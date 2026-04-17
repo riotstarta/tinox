@@ -7,6 +7,7 @@ edition = "2021"
 tinox_lexer = { package = "tinox-lexer", path = "../tinox-lexer" }
 tinox_parser = { package = "tinox-parser", path = "../tinox-parser" }
 tinox_codegen = { package = "tinox-codegen", path = "../tinox-codegen" }
+tinox_typecheck = { package = "tinox-typecheck", path = "../tinox-typecheck" }
 tinox_common = { package = "tinox-common", path = "../tinox-common" }
 
 [[bin]]

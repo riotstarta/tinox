@@ -10,6 +10,7 @@ dependencies = [
  "tinox-common",
  "tinox-lexer",
  "tinox-parser",
+ "tinox-typecheck",
 ]
 
 [[package]]

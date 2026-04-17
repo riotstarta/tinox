@@ -2,9 +2,9 @@ use std::env;
 use std::fs;
 use std::process::Command;
 
+use tinox_codegen::CodeGen;
 use tinox_lexer::Lexer;
 use tinox_parser::Parser;
-use tinox_codegen::CodeGen;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -100,16 +100,23 @@ fn check(args: &[String]) {
 }
 
 fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
-    let source = fs::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let source =
+        fs::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     let mut lexer = Lexer::new(&source);
-    let tokens = lexer.tokenize().map_err(|e| format!("Lexer error: {:?}", e))?;
+    let tokens = lexer
+        .tokenize()
+        .map_err(|e| format!("Lexer error: {:?}", e))?;
 
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse().map_err(|e| format!("Parse error: {:?}", e))?;
+    let ast = parser
+        .parse()
+        .map_err(|e| format!("Parse error: {:?}", e))?;
 
     let mut codegen = CodeGen::new();
-    codegen.gen(&ast).map_err(|e| format!("Codegen error: {:?}", e))?;
+    codegen
+        .gen(&ast)
+        .map_err(|e| format!("Codegen error: {:?}", e))?;
 
     let ir = codegen.into_ir();
     let ir_path = format!("{}.ll", output_name);

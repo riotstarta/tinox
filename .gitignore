@@ -34,3 +34,7 @@ test_O0
 test_O1
 runtime.o
 build.rs
+hello_out
+test_out
+*.tnx
+work.sh
