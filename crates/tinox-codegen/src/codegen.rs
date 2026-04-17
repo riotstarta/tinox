@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Pattern, SourceFile, Stmt, StmtKind,
-    Type, UnaryOp,
+    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern, SourceFile, Stmt,
+    StmtKind, Type, UnaryOp,
 };
 
 pub struct CodeGen {
@@ -14,6 +14,7 @@ pub struct CodeGen {
     temp_count: usize,
     struct_layouts: HashMap<String, Vec<String>>,
     closure_envs: HashMap<String, String>,
+    method_ret_types: HashMap<String, String>,
 }
 
 impl CodeGen {
@@ -25,6 +26,7 @@ impl CodeGen {
             temp_count: 0,
             struct_layouts: HashMap::new(),
             closure_envs: HashMap::new(),
+            method_ret_types: HashMap::new(),
         }
     }
 
@@ -54,6 +56,9 @@ impl CodeGen {
                 DeclKind::Class(c) => {
                     let fields: Vec<String> = c.fields.iter().map(|f| f.name.clone()).collect();
                     self.struct_layouts.insert(c.name.clone(), fields);
+                    for method in &c.methods {
+                        self.gen_class_method(&c.name, method)?;
+                    }
                 }
                 _ => {}
             }
@@ -125,6 +130,86 @@ impl CodeGen {
         writeln!(&mut self.ir, "entry:").unwrap();
 
         self.gen_stmt_body(&f.body, &mut ctx)?;
+
+        let has_terminator = self.ir.lines().last().map_or(false, |l| {
+            let t = l.trim();
+            t.starts_with("ret ") || t.starts_with("br ")
+        });
+        if !has_terminator {
+            if ret_type == "void" {
+                writeln!(&mut self.ir, "ret void").unwrap();
+            } else {
+                writeln!(&mut self.ir, "ret {} 0", ret_type).unwrap();
+            }
+        }
+
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+
+        Ok(())
+    }
+
+    fn gen_class_method(
+        &mut self,
+        class_name: &str,
+        method: &Method,
+    ) -> Result<(), ErrorBag> {
+        let ret_type = Self::type_to_llvm(&method.ret_type);
+        let fn_name = format!("{}_{}", class_name, method.name);
+        self.method_ret_types.insert(fn_name.clone(), ret_type.clone());
+
+        let mut ctx = GenCtx {
+            locals: HashMap::new(),
+            params: HashSet::new(),
+            struct_fields: Vec::new(),
+            current_struct: Some(class_name.to_string()),
+            local_types: HashMap::new(),
+            break_target: None,
+            continue_target: None,
+            error_catch: None,
+            defer_stack: Vec::new(),
+            in_defer_exec: false,
+        };
+
+        let mut params_str = "i64* %self".to_string();
+        ctx.locals
+            .insert("self".to_string(), ("i64*".to_string(), 0));
+        ctx.params.insert("self".to_string());
+        ctx.local_types
+            .insert("self".to_string(), class_name.to_string());
+
+        for p in &method.params {
+            let llvm_ty = Self::type_to_llvm(&p.param_type);
+            params_str.push_str(&format!(", {} %{}", llvm_ty, p.name));
+            ctx.locals
+                .insert(p.name.clone(), (llvm_ty.clone(), ctx.locals.len()));
+            ctx.params.insert(p.name.clone());
+            if let Type::Named(cn) = &p.param_type {
+                ctx.local_types.insert(p.name.clone(), cn.clone());
+            }
+        }
+
+        writeln!(
+            &mut self.ir,
+            "define {} @{}({}) {{",
+            ret_type, fn_name, params_str
+        )
+        .unwrap();
+        writeln!(&mut self.ir, "entry:").unwrap();
+
+        self.gen_stmt_body(&method.body, &mut ctx)?;
+
+        let has_terminator = self.ir.lines().last().map_or(false, |l| {
+            let t = l.trim();
+            t.starts_with("ret ") || t.starts_with("br ")
+        });
+        if !has_terminator {
+            if ret_type == "void" {
+                writeln!(&mut self.ir, "ret void").unwrap();
+            } else {
+                writeln!(&mut self.ir, "ret {} 0", ret_type).unwrap();
+            }
+        }
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
@@ -422,6 +507,76 @@ impl CodeGen {
             } => {
                 self.gen_try_stmt(body, catches, finally.as_deref(), ctx)?;
             }
+            StmtKind::For { var, iter, body } => {
+                let (range_ptr, _range_ty) = self.gen_expr(iter, ctx)?;
+
+                let start_gep = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = getelementptr i64, i64* {}, i64 0",
+                    start_gep, range_ptr
+                )
+                .unwrap();
+                let start_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", start_val, start_gep).unwrap();
+
+                let end_gep = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = getelementptr i64, i64* {}, i64 1",
+                    end_gep, range_ptr
+                )
+                .unwrap();
+                let end_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", end_val, end_gep).unwrap();
+
+                writeln!(&mut self.ir, "%{} = alloca i64", var).unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var).unwrap();
+                ctx.locals
+                    .insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
+
+                let cond_bb = self.new_bb("for_cond");
+                let body_bb = self.new_bb("for_body");
+                let end_bb = self.new_bb("for_end");
+
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.continue_target = Some(cond_bb.clone());
+
+                writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
+                let cur_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* %{}", cur_val, var).unwrap();
+                let cmp = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = icmp slt i64 {}, {}",
+                    cmp, cur_val, end_val
+                )
+                .unwrap();
+                writeln!(
+                    &mut self.ir,
+                    "br i1 {}, label %{}, label %{}",
+                    cmp, body_bb, end_bb
+                )
+                .unwrap();
+
+                writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+                self.gen_stmt_body(body, ctx)?;
+
+                let loaded_inc = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* %{}", loaded_inc, var).unwrap();
+                let next_val = self.temp();
+                writeln!(&mut self.ir, "{} = add i64 {}, 1", next_val, loaded_inc).unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* %{}", next_val, var).unwrap();
+                writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
+            }
             StmtKind::Assignment { target, value } => {
                 if let ExprKind::Ident(name) = &target.node {
                     let name = name.clone();
@@ -430,6 +585,32 @@ impl CodeGen {
                         let (val, _) = self.gen_expr(value, ctx)?;
                         writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, val, ty, name).unwrap();
                     }
+                } else if let ExprKind::FieldAccess { obj, field } = &target.node {
+                    let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
+                    let struct_name = match &obj.node {
+                        ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+                        ExprKind::This => ctx.current_struct.clone(),
+                        _ => None,
+                    };
+                    let offset = if let Some(sname) = struct_name {
+                        if let Some(fields) = self.struct_layouts.get(&sname) {
+                            fields.iter().position(|f| f == field).unwrap_or(0) as i64
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    };
+                    let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    let field_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        field_ptr, obj_ptr, offset
+                    )
+                    .unwrap();
+                    writeln!(&mut self.ir, "store {} {}, i64* {}", val_ty, val, field_ptr)
+                        .unwrap();
                 } else if let ExprKind::Index { obj, index } = &target.node {
                     let (idx_val, _) = self.gen_expr(index, ctx)?;
                     let (base_ptr, _) = if let ExprKind::Ident(name) = &obj.node {
@@ -680,42 +861,40 @@ impl CodeGen {
                 Ok((result, ret_ty))
             }
             ExprKind::MethodCall { obj, method, args } => {
-                // Get object and determine its class type
                 let (obj_ptr, obj_ty) = self.gen_expr(obj, ctx)?;
 
-                // Determine the class name from the object expression
-                let class_name = if let ExprKind::Ident(name) = &obj.node {
-                    ctx.local_types.get(name).cloned()
-                } else {
-                    // For other expressions (e.g., struct literals), we can't easily determine type
-                    // This is a limitation we'll address with proper type tracking
-                    None
+                let class_name = match &obj.node {
+                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+                    ExprKind::This => ctx.current_struct.clone(),
+                    _ => None,
                 };
 
-                // Construct the full method name: ClassName_methodName
                 let full_method_name = if let Some(class) = class_name {
                     format!("{}_{}", class, method)
                 } else {
-                    // Fallback: just use the method name (for now)
                     method.clone()
                 };
 
-                // Build argument list with object as first argument
                 let mut full_args_str = format!("{} {}", obj_ty, obj_ptr);
                 for arg in args {
                     let (val, ty) = self.gen_expr(arg, ctx)?;
                     full_args_str.push_str(&format!(", {} {}", ty, val));
                 }
 
-                // Call the method function
+                let ret_ty = self
+                    .method_ret_types
+                    .get(&full_method_name)
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+
                 let result = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = call i64 @{}({})",
-                    result, full_method_name, full_args_str
+                    "{} = call {} @{}({})",
+                    result, ret_ty, full_method_name, full_args_str
                 )
                 .unwrap();
-                Ok((result, "i64".to_string()))
+                Ok((result, ret_ty))
             }
             ExprKind::Index { obj, index } => {
                 let (idx_val, _) = self.gen_expr(index, ctx)?;
@@ -1193,7 +1372,14 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
                 Ok(last_result)
             }
-            ExprKind::This | ExprKind::Super => Ok(("0".to_string(), "i64".to_string())),
+            ExprKind::This => {
+                if ctx.params.contains("self") {
+                    Ok(("%self".to_string(), "i64*".to_string()))
+                } else {
+                    Ok(("0".to_string(), "i64".to_string()))
+                }
+            }
+            ExprKind::Super => Ok(("0".to_string(), "i64".to_string())),
             ExprKind::Is { expr, .. } => {
                 let (val, _val_ty) = self.gen_expr(expr, ctx)?;
                 let result = self.temp();

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, Decl, DeclKind, Expr, ExprKind, Function, Literal, Param, Pattern, SourceFile, Stmt,
-    StmtKind, Type, UnaryOp,
+    BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, SourceFile, Stmt, StmtKind,
+    Type, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
@@ -256,6 +256,8 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
+    interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
+    interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
 }
 
 impl TypeChecker {
@@ -279,6 +281,8 @@ impl TypeChecker {
             errors: Vec::new(),
             symbols,
             enums: HashMap::new(),
+            interfaces: HashMap::new(),
+            interface_implementations: HashMap::new(),
         }
     }
 
@@ -314,6 +318,23 @@ impl TypeChecker {
                             .variables
                             .insert(format!("{}.{}", c.name, field.name), (ty, true));
                     }
+                    for method in &c.methods {
+                        let mut params =
+                            vec![("self".to_string(), ValueType::Named(c.name.clone()))];
+                        params.extend(
+                            method
+                                .params
+                                .iter()
+                                .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type))),
+                        );
+                        let sig = FunctionSignature {
+                            params,
+                            return_type: Self::type_to_value(&method.ret_type),
+                        };
+                        self.symbols
+                            .functions
+                            .insert(format!("{}_{}", c.name, method.name), sig);
+                    }
                 }
                 DeclKind::Enum(e) => {
                     let variant_names: Vec<String> =
@@ -326,13 +347,55 @@ impl TypeChecker {
                             .insert(format!("{}.{}", e.name, variant.name), (ty, true));
                     }
                 }
+                DeclKind::Interface(iface) => {
+                    let methods = iface
+                        .methods
+                        .iter()
+                        .map(|m| {
+                            let sig = FunctionSignature {
+                                params: m
+                                    .params
+                                    .iter()
+                                    .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type)))
+                                    .collect(),
+                                return_type: Self::type_to_value(&m.ret_type),
+                            };
+                            (m.name.clone(), sig)
+                        })
+                        .collect();
+                    self.interfaces.insert(iface.name.clone(), methods);
+                }
+                DeclKind::Trait(t) => {
+                    let methods = t
+                        .methods
+                        .iter()
+                        .map(|m| {
+                            let sig = FunctionSignature {
+                                params: m
+                                    .params
+                                    .iter()
+                                    .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type)))
+                                    .collect(),
+                                return_type: Self::type_to_value(&m.ret_type),
+                            };
+                            (m.name.clone(), sig)
+                        })
+                        .collect();
+                    self.interfaces.insert(t.name.clone(), methods);
+                }
                 _ => {}
             }
         }
 
         for decl in &source.decls {
-            if let DeclKind::Function(f) = &decl.node {
-                self.check_function(f);
+            match &decl.node {
+                DeclKind::Function(f) => {
+                    self.check_function(f);
+                }
+                DeclKind::Class(c) => {
+                    self.check_class(c);
+                }
+                _ => {}
             }
         }
     }
@@ -354,6 +417,89 @@ impl TypeChecker {
         self.symbols.exit_scope(saved_vars);
     }
 
+    fn check_class(&mut self, c: &Class) {
+        for method in &c.methods {
+            let saved_vars = self.symbols.enter_scope();
+            self.symbols.variables.insert(
+                "self".to_string(),
+                (ValueType::Named(c.name.clone()), false),
+            );
+            for param in &method.params {
+                self.symbols.variables.insert(
+                    param.name.clone(),
+                    (Self::type_to_value(&param.param_type), false),
+                );
+            }
+            let has_return = self.check_stmt(&method.body);
+            let expected = Self::type_to_value(&method.ret_type);
+            if expected != ValueType::Unit && expected != ValueType::Never && !has_return {
+                self.errors
+                    .push(Error::new(method.span, "missing return statement"));
+            }
+            self.symbols.exit_scope(saved_vars);
+        }
+
+        let mut implemented_ifaces = Vec::new();
+        for iface_name in &c.implements {
+            implemented_ifaces.push(iface_name.clone());
+            if let Some(iface_methods) = self.interfaces.get(iface_name).cloned() {
+                for (method_name, required_sig) in &iface_methods {
+                    let full_name = format!("{}_{}", c.name, method_name);
+                    if let Some(class_sig) = self.symbols.functions.get(&full_name).cloned() {
+                        // Check param count (excluding implicit self)
+                        let class_param_count = class_sig.params.len().saturating_sub(1);
+                        if class_param_count != required_sig.params.len() {
+                            self.errors.push(Error::new(
+                                c.span,
+                                format!(
+                                    "method '{}' in class {} has wrong number of parameters for interface {}: expected {}, found {}",
+                                    method_name, c.name, iface_name, required_sig.params.len(), class_param_count
+                                ),
+                            ));
+                        } else {
+                            for (i, ((_, class_ty), (_, req_ty))) in class_sig
+                                .params
+                                .iter()
+                                .skip(1) // skip self
+                                .zip(required_sig.params.iter())
+                                .enumerate()
+                            {
+                                if !Self::types_compatible(class_ty, req_ty) {
+                                    self.errors.push(Error::new(
+                                        c.span,
+                                        format!(
+                                            "method '{}' param {} type mismatch in class {}: expected {}, found {}",
+                                            method_name, i, c.name, req_ty.to_string(), class_ty.to_string()
+                                        ),
+                                    ));
+                                }
+                            }
+                            if !Self::types_compatible(&class_sig.return_type, &required_sig.return_type) {
+                                self.errors.push(Error::new(
+                                    c.span,
+                                    format!(
+                                        "method '{}' return type mismatch in class {}: expected {}, found {}",
+                                        method_name, c.name, required_sig.return_type.to_string(), class_sig.return_type.to_string()
+                                    ),
+                                ));
+                            }
+                        }
+                    } else {
+                        self.errors.push(Error::new(
+                            c.span,
+                            format!(
+                                "class {} does not implement method '{}' from interface {}",
+                                c.name, method_name, iface_name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        self.interface_implementations
+            .insert(c.name.clone(), implemented_ifaces);
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
         match &stmt.node {
             StmtKind::Let {
@@ -363,14 +509,27 @@ impl TypeChecker {
                     self.errors
                         .push(TypeError::DuplicateDefinition(name.clone(), stmt.span).to_error());
                 }
-                let inferred_type = if let Some(v) = value {
-                    Some(self.infer_type(v))
-                } else if let Some(t) = ty {
-                    Some(Self::type_to_value(t))
-                } else {
-                    None
+                let final_type = match (value, ty) {
+                    (Some(v), Some(t)) => {
+                        let val_ty = self.infer_type(v);
+                        let ann_ty = Self::type_to_value(t);
+                        if !Self::types_compatible(&ann_ty, &val_ty) {
+                            self.errors.push(
+                                TypeError::TypeMismatch {
+                                    expected: ann_ty.to_string(),
+                                    found: val_ty.to_string(),
+                                    span: v.span,
+                                }
+                                .to_error(),
+                            );
+                        }
+                        Some(ann_ty)
+                    }
+                    (Some(v), None) => Some(self.infer_type(v)),
+                    (None, Some(t)) => Some(Self::type_to_value(t)),
+                    (None, None) => None,
                 };
-                if let Some(t) = inferred_type {
+                if let Some(t) = final_type {
                     self.symbols.variables.insert(name.clone(), (t, false));
                 } else {
                     self.errors
@@ -621,7 +780,7 @@ impl TypeChecker {
                 self.check_call(&func_expr, &call_args, expr.span)
             }
             ExprKind::Index { obj, index } => {
-                let obj_ty = self.infer_type(obj);
+                self.infer_type(obj);
                 let index_ty = self.infer_type(index);
                 if !matches!(index_ty, ValueType::Int) {
                     self.errors
@@ -647,7 +806,13 @@ impl TypeChecker {
                 }
                 ValueType::Any
             }
-            ExprKind::This => ValueType::Named("Self".to_string()),
+            ExprKind::This => {
+                if let Some((ty, _)) = self.symbols.variables.get("self") {
+                    ty.clone()
+                } else {
+                    ValueType::Named("Self".to_string())
+                }
+            }
             ExprKind::Super => ValueType::Named("Super".to_string()),
             ExprKind::New { class, args } => {
                 for arg in args {
@@ -837,7 +1002,7 @@ impl TypeChecker {
             }
             ExprKind::EnumValue {
                 enum_name,
-                variant,
+                variant: _,
                 args,
             } => {
                 // Type check all arguments
