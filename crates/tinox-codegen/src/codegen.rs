@@ -853,6 +853,67 @@ impl CodeGen {
                 }
                 Ok((typed_ptr, "i64*".to_string()))
             }
+            ExprKind::EnumValue {
+                enum_name,
+                variant,
+                args,
+            } => {
+                // For simplicity, we represent enum values as:
+                // - For variants without args: just a discriminator integer
+                // - For variants with args: allocate memory with discriminator + args
+
+                if args.is_empty() {
+                    // Simple enum variant without arguments
+                    // Use variant hash as discriminator or a simple mapping
+                    let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+                    Ok((format!("{}", discriminator), "i64".to_string()))
+                } else {
+                    // Enum variant with arguments
+                    // Allocate memory: [discriminator, arg1, arg2, ...]
+                    let ptr = self.temp();
+                    let size = (args.len() + 1) * 8; // +1 for discriminator
+                    writeln!(
+                        &mut self.ir,
+                        "{} = call i8* @tinox_alloc(i64 {})",
+                        ptr, size
+                    )
+                    .unwrap();
+                    let typed_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
+
+                    // Store discriminator at index 0
+                    let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+                    let disc_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 0",
+                        disc_ptr, typed_ptr
+                    )
+                    .unwrap();
+                    writeln!(
+                        &mut self.ir,
+                        "store i64 {}, i64* {}",
+                        discriminator, disc_ptr
+                    )
+                    .unwrap();
+
+                    // Store arguments starting at index 1
+                    for (i, arg) in args.iter().enumerate() {
+                        let (val, _) = self.gen_expr(arg, ctx)?;
+                        let arg_ptr = self.temp();
+                        writeln!(
+                            &mut self.ir,
+                            "{} = getelementptr i64, i64* {}, i64 {}",
+                            arg_ptr,
+                            typed_ptr,
+                            i + 1
+                        )
+                        .unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", val, arg_ptr).unwrap();
+                    }
+                    Ok((typed_ptr, "i64*".to_string()))
+                }
+            }
             ExprKind::Cast { expr, ty } => {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 let llvm_ty = Self::type_to_llvm(ty);
@@ -989,7 +1050,7 @@ impl CodeGen {
                             let cmp = self.temp();
                             writeln!(
                                 &mut self.ir,
-                                "%{} = icmp eq {} {}, {}",
+                                "{} = icmp eq {} {}, {}",
                                 cmp, val_ty, val, lit_val
                             )
                             .unwrap();
@@ -997,7 +1058,7 @@ impl CodeGen {
                             let next_bb = self.new_bb("match_next");
                             writeln!(
                                 &mut self.ir,
-                                "br i1 %{}, label %{}, label %{}",
+                                "br i1 {}, label %{}, label %{}",
                                 cmp, case_bb, next_bb
                             )
                             .unwrap();
@@ -1021,6 +1082,110 @@ impl CodeGen {
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
                             last_result = (body_val, body_ty);
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                        }
+                        Pattern::EnumVariant { variant, args, .. } => {
+                            // For enum variants, we need to:
+                            // 1. Extract and compare the discriminator
+                            // 2. If it matches, bind any pattern arguments
+
+                            let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+
+                            if !args.is_empty() && val_ty.ends_with("*") {
+                                // Load discriminator from the enum value
+                                let disc_ptr = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = getelementptr i64, i64* {}, i64 0",
+                                    disc_ptr, val
+                                )
+                                .unwrap();
+                                let loaded_disc = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = load i64, i64* {}",
+                                    loaded_disc, disc_ptr
+                                )
+                                .unwrap();
+
+                                let cmp = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = icmp eq i64 {}, {}",
+                                    cmp, loaded_disc, discriminator
+                                )
+                                .unwrap();
+
+                                let case_bb = self.new_bb("match_case");
+                                let next_bb = self.new_bb("match_next");
+                                writeln!(
+                                    &mut self.ir,
+                                    "br i1 {}, label %{}, label %{}",
+                                    cmp, case_bb, next_bb
+                                )
+                                .unwrap();
+                                writeln!(&mut self.ir, "{}:", case_bb).unwrap();
+
+                                // Bind arguments if present
+                                for (i, arg_pattern) in args.iter().enumerate() {
+                                    if let Pattern::Ident(arg_name, _, _) = arg_pattern {
+                                        let arg_ptr = self.temp();
+                                        writeln!(
+                                            &mut self.ir,
+                                            "{} = getelementptr i64, i64* {}, i64 {}",
+                                            arg_ptr,
+                                            val,
+                                            i + 1
+                                        )
+                                        .unwrap();
+                                        let arg_val = self.temp();
+                                        writeln!(
+                                            &mut self.ir,
+                                            "{} = load i64, i64* {}",
+                                            arg_val, arg_ptr
+                                        )
+                                        .unwrap();
+                                        ctx.locals.insert(
+                                            arg_name.clone(),
+                                            ("i64".to_string(), ctx.locals.len()),
+                                        );
+                                        writeln!(&mut self.ir, "%{} = alloca i64", arg_name)
+                                            .unwrap();
+                                        writeln!(
+                                            &mut self.ir,
+                                            "store i64 {}, i64* %{}",
+                                            arg_val, arg_name
+                                        )
+                                        .unwrap();
+                                    }
+                                }
+
+                                let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                                last_result = (body_val, body_ty);
+                                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                                writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+                            } else if val_ty == "i64" {
+                                // Simple enum variant (no arguments)
+                                let cmp = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = icmp eq i64 {}, {}",
+                                    cmp, val, discriminator
+                                )
+                                .unwrap();
+                                let case_bb = self.new_bb("match_case");
+                                let next_bb = self.new_bb("match_next");
+                                writeln!(
+                                    &mut self.ir,
+                                    "br i1 {}, label %{}, label %{}",
+                                    cmp, case_bb, next_bb
+                                )
+                                .unwrap();
+                                writeln!(&mut self.ir, "{}:", case_bb).unwrap();
+                                let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                                last_result = (body_val, body_ty);
+                                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                                writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+                            }
                         }
                         _ => {}
                     }
@@ -1422,7 +1587,7 @@ impl CodeGen {
     }
 
     fn new_bb(&mut self, name: &str) -> String {
-        format!(".{}_{}", name, self.temp_count)
+        format!("{}_{}", name, self.temp_count)
     }
 
     fn get_field_offset(

@@ -255,6 +255,7 @@ impl SymbolTable {
 pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
+    enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
 }
 
 impl TypeChecker {
@@ -277,6 +278,7 @@ impl TypeChecker {
         Self {
             errors: Vec::new(),
             symbols,
+            enums: HashMap::new(),
         }
     }
 
@@ -314,6 +316,9 @@ impl TypeChecker {
                     }
                 }
                 DeclKind::Enum(e) => {
+                    let variant_names: Vec<String> =
+                        e.variants.iter().map(|v| v.name.clone()).collect();
+                    self.enums.insert(e.name.clone(), variant_names.clone());
                     for variant in &e.variants {
                         let ty = ValueType::Named(format!("{}.{}", e.name, variant.name));
                         self.symbols
@@ -616,13 +621,15 @@ impl TypeChecker {
                 self.check_call(&func_expr, &call_args, expr.span)
             }
             ExprKind::Index { obj, index } => {
-                self.infer_type(obj);
+                let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
                 if !matches!(index_ty, ValueType::Int) {
                     self.errors
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
-                ValueType::Any
+                // Array indexing returns the element type
+                // For now, arrays are assumed to contain Int64 values
+                ValueType::Int
             }
             ExprKind::FieldAccess { obj, field } => {
                 let obj_ty = self.infer_type(obj);
@@ -827,6 +834,18 @@ impl TypeChecker {
                     self.infer_type(e);
                 }
                 ValueType::Tuple
+            }
+            ExprKind::EnumValue {
+                enum_name,
+                variant,
+                args,
+            } => {
+                // Type check all arguments
+                for arg in args {
+                    self.infer_type(arg);
+                }
+                // Return the enum type
+                ValueType::Named(enum_name.clone())
             }
             ExprKind::ArrayLiteral(elements) => {
                 for e in elements {

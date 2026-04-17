@@ -188,6 +188,11 @@ pub enum ExprKind {
         inclusive: bool,
     },
     Tuple(Vec<Expr>),
+    EnumValue {
+        enum_name: Ident,
+        variant: Ident,
+        args: Vec<Expr>,
+    },
 }
 
 pub type Expr = Spanned<ExprKind>;

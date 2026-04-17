@@ -513,11 +513,8 @@ impl Parser {
                         let value = self.parse_expr()?;
                         self.expect(TokenKind::Semicolon)?;
                         let target = Spanned::new(ExprKind::Ident(name.clone()), Span::dummy());
-                        StmtKind::Assignment {
-                            target,
-                            value,
-                        }
-} else if self.check(TokenKind::PlusEquals)
+                        StmtKind::Assignment { target, value }
+                    } else if self.check(TokenKind::PlusEquals)
                         || self.check(TokenKind::MinusEquals)
                         || self.check(TokenKind::StarEquals)
                         || self.check(TokenKind::SlashEquals)
@@ -557,10 +554,7 @@ impl Parser {
                             },
                             Span::dummy(),
                         );
-                        StmtKind::Assignment {
-                            target,
-                            value,
-                        }
+                        StmtKind::Assignment { target, value }
                     } else if self.check(TokenKind::LParen) {
                         let mut args = Vec::new();
                         self.bump();
@@ -663,7 +657,7 @@ impl Parser {
     fn parse_for_stmt(&mut self) -> Result<StmtKind, Error> {
         self.bump();
         self.expect(TokenKind::LParen)?;
-        
+
         let init = if !self.check(TokenKind::Semicolon) {
             let stmt = if self.check_keyword(Keyword::Let) {
                 self.parse_let_stmt()?
@@ -1139,6 +1133,36 @@ impl Parser {
                         span,
                     );
                 }
+            } else if self.check(TokenKind::ColonColon) {
+                // Handle enum value construction: Color::Red or Option::Some(value)
+                if let ExprKind::Ident(enum_name) = &expr.node {
+                    self.bump(); // consume ::
+                    let variant = self.parse_ident()?;
+                    let span = expr.span;
+
+                    let mut args = Vec::new();
+                    if self.check(TokenKind::LParen) {
+                        self.bump();
+                        if !self.check(TokenKind::RParen) {
+                            args.push(self.parse_expr()?);
+                            while self.consume(TokenKind::Comma) {
+                                args.push(self.parse_expr()?);
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                    }
+
+                    expr = Spanned::new(
+                        ExprKind::EnumValue {
+                            enum_name: enum_name.clone(),
+                            variant,
+                            args,
+                        },
+                        span,
+                    );
+                } else {
+                    return Err(self.error("expected enum name before ::"));
+                }
             } else if self.check(TokenKind::LBracket) {
                 self.bump();
                 let index = self.parse_expr()?;
@@ -1204,10 +1228,7 @@ impl Parser {
                     }
                 }
                 self.expect(TokenKind::RBracket)?;
-                Ok(Spanned::new(
-                    ExprKind::ArrayLiteral(elements),
-                    token.span,
-                ))
+                Ok(Spanned::new(ExprKind::ArrayLiteral(elements), token.span))
             }
             TokenKind::Integer(n) => {
                 self.bump();
@@ -1314,25 +1335,47 @@ impl Parser {
             TokenKind::Ident(s) => {
                 self.bump();
                 if self.check(TokenKind::LBrace) {
-                    self.bump();
-                    let mut fields = Vec::new();
-                    while !self.check(TokenKind::RBrace) {
-                        let name = self.parse_ident()?;
-                        self.expect(TokenKind::Colon)?;
-                        let value = self.parse_expr()?;
-                        fields.push((name, value));
-                        if !self.check(TokenKind::RBrace) {
-                            self.expect(TokenKind::Comma)?;
+                    // Lookahead to check if this is really a struct literal
+                    // Struct literals have Ident { field: value, ... }
+                    // We check if the next token after { is either } or an Ident followed by :
+                    let is_struct_literal = {
+                        let saved_pos = self.pos;
+                        self.bump(); // consume {
+                        let result = if self.check(TokenKind::RBrace) {
+                            true // empty struct literal
+                        } else if let TokenKind::Ident(_) = self.peek().kind {
+                            self.bump(); // consume potential field name
+                            self.check(TokenKind::Colon) // check if followed by :
+                        } else {
+                            false // not a struct literal
+                        };
+                        self.pos = saved_pos; // restore position
+                        result
+                    };
+
+                    if is_struct_literal {
+                        self.bump(); // consume {
+                        let mut fields = Vec::new();
+                        while !self.check(TokenKind::RBrace) {
+                            let name = self.parse_ident()?;
+                            self.expect(TokenKind::Colon)?;
+                            let value = self.parse_expr()?;
+                            fields.push((name, value));
+                            if !self.check(TokenKind::RBrace) {
+                                self.expect(TokenKind::Comma)?;
+                            }
                         }
+                        self.expect(TokenKind::RBrace)?;
+                        Ok(Spanned::new(
+                            ExprKind::StructLiteral {
+                                name: s.clone(),
+                                fields,
+                            },
+                            token.span,
+                        ))
+                    } else {
+                        Ok(Spanned::new(ExprKind::Ident(s.clone()), token.span))
                     }
-                    self.expect(TokenKind::RBrace)?;
-                    Ok(Spanned::new(
-                        ExprKind::StructLiteral {
-                            name: s.clone(),
-                            fields,
-                        },
-                        token.span,
-                    ))
                 } else {
                     Ok(Spanned::new(ExprKind::Ident(s.clone()), token.span))
                 }
@@ -1369,7 +1412,13 @@ impl Parser {
         self.expect_keyword(Keyword::While)?;
         let cond = self.parse_expr()?;
         let body = Box::new(self.parse_expr()?);
-        Ok(Spanned::new(ExprKind::While { cond: Box::new(cond), body }, span))
+        Ok(Spanned::new(
+            ExprKind::While {
+                cond: Box::new(cond),
+                body,
+            },
+            span,
+        ))
     }
 
     fn parse_loop_expr(&mut self) -> Result<Expr, Error> {
@@ -1439,7 +1488,68 @@ impl Parser {
             return Ok(Pattern::Tuple(patterns, span));
         }
 
+        // Try to parse a literal
+        match &self.peek().kind {
+            TokenKind::Integer(n) => {
+                let n = *n;
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Integer(n), span));
+            }
+            TokenKind::Float(f) => {
+                let f = *f;
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Float(f), span));
+            }
+            TokenKind::String(s) => {
+                let s = s.clone();
+                self.bump();
+                return Ok(Pattern::Literal(Literal::String(s), span));
+            }
+            TokenKind::Char(c) => {
+                let c = *c;
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Char(c), span));
+            }
+            TokenKind::Byte(b) => {
+                let b = *b;
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Byte(b), span));
+            }
+            TokenKind::Keyword(Keyword::True) => {
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Bool(true), span));
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.bump();
+                return Ok(Pattern::Literal(Literal::Bool(false), span));
+            }
+            _ => {}
+        }
+
         let name = self.parse_ident()?;
+
+        // Handle enum variant patterns: Color::Red or Option::Some(x)
+        if self.check(TokenKind::ColonColon) {
+            self.bump();
+            let variant = self.parse_ident()?;
+            let mut args = Vec::new();
+            if self.check(TokenKind::LParen) {
+                self.bump();
+                if !self.check(TokenKind::RParen) {
+                    args.push(self.parse_pattern()?);
+                    while self.consume(TokenKind::Comma) {
+                        args.push(self.parse_pattern()?);
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+            }
+            return Ok(Pattern::EnumVariant {
+                enum_name: name,
+                variant,
+                args,
+                span,
+            });
+        }
 
         if self.check(TokenKind::LParen) {
             self.bump();
