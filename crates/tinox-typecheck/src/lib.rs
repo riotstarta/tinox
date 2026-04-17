@@ -605,9 +605,15 @@ impl TypeChecker {
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
             ExprKind::MethodCall { obj, method, args } => {
                 let obj_ty = self.infer_type(obj);
-                let method_name = format!("{}.{}", obj_ty.to_string(), method);
+                // Method names are looked up as ClassName_methodName
+                let method_name = format!("{}_{}", obj_ty.to_string(), method);
                 let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
-                self.check_call(&func_expr, args, expr.span)
+
+                // Prepend the object as the first argument for type checking
+                let mut call_args = vec![(**obj).clone()];
+                call_args.extend(args.iter().map(|e| e.clone()));
+
+                self.check_call(&func_expr, &call_args, expr.span)
             }
             ExprKind::Index { obj, index } => {
                 self.infer_type(obj);

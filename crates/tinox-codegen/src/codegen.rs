@@ -103,6 +103,11 @@ impl CodeGen {
             params_str.push_str(&format!("{} %{}", llvm_ty, p.name));
             ctx.locals.insert(p.name.clone(), (llvm_ty.clone(), i));
             ctx.params.insert(p.name.clone());
+
+            // Track parameter types for struct/class types
+            if let Type::Named(class_name) = &p.param_type {
+                ctx.local_types.insert(p.name.clone(), class_name.clone());
+            }
         }
 
         let fn_name = if f.name == "main" {
@@ -675,17 +680,39 @@ impl CodeGen {
                 Ok((result, ret_ty))
             }
             ExprKind::MethodCall { obj, method, args } => {
+                // Get object and determine its class type
                 let (obj_ptr, obj_ty) = self.gen_expr(obj, ctx)?;
+
+                // Determine the class name from the object expression
+                let class_name = if let ExprKind::Ident(name) = &obj.node {
+                    ctx.local_types.get(name).cloned()
+                } else {
+                    // For other expressions (e.g., struct literals), we can't easily determine type
+                    // This is a limitation we'll address with proper type tracking
+                    None
+                };
+
+                // Construct the full method name: ClassName_methodName
+                let full_method_name = if let Some(class) = class_name {
+                    format!("{}_{}", class, method)
+                } else {
+                    // Fallback: just use the method name (for now)
+                    method.clone()
+                };
+
+                // Build argument list with object as first argument
                 let mut full_args_str = format!("{} {}", obj_ty, obj_ptr);
                 for arg in args {
                     let (val, ty) = self.gen_expr(arg, ctx)?;
                     full_args_str.push_str(&format!(", {} {}", ty, val));
                 }
+
+                // Call the method function
                 let result = self.temp();
                 writeln!(
                     &mut self.ir,
                     "{} = call i64 @{}({})",
-                    result, method, full_args_str
+                    result, full_method_name, full_args_str
                 )
                 .unwrap();
                 Ok((result, "i64".to_string()))
@@ -1380,8 +1407,10 @@ impl CodeGen {
             Type::Char => "i32".to_string(),
             Type::String => "i8*".to_string(),
             Type::Unit => "void".to_string(),
+            Type::Named(_) => "i64*".to_string(), // Classes/structs are pointers
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
+            Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
             _ => "i64".to_string(),
         }
     }

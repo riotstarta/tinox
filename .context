@@ -1,0 +1,78 @@
+# Tinox Project - Context fuer OpenCode
+
+## Projektuebersicht
+
+Tinox ist ein eigener Compiler fuer eine Java-aehnliche Sprache.
+- **Location**: `/ki/ps`
+- **Sprache**: Rust
+- **Build**: `cargo build` / `cargo test`
+- **Ausfuehren**: `cargo run -- run test.tnx` (Exit Code 42 = Erfolg)
+
+## Aktueller Stand (V2 - Parser Fixed)
+
+Der Parser wurde repariert und kompiliert. Das Projekt laeuft mit hardcodiertem LLVM IR.
+Zum Weiterarbeiten: CLI muss an die volle Pipeline (Lexer->Parser->Codegen) angebunden werden.
+
+## Wie du mich am besten startest
+
+### 1. Projekt verstehen
+```
+cd /ki/ps
+cat .tinox_progress   # Aktueller Fortschritt
+cat .tinox_notes      # Entwicklungsnotizen
+```
+
+### 2. Bauen und Testen
+```
+cargo build 2>&1 | tail -20   # Kompiliert es noch?
+cargo test                      # Alle Tests noch gruen?
+```
+
+### 3. Ausfuehren
+```
+cargo run --quiet -- run test.tnx
+echo "Exit code: $?"           # Sollte 42 sein
+```
+
+### 4. Weiterarbeiten
+Lies zuerst:
+- `crates/tinox/src/main.rs` - CLI Einstiegspunkt
+- `crates/tinox-codegen/src/codegen.rs` - Code Generation
+- `crates/tinox-parser/src/parser.rs` - Parser
+
+## Wenn du mich startest
+
+Starte mich mit:
+```
+cd /ki/ps && cargo run --quiet -- run test.tnx && echo "OK"
+```
+
+Wenn das kompiliert und Exit 42 liefert, ist alles gut.
+
+**Befehl zum Weiterarbeiten**:
+```
+mach weiter am tinox projekt. lies zuerst .tinox_progress und .tinox_notes
+```
+
+## Wichtige Dateien
+
+| Datei | Zweck |
+|-------|-------|
+| `crates/tinox/src/main.rs` | CLI -Compile, Run, Check |
+| `crates/tinox-parser/src/parser.rs` | Parser (jetzt fixed) |
+| `crates/tinox-lexer/src/lib.rs` | Lexer |
+| `crates/tinox-codegen/src/codegen.rs` | Codegen (incomplete) |
+| `test.tnx` | Testprogramm - `fn main() -> Int32 { return 42; }` |
+| `runtime/runtime.c` | C Runtime |
+
+## Bekannte Probleme
+
+- CLI verwendet noch hardcodiertes IR statt echte Codegen Pipeline
+- Einige unused warnings in allen Crates
+- `cargo run --quiet -- run test.tnx` zeigt keine Exit-Code Ausgabe
+
+## Nächste Schritte (falls ich weitermachen soll)
+
+1. `main.rs` umschreiben: Lexer -> Parser -> Codegen -> LLVM IR
+2. Codegen `gen()` Methode implementieren
+3. Komplexere Testprogramme
