@@ -1,0 +1,36 @@
+# Build artifacts
+/target
+**/*.rlib
+**/*.pdb
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tinox state
+.tinox_progress
+.tinox_notes
+*.tinox_state
+
+# Temporary
+*.tmp
+*.bak
+.tinox_tmp_*
+*.ll
+*.o
+*.s
+test
+test2
+test_manual
+test_verify
+test_O0
+test_O1
+runtime.o
+build.rs

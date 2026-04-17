@@ -1,0 +1,8 @@
+[package]
+name = "tinox-codegen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tinox-common = { path = "../tinox-common" }
+tinox-parser = { path = "../tinox-parser" }

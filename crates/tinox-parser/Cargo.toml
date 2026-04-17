@@ -1,0 +1,8 @@
+[package]
+name = "tinox-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tinox-common = { path = "../tinox-common" }
+tinox-lexer = { path = "../tinox-lexer" }

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tinox",
+    "crates/tinox-common",
+    "crates/tinox-lexer",
+    "crates/tinox-parser",
+    "crates/tinox-typecheck",
+    "crates/tinox-codegen",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Tino"]
+repository = ""
+
+[workspace.dependencies]
+parking_lot = "0.12"
+unicode-ident = "0.3"
+hashbrown = "0.15"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,14 @@
+[package]
+name = "tinox"
+version = "0.1.0-dev"
+edition = "2021"
+
+[dependencies]
+tinox_lexer = { package = "tinox-lexer", path = "../tinox-lexer" }
+tinox_parser = { package = "tinox-parser", path = "../tinox-parser" }
+tinox_codegen = { package = "tinox-codegen", path = "../tinox-codegen" }
+tinox_common = { package = "tinox-common", path = "../tinox-common" }
+
+[[bin]]
+name = "tinox"
+path = "src/main.rs"

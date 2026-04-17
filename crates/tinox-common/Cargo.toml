@@ -1,0 +1,6 @@
+[package]
+name = "tinox-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
