@@ -113,6 +113,11 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
+    let mut typechecker = tinox_typecheck::TypeChecker::new();
+    typechecker
+        .check(&ast)
+        .map_err(|e| format!("Type error:\n{}", e))?;
+
     let mut codegen = CodeGen::new();
     codegen
         .gen(&ast)

@@ -531,14 +531,13 @@ impl TypeChecker {
             }
             StmtKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
-                let mut all_return = true;
+                let mut last_returns = false;
                 for s in stmts {
-                    if !self.check_stmt(s) {
-                        all_return = false;
-                    }
+                    last_returns = self.check_stmt(s);
                 }
                 self.symbols.exit_scope(saved_vars);
-                all_return
+                // Block returns only if the LAST statement causes a return
+                last_returns
             }
             StmtKind::Empty => false,
             StmtKind::Defer(stmt) => {
@@ -833,47 +832,65 @@ impl TypeChecker {
     }
 
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> ValueType {
-        let fn_name = match &func.node {
-            ExprKind::Ident(name) => name.clone(),
-            _ => {
-                self.infer_type(func);
-                return ValueType::Any;
-            }
-        };
-
-        if let Some(sig) = self.symbols.functions.get(&fn_name).cloned() {
-            if sig.params.len() != args.len() {
-                self.errors.push(
-                    TypeError::InvalidArgumentCount {
-                        expected: sig.params.len(),
-                        found: args.len(),
-                        span,
-                    }
-                    .to_error(),
-                );
-            }
-            for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
-                let arg_ty = self.infer_type(arg);
-                if !Self::types_compatible(expected_ty, &arg_ty) {
+        // Check if it's a simple identifier - could be function or lambda variable
+        if let ExprKind::Ident(name) = &func.node {
+            // First check if it's a defined function
+            if let Some(sig) = self.symbols.functions.get(name).cloned() {
+                if sig.params.len() != args.len() {
                     self.errors.push(
-                        TypeError::TypeMismatch {
-                            expected: expected_ty.to_string(),
-                            found: arg_ty.to_string(),
-                            span: arg.span,
+                        TypeError::InvalidArgumentCount {
+                            expected: sig.params.len(),
+                            found: args.len(),
+                            span,
                         }
                         .to_error(),
                     );
                 }
+                for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
+                    let arg_ty = self.infer_type(arg);
+                    if !Self::types_compatible(expected_ty, &arg_ty) {
+                        self.errors.push(
+                            TypeError::TypeMismatch {
+                                expected: expected_ty.to_string(),
+                                found: arg_ty.to_string(),
+                                span: arg.span,
+                            }
+                            .to_error(),
+                        );
+                    }
+                }
+                return sig.return_type.clone();
             }
-            sig.return_type.clone()
-        } else {
+
+            // Check if it's a variable with Fn type (lambda)
+            if let Some((ty, _)) = self.symbols.variables.get(name) {
+                if *ty == ValueType::Fn {
+                    // Lambda call - just check arguments are present
+                    for arg in args {
+                        self.infer_type(arg);
+                    }
+                    return ValueType::Any; // We don't have detailed lambda type info
+                }
+            }
+
+            // Not found
             self.errors
-                .push(TypeError::UndefinedFunction(fn_name, span).to_error());
-            for arg in args {
-                self.infer_type(arg);
+                .push(TypeError::UndefinedFunction(name.clone(), span).to_error());
+        } else {
+            // Not an identifier - could be complex expression returning Fn
+            let func_ty = self.infer_type(func);
+            if func_ty == ValueType::Fn {
+                for arg in args {
+                    self.infer_type(arg);
+                }
+                return ValueType::Any;
             }
-            ValueType::Any
         }
+
+        for arg in args {
+            self.infer_type(arg);
+        }
+        ValueType::Any
     }
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {

@@ -746,14 +746,36 @@ impl CodeGen {
             }
             ExprKind::FieldAccess { obj, field } => {
                 let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
-                let result = self.temp();
+
+                // Find the struct type and field offset
+                let struct_name = if let ExprKind::Ident(name) = &obj.node {
+                    ctx.local_types.get(name).cloned()
+                } else {
+                    None
+                };
+
+                let offset = if let Some(sname) = struct_name {
+                    if let Some(fields) = self.struct_layouts.get(&sname) {
+                        fields.iter().position(|f| f == field).unwrap_or(0) as i64
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
+                let field_ptr = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 0",
-                    result, obj_ptr
+                    "{} = getelementptr i64, i64* {}, i64 {}",
+                    field_ptr, obj_ptr, offset
                 )
                 .unwrap();
-                Ok((result, "i64*".to_string()))
+
+                // Load the value from the field
+                let result = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, field_ptr).unwrap();
+                Ok((result, "i64".to_string()))
             }
             ExprKind::StructLiteral { name, fields } => {
                 let ptr = self.temp();
