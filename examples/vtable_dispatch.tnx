@@ -1,0 +1,31 @@
+interface IDrawable {
+    fn draw() -> i64;
+}
+
+class Circle implements IDrawable {
+    radius: i64
+    fn draw() -> i64 {
+        return self.radius;
+    }
+}
+
+class Square implements IDrawable {
+    side: i64
+    fn draw() -> i64 {
+        return self.side;
+    }
+}
+
+fn main() -> i64 {
+    // Direct (concrete) dispatch — should work as before
+    let c: Circle = Circle { radius: 5 };
+    let s: Square = Square { side: 10 };
+    println(c.draw());
+    println(s.draw());
+
+    // Interface (vtable) dispatch
+    let shape: IDrawable = Circle { radius: 42 };
+    println(shape.draw());
+
+    return 0;
+}
