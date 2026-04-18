@@ -118,7 +118,10 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
         .check(&ast)
         .map_err(|e| format!("Type error:\n{}", e))?;
 
+    let (iface_methods, class_implements) = typechecker.interface_info();
+
     let mut codegen = CodeGen::new();
+    codegen.set_interface_info(iface_methods, class_implements);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

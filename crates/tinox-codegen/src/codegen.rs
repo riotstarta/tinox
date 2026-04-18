@@ -26,6 +26,8 @@ pub struct CodeGen {
     known_interfaces: HashSet<String>,
     /// child_class_name -> parent_class_name (for super calls)
     class_parents: HashMap<String, String>,
+    /// class_name -> number of entries in its vtable global (computed during emit_vtable_globals)
+    vtable_sizes: HashMap<String, usize>,
 }
 
 impl CodeGen {
@@ -43,6 +45,7 @@ impl CodeGen {
             classes_with_vtable: HashSet::new(),
             known_interfaces: HashSet::new(),
             class_parents: HashMap::new(),
+            vtable_sizes: HashMap::new(),
         }
     }
 
@@ -94,6 +97,19 @@ impl CodeGen {
                 if has_vtable {
                     fields.push("__vtable__".to_string());
                     self.classes_with_vtable.insert(c.name.clone());
+                    // Compute vtable size (union of all methods from all interfaces)
+                    let mut vtable_methods: Vec<String> = Vec::new();
+                    let mut seen: HashSet<String> = HashSet::new();
+                    for iface in &c.implements {
+                        if let Some(methods) = self.vtable_layouts.get(iface) {
+                            for m in methods {
+                                if seen.insert(m.clone()) {
+                                    vtable_methods.push(m.clone());
+                                }
+                            }
+                        }
+                    }
+                    self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
                 }
                 fields.extend(c.fields.iter().map(|f| f.name.clone()));
                 self.struct_layouts.insert(c.name.clone(), fields);
@@ -405,8 +421,19 @@ impl CodeGen {
                     };
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
-                    if let Some(sn) = &struct_name {
-                        ctx.local_types.insert(name.clone(), sn.clone());
+                    // If the declared type annotation is an interface, record the
+                    // interface name so vtable dispatch is used for method calls.
+                    let effective_type = if let Some(Type::Named(ann)) = ty {
+                        if self.known_interfaces.contains(ann.as_str()) {
+                            Some(ann.clone())
+                        } else {
+                            struct_name.clone()
+                        }
+                    } else {
+                        struct_name.clone()
+                    };
+                    if let Some(sn) = effective_type {
+                        ctx.local_types.insert(name.clone(), sn);
                     }
                     if is_heap_ptr {
                         writeln!(&mut self.ir, "%{} = alloca {}", name, actual_ty).unwrap();
@@ -468,8 +495,18 @@ impl CodeGen {
                     };
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
-                    if let Some(sn) = &struct_name {
-                        ctx.local_types.insert(name.clone(), sn.clone());
+                    // If the declared type annotation is an interface, use it for vtable dispatch.
+                    let effective_type = if let Some(Type::Named(ann)) = ty {
+                        if self.known_interfaces.contains(ann.as_str()) {
+                            Some(ann.clone())
+                        } else {
+                            struct_name.clone()
+                        }
+                    } else {
+                        struct_name.clone()
+                    };
+                    if let Some(sn) = effective_type {
+                        ctx.local_types.insert(name.clone(), sn);
                     }
                     writeln!(&mut self.ir, "%{} = alloca {}", name, actual_ty).unwrap();
                     writeln!(
@@ -973,38 +1010,129 @@ impl CodeGen {
             ExprKind::MethodCall { obj, method, args } => {
                 let (obj_ptr, obj_ty) = self.gen_expr(obj, ctx)?;
 
-                let class_name = match &obj.node {
+                let declared_type = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => None,
                 };
 
-                let full_method_name = if let Some(class) = class_name {
-                    format!("{}_{}", class, method)
-                } else {
-                    method.clone()
-                };
+                // Check if the declared type is an interface — if so, use vtable dispatch.
+                let is_interface_dispatch = declared_type
+                    .as_deref()
+                    .map(|t| self.known_interfaces.contains(t))
+                    .unwrap_or(false);
 
-                let mut full_args_str = format!("{} {}", obj_ty, obj_ptr);
+                // Evaluate extra arguments first (used in both paths).
+                let mut extra_args: Vec<(String, String)> = Vec::new();
                 for arg in args {
                     let (val, ty) = self.gen_expr(arg, ctx)?;
+                    extra_args.push((val, ty));
+                }
+
+                let mut full_args_str = format!("{} {}", obj_ty, obj_ptr);
+                for (val, ty) in &extra_args {
                     full_args_str.push_str(&format!(", {} {}", ty, val));
                 }
 
-                let ret_ty = self
-                    .method_ret_types
-                    .get(&full_method_name)
-                    .cloned()
-                    .unwrap_or_else(|| "i64".to_string());
+                if is_interface_dispatch {
+                    let iface_name = declared_type.as_deref().unwrap();
 
-                let result = self.temp();
-                writeln!(
-                    &mut self.ir,
-                    "{} = call {} @{}({})",
-                    result, ret_ty, full_method_name, full_args_str
-                )
-                .unwrap();
-                Ok((result, ret_ty))
+                    // Find the method slot index in the vtable.
+                    let slot_idx = self
+                        .vtable_layouts
+                        .get(iface_name)
+                        .and_then(|methods| methods.iter().position(|m| m == method))
+                        .unwrap_or(0) as i64;
+
+                    // Load vtable pointer from slot 0 of the object.
+                    // The object is an i64* pointer; slot 0 holds the vtable address as i64.
+                    let vtable_i64_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 0",
+                        vtable_i64_ptr, obj_ptr
+                    )
+                    .unwrap();
+                    let vtable_i64 = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = load i64, i64* {}",
+                        vtable_i64, vtable_i64_ptr
+                    )
+                    .unwrap();
+                    // Cast the i64 vtable base address to i64*.
+                    let vtable_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = inttoptr i64 {} to i64*",
+                        vtable_ptr, vtable_i64
+                    )
+                    .unwrap();
+
+                    // Load the function pointer at vtable[slot_idx].
+                    let fn_slot_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        fn_slot_ptr, vtable_ptr, slot_idx
+                    )
+                    .unwrap();
+                    let fn_i64 = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = load i64, i64* {}",
+                        fn_i64, fn_slot_ptr
+                    )
+                    .unwrap();
+
+                    // Build the function type string based on args.
+                    let ret_ty = "i64".to_string(); // vtable methods return i64 (uniform representation)
+                    let mut param_types = vec!["i64*".to_string()]; // self
+                    for (_, ty) in &extra_args {
+                        param_types.push(ty.clone());
+                    }
+                    let param_types_str = param_types.join(", ");
+                    let fn_type_str = format!("{} ({})*", ret_ty, param_types_str);
+
+                    let casted_fn = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = inttoptr i64 {} to {}",
+                        casted_fn, fn_i64, fn_type_str
+                    )
+                    .unwrap();
+
+                    let result = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = call {} {}({})",
+                        result, ret_ty, casted_fn, full_args_str
+                    )
+                    .unwrap();
+                    Ok((result, ret_ty))
+                } else {
+                    // Direct (static) dispatch.
+                    let full_method_name = if let Some(class) = declared_type {
+                        format!("{}_{}", class, method)
+                    } else {
+                        method.clone()
+                    };
+
+                    let ret_ty = self
+                        .method_ret_types
+                        .get(&full_method_name)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+
+                    let result = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = call {} @{}({})",
+                        result, ret_ty, full_method_name, full_args_str
+                    )
+                    .unwrap();
+                    Ok((result, ret_ty))
+                }
             }
             ExprKind::Index { obj, index } => {
                 let (idx_val, _) = self.gen_expr(index, ctx)?;
@@ -1109,6 +1237,7 @@ impl CodeGen {
                 // If this class has a vtable, store the vtable pointer at index 0.
                 let has_vtable = self.classes_with_vtable.contains(name);
                 if has_vtable {
+                    let n_vtable = self.vtable_sizes.get(name).copied().unwrap_or(1);
                     let vtable_gep = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -1120,9 +1249,7 @@ impl CodeGen {
                     writeln!(
                         &mut self.ir,
                         "{} = ptrtoint [{} x i64]* @{}_vtable to i64",
-                        vtable_as_i64,
-                        layout.len() - 1, // n methods = layout.len() - 1 (minus vtable slot)
-                        name
+                        vtable_as_i64, n_vtable, name
                     )
                     .unwrap();
                     writeln!(
@@ -1280,6 +1407,7 @@ impl CodeGen {
             }
             ExprKind::New { class, args } => {
                 let layout_clone = self.struct_layouts.get(class).cloned();
+                let has_vtable = self.classes_with_vtable.contains(class);
                 let ptr = self.temp();
                 let size = if let Some(ref layout) = layout_clone {
                     layout.len() * 8
@@ -1294,15 +1422,43 @@ impl CodeGen {
                 .unwrap();
                 let typed_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
+
+                if has_vtable {
+                    let n_vtable = self.vtable_sizes.get(class).copied().unwrap_or(1);
+                    let vtable_gep = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 0",
+                        vtable_gep, typed_ptr
+                    )
+                    .unwrap();
+                    let vtable_as_i64 = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = ptrtoint [{} x i64]* @{}_vtable to i64",
+                        vtable_as_i64, n_vtable, class
+                    )
+                    .unwrap();
+                    writeln!(
+                        &mut self.ir,
+                        "store i64 {}, i64* {}",
+                        vtable_as_i64, vtable_gep
+                    )
+                    .unwrap();
+                }
+
                 if let Some(ref layout) = layout_clone {
-                    for (i, _) in layout.iter().enumerate() {
-                        if i < args.len() {
-                            let (val, _) = self.gen_expr(&args[i], ctx)?;
+                    // For vtable classes, user args start at index 1 in layout
+                    let field_start = if has_vtable { 1 } else { 0 };
+                    for (arg_idx, arg) in args.iter().enumerate() {
+                        let layout_idx = field_start + arg_idx;
+                        if layout_idx < layout.len() {
+                            let (val, _) = self.gen_expr(arg, ctx)?;
                             let field_ptr = self.temp();
                             writeln!(
                                 &mut self.ir,
                                 "{} = getelementptr i64, i64* {}, i64 {}",
-                                field_ptr, typed_ptr, i
+                                field_ptr, typed_ptr, layout_idx
                             )
                             .unwrap();
                             writeln!(&mut self.ir, "store i64 {}, i64* {}", val, field_ptr)

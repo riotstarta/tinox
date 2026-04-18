@@ -112,7 +112,10 @@ pub enum ExprKind {
         field: Ident,
     },
     This,
-    Super,
+    SuperCall {
+        method: Ident,
+        args: Vec<Expr>,
+    },
     New {
         class: Ident,
         args: Vec<Expr>,

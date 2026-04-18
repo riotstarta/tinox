@@ -1302,8 +1302,20 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::This, token.span))
             }
             TokenKind::Keyword(Keyword::Super) => {
+                let span = token.span;
                 self.bump();
-                Ok(Spanned::new(ExprKind::Super, token.span))
+                self.expect(TokenKind::Dot)?;
+                let method = self.parse_ident()?;
+                self.expect(TokenKind::LParen)?;
+                let mut args = Vec::new();
+                if !self.check(TokenKind::RParen) {
+                    args.push(self.parse_expr()?);
+                    while self.consume(TokenKind::Comma) {
+                        args.push(self.parse_expr()?);
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                Ok(Spanned::new(ExprKind::SuperCall { method, args }, span))
             }
             TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
             TokenKind::Keyword(Keyword::While) => self.parse_while_expr(),
