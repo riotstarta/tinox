@@ -1662,6 +1662,16 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::New)?;
         let class = self.parse_ident()?;
+        let type_args = if self.consume(TokenKind::Less) {
+            let mut targs = vec![self.parse_type()?];
+            while self.consume(TokenKind::Comma) {
+                targs.push(self.parse_type()?);
+            }
+            self.expect(TokenKind::Greater)?;
+            targs
+        } else {
+            vec![]
+        };
         self.expect(TokenKind::LParen)?;
         let mut args = Vec::new();
         if !self.check(TokenKind::RParen) {
@@ -1671,7 +1681,7 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        Ok(Spanned::new(ExprKind::New { class, args }, span))
+        Ok(Spanned::new(ExprKind::New { class, type_args, args }, span))
     }
 
     fn parse_spawn_expr(&mut self) -> Result<Expr, Error> {

@@ -35,6 +35,8 @@ pub struct CodeGen {
     spawn_counter: usize,
     /// Generic function AST nodes (not directly compiled, monomorphized on demand)
     generic_fns: HashMap<String, tinox_parser::Function>,
+    /// Generic class AST nodes (not directly compiled, monomorphized on demand)
+    generic_classes: HashMap<String, tinox_parser::Class>,
     /// Already-generated specializations (mangled_name already emitted)
     generated_specializations: HashSet<String>,
 }
@@ -59,6 +61,7 @@ impl CodeGen {
             fn_sigs: HashMap::new(),
             spawn_counter: 0,
             generic_fns: HashMap::new(),
+            generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
         }
     }
@@ -165,6 +168,7 @@ impl CodeGen {
         // and method_impl (for inherited method dispatch).
         for decl in &source.decls {
             if let DeclKind::Class(c) = &decl.node {
+                if !c.type_params.is_empty() { continue; } // generics are monomorphized on demand
                 if let Some(parent) = &c.extends {
                     self.class_parents.insert(c.name.clone(), parent.clone());
                 }
@@ -230,17 +234,23 @@ impl CodeGen {
             }
         }
 
-        // Pre-pass: collect all function signatures; store generic fns separately
+        // Pre-pass: collect all function signatures; store generic fns/classes separately
         for decl in &source.decls {
-            if let DeclKind::Function(f) = &decl.node {
-                if !f.type_params.is_empty() {
-                    self.generic_fns.insert(f.name.clone(), f.clone());
-                } else {
-                    let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
-                    let ret_ty = Self::type_to_llvm(&f.ret_type);
-                    let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
-                    self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+            match &decl.node {
+                DeclKind::Function(f) => {
+                    if !f.type_params.is_empty() {
+                        self.generic_fns.insert(f.name.clone(), f.clone());
+                    } else {
+                        let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
+                        let ret_ty = Self::type_to_llvm(&f.ret_type);
+                        let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
+                        self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+                    }
                 }
+                DeclKind::Class(c) if !c.type_params.is_empty() => {
+                    self.generic_classes.insert(c.name.clone(), c.clone());
+                }
+                _ => {}
             }
         }
 
@@ -252,7 +262,7 @@ impl CodeGen {
                         self.gen_fn(f)?;
                     }
                 }
-                DeclKind::Class(c) => {
+                DeclKind::Class(c) if c.type_params.is_empty() => {
                     for method in &c.methods {
                         self.gen_class_method(&c.name, method)?;
                     }
@@ -527,6 +537,10 @@ impl CodeGen {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(n.clone());
                         true
+                    } else if let ExprKind::New { class, type_args, .. } = &v.node {
+                        llvm_ty = "i64*".to_string();
+                        struct_name = Some(self.effective_class_name(class, type_args));
+                        true
                     } else if matches!(&v.node, ExprKind::ArrayLiteral(_)) {
                         llvm_ty = "i64*".to_string();
                         true
@@ -603,6 +617,10 @@ impl CodeGen {
                     if let ExprKind::StructLiteral { name: n, .. } = &v.node {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(n.clone());
+                        true
+                    } else if let ExprKind::New { class, type_args, .. } = &v.node {
+                        llvm_ty = "i64*".to_string();
+                        struct_name = Some(self.effective_class_name(class, type_args));
                         true
                     } else if matches!(&v.node, ExprKind::ArrayLiteral(_)) {
                         llvm_ty = "i64*".to_string();
@@ -1689,9 +1707,11 @@ impl CodeGen {
                     Ok(("0".to_string(), "i64".to_string()))
                 }
             }
-            ExprKind::New { class, args } => {
-                let layout_clone = self.struct_layouts.get(class).cloned();
-                let has_vtable = self.classes_with_vtable.contains(class);
+            ExprKind::New { class, type_args, args } => {
+                // Resolve the effective class name, monomorphizing generic classes on demand.
+                let effective_class = self.ensure_generic_class_specialization(class, type_args)?;
+                let layout_clone = self.struct_layouts.get(&effective_class).cloned();
+                let has_vtable = self.classes_with_vtable.contains(&effective_class);
                 let ptr = self.temp();
                 let size = if let Some(ref layout) = layout_clone {
                     layout.len() * 8
@@ -1708,7 +1728,7 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
 
                 if has_vtable {
-                    let n_vtable = self.vtable_sizes.get(class).copied().unwrap_or(1);
+                    let n_vtable = self.vtable_sizes.get(&effective_class).copied().unwrap_or(1);
                     let vtable_gep = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -1720,7 +1740,7 @@ impl CodeGen {
                     writeln!(
                         &mut self.ir,
                         "{} = ptrtoint [{} x i64]* @{}_vtable to i64",
-                        vtable_as_i64, n_vtable, class
+                        vtable_as_i64, n_vtable, effective_class
                     )
                     .unwrap();
                     writeln!(
@@ -2962,6 +2982,106 @@ impl CodeGen {
         }
     }
 
+    /// Compute the mangled class name for a generic instantiation without emitting code.
+    fn effective_class_name(&self, class: &str, type_args: &[tinox_parser::Type]) -> String {
+        if type_args.is_empty() {
+            return class.to_string();
+        }
+        if let Some(gc) = self.generic_classes.get(class) {
+            let bindings: HashMap<String, String> = gc.type_params.iter()
+                .zip(type_args.iter())
+                .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                .collect();
+            Self::mangle_generic_name(class, &gc.type_params, &bindings)
+        } else {
+            class.to_string()
+        }
+    }
+
+    /// If `class` is a known generic class, monomorphize it with `type_args` and return the
+    /// mangled name. Otherwise return the class name unchanged. Emits the specialized methods
+    /// into `lambda_ir` the first time a given instantiation is requested.
+    fn ensure_generic_class_specialization(
+        &mut self,
+        class: &str,
+        type_args: &[tinox_parser::Type],
+    ) -> Result<String, ErrorBag> {
+        if type_args.is_empty() || !self.generic_classes.contains_key(class) {
+            return Ok(class.to_string());
+        }
+        let gc = self.generic_classes.get(class).unwrap().clone();
+        let bindings: HashMap<String, String> = gc.type_params.iter()
+            .zip(type_args.iter())
+            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+            .collect();
+        let mangled = Self::mangle_generic_name(class, &gc.type_params, &bindings);
+        if !self.generated_specializations.contains(&mangled) {
+            self.generated_specializations.insert(mangled.clone());
+            let specialized = Self::substitute_class(&gc, &mangled, &bindings);
+            // Register struct layout (field names, in order)
+            let fields: Vec<String> = specialized.fields.iter().map(|f| f.name.clone()).collect();
+            self.struct_layouts.insert(mangled.clone(), fields);
+            // Register method signatures for dispatch
+            for method in &specialized.methods {
+                let fn_name = format!("{}_{}", mangled, method.name);
+                let ret_ty = Self::type_to_llvm(&method.ret_type);
+                self.method_ret_types.insert(fn_name.clone(), ret_ty);
+                self.method_impl.insert(fn_name.clone(), fn_name);
+            }
+            // Generate method IR into lambda_ir so it doesn't interrupt current function
+            let saved_ir = std::mem::take(&mut self.ir);
+            let saved_temp = self.temp_count;
+            self.temp_count = 0;
+            for method in &specialized.methods {
+                self.gen_class_method(&mangled, method)?;
+            }
+            let spec_ir = std::mem::take(&mut self.ir);
+            self.ir = saved_ir;
+            self.temp_count = saved_temp;
+            self.lambda_ir.push_str(&spec_ir);
+        }
+        Ok(mangled)
+    }
+
+    /// Create a monomorphic copy of a generic class with substituted types and a mangled name.
+    fn substitute_class(
+        c: &tinox_parser::Class,
+        mangled_name: &str,
+        bindings: &HashMap<String, String>,
+    ) -> tinox_parser::Class {
+        let subst: HashMap<String, tinox_parser::Type> = bindings.iter()
+            .map(|(tp, llvm_ty)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm_ty)))
+            .collect();
+        tinox_parser::Class {
+            name: mangled_name.to_string(),
+            type_params: vec![],
+            extends: c.extends.clone(),
+            implements: c.implements.clone(),
+            fields: c.fields.iter().map(|f| tinox_parser::FieldDef {
+                name: f.name.clone(),
+                field_type: Self::substitute_type(&f.field_type, &subst),
+                visibility: f.visibility.clone(),
+                mutable: f.mutable,
+                span: f.span,
+            }).collect(),
+            methods: c.methods.iter().map(|m| tinox_parser::Method {
+                name: m.name.clone(),
+                params: m.params.iter().map(|p| tinox_parser::Param {
+                    name: p.name.clone(),
+                    param_type: Self::substitute_type(&p.param_type, &subst),
+                    span: p.span,
+                }).collect(),
+                ret_type: Self::substitute_type(&m.ret_type, &subst),
+                body: m.body.clone(),
+                static_: m.static_,
+                visibility: m.visibility.clone(),
+                span: m.span,
+                is_async: m.is_async,
+            }).collect(),
+            span: c.span,
+        }
+    }
+
     /// Best-effort mapping from an LLVM type string back to a parser Type (for substitution).
     fn llvm_ty_to_parser_type(llvm_ty: &str) -> tinox_parser::Type {
         match llvm_ty {
@@ -3417,5 +3537,45 @@ mod tests {
         );
         let ir = compile_to_ir(src);
         assert!(ir.contains("cont_dead"), "should have dead block after continue expr");
+    }
+
+    #[test]
+    fn test_generic_class_monomorphization() {
+        let src = concat!(
+            "class Box<T> {\n",
+            "  value: T;\n",
+            "  fn get() -> T {\n",
+            "    return this.value;\n",
+            "  }\n",
+            "}\n",
+            "fn main() -> Int64 {\n",
+            "  let b = new Box<Int64>(42);\n",
+            "  return b.get();\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("Box__i64_get"), "should emit specialized method Box__i64_get");
+        assert!(ir.contains("define i64 @Box__i64_get"), "method should return i64");
+        assert!(!ir.contains("define i64 @Box_get"), "unspecialized Box_get must not be emitted");
+    }
+
+    #[test]
+    fn test_generic_class_two_instantiations() {
+        let src = concat!(
+            "class Pair<T> {\n",
+            "  first: T;\n",
+            "  fn fst() -> T {\n",
+            "    return this.first;\n",
+            "  }\n",
+            "}\n",
+            "fn main() -> Int64 {\n",
+            "  let a = new Pair<Int64>(1);\n",
+            "  let b = new Pair<Float64>(2);\n",
+            "  return a.fst();\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("Pair__i64_fst"), "should have i64 specialization");
+        assert!(ir.contains("Pair__double_fst"), "should have double specialization");
     }
 }

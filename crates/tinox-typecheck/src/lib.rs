@@ -1195,7 +1195,7 @@ impl TypeChecker {
                 }
                 sig.return_type.clone()
             }
-            ExprKind::New { class, args } => {
+            ExprKind::New { class, args, .. } => {
                 for arg in args {
                     self.infer_type(arg);
                 }

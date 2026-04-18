@@ -120,6 +120,7 @@ pub enum ExprKind {
     },
     New {
         class: Ident,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
     StructLiteral {
