@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
     BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, SourceFile, Stmt, StmtKind,
@@ -235,6 +235,7 @@ impl ValueType {
             Type::Any => ValueType::Any,
             Type::Infer => ValueType::Any,
             Type::Named(name) => ValueType::Named(name.clone()),
+            Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
             Type::Mutable(_) => ValueType::Ref,
             Type::Ref(_) => ValueType::Ref,
@@ -303,6 +304,8 @@ pub struct TypeChecker {
     current_class: Option<String>, // class currently being type-checked
     method_visibility: HashMap<String, Visibility>, // ClassName_methodName -> visibility
     field_visibility: HashMap<String, Visibility>,  // ClassName.fieldName -> visibility
+    /// Type parameter names in scope for the function currently being checked.
+    type_param_scope: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -333,6 +336,7 @@ impl TypeChecker {
             current_class: None,
             method_visibility: HashMap::new(),
             field_visibility: HashMap::new(),
+            type_param_scope: HashSet::new(),
         }
     }
 
@@ -372,9 +376,9 @@ impl TypeChecker {
                         params: f
                             .params
                             .iter()
-                            .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type)))
+                            .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &f.type_params)))
                             .collect(),
-                        return_type: Self::type_to_value(&f.ret_type),
+                        return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
                     };
                     self.symbols.functions.insert(f.name.clone(), sig);
                 }
@@ -693,18 +697,23 @@ impl TypeChecker {
 
     fn check_function(&mut self, f: &Function) {
         let saved_vars = self.symbols.enter_scope();
+        let saved_type_params = std::mem::take(&mut self.type_param_scope);
+        for tp in &f.type_params {
+            self.type_param_scope.insert(tp.clone());
+        }
         for param in &f.params {
             self.symbols.variables.insert(
                 param.name.clone(),
-                (Self::type_to_value(&param.param_type), false),
+                (self.resolve_type(&param.param_type), false),
             );
         }
         let has_return = self.check_stmt(&f.body);
-        let expected = Self::type_to_value(&f.ret_type);
+        let expected = self.resolve_type(&f.ret_type);
         if expected != ValueType::Unit && expected != ValueType::Never && !has_return {
             self.errors
                 .push(Error::new(f.span, "missing return statement"));
         }
+        self.type_param_scope = saved_type_params;
         self.symbols.exit_scope(saved_vars);
     }
 
@@ -1562,6 +1571,24 @@ impl TypeChecker {
 
     fn type_to_value(ty: &Type) -> ValueType {
         ValueType::from_parser_type(ty)
+    }
+
+    /// Like `type_to_value` but resolves type parameters in scope to `Any`.
+    fn resolve_type(&self, ty: &Type) -> ValueType {
+        match ty {
+            Type::Named(name) if self.type_param_scope.contains(name) => ValueType::Any,
+            Type::Generic { name, .. } if self.type_param_scope.contains(name) => ValueType::Any,
+            _ => Self::type_to_value(ty),
+        }
+    }
+
+    /// Used during registration to erase type parameters to `Any`.
+    fn type_to_value_erasing(ty: &Type, type_params: &[String]) -> ValueType {
+        match ty {
+            Type::Named(name) if type_params.contains(name) => ValueType::Any,
+            Type::Generic { name, .. } if type_params.contains(name) => ValueType::Any,
+            _ => Self::type_to_value(ty),
+        }
     }
 
     fn is_subclass_or_equal(&self, candidate: &str, base: &str) -> bool {

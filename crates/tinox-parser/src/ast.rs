@@ -22,6 +22,8 @@ pub enum Type {
     Any,
     Infer,
     Named(Ident),
+    /// A named type instantiated with concrete type arguments, e.g. `Box<Int64>`.
+    Generic { name: Ident, args: Vec<Type> },
     Array(Box<Type>),
     Mutable(Box<Type>),
     Ref(Box<Type>),
@@ -327,6 +329,7 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: Ident,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret_type: Type,
     pub body: Stmt,
@@ -372,6 +375,7 @@ pub struct FieldDef {
 #[derive(Debug, Clone)]
 pub struct Class {
     pub name: Ident,
+    pub type_params: Vec<String>,
     pub extends: Option<Ident>,
     pub implements: Vec<Ident>,
     pub fields: Vec<FieldDef>,

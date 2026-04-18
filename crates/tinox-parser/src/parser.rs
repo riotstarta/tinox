@@ -103,6 +103,7 @@ impl Parser {
 
         Ok(DeclKind::Function(Function {
             name,
+            type_params: vec![],
             params,
             ret_type,
             body: Spanned::new(StmtKind::Empty, span),
@@ -111,10 +112,25 @@ impl Parser {
         }))
     }
 
+    fn parse_type_params(&mut self) -> Result<Vec<String>, Error> {
+        self.expect(TokenKind::Less)?;
+        let mut params = vec![self.parse_ident()?];
+        while self.consume(TokenKind::Comma) {
+            params.push(self.parse_ident()?);
+        }
+        self.expect(TokenKind::Greater)?;
+        Ok(params)
+    }
+
     fn parse_fn(&mut self) -> Result<Function, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Fn)?;
         let name = self.parse_ident()?;
+        let type_params = if self.check(TokenKind::Less) {
+            self.parse_type_params()?
+        } else {
+            vec![]
+        };
         self.expect(TokenKind::LParen)?;
 
         let mut params = Vec::new();
@@ -136,6 +152,7 @@ impl Parser {
 
         Ok(Function {
             name,
+            type_params,
             params,
             ret_type,
             body,
@@ -160,6 +177,11 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Class)?;
         let name = self.parse_ident()?;
+        let type_params = if self.check(TokenKind::Less) {
+            self.parse_type_params()?
+        } else {
+            vec![]
+        };
 
         let extends = if self.consume_keyword(Keyword::Extends) {
             Some(self.parse_ident()?)
@@ -200,6 +222,7 @@ impl Parser {
 
         Ok(Class {
             name,
+            type_params,
             extends,
             implements,
             fields,
@@ -457,7 +480,20 @@ impl Parser {
             "Unit" => Ok(Type::Unit),
             "Never" => Ok(Type::Never),
             "Any" => Ok(Type::Any),
-            s => Ok(Type::Named(s.to_string())),
+            s => {
+                // Check for generic type arguments: Box<Int64>
+                if self.check(TokenKind::Less) {
+                    self.bump();
+                    let mut args = vec![self.parse_type()?];
+                    while self.consume(TokenKind::Comma) {
+                        args.push(self.parse_type()?);
+                    }
+                    self.expect(TokenKind::Greater)?;
+                    Ok(Type::Generic { name: s.to_string(), args })
+                } else {
+                    Ok(Type::Named(s.to_string()))
+                }
+            }
         }
     }
 

@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern, SourceFile, Stmt,
-    StmtKind, Type, UnaryOp,
+    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Param, Pattern, SourceFile,
+    Stmt, StmtKind, Type, UnaryOp,
 };
 
 pub struct CodeGen {
@@ -33,6 +33,10 @@ pub struct CodeGen {
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
     spawn_counter: usize,
+    /// Generic function AST nodes (not directly compiled, monomorphized on demand)
+    generic_fns: HashMap<String, tinox_parser::Function>,
+    /// Already-generated specializations (mangled_name already emitted)
+    generated_specializations: HashSet<String>,
 }
 
 impl CodeGen {
@@ -54,6 +58,8 @@ impl CodeGen {
             method_impl: HashMap::new(),
             fn_sigs: HashMap::new(),
             spawn_counter: 0,
+            generic_fns: HashMap::new(),
+            generated_specializations: HashSet::new(),
         }
     }
 
@@ -224,21 +230,27 @@ impl CodeGen {
             }
         }
 
-        // Pre-pass: collect all function signatures (needed for spawn wrapper generation)
+        // Pre-pass: collect all function signatures; store generic fns separately
         for decl in &source.decls {
             if let DeclKind::Function(f) = &decl.node {
-                let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
-                let ret_ty = Self::type_to_llvm(&f.ret_type);
-                let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
-                self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+                if !f.type_params.is_empty() {
+                    self.generic_fns.insert(f.name.clone(), f.clone());
+                } else {
+                    let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
+                    let ret_ty = Self::type_to_llvm(&f.ret_type);
+                    let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
+                    self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+                }
             }
         }
 
-        // Second pass: generate code
+        // Second pass: generate code (skip generic functions — they are monomorphized on demand)
         for decl in &source.decls {
             match &decl.node {
                 DeclKind::Function(f) => {
-                    self.gen_fn(f)?;
+                    if f.type_params.is_empty() {
+                        self.gen_fn(f)?;
+                    }
                 }
                 DeclKind::Class(c) => {
                     for method in &c.methods {
@@ -534,6 +546,9 @@ impl CodeGen {
                         val_ty.clone()
                     } else if is_heap_ptr {
                         llvm_ty.clone()
+                    } else if ty.is_none() || matches!(ty, Some(Type::Infer)) {
+                        // No annotation: use the value's actual type (enables correct float/generic inference)
+                        val_ty.clone()
                     } else {
                         llvm_ty.clone()
                     };
@@ -1127,6 +1142,41 @@ impl CodeGen {
                     },
                     _ => "unknown_fn".to_string(),
                 };
+                // Check if this is a call to a generic function — monomorphize if so
+                if let ExprKind::Ident(callee_name) = &func.node {
+                    if let Some(gf) = self.generic_fns.get(callee_name).cloned() {
+                        // Infer type bindings from argument types
+                        let bindings: HashMap<String, String> = gf
+                            .type_params
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, tp)| {
+                                arg_types.get(i).map(|at| (tp.clone(), at.clone()))
+                            })
+                            .collect();
+                        let mangled = Self::mangle_generic_name(&gf.name, &gf.type_params, &bindings);
+                        // Generate specialization if not already done
+                        if !self.generated_specializations.contains(&mangled) {
+                            self.generated_specializations.insert(mangled.clone());
+                            let specialized = Self::substitute_fn(&gf, &mangled, &bindings);
+                            // emit into lambda_ir so it doesn't interrupt current function
+                            let saved_ir = std::mem::take(&mut self.ir);
+                            let saved_temp = self.temp_count;
+                            self.temp_count = 0;
+                            self.gen_fn(&specialized)?;
+                            let spec_ir = std::mem::take(&mut self.ir);
+                            self.ir = saved_ir;
+                            self.temp_count = saved_temp;
+                            self.lambda_ir.push_str(&spec_ir);
+                        }
+                        // Emit the call to the mangled name
+                        let ret_ty = Self::type_to_llvm_with_bindings(&gf.ret_type, &bindings);
+                        let result = self.temp();
+                        writeln!(&mut self.ir, "  {} = call {} @{}({})", result, ret_ty, mangled, args_str).unwrap();
+                        return Ok((result, ret_ty));
+                    }
+                }
+
                 let ret_ty = arg_types
                     .first()
                     .cloned()
@@ -2609,7 +2659,8 @@ impl CodeGen {
             Type::Char => "i32".to_string(),
             Type::String => "i8*".to_string(),
             Type::Unit => "void".to_string(),
-            Type::Named(_) => "i64*".to_string(), // Classes/structs are pointers
+            Type::Named(_) => "i64*".to_string(),
+            Type::Generic { .. } => "i64*".to_string(), // Generic class instances are pointers
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
@@ -2832,6 +2883,103 @@ impl CodeGen {
             ));
         }
         Ok(())
+    }
+
+    /// Produce a mangled name like `identity__i64__double` for a generic instantiation.
+    fn mangle_generic_name(name: &str, type_params: &[String], bindings: &HashMap<String, String>) -> String {
+        let suffix: Vec<String> = type_params
+            .iter()
+            .map(|tp| {
+                bindings.get(tp).cloned().unwrap_or_else(|| "i64".to_string())
+                    .replace('*', "P")
+                    .replace(' ', "_")
+            })
+            .collect();
+        if suffix.is_empty() { name.to_string() } else { format!("{}__{}", name, suffix.join("__")) }
+    }
+
+    /// Resolve a parser Type using concrete LLVM type bindings for type parameters.
+    fn type_to_llvm_with_bindings(ty: &tinox_parser::Type, bindings: &HashMap<String, String>) -> String {
+        match ty {
+            tinox_parser::Type::Named(n) => {
+                if let Some(llvm) = bindings.get(n) { llvm.clone() }
+                else { Self::type_to_llvm(ty) }
+            }
+            tinox_parser::Type::Generic { name, .. } => {
+                if let Some(llvm) = bindings.get(name) { llvm.clone() }
+                else { Self::type_to_llvm(ty) }
+            }
+            _ => Self::type_to_llvm(ty),
+        }
+    }
+
+    /// Substitute type parameter names in a `Type` with concrete parser `Type`s.
+    fn substitute_type(ty: &tinox_parser::Type, subst: &HashMap<String, tinox_parser::Type>) -> tinox_parser::Type {
+        match ty {
+            tinox_parser::Type::Named(n) => {
+                subst.get(n).cloned().unwrap_or_else(|| ty.clone())
+            }
+            tinox_parser::Type::Generic { name, args } => {
+                if let Some(concrete) = subst.get(name) {
+                    concrete.clone()
+                } else {
+                    tinox_parser::Type::Generic {
+                        name: name.clone(),
+                        args: args.iter().map(|a| Self::substitute_type(a, subst)).collect(),
+                    }
+                }
+            }
+            tinox_parser::Type::Array(inner) => tinox_parser::Type::Array(Box::new(Self::substitute_type(inner, subst))),
+            tinox_parser::Type::Ref(inner) => tinox_parser::Type::Ref(Box::new(Self::substitute_type(inner, subst))),
+            tinox_parser::Type::Mutable(inner) => tinox_parser::Type::Mutable(Box::new(Self::substitute_type(inner, subst))),
+            tinox_parser::Type::Fn { params, ret } => tinox_parser::Type::Fn {
+                params: params.iter().map(|p| Self::substitute_type(p, subst)).collect(),
+                ret: Box::new(Self::substitute_type(ret, subst)),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// Create a monomorphic copy of a generic function with substituted types and a mangled name.
+    fn substitute_fn(f: &tinox_parser::Function, mangled_name: &str, bindings: &HashMap<String, String>) -> tinox_parser::Function {
+        // Build a Type substitution map: "T" -> Type::Int64 etc.
+        let subst: HashMap<String, tinox_parser::Type> = bindings.iter().map(|(tp, llvm_ty)| {
+            let concrete_type = Self::llvm_ty_to_parser_type(llvm_ty);
+            (tp.clone(), concrete_type)
+        }).collect();
+        tinox_parser::Function {
+            name: mangled_name.to_string(),
+            type_params: vec![],
+            params: f.params.iter().map(|p| tinox_parser::Param {
+                name: p.name.clone(),
+                param_type: Self::substitute_type(&p.param_type, &subst),
+                span: p.span,
+            }).collect(),
+            ret_type: Self::substitute_type(&f.ret_type, &subst),
+            body: f.body.clone(),
+            span: f.span,
+            is_async: f.is_async,
+        }
+    }
+
+    /// Best-effort mapping from an LLVM type string back to a parser Type (for substitution).
+    fn llvm_ty_to_parser_type(llvm_ty: &str) -> tinox_parser::Type {
+        match llvm_ty {
+            "i64" => tinox_parser::Type::Int64,
+            "i32" => tinox_parser::Type::Int32,
+            "i16" => tinox_parser::Type::Int16,
+            "i8" => tinox_parser::Type::Int8,
+            "double" => tinox_parser::Type::Float64,
+            "float" => tinox_parser::Type::Float32,
+            "i1" => tinox_parser::Type::Bool,
+            "i8*" => tinox_parser::Type::String,
+            "void" => tinox_parser::Type::Unit,
+            other if other.ends_with('*') => {
+                let inner = &other[..other.len() - 1];
+                tinox_parser::Type::Ref(Box::new(Self::llvm_ty_to_parser_type(inner)))
+            }
+            other => tinox_parser::Type::Named(other.to_string()),
+        }
     }
 
     /// Coerce an LLVM value of the given type to i64, emitting cast instructions as needed.
