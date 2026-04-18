@@ -28,6 +28,8 @@ pub struct CodeGen {
     class_parents: HashMap<String, String>,
     /// class_name -> number of entries in its vtable global (computed during emit_vtable_globals)
     vtable_sizes: HashMap<String, usize>,
+    /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
+    method_impl: HashMap<String, String>,
 }
 
 impl CodeGen {
@@ -46,6 +48,7 @@ impl CodeGen {
             known_interfaces: HashSet::new(),
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
+            method_impl: HashMap::new(),
         }
     }
 
@@ -67,6 +70,50 @@ impl CodeGen {
         }
     }
 
+    /// Collect all field names for a class in inheritance order: ancestor fields first, own last.
+    fn collect_inherited_fields(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> Vec<String> {
+        let Some(c) = class_map.get(name) else {
+            return vec![];
+        };
+        let mut fields: Vec<String> = if let Some(parent) = &c.extends {
+            Self::collect_inherited_fields(parent, class_map)
+        } else {
+            vec![]
+        };
+        for f in &c.fields {
+            if !fields.contains(&f.name) {
+                fields.push(f.name.clone());
+            }
+        }
+        fields
+    }
+
+    /// Resolve method call to the class that actually implements it (walks parent chain).
+    fn resolve_method_owner(
+        class: &str,
+        method: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> String {
+        let mut current = class.to_string();
+        loop {
+            if let Some(c) = class_map.get(&current) {
+                if c.methods.iter().any(|m| m.name == method) {
+                    return format!("{}_{}", current, method);
+                }
+                match &c.extends {
+                    Some(parent) => current = parent.clone(),
+                    None => break,
+                }
+            } else {
+                break;
+            }
+        }
+        format!("{}_{}", class, method)
+    }
+
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
         writeln!(&mut self.ir, "; Module ID = \"tinox\"").unwrap();
         writeln!(&mut self.ir, "source_filename = \"tinox\"").unwrap();
@@ -85,7 +132,21 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
+        // Build class AST map for inheritance helpers.
+        let class_ast_map: HashMap<String, tinox_parser::Class> = source
+            .decls
+            .iter()
+            .filter_map(|d| {
+                if let DeclKind::Class(c) = &d.node {
+                    Some((c.name.clone(), c.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         // First pass: build struct_layouts (with vtable slot at index 0 where needed)
+        // and method_impl (for inherited method dispatch).
         for decl in &source.decls {
             if let DeclKind::Class(c) = &decl.node {
                 if let Some(parent) = &c.extends {
@@ -111,8 +172,45 @@ impl CodeGen {
                     }
                     self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
                 }
-                fields.extend(c.fields.iter().map(|f| f.name.clone()));
+                // Use inherited field layout (parent fields first, own last).
+                fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
                 self.struct_layouts.insert(c.name.clone(), fields);
+
+                // Build method_impl: resolve each accessible method to its implementing class.
+                // Own methods map to themselves.
+                for method in &c.methods {
+                    let key = format!("{}_{}", c.name, method.name);
+                    self.method_impl.insert(key.clone(), key);
+                    self.method_ret_types.insert(
+                        format!("{}_{}", c.name, method.name),
+                        Self::type_to_llvm(&method.ret_type),
+                    );
+                }
+                // Inherited methods (not overridden) map to the ancestor's implementation.
+                let own_method_names: HashSet<String> =
+                    c.methods.iter().map(|m| m.name.clone()).collect();
+                let mut ancestor = c.extends.clone();
+                while let Some(ref aname) = ancestor.clone() {
+                    let Some(ac) = class_ast_map.get(aname) else {
+                        break;
+                    };
+                    for method in &ac.methods {
+                        if !own_method_names.contains(&method.name) {
+                            let child_key = format!("{}_{}", c.name, method.name);
+                            if !self.method_impl.contains_key(&child_key) {
+                                let owner_key = Self::resolve_method_owner(
+                                    aname,
+                                    &method.name,
+                                    &class_ast_map,
+                                );
+                                self.method_impl.insert(child_key.clone(), owner_key.clone());
+                                let ret_ty = Self::type_to_llvm(&method.ret_type);
+                                self.method_ret_types.insert(child_key, ret_ty);
+                            }
+                        }
+                    }
+                    ancestor = ac.extends.clone();
+                }
             }
         }
 
@@ -1111,12 +1209,17 @@ impl CodeGen {
                     .unwrap();
                     Ok((result, ret_ty))
                 } else {
-                    // Direct (static) dispatch.
-                    let full_method_name = if let Some(class) = declared_type {
+                    // Direct (static) dispatch — resolve through inheritance chain.
+                    let logical_name = if let Some(class) = declared_type {
                         format!("{}_{}", class, method)
                     } else {
                         method.clone()
                     };
+                    let full_method_name = self
+                        .method_impl
+                        .get(&logical_name)
+                        .cloned()
+                        .unwrap_or(logical_name);
 
                     let ret_ty = self
                         .method_ret_types

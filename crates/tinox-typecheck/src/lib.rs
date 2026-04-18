@@ -567,6 +567,117 @@ impl TypeChecker {
             );
         }
 
+        // Third pass: expand class inheritance (fields and methods from parent classes).
+        {
+            use std::collections::HashSet;
+            let class_map: HashMap<String, tinox_parser::Class> = source
+                .decls
+                .iter()
+                .filter_map(|d| {
+                    if let DeclKind::Class(c) = &d.node {
+                        Some((c.name.clone(), c.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let class_names: Vec<String> = class_map.keys().cloned().collect();
+            let mut processed: HashSet<String> = HashSet::new();
+
+            loop {
+                let before = processed.len();
+                for name in &class_names {
+                    if processed.contains(name) {
+                        continue;
+                    }
+                    let c = &class_map[name];
+                    let parent_ready = c
+                        .extends
+                        .as_ref()
+                        .map(|p| processed.contains(p) || !class_map.contains_key(p))
+                        .unwrap_or(true);
+                    if !parent_ready {
+                        continue;
+                    }
+
+                    if let Some(parent_name) = &c.extends {
+                        if !class_map.contains_key(parent_name) {
+                            self.errors.push(Error::new(
+                                c.span,
+                                format!("undefined parent class: {}", parent_name),
+                            ));
+                            processed.insert(name.clone());
+                            continue;
+                        }
+
+                        let child_own_fields: HashSet<String> =
+                            c.fields.iter().map(|f| f.name.clone()).collect();
+                        let child_own_methods: HashSet<String> =
+                            c.methods.iter().map(|m| m.name.clone()).collect();
+
+                        // Walk the ancestor chain and collect inherited fields/methods.
+                        let mut ancestor = parent_name.clone();
+                        loop {
+                            let Some(pc) = class_map.get(&ancestor) else {
+                                break;
+                            };
+
+                            for field in &pc.fields {
+                                if child_own_fields.contains(&field.name) {
+                                    continue;
+                                }
+                                let child_key = format!("{}.{}", name, field.name);
+                                if self.symbols.variables.contains_key(&child_key) {
+                                    continue;
+                                }
+                                let ty = Self::type_to_value(&field.field_type);
+                                self.symbols.variables.insert(child_key.clone(), (ty, true));
+                                self.field_visibility
+                                    .entry(child_key)
+                                    .or_insert_with(|| field.visibility.clone());
+                            }
+
+                            for method in &pc.methods {
+                                if child_own_methods.contains(&method.name) {
+                                    continue;
+                                }
+                                let child_key = format!("{}_{}", name, method.name);
+                                if self.symbols.functions.contains_key(&child_key) {
+                                    continue;
+                                }
+                                let mut params = vec![(
+                                    "self".to_string(),
+                                    ValueType::Named(name.clone()),
+                                )];
+                                params.extend(method.params.iter().map(|p| {
+                                    (p.name.clone(), Self::type_to_value(&p.param_type))
+                                }));
+                                let sig = FunctionSignature {
+                                    params,
+                                    return_type: Self::type_to_value(&method.ret_type),
+                                };
+                                self.symbols.functions.insert(child_key.clone(), sig);
+                                self.method_visibility
+                                    .entry(child_key)
+                                    .or_insert_with(|| method.visibility.clone());
+                            }
+
+                            ancestor = match &pc.extends {
+                                Some(next) => next.clone(),
+                                None => break,
+                            };
+                        }
+                    }
+
+                    processed.insert(name.clone());
+                }
+                if processed.len() == before {
+                    break;
+                }
+            }
+        }
+
         for decl in &source.decls {
             match &decl.node {
                 DeclKind::Function(f) => {
