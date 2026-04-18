@@ -918,7 +918,10 @@ impl CodeGen {
             ExprKind::Literal(lit) => self.gen_literal(lit),
             ExprKind::Ident(name) => {
                 if ctx.params.contains(name) {
-                    Ok((format!("%{}", name), "i64".to_string()))
+                    let ty = ctx.locals.get(name)
+                        .map(|(t, _)| t.clone())
+                        .unwrap_or_else(|| "i64".to_string());
+                    Ok((format!("%{}", name), ty))
                 } else if let Some((ty, _)) = ctx.locals.get(name) {
                     let val = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, name).unwrap();
@@ -931,39 +934,84 @@ impl CodeGen {
                 let (l, lt) = self.gen_expr(lhs, ctx)?;
                 let (r, rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
+                let float = Self::is_float(&lt);
                 match op {
                     tinox_parser::BinaryOp::Add => {
-                        writeln!(&mut self.ir, "{} = add {} {}, {}", result, lt, l, r).unwrap()
+                        if float {
+                            writeln!(&mut self.ir, "{} = fadd {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = add {} {}, {}", result, lt, l, r).unwrap()
+                        }
                     }
                     tinox_parser::BinaryOp::Sub => {
-                        writeln!(&mut self.ir, "{} = sub {} {}, {}", result, lt, l, r).unwrap()
+                        if float {
+                            writeln!(&mut self.ir, "{} = fsub {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = sub {} {}, {}", result, lt, l, r).unwrap()
+                        }
                     }
                     tinox_parser::BinaryOp::Mul => {
-                        writeln!(&mut self.ir, "{} = mul {} {}, {}", result, lt, l, r).unwrap()
+                        if float {
+                            writeln!(&mut self.ir, "{} = fmul {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = mul {} {}, {}", result, lt, l, r).unwrap()
+                        }
                     }
                     tinox_parser::BinaryOp::Div => {
-                        writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Eq => {
-                        writeln!(&mut self.ir, "{} = icmp eq {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Ne => {
-                        writeln!(&mut self.ir, "{} = icmp ne {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Lt => {
-                        writeln!(&mut self.ir, "{} = icmp slt {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Le => {
-                        writeln!(&mut self.ir, "{} = icmp sle {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Gt => {
-                        writeln!(&mut self.ir, "{} = icmp sgt {} {}, {}", result, lt, l, r).unwrap()
-                    }
-                    tinox_parser::BinaryOp::Ge => {
-                        writeln!(&mut self.ir, "{} = icmp sge {} {}, {}", result, lt, l, r).unwrap()
+                        if float {
+                            writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, lt, l, r).unwrap()
+                        }
                     }
                     tinox_parser::BinaryOp::Mod => {
-                        writeln!(&mut self.ir, "{} = srem {} {}, {}", result, lt, l, r).unwrap()
+                        if float {
+                            writeln!(&mut self.ir, "{} = frem {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = srem {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Eq => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp oeq {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp eq {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Ne => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp one {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp ne {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Lt => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp olt {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp slt {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Le => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp ole {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp sle {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Gt => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp ogt {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp sgt {} {}, {}", result, lt, l, r).unwrap()
+                        }
+                    }
+                    tinox_parser::BinaryOp::Ge => {
+                        if float {
+                            writeln!(&mut self.ir, "{} = fcmp oge {} {}, {}", result, lt, l, r).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = icmp sge {} {}, {}", result, lt, l, r).unwrap()
+                        }
                     }
                     tinox_parser::BinaryOp::And => {
                         writeln!(&mut self.ir, "{} = and {} {}, {}", result, lt, l, r).unwrap()
@@ -994,7 +1042,11 @@ impl CodeGen {
                 let result = self.temp();
                 match op {
                     tinox_parser::UnaryOp::Neg => {
-                        writeln!(&mut self.ir, "{} = sub {} 0, {}", result, ty, val).unwrap()
+                        if Self::is_float(&ty) {
+                            writeln!(&mut self.ir, "{} = fneg {} {}", result, ty, val).unwrap()
+                        } else {
+                            writeln!(&mut self.ir, "{} = sub {} 0, {}", result, ty, val).unwrap()
+                        }
                     }
                     tinox_parser::UnaryOp::Not => {
                         writeln!(&mut self.ir, "{} = xor {} 1, {}", result, ty, val).unwrap()
@@ -2171,16 +2223,14 @@ impl CodeGen {
     fn gen_literal(&mut self, lit: &Literal) -> Result<(String, String), ErrorBag> {
         match lit {
             Literal::Integer(n) => Ok((format!("{}", n), "i64".to_string())),
-            Literal::Float(_f) => {
-                let const_name = format!("f{}", self.temp_count);
-                self.temp_count += 1;
-                writeln!(
-                    &mut self.ir,
-                    "{} = fmul double {}, {}",
-                    const_name, const_name, const_name
-                )
-                .unwrap();
-                Ok((const_name, "double".to_string()))
+            Literal::Float(f) => {
+                let s = format!("{}", f);
+                let val = if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{}.0", s)
+                };
+                Ok((val, "double".to_string()))
             }
             Literal::String(s) => {
                 let name = format!("str{}", self.strings.len());
@@ -2379,6 +2429,10 @@ impl CodeGen {
         } else {
             Ok((ptr_name, "i64".to_string()))
         }
+    }
+
+    fn is_float(ty: &str) -> bool {
+        ty == "float" || ty == "double"
     }
 
     fn llvm_type_str(ty: &str) -> String {
@@ -2757,6 +2811,13 @@ mod tests {
         let src = "fn main() -> Int64 {\n  let x = { let a = 10; a; };\n  return x;\n}";
         let ir = compile_to_ir(src);
         assert!(ir.contains("alloca"), "should have allocas");
+    }
+
+    #[test]
+    fn test_float_ops() {
+        let src = "fn add_floats(a: Float64, b: Float64) -> Float64 {\n  return a + b;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("fadd double"), "should use fadd for float addition");
     }
 
     #[test]
