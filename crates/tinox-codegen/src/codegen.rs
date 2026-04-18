@@ -2529,23 +2529,82 @@ impl CodeGen {
         writeln!(&mut self.ir, "{}:", try_ok_bb).unwrap();
         writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
 
-        // --- catch block ---
-        writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
-        if !catches.is_empty() {
-            let catch = &catches[0];
-            let param_slot = ctx.locals.len();
-            ctx.locals
-                .insert(catch.param.clone(), ("i64".to_string(), param_slot));
-            writeln!(&mut self.ir, "%{} = alloca i64", catch.param).unwrap();
-            let err_val = self.temp();
-            writeln!(&mut self.ir, "{} = load i64, i64* {}", err_val, error_var).unwrap();
-            writeln!(&mut self.ir, "store i64 {}, i64* %{}", err_val, catch.param).unwrap();
-            self.gen_stmt_body(&catch.body, ctx)?;
+        // --- catch blocks (chained) ---
+        // Each catch clause gets its own labeled block; they are chained so that
+        // control flows through all matching handlers. The dispatch block (catch_bb)
+        // jumps into the first clause; each clause ends with an unreachable-guard
+        // block that branches to the next clause (or merge_target after the last).
+        if catches.is_empty() {
+            writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
+            let catch_ok_bb = self.new_bb("catch_ok");
+            writeln!(&mut self.ir, "{}:", catch_ok_bb).unwrap();
+            writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
+        } else {
+            // Pre-allocate all per-clause block labels so we can forward-reference them.
+            let clause_bbs: Vec<String> = (0..catches.len())
+                .map(|i| self.new_bb(&format!("catch_{}", i)))
+                .collect();
+
+            // Dispatch: jump to first clause.
+            writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
+            writeln!(&mut self.ir, "br label %{}", clause_bbs[0]).unwrap();
+
+            for (i, catch) in catches.iter().enumerate() {
+                let llvm_ty = Self::type_to_llvm(&catch.ty);
+                let param_slot = ctx.locals.len();
+                ctx.locals
+                    .insert(catch.param.clone(), (llvm_ty.clone(), param_slot));
+
+                writeln!(&mut self.ir, "{}:", clause_bbs[i]).unwrap();
+                writeln!(&mut self.ir, "%{} = alloca {}", catch.param, llvm_ty).unwrap();
+                let err_val = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = load i64, i64* {}",
+                    err_val, error_var
+                )
+                .unwrap();
+                // truncate/extend if the catch param type differs from i64
+                let store_val = if llvm_ty != "i64" {
+                    let cast_val = self.temp();
+                    if Self::is_float(&llvm_ty) {
+                        writeln!(
+                            &mut self.ir,
+                            "{} = sitofp i64 {} to {}",
+                            cast_val, err_val, llvm_ty
+                        )
+                        .unwrap();
+                    } else {
+                        writeln!(
+                            &mut self.ir,
+                            "{} = trunc i64 {} to {}",
+                            cast_val, err_val, llvm_ty
+                        )
+                        .unwrap();
+                    }
+                    cast_val
+                } else {
+                    err_val
+                };
+                writeln!(
+                    &mut self.ir,
+                    "store {} {}, {}* %{}",
+                    llvm_ty, store_val, llvm_ty, catch.param
+                )
+                .unwrap();
+                self.gen_stmt_body(&catch.body, ctx)?;
+
+                // Guard block: falls through to next clause or merge.
+                let next = if i + 1 < clause_bbs.len() {
+                    clause_bbs[i + 1].clone()
+                } else {
+                    merge_target.clone()
+                };
+                let guard_bb = self.new_bb(&format!("catch_{}_ok", i));
+                writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
+                writeln!(&mut self.ir, "br label %{}", next).unwrap();
+            }
         }
-        // unreachable block after catch body
-        let catch_ok_bb = self.new_bb("catch_ok");
-        writeln!(&mut self.ir, "{}:", catch_ok_bb).unwrap();
-        writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
 
         // --- finally block ---
         if let Some(fb) = &finally_bb {
@@ -2850,6 +2909,27 @@ mod tests {
         let ir = compile_to_ir(src);
         assert!(ir.contains("finally_"), "should have finally block");
         assert!(ir.contains("try_end"), "should have end block");
+    }
+
+    #[test]
+    fn test_multiple_catches() {
+        let src = concat!(
+            "fn main() -> Int64 {\n",
+            "  try {\n",
+            "    println(1);\n",
+            "  } catch (e: Int64) {\n",
+            "    println(e);\n",
+            "  } catch (f: Int64) {\n",
+            "    println(f);\n",
+            "  };\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("catch_0"), "should have catch_0 block");
+        assert!(ir.contains("catch_1"), "should have catch_1 block");
+        assert!(ir.contains("catch_0_ok"), "should have catch_0_ok guard");
+        assert!(ir.contains("catch_1_ok"), "should have catch_1_ok guard");
     }
 
     #[test]
