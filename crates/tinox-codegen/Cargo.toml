@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 tinox-common = { path = "../tinox-common" }
 tinox-parser = { path = "../tinox-parser" }
+
+[dev-dependencies]
+tinox-lexer = { path = "../tinox-lexer" }

@@ -822,6 +822,24 @@ impl CodeGen {
                 ctx.break_target = old_break;
                 ctx.continue_target = old_continue;
             }
+            StmtKind::Loop { body } => {
+                let loop_bb = self.new_bb("loop_body");
+                let end_bb = self.new_bb("loop_end");
+
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.continue_target = Some(loop_bb.clone());
+
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
+                self.gen_stmt_body(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
+            }
             StmtKind::Assignment { target, value } => {
                 if let ExprKind::Ident(name) = &target.node {
                     let name = name.clone();
@@ -1503,10 +1521,19 @@ impl CodeGen {
                 }
             }
             ExprKind::Block(stmts) => {
-                for stmt in stmts {
+                if stmts.is_empty() {
+                    return Ok(("0".to_string(), "i64".to_string()));
+                }
+                let (last, rest) = stmts.split_last().unwrap();
+                for stmt in rest {
                     self.gen_stmt_body(stmt, ctx)?;
                 }
-                Ok(("0".to_string(), "i64".to_string()))
+                if let StmtKind::Expr(e) = &last.node {
+                    self.gen_expr(e, ctx)
+                } else {
+                    self.gen_stmt_body(last, ctx)?;
+                    Ok(("0".to_string(), "i64".to_string()))
+                }
             }
             ExprKind::New { class, args } => {
                 let layout_clone = self.struct_layouts.get(class).cloned();
@@ -1815,6 +1842,160 @@ impl CodeGen {
                 let result = self.temp();
                 writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, val).unwrap();
                 Ok((result, "i1".to_string()))
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let result_slot = self.temp();
+                writeln!(&mut self.ir, "{} = alloca i64", result_slot).unwrap();
+
+                let (cond_val, _) = self.gen_expr(cond, ctx)?;
+                let then_bb = self.new_bb("if_then");
+                let else_bb = self.new_bb("if_else");
+                let merge_bb = self.new_bb("if_merge");
+
+                writeln!(
+                    &mut self.ir,
+                    "br i1 {}, label %{}, label %{}",
+                    cond_val, then_bb, else_bb
+                )
+                .unwrap();
+
+                writeln!(&mut self.ir, "{}:", then_bb).unwrap();
+                let (then_val, _) = self.gen_expr(then_branch, ctx)?;
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", then_val, result_slot).unwrap();
+                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+
+                writeln!(&mut self.ir, "{}:", else_bb).unwrap();
+                if let Some(else_expr) = else_branch {
+                    let (else_val, _) = self.gen_expr(else_expr, ctx)?;
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", else_val, result_slot)
+                        .unwrap();
+                } else {
+                    writeln!(&mut self.ir, "store i64 0, i64* {}", result_slot).unwrap();
+                }
+                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+
+                writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
+                let result = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, result_slot).unwrap();
+                Ok((result, "i64".to_string()))
+            }
+            ExprKind::While { cond, body } => {
+                let loop_bb = self.new_bb("while_cond");
+                let body_bb = self.new_bb("while_body");
+                let end_bb = self.new_bb("while_end");
+
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.continue_target = Some(loop_bb.clone());
+
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
+                let (cond_val, _) = self.gen_expr(cond, ctx)?;
+                writeln!(
+                    &mut self.ir,
+                    "br i1 {}, label %{}, label %{}",
+                    cond_val, body_bb, end_bb
+                )
+                .unwrap();
+                writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+                self.gen_expr(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
+                Ok(("0".to_string(), "i64".to_string()))
+            }
+            ExprKind::For { var, iter, body } => {
+                let (range_ptr, _) = self.gen_expr(iter, ctx)?;
+
+                let start_gep = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = getelementptr i64, i64* {}, i64 0",
+                    start_gep, range_ptr
+                )
+                .unwrap();
+                let start_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", start_val, start_gep).unwrap();
+
+                let end_gep = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = getelementptr i64, i64* {}, i64 1",
+                    end_gep, range_ptr
+                )
+                .unwrap();
+                let end_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", end_val, end_gep).unwrap();
+
+                writeln!(&mut self.ir, "%{} = alloca i64", var).unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var).unwrap();
+                ctx.locals
+                    .insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
+
+                let cond_bb = self.new_bb("for_cond");
+                let body_bb = self.new_bb("for_body");
+                let end_bb = self.new_bb("for_end");
+
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.continue_target = Some(cond_bb.clone());
+
+                writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
+                let cur_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* %{}", cur_val, var).unwrap();
+                let cmp = self.temp();
+                writeln!(&mut self.ir, "{} = icmp slt i64 {}, {}", cmp, cur_val, end_val)
+                    .unwrap();
+                writeln!(
+                    &mut self.ir,
+                    "br i1 {}, label %{}, label %{}",
+                    cmp, body_bb, end_bb
+                )
+                .unwrap();
+
+                writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+                self.gen_expr(body, ctx)?;
+
+                let loaded_inc = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* %{}", loaded_inc, var).unwrap();
+                let next_val = self.temp();
+                writeln!(&mut self.ir, "{} = add i64 {}, 1", next_val, loaded_inc).unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* %{}", next_val, var).unwrap();
+                writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
+                Ok(("0".to_string(), "i64".to_string()))
+            }
+            ExprKind::Loop { body } => {
+                let loop_bb = self.new_bb("loop_body");
+                let end_bb = self.new_bb("loop_end");
+
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.continue_target = Some(loop_bb.clone());
+
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
+                self.gen_expr(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
+                Ok(("0".to_string(), "i64".to_string()))
             }
             _ => {
                 let mut bag = ErrorBag::new();
@@ -2544,5 +2725,45 @@ pub fn gen(source: &SourceFile) -> Result<CodeGen, ErrorBag> {
 impl Default for CodeGen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tinox_lexer::Lexer;
+    use tinox_parser::Parser;
+
+    fn compile_to_ir(src: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        cg.gen(&ast).expect("codegen failed");
+        cg.into_ir()
+    }
+
+    #[test]
+    fn test_if_expr() {
+        let src = "fn main() -> Int64 {\n  let x = if true { 42; } else { 0; };\n  return x;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("if_then"), "should have if_then block");
+        assert!(ir.contains("if_merge"), "should have if_merge block");
+    }
+
+    #[test]
+    fn test_block_expr_returns_last() {
+        let src = "fn main() -> Int64 {\n  let x = { let a = 10; a; };\n  return x;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("alloca"), "should have allocas");
+    }
+
+    #[test]
+    fn test_loop_stmt() {
+        let src = "fn main() -> Int64 {\n  loop { break; };\n  return 0;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("loop_body"), "should have loop body block");
+        assert!(ir.contains("loop_end"), "should have loop end block");
     }
 }
