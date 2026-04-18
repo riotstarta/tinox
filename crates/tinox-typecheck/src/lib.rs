@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
     BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, SourceFile, Stmt, StmtKind,
-    Type, UnaryOp,
+    Type, UnaryOp, Visibility,
 };
 
 #[derive(Debug, Clone)]
@@ -57,6 +57,16 @@ pub enum TypeError {
         interface: String,
         parent: String,
         method: String,
+        span: Span,
+    },
+    PrivateAccess {
+        class: String,
+        member: String,
+        span: Span,
+    },
+    ProtectedAccess {
+        class: String,
+        member: String,
         span: Span,
     },
 }
@@ -175,6 +185,14 @@ impl TypeError {
                     interface, parent, method
                 ),
             ),
+            TypeError::PrivateAccess { class, member, span } => Error::new(
+                *span,
+                format!("'{}' is private to class '{}'", member, class),
+            ),
+            TypeError::ProtectedAccess { class, member, span } => Error::new(
+                *span,
+                format!("'{}' is protected in class '{}' and not accessible here", member, class),
+            ),
         }
     }
 }
@@ -283,6 +301,8 @@ pub struct TypeChecker {
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
     class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
     current_class: Option<String>, // class currently being type-checked
+    method_visibility: HashMap<String, Visibility>, // ClassName_methodName -> visibility
+    field_visibility: HashMap<String, Visibility>,  // ClassName.fieldName -> visibility
 }
 
 impl TypeChecker {
@@ -311,6 +331,8 @@ impl TypeChecker {
             interface_implementations: HashMap::new(),
             class_parents: HashMap::new(),
             current_class: None,
+            method_visibility: HashMap::new(),
+            field_visibility: HashMap::new(),
         }
     }
 
@@ -362,9 +384,9 @@ impl TypeChecker {
                     }
                     for field in &c.fields {
                         let ty = Self::type_to_value(&field.field_type);
-                        self.symbols
-                            .variables
-                            .insert(format!("{}.{}", c.name, field.name), (ty, true));
+                        let key = format!("{}.{}", c.name, field.name);
+                        self.symbols.variables.insert(key.clone(), (ty, true));
+                        self.field_visibility.insert(key, field.visibility.clone());
                     }
                     for method in &c.methods {
                         let mut params =
@@ -379,9 +401,9 @@ impl TypeChecker {
                             params,
                             return_type: Self::type_to_value(&method.ret_type),
                         };
-                        self.symbols
-                            .functions
-                            .insert(format!("{}_{}", c.name, method.name), sig);
+                        let key = format!("{}_{}", c.name, method.name);
+                        self.symbols.functions.insert(key.clone(), sig);
+                        self.method_visibility.insert(key, method.visibility.clone());
                     }
                 }
                 DeclKind::Enum(e) => {
@@ -930,14 +952,16 @@ impl TypeChecker {
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
             ExprKind::MethodCall { obj, method, args } => {
                 let obj_ty = self.infer_type(obj);
-                // Method names are looked up as ClassName_methodName
-                let method_name = format!("{}_{}", obj_ty.to_string(), method);
-                let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
+                let class_name = obj_ty.to_string();
+                let method_name = format!("{}_{}", class_name, method);
 
-                // Prepend the object as the first argument for type checking
+                if let Some(vis) = self.method_visibility.get(&method_name).cloned() {
+                    self.check_member_visibility(&class_name, method, &vis, expr.span);
+                }
+
+                let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().map(|e| e.clone()));
-
                 self.check_call(&func_expr, &call_args, expr.span)
             }
             ExprKind::Index { obj, index } => {
@@ -955,6 +979,9 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 if let ValueType::Named(name) = obj_ty {
                     let full_name = format!("{}.{}", name, field);
+                    if let Some(vis) = self.field_visibility.get(&full_name).cloned() {
+                        self.check_member_visibility(&name, field, &vis, expr.span);
+                    }
                     if let Some((ty, _)) = self.symbols.variables.get(&full_name) {
                         return ty.clone();
                     }
@@ -1414,6 +1441,66 @@ impl TypeChecker {
 
     fn type_to_value(ty: &Type) -> ValueType {
         ValueType::from_parser_type(ty)
+    }
+
+    fn is_subclass_or_equal(&self, candidate: &str, base: &str) -> bool {
+        if candidate == base {
+            return true;
+        }
+        let mut current = candidate.to_string();
+        while let Some(parent) = self.class_parents.get(&current) {
+            if parent == base {
+                return true;
+            }
+            current = parent.clone();
+        }
+        false
+    }
+
+    fn check_member_visibility(
+        &mut self,
+        class: &str,
+        member: &str,
+        visibility: &Visibility,
+        span: Span,
+    ) {
+        match visibility {
+            Visibility::Public | Visibility::Package => {}
+            Visibility::Private => {
+                let allowed = self
+                    .current_class
+                    .as_deref()
+                    .map(|c| c == class)
+                    .unwrap_or(false);
+                if !allowed {
+                    self.errors.push(
+                        TypeError::PrivateAccess {
+                            class: class.to_string(),
+                            member: member.to_string(),
+                            span,
+                        }
+                        .to_error(),
+                    );
+                }
+            }
+            Visibility::Protected => {
+                let allowed = self
+                    .current_class
+                    .as_deref()
+                    .map(|c| self.is_subclass_or_equal(c, class))
+                    .unwrap_or(false);
+                if !allowed {
+                    self.errors.push(
+                        TypeError::ProtectedAccess {
+                            class: class.to_string(),
+                            member: member.to_string(),
+                            span,
+                        }
+                        .to_error(),
+                    );
+                }
+            }
+        }
     }
 
     fn types_compatible(a: &ValueType, b: &ValueType) -> bool {
