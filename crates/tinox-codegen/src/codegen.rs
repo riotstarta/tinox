@@ -15,6 +15,17 @@ pub struct CodeGen {
     struct_layouts: HashMap<String, Vec<String>>,
     closure_envs: HashMap<String, String>,
     method_ret_types: HashMap<String, String>,
+    // vtable support
+    /// interface_name -> ordered method names (vtable slot order)
+    vtable_layouts: HashMap<String, Vec<String>>,
+    /// class_name -> list of interfaces it implements
+    class_implements: HashMap<String, Vec<String>>,
+    /// set of class names that have a vtable pointer at slot 0
+    classes_with_vtable: HashSet<String>,
+    /// set of known interface names (for dispatch decisions)
+    known_interfaces: HashSet<String>,
+    /// child_class_name -> parent_class_name (for super calls)
+    class_parents: HashMap<String, String>,
 }
 
 impl CodeGen {
@@ -27,6 +38,29 @@ impl CodeGen {
             struct_layouts: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
+            vtable_layouts: HashMap::new(),
+            class_implements: HashMap::new(),
+            classes_with_vtable: HashSet::new(),
+            known_interfaces: HashSet::new(),
+            class_parents: HashMap::new(),
+        }
+    }
+
+    /// Provide interface metadata from the type checker.
+    /// Must be called before `gen()`.
+    pub fn set_interface_info(
+        &mut self,
+        vtable_layouts: HashMap<String, Vec<String>>,
+        class_implements: HashMap<String, Vec<String>>,
+    ) {
+        self.known_interfaces = vtable_layouts.keys().cloned().collect();
+        self.vtable_layouts = vtable_layouts;
+        self.class_implements = class_implements;
+        // Determine which classes have vtables
+        for (class_name, ifaces) in &self.class_implements {
+            if !ifaces.is_empty() {
+                self.classes_with_vtable.insert(class_name.clone());
+            }
         }
     }
 
@@ -48,14 +82,31 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
+        // First pass: build struct_layouts (with vtable slot at index 0 where needed)
+        for decl in &source.decls {
+            if let DeclKind::Class(c) = &decl.node {
+                if let Some(parent) = &c.extends {
+                    self.class_parents.insert(c.name.clone(), parent.clone());
+                }
+                let has_vtable = !c.implements.is_empty()
+                    || self.classes_with_vtable.contains(&c.name);
+                let mut fields: Vec<String> = Vec::new();
+                if has_vtable {
+                    fields.push("__vtable__".to_string());
+                    self.classes_with_vtable.insert(c.name.clone());
+                }
+                fields.extend(c.fields.iter().map(|f| f.name.clone()));
+                self.struct_layouts.insert(c.name.clone(), fields);
+            }
+        }
+
+        // Second pass: generate code
         for decl in &source.decls {
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.gen_fn(f)?;
                 }
                 DeclKind::Class(c) => {
-                    let fields: Vec<String> = c.fields.iter().map(|f| f.name.clone()).collect();
-                    self.struct_layouts.insert(c.name.clone(), fields);
                     for method in &c.methods {
                         self.gen_class_method(&c.name, method)?;
                     }
@@ -63,6 +114,9 @@ impl CodeGen {
                 _ => {}
             }
         }
+
+        // Emit vtable globals for classes that implement interfaces
+        self.emit_vtable_globals(source);
 
         for (name, s) in &self.strings {
             writeln!(
@@ -215,6 +269,62 @@ impl CodeGen {
         writeln!(&mut self.ir).unwrap();
 
         Ok(())
+    }
+
+    /// Emit a vtable global for each class that implements at least one interface.
+    fn emit_vtable_globals(&mut self, source: &SourceFile) {
+        let class_names: Vec<(String, Vec<String>)> = source
+            .decls
+            .iter()
+            .filter_map(|d| {
+                if let DeclKind::Class(c) = &d.node {
+                    if !c.implements.is_empty() {
+                        Some((c.name.clone(), c.implements.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (class_name, implements) in class_names {
+            let mut vtable_methods: Vec<String> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for iface in &implements {
+                if let Some(methods) = self.vtable_layouts.get(iface) {
+                    for m in methods {
+                        if seen.insert(m.clone()) {
+                            vtable_methods.push(m.clone());
+                        }
+                    }
+                }
+            }
+
+            if vtable_methods.is_empty() {
+                continue;
+            }
+
+            let n = vtable_methods.len();
+            let mut entries = String::new();
+            for (i, method_name) in vtable_methods.iter().enumerate() {
+                if i > 0 {
+                    entries.push_str(", ");
+                }
+                let full_fn = format!("{}_{}", class_name, method_name);
+                entries.push_str(&format!(
+                    "i64 ptrtoint (i64* (i64*)* @{} to i64)",
+                    full_fn
+                ));
+            }
+            writeln!(
+                &mut self.ir,
+                "@{}_vtable = global [{} x i64] [{}]",
+                class_name, n, entries
+            )
+            .unwrap();
+        }
     }
 
     fn gen_stmt_body(&mut self, stmt: &Stmt, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
@@ -995,13 +1105,43 @@ impl CodeGen {
                 .unwrap();
                 let typed_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
-                for (i, (fname, value)) in fields.iter().enumerate() {
+
+                // If this class has a vtable, store the vtable pointer at index 0.
+                let has_vtable = self.classes_with_vtable.contains(name);
+                if has_vtable {
+                    let vtable_gep = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr i64, i64* {}, i64 0",
+                        vtable_gep, typed_ptr
+                    )
+                    .unwrap();
+                    let vtable_as_i64 = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = ptrtoint [{} x i64]* @{}_vtable to i64",
+                        vtable_as_i64,
+                        layout.len() - 1, // n methods = layout.len() - 1 (minus vtable slot)
+                        name
+                    )
+                    .unwrap();
+                    writeln!(
+                        &mut self.ir,
+                        "store i64 {}, i64* {}",
+                        vtable_as_i64, vtable_gep
+                    )
+                    .unwrap();
+                }
+
+                for (fname, value) in fields.iter() {
                     let (val, _) = self.gen_expr(value, ctx)?;
+                    // Look up field position in layout (which includes __vtable__ at 0 if vtable class)
+                    let field_idx = layout.iter().position(|f| f == fname).unwrap_or(0);
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
                         "{} = getelementptr i64, i64* {}, i64 {}",
-                        field_ptr, typed_ptr, i
+                        field_ptr, typed_ptr, field_idx
                     )
                     .unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", val, field_ptr).unwrap();
@@ -1379,7 +1519,36 @@ impl CodeGen {
                     Ok(("0".to_string(), "i64".to_string()))
                 }
             }
-            ExprKind::Super => Ok(("0".to_string(), "i64".to_string())),
+            ExprKind::SuperCall { method, args } => {
+                // Static dispatch to parent's method: call ParentClass_method(%self, args...)
+                let parent_class = ctx.current_struct
+                    .as_ref()
+                    .and_then(|class| self.class_parents.get(class).cloned())
+                    .unwrap_or_else(|| "__unknown__".to_string());
+                let full_method_name = format!("{}_{}", parent_class, method);
+
+                // First arg is %self (the current self pointer)
+                let mut full_args_str = "i64* %self".to_string();
+                for arg in args {
+                    let (val, ty) = self.gen_expr(arg, ctx)?;
+                    full_args_str.push_str(&format!(", {} {}", ty, val));
+                }
+
+                let ret_ty = self
+                    .method_ret_types
+                    .get(&full_method_name)
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+
+                let result = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = call {} @{}({})",
+                    result, ret_ty, full_method_name, full_args_str
+                )
+                .unwrap();
+                Ok((result, ret_ty))
+            }
             ExprKind::Is { expr, .. } => {
                 let (val, _val_ty) = self.gen_expr(expr, ctx)?;
                 let result = self.temp();
@@ -2012,7 +2181,7 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
             }
             collect_free_vars_inner(body, &lambda_params, vars);
         }
-        ExprKind::This | ExprKind::Super | ExprKind::New { .. } | ExprKind::Is { .. } => {}
+        ExprKind::This | ExprKind::SuperCall { .. } | ExprKind::New { .. } | ExprKind::Is { .. } => {}
         ExprKind::Literal(_) => {}
         _ => {}
     }

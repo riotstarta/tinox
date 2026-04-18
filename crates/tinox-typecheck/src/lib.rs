@@ -52,6 +52,13 @@ pub enum TypeError {
     DivisionByZero(Span),
     CannotInferType(Span),
     DuplicateDefinition(String, Span),
+    UndefinedInterface(String, Span),
+    InterfaceMethodConflict {
+        interface: String,
+        parent: String,
+        method: String,
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -153,6 +160,21 @@ impl TypeError {
             TypeError::DuplicateDefinition(name, span) => {
                 Error::new(*span, format!("duplicate definition of: {}", name))
             }
+            TypeError::UndefinedInterface(name, span) => {
+                Error::new(*span, format!("undefined interface: {}", name))
+            }
+            TypeError::InterfaceMethodConflict {
+                interface,
+                parent,
+                method,
+                span,
+            } => Error::new(
+                *span,
+                format!(
+                    "interface '{}' extends '{}' but both define method '{}' with conflicting signatures",
+                    interface, parent, method
+                ),
+            ),
         }
     }
 }
@@ -257,7 +279,10 @@ pub struct TypeChecker {
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
     interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
+    interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
+    class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
+    current_class: Option<String>, // class currently being type-checked
 }
 
 impl TypeChecker {
@@ -282,7 +307,10 @@ impl TypeChecker {
             symbols,
             enums: HashMap::new(),
             interfaces: HashMap::new(),
+            interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
+            class_parents: HashMap::new(),
+            current_class: None,
         }
     }
 
@@ -295,6 +323,23 @@ impl TypeChecker {
                 errors: std::mem::take(&mut self.errors),
             })
         }
+    }
+
+    /// Returns (interface_name -> ordered method names, class_name -> [interface names])
+    pub fn interface_info(
+        &self,
+    ) -> (HashMap<String, Vec<String>>, HashMap<String, Vec<String>>) {
+        let iface_methods: HashMap<String, Vec<String>> = self
+            .interfaces
+            .iter()
+            .map(|(name, methods)| {
+                (
+                    name.clone(),
+                    methods.iter().map(|(m, _)| m.clone()).collect(),
+                )
+            })
+            .collect();
+        (iface_methods, self.interface_implementations.clone())
     }
 
     fn check_source_file(&mut self, source: &SourceFile) {
@@ -312,6 +357,9 @@ impl TypeChecker {
                     self.symbols.functions.insert(f.name.clone(), sig);
                 }
                 DeclKind::Class(c) => {
+                    if let Some(parent) = &c.extends {
+                        self.class_parents.insert(c.name.clone(), parent.clone());
+                    }
                     for field in &c.fields {
                         let ty = Self::type_to_value(&field.field_type);
                         self.symbols
@@ -364,6 +412,12 @@ impl TypeChecker {
                         })
                         .collect();
                     self.interfaces.insert(iface.name.clone(), methods);
+                    if !iface.extends.is_empty() {
+                        self.interface_extends.insert(
+                            iface.name.clone(),
+                            (iface.extends.clone(), decl.span),
+                        );
+                    }
                 }
                 DeclKind::Trait(t) => {
                     let methods = t
@@ -385,6 +439,110 @@ impl TypeChecker {
                 }
                 _ => {}
             }
+        }
+
+        // Second pass: expand interfaces with methods from their parent interfaces.
+        // Collect the extends relationships first to avoid borrow conflicts.
+        let extends_map: Vec<(String, Vec<String>, tinox_common::Span)> = self
+            .interface_extends
+            .iter()
+            .map(|(name, (parents, span))| (name.clone(), parents.clone(), *span))
+            .collect();
+
+        for (iface_name, parents, span) in &extends_map {
+            // Validate that every parent interface exists.
+            for parent in parents {
+                if !self.interfaces.contains_key(parent) {
+                    self.errors.push(
+                        TypeError::UndefinedInterface(parent.clone(), *span).to_error(),
+                    );
+                }
+            }
+
+            // Collect all methods from parents (only those that are defined).
+            let mut inherited: Vec<(String, FunctionSignature)> = Vec::new();
+            for parent in parents {
+                if let Some(parent_methods) = self.interfaces.get(parent).cloned() {
+                    for (method_name, parent_sig) in parent_methods {
+                        inherited.push((method_name, parent_sig));
+                    }
+                }
+            }
+
+            // Merge: for each inherited method, check for conflicts with own methods.
+            if let Some(own_methods) = self.interfaces.get(iface_name).cloned() {
+                for (method_name, parent_sig) in &inherited {
+                    if let Some((_, own_sig)) =
+                        own_methods.iter().find(|(n, _)| n == method_name)
+                    {
+                        // Both define the method — check for signature conflict.
+                        let params_match = own_sig.params.len() == parent_sig.params.len()
+                            && own_sig
+                                .params
+                                .iter()
+                                .zip(parent_sig.params.iter())
+                                .all(|((_, a), (_, b))| Self::types_compatible(a, b));
+                        let ret_match = Self::types_compatible(
+                            &own_sig.return_type,
+                            &parent_sig.return_type,
+                        );
+                        if !params_match || !ret_match {
+                            // Find the parent name that defined this method.
+                            let parent_name = parents
+                                .iter()
+                                .find(|p| {
+                                    self.interfaces
+                                        .get(*p)
+                                        .map(|ms| ms.iter().any(|(n, _)| n == method_name))
+                                        .unwrap_or(false)
+                                })
+                                .cloned()
+                                .unwrap_or_default();
+                            self.errors.push(
+                                TypeError::InterfaceMethodConflict {
+                                    interface: iface_name.clone(),
+                                    parent: parent_name,
+                                    method: method_name.clone(),
+                                    span: *span,
+                                }
+                                .to_error(),
+                            );
+                        }
+                        // Own method takes precedence — do not add inherited version.
+                    } else {
+                        // Not defined in own methods — add the inherited one.
+                        self.interfaces
+                            .get_mut(iface_name)
+                            .unwrap()
+                            .push((method_name.clone(), parent_sig.clone()));
+                    }
+                }
+            }
+        }
+
+        // Register interface methods as InterfaceName_methodName in symbol table
+        // so method calls through interface-typed variables type-check correctly.
+        let iface_entries: Vec<(String, String, FunctionSignature)> = self
+            .interfaces
+            .iter()
+            .flat_map(|(iface_name, methods)| {
+                methods.iter().map(move |(method_name, sig)| {
+                    (iface_name.clone(), method_name.clone(), sig.clone())
+                })
+            })
+            .collect();
+        for (iface_name, method_name, sig) in iface_entries {
+            let full_name = format!("{}_{}", iface_name, method_name);
+            // first param is self (the interface-typed object)
+            let mut params = vec![("self".to_string(), ValueType::Named(iface_name.clone()))];
+            params.extend(sig.params.clone());
+            self.symbols.functions.insert(
+                full_name,
+                FunctionSignature {
+                    params,
+                    return_type: sig.return_type.clone(),
+                },
+            );
         }
 
         for decl in &source.decls {
@@ -418,6 +576,8 @@ impl TypeChecker {
     }
 
     fn check_class(&mut self, c: &Class) {
+        let saved_class = self.current_class.clone();
+        self.current_class = Some(c.name.clone());
         for method in &c.methods {
             let saved_vars = self.symbols.enter_scope();
             self.symbols.variables.insert(
@@ -438,6 +598,7 @@ impl TypeChecker {
             }
             self.symbols.exit_scope(saved_vars);
         }
+        self.current_class = saved_class;
 
         let mut implemented_ifaces = Vec::new();
         for iface_name in &c.implements {
@@ -813,7 +974,80 @@ impl TypeChecker {
                     ValueType::Named("Self".to_string())
                 }
             }
-            ExprKind::Super => ValueType::Named("Super".to_string()),
+            ExprKind::SuperCall { method, args } => {
+                // super calls are only valid inside a class method
+                let current_class = match &self.current_class {
+                    Some(c) => c.clone(),
+                    None => {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            "super call is only valid inside a class method",
+                        ));
+                        for arg in args {
+                            self.infer_type(arg);
+                        }
+                        return ValueType::Any;
+                    }
+                };
+                // get the parent class
+                let parent_class = match self.class_parents.get(&current_class).cloned() {
+                    Some(p) => p,
+                    None => {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!("class {} has no parent class for super call", current_class),
+                        ));
+                        for arg in args {
+                            self.infer_type(arg);
+                        }
+                        return ValueType::Any;
+                    }
+                };
+                // look up parent method in symbol table as ParentClass_methodName
+                let parent_method_key = format!("{}_{}", parent_class, method);
+                let sig = match self.symbols.functions.get(&parent_method_key).cloned() {
+                    Some(s) => s,
+                    None => {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "parent class {} has no method '{}'",
+                                parent_class, method
+                            ),
+                        ));
+                        for arg in args {
+                            self.infer_type(arg);
+                        }
+                        return ValueType::Any;
+                    }
+                };
+                // sig.params[0] is self; check user-supplied args against params[1..]
+                let expected_arg_count = sig.params.len().saturating_sub(1);
+                if args.len() != expected_arg_count {
+                    self.errors.push(
+                        TypeError::InvalidArgumentCount {
+                            expected: expected_arg_count,
+                            found: args.len(),
+                            span: expr.span,
+                        }
+                        .to_error(),
+                    );
+                }
+                for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter().skip(1)) {
+                    let arg_ty = self.infer_type(arg);
+                    if !Self::types_compatible(expected_ty, &arg_ty) {
+                        self.errors.push(
+                            TypeError::TypeMismatch {
+                                expected: expected_ty.to_string(),
+                                found: arg_ty.to_string(),
+                                span: arg.span,
+                            }
+                            .to_error(),
+                        );
+                    }
+                }
+                sig.return_type.clone()
+            }
             ExprKind::New { class, args } => {
                 for arg in args {
                     self.infer_type(arg);
@@ -1276,5 +1510,80 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.message.contains("undefined function")));
+    }
+
+    fn parse_code(code: &str) -> Result<tinox_parser::SourceFile, tinox_common::ErrorBag> {
+        let mut lexer = Lexer::new(code);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        parser.parse()
+    }
+
+    #[test]
+    fn test_interface_extends_full_implementation() {
+        // A class implementing IDrawable (which extends IShape) must implement both methods.
+        // Interface methods require a body (parser constraint); use empty bodies here.
+        let code = r#"
+interface IShape {
+    fn area() -> Int64 { return 0; }
+}
+interface IDrawable extends IShape {
+    fn draw() { }
+}
+class Circle implements IDrawable {
+    fn draw() { }
+    fn area() -> Int64 { return 42; }
+}
+"#;
+        let ast = parse_code(code).expect("parse should succeed");
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+        assert!(result.is_ok(), "expected ok but got: {:?}", result);
+    }
+
+    #[test]
+    fn test_interface_extends_missing_inherited_method() {
+        // A class implementing IDrawable but missing area() (inherited from IShape) should fail.
+        let code = r#"
+interface IShape {
+    fn area() -> Int64 { return 0; }
+}
+interface IDrawable extends IShape {
+    fn draw() { }
+}
+class Circle implements IDrawable {
+    fn draw() { }
+}
+"#;
+        let ast = parse_code(code).expect("parse should succeed");
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.errors.iter().any(|e| e.message.contains("area")),
+            "expected error about missing 'area', got: {:?}",
+            errors.errors
+        );
+    }
+
+    #[test]
+    fn test_interface_extends_undefined_parent() {
+        // Extending an interface that doesn't exist should produce an error.
+        let code = r#"
+interface IDrawable extends IDoesNotExist {
+    fn draw() { }
+}
+"#;
+        let ast = parse_code(code).expect("parse should succeed");
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.errors.iter().any(|e| e.message.contains("IDoesNotExist")),
+            "expected error about undefined interface, got: {:?}",
+            errors.errors
+        );
     }
 }
