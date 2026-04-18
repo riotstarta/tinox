@@ -729,13 +729,13 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{}:", end_bb).unwrap();
             }
             StmtKind::Break => {
-                if let Some(break_bb) = ctx.break_target.take() {
+                if let Some(ref break_bb) = ctx.break_target.clone() {
                     writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
                 }
             }
             StmtKind::Continue => {
-                if let Some(continue_bb) = ctx.continue_target.take() {
-                    writeln!(&mut self.ir, "br label %{}", continue_bb).unwrap();
+                if let Some(ref cont_bb) = ctx.continue_target.clone() {
+                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
                 }
             }
             StmtKind::Throw(expr) => {
@@ -1532,6 +1532,46 @@ impl CodeGen {
                     }
                     Ok((typed_ptr, "i64*".to_string()))
                 }
+            }
+            ExprKind::Return(value) => {
+                let stmts_to_run: Vec<_> = ctx
+                    .defer_stack
+                    .last()
+                    .cloned()
+                    .unwrap_or_default();
+                for stmt in stmts_to_run.into_iter().rev() {
+                    self.gen_stmt_body(&Box::new(stmt), ctx)?;
+                }
+                if let Some(scope) = ctx.defer_stack.last_mut() {
+                    scope.clear();
+                }
+                if let Some(val_expr) = value {
+                    let (val, ty) = self.gen_expr(val_expr, ctx)?;
+                    let llvm_ty = Self::llvm_type_str(&ty);
+                    writeln!(&mut self.ir, "ret {} {}", llvm_ty, val).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "ret void").unwrap();
+                }
+                // Dead-code block so subsequent IR remains in a valid block.
+                let dead_bb = self.new_bb("ret_dead");
+                writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
+                Ok(("0".to_string(), "i64".to_string()))
+            }
+            ExprKind::Break => {
+                if let Some(ref break_bb) = ctx.break_target.clone() {
+                    writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
+                }
+                let dead_bb = self.new_bb("break_dead");
+                writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
+                Ok(("0".to_string(), "i64".to_string()))
+            }
+            ExprKind::Continue => {
+                if let Some(ref cont_bb) = ctx.continue_target.clone() {
+                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+                }
+                let dead_bb = self.new_bb("cont_dead");
+                writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
+                Ok(("0".to_string(), "i64".to_string()))
             }
             ExprKind::Cast { expr, ty } => {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
@@ -2959,5 +2999,48 @@ mod tests {
         let ir = compile_to_ir(src);
         assert!(ir.contains("loop_body"), "should have loop body block");
         assert!(ir.contains("loop_end"), "should have loop end block");
+    }
+
+    #[test]
+    fn test_return_as_expr() {
+        // return used in expression position (right side of let)
+        let src = concat!(
+            "fn f() -> Int64 {\n",
+            "  let _ = return 42;\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("ret i64 42"), "should emit ret for return-expr");
+        assert!(ir.contains("ret_dead"), "should have dead block after return expr");
+    }
+
+    #[test]
+    fn test_break_as_expr() {
+        let src = concat!(
+            "fn main() -> Int64 {\n",
+            "  loop {\n",
+            "    let _ = break;\n",
+            "  };\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("break_dead"), "should have dead block after break expr");
+    }
+
+    #[test]
+    fn test_continue_as_expr() {
+        let src = concat!(
+            "fn main() -> Int64 {\n",
+            "  let i = 0;\n",
+            "  loop {\n",
+            "    let _ = continue;\n",
+            "  };\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("cont_dead"), "should have dead block after continue expr");
     }
 }

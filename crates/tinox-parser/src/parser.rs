@@ -1327,6 +1327,29 @@ impl Parser {
             TokenKind::Keyword(Keyword::Await) => self.parse_await_expr(),
             TokenKind::Keyword(Keyword::Send) => self.parse_send_expr(),
             TokenKind::Keyword(Keyword::Recv) => self.parse_recv_expr(),
+            TokenKind::Keyword(Keyword::Return) => {
+                let span = token.span;
+                self.bump();
+                let value = if self.check(TokenKind::Semicolon)
+                    || self.check(TokenKind::RBrace)
+                    || self.check(TokenKind::RParen)
+                {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr()?))
+                };
+                Ok(Spanned::new(ExprKind::Return(value), span))
+            }
+            TokenKind::Keyword(Keyword::Break) => {
+                let span = token.span;
+                self.bump();
+                Ok(Spanned::new(ExprKind::Break, span))
+            }
+            TokenKind::Keyword(Keyword::Continue) => {
+                let span = token.span;
+                self.bump();
+                Ok(Spanned::new(ExprKind::Continue, span))
+            }
             TokenKind::Keyword(Keyword::Cast) => self.parse_cast_expr(),
             TokenKind::Keyword(Keyword::Is) => self.parse_is_expr(),
             TokenKind::Keyword(Keyword::Channel) => {
