@@ -58,6 +58,7 @@ impl Parser {
         } else if self.check_keyword(Keyword::Module) {
             self.bump();
             let name = self.parse_ident()?;
+            self.consume(TokenKind::Semicolon);
             DeclKind::Module(name)
         } else if self.check_keyword(Keyword::Extern) {
             self.parse_extern_fn()?

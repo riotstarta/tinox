@@ -1,0 +1,8 @@
+import test_modules.utils.math;
+import test_lib;
+
+fn main() -> Int64 {
+    println(square(5));
+    println(add(10, 20));
+    return 0;
+}

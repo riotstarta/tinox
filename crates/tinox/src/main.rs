@@ -1,10 +1,12 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tinox_codegen::CodeGen;
 use tinox_lexer::Lexer;
-use tinox_parser::Parser;
+use tinox_parser::{DeclKind, Parser};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -99,6 +101,70 @@ fn check(args: &[String]) {
     println!("(Full parsing not yet implemented - V1 minimal)");
 }
 
+fn resolve_imports(
+    ast: &mut tinox_parser::SourceFile,
+    base_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let imports: Vec<_> = ast
+        .decls
+        .iter()
+        .filter_map(|d| {
+            if let DeclKind::Import(i) = &d.node {
+                Some(i.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for import in imports {
+        // ["foo", "bar"] → "foo/bar.tnx"
+        let mut rel = PathBuf::new();
+        for (i, seg) in import.path.iter().enumerate() {
+            if i == import.path.len() - 1 {
+                rel.push(format!("{}.tnx", seg));
+            } else {
+                rel.push(seg);
+            }
+        }
+        let full_path = base_dir
+            .join(&rel)
+            .canonicalize()
+            .map_err(|e| format!("Cannot resolve import '{}': {}", rel.display(), e))?;
+
+        if visited.contains(&full_path) {
+            continue;
+        }
+        visited.insert(full_path.clone());
+
+        let source = fs::read_to_string(&full_path)
+            .map_err(|e| format!("Failed to read import '{}': {}", full_path.display(), e))?;
+
+        let mut lexer = Lexer::new(&source);
+        // Keep source alive for the lexer lifetime
+        let tokens = lexer
+            .tokenize()
+            .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
+
+        let mut parser = Parser::new(tokens);
+        let mut imported = parser
+            .parse()
+            .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
+
+        let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        resolve_imports(&mut imported, &imported_dir, visited)?;
+
+        ast.decls.extend(imported.decls);
+    }
+
+    // Drop Import and Module decls — they are resolved or informational only
+    ast.decls
+        .retain(|d| !matches!(&d.node, DeclKind::Import(_) | DeclKind::Module(_)));
+
+    Ok(())
+}
+
 fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
     let source =
         fs::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
@@ -109,9 +175,20 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
         .map_err(|e| format!("Lexer error: {:?}", e))?;
 
     let mut parser = Parser::new(tokens);
-    let ast = parser
+    let mut ast = parser
         .parse()
         .map_err(|e| format!("Parse error: {:?}", e))?;
+
+    let base_dir = Path::new(input_path)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let mut visited = HashSet::new();
+    if let Ok(canonical) = Path::new(input_path).canonicalize() {
+        visited.insert(canonical);
+    }
+    resolve_imports(&mut ast, &base_dir, &mut visited)
+        .map_err(|e| format!("Import error: {}", e))?;
 
     let mut typechecker = tinox_typecheck::TypeChecker::new();
     typechecker
