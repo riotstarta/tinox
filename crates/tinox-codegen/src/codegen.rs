@@ -2520,27 +2520,25 @@ impl CodeGen {
         };
         let end_bb = self.new_bb("try_end");
 
+        let merge_target = finally_bb.as_deref().unwrap_or(&end_bb).to_string();
+
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
 
+        // --- try body ---
         writeln!(&mut self.ir, "br label %{}", try_bb).unwrap();
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
-
         let old_error_catch = ctx.error_catch.take();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone()));
-
         self.gen_stmt_body(body, ctx)?;
-
         ctx.error_catch = old_error_catch;
+        // unreachable block swallows any double-terminator after a throw
+        let try_ok_bb = self.new_bb("try_ok");
+        writeln!(&mut self.ir, "{}:", try_ok_bb).unwrap();
+        writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
 
-        if let Some(fb) = &finally_bb {
-            writeln!(&mut self.ir, "br label %{}", fb).unwrap();
-        } else {
-            writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
-        }
-
+        // --- catch block ---
         writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
-
         if !catches.is_empty() {
             let catch = &catches[0];
             let param_slot = ctx.locals.len();
@@ -2550,21 +2548,25 @@ impl CodeGen {
             let err_val = self.temp();
             writeln!(&mut self.ir, "{} = load i64, i64* {}", err_val, error_var).unwrap();
             writeln!(&mut self.ir, "store i64 {}, i64* %{}", err_val, catch.param).unwrap();
-
             self.gen_stmt_body(&catch.body, ctx)?;
         }
+        // unreachable block after catch body
+        let catch_ok_bb = self.new_bb("catch_ok");
+        writeln!(&mut self.ir, "{}:", catch_ok_bb).unwrap();
+        writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
 
+        // --- finally block ---
         if let Some(fb) = &finally_bb {
+            writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
-                writeln!(&mut self.ir, "br label %{}", fb).unwrap();
-                writeln!(&mut self.ir, "{}:", fb).unwrap();
                 self.gen_stmt_body(finally_stmt, ctx)?;
             }
+            let finally_ok_bb = self.new_bb("finally_ok");
+            writeln!(&mut self.ir, "{}:", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
         }
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();
-
         Ok(())
     }
 
@@ -2818,6 +2820,44 @@ mod tests {
         let src = "fn add_floats(a: Float64, b: Float64) -> Float64 {\n  return a + b;\n}";
         let ir = compile_to_ir(src);
         assert!(ir.contains("fadd double"), "should use fadd for float addition");
+    }
+
+    #[test]
+    fn test_try_catch() {
+        // throw followed by semicolon — parser requires this
+        let src = concat!(
+            "fn main() -> Int64 {\n",
+            "  try {\n",
+            "    println(1);\n",
+            "  } catch (e: Int64) {\n",
+            "    println(e);\n",
+            "  };\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("try_"), "should have try block");
+        assert!(ir.contains("catch_"), "should have catch block");
+        assert!(ir.contains("try_end"), "should have end block");
+    }
+
+    #[test]
+    fn test_try_finally() {
+        let src = concat!(
+            "fn main() -> Int64 {\n",
+            "  try {\n",
+            "    println(1);\n",
+            "  } catch (e: Int64) {\n",
+            "    println(e);\n",
+            "  } finally {\n",
+            "    println(0);\n",
+            "  };\n",
+            "  return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("finally_"), "should have finally block");
+        assert!(ir.contains("try_end"), "should have end block");
     }
 
     #[test]
