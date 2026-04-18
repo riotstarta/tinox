@@ -1537,40 +1537,32 @@ impl CodeGen {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 let llvm_ty = Self::type_to_llvm(ty);
                 if llvm_ty == val_ty {
-                    Ok((val, llvm_ty))
-                } else {
-                    let result = self.temp();
-                    if val_ty == "i1" {
-                        writeln!(&mut self.ir, "{} = zext i1 {} to {}", result, val, llvm_ty)
-                            .unwrap();
-                    } else if val_ty.starts_with('i') && llvm_ty.starts_with('i') {
-                        let val_bits: u32 = val_ty[1..].parse().unwrap_or(64);
-                        let tgt_bits: u32 = llvm_ty[1..].parse().unwrap_or(64);
-                        if val_bits < tgt_bits {
-                            writeln!(
-                                &mut self.ir,
-                                "{} = sext {} {} to {}",
-                                result, val_ty, val, llvm_ty
-                            )
-                            .unwrap();
-                        } else {
-                            writeln!(
-                                &mut self.ir,
-                                "{} = trunc {} {} to {}",
-                                result, val_ty, val, llvm_ty
-                            )
-                            .unwrap();
-                        }
-                    } else {
-                        writeln!(
-                            &mut self.ir,
-                            "{} = bitcast {} {} to {}",
-                            result, val_ty, val, llvm_ty
-                        )
-                        .unwrap();
-                    }
-                    Ok((result, llvm_ty))
+                    return Ok((val, llvm_ty));
                 }
+                let result = self.temp();
+                let src_float = Self::is_float(&val_ty);
+                let dst_float = Self::is_float(&llvm_ty);
+                if src_float && dst_float {
+                    // float ↔ float (fptrunc: double→float, fpext: float→double)
+                    let op = if val_ty == "double" { "fptrunc" } else { "fpext" };
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
+                } else if src_float {
+                    // float → int: fptosi
+                    writeln!(&mut self.ir, "{} = fptosi {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                } else if dst_float {
+                    // int → float: sitofp
+                    writeln!(&mut self.ir, "{} = sitofp {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                } else if val_ty == "i1" {
+                    writeln!(&mut self.ir, "{} = zext i1 {} to {}", result, val, llvm_ty).unwrap();
+                } else if val_ty.starts_with('i') && llvm_ty.starts_with('i') {
+                    let val_bits: u32 = val_ty[1..].parse().unwrap_or(64);
+                    let tgt_bits: u32 = llvm_ty[1..].parse().unwrap_or(64);
+                    let op = if val_bits < tgt_bits { "sext" } else { "trunc" };
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "{} = bitcast {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                }
+                Ok((result, llvm_ty))
             }
             ExprKind::Block(stmts) => {
                 if stmts.is_empty() {
@@ -2858,6 +2850,27 @@ mod tests {
         let ir = compile_to_ir(src);
         assert!(ir.contains("finally_"), "should have finally block");
         assert!(ir.contains("try_end"), "should have end block");
+    }
+
+    #[test]
+    fn test_cast_float_to_int() {
+        let src = "fn f(x: Float64) -> Int64 {\n  return cast x as Int64;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("fptosi double"), "should use fptosi for float→int");
+    }
+
+    #[test]
+    fn test_cast_int_to_float() {
+        let src = "fn f(x: Int64) -> Float64 {\n  return cast x as Float64;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("sitofp i64"), "should use sitofp for int→float");
+    }
+
+    #[test]
+    fn test_cast_double_to_float() {
+        let src = "fn f(x: Float64) -> Float32 {\n  return cast x as Float32;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("fptrunc double"), "should use fptrunc for double→float");
     }
 
     #[test]

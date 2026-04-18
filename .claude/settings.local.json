@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(cat)",
+      "Bash(cargo run *)",
+      "Bash(/tmp/test_new_out *)",
+      "Bash(target/debug/tinox run *)",
+      "Bash(target/debug/tinox build *)",
+      "Read(//tmp/**)",
+      "Bash(timeout 5 /tmp/test_for)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"exit=$?\")",
+      "Bash(/tmp/test_fc)",
+      "Bash(echo \"result=$?\")"
+    ]
+  }
+}

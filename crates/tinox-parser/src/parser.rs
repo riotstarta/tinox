@@ -1635,7 +1635,7 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Cast)?;
         let expr = Box::new(self.parse_expr()?);
-        self.expect_keyword(Keyword::As_)?;
+        self.expect_keyword(Keyword::As)?;
         let ty = self.parse_type()?;
         Ok(Spanned::new(ExprKind::Cast { expr, ty }, span))
     }
