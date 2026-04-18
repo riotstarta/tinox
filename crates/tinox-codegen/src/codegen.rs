@@ -1775,7 +1775,9 @@ impl CodeGen {
                 if ctx.params.contains("self") {
                     Ok(("%self".to_string(), "i64*".to_string()))
                 } else {
-                    Ok(("0".to_string(), "i64".to_string()))
+                    let mut bag = ErrorBag::new();
+                    bag.push(Error::new(expr.span, "'this' used outside of a method"));
+                    Err(bag)
                 }
             }
             ExprKind::SuperCall { method, args } => {
@@ -1814,7 +1816,17 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, val).unwrap();
                 Ok((result, "i1".to_string()))
             }
-            _ => Ok(("0".to_string(), "i64".to_string())),
+            _ => {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(
+                    expr.span,
+                    format!(
+                        "codegen: unsupported expression kind '{}'",
+                        expr_kind_name(&expr.node)
+                    ),
+                ));
+                Err(bag)
+            }
         }
     }
 
@@ -1939,16 +1951,38 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = srem i64 {}, {}", result, loaded, rhs)
                             .unwrap();
                     }
-                    _ => {
-                        let r = self.temp();
-                        writeln!(&mut self.ir, "{} = or i64 {}, {}", r, 0, rhs).unwrap();
-                        writeln!(&mut self.ir, "{} = add i64 {}, {}", result, loaded, r).unwrap();
+                    tinox_parser::CompoundOp::BitAnd => {
+                        writeln!(&mut self.ir, "{} = and i64 {}, {}", result, loaded, rhs).unwrap();
+                    }
+                    tinox_parser::CompoundOp::BitOr => {
+                        writeln!(&mut self.ir, "{} = or i64 {}, {}", result, loaded, rhs).unwrap();
+                    }
+                    tinox_parser::CompoundOp::BitXor => {
+                        writeln!(&mut self.ir, "{} = xor i64 {}, {}", result, loaded, rhs).unwrap();
+                    }
+                    tinox_parser::CompoundOp::Shl => {
+                        writeln!(&mut self.ir, "{} = shl i64 {}, {}", result, loaded, rhs).unwrap();
+                    }
+                    tinox_parser::CompoundOp::Shr => {
+                        writeln!(&mut self.ir, "{} = lshr i64 {}, {}", result, loaded, rhs)
+                            .unwrap();
+                    }
+                    tinox_parser::CompoundOp::ShrArith => {
+                        writeln!(&mut self.ir, "{} = ashr i64 {}, {}", result, loaded, rhs)
+                            .unwrap();
                     }
                 }
                 writeln!(&mut self.ir, "store i64 {}, i64* {}", result, ptr_name).unwrap();
                 return Ok((result, "i64".to_string()));
             }
-            _ => {}
+            _ => {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(
+                    target.span,
+                    "codegen: unsupported compound-assignment target",
+                ));
+                return Err(bag);
+            }
         }
         Ok(("0".to_string(), "i64".to_string()))
     }
@@ -2348,6 +2382,48 @@ impl CodeGen {
             ));
         }
         Ok(())
+    }
+}
+
+fn expr_kind_name(kind: &ExprKind) -> &'static str {
+    match kind {
+        ExprKind::Literal(_) => "Literal",
+        ExprKind::ArrayLiteral(_) => "ArrayLiteral",
+        ExprKind::Ident(_) => "Ident",
+        ExprKind::Binary { .. } => "Binary",
+        ExprKind::Unary { .. } => "Unary",
+        ExprKind::Call { .. } => "Call",
+        ExprKind::MethodCall { .. } => "MethodCall",
+        ExprKind::Index { .. } => "Index",
+        ExprKind::FieldAccess { .. } => "FieldAccess",
+        ExprKind::This => "This",
+        ExprKind::SuperCall { .. } => "SuperCall",
+        ExprKind::New { .. } => "New",
+        ExprKind::StructLiteral { .. } => "StructLiteral",
+        ExprKind::Block(_) => "Block",
+        ExprKind::If { .. } => "If",
+        ExprKind::While { .. } => "While",
+        ExprKind::For { .. } => "For",
+        ExprKind::Loop { .. } => "Loop",
+        ExprKind::Match { .. } => "Match",
+        ExprKind::Return(_) => "Return",
+        ExprKind::Break => "Break",
+        ExprKind::Continue => "Continue",
+        ExprKind::Throw(_) => "Throw",
+        ExprKind::Try { .. } => "Try",
+        ExprKind::Assign { .. } => "Assign",
+        ExprKind::CompoundAssign { .. } => "CompoundAssign",
+        ExprKind::Lambda { .. } => "Lambda",
+        ExprKind::Spawn(_) => "Spawn",
+        ExprKind::Await(_) => "Await",
+        ExprKind::Channel => "Channel",
+        ExprKind::Send { .. } => "Send",
+        ExprKind::Recv(_) => "Recv",
+        ExprKind::Cast { .. } => "Cast",
+        ExprKind::Is { .. } => "Is",
+        ExprKind::Range { .. } => "Range",
+        ExprKind::Tuple(_) => "Tuple",
+        ExprKind::EnumValue { .. } => "EnumValue",
     }
 }
 
