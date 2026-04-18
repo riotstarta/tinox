@@ -243,7 +243,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str) -> Result<(), String> {
     }
 
     let link_status = Command::new("cc")
-        .args(&[&obj_path, &runtime_obj, "-o", output_name, "-lm", "-no-pie"])
+        .args(&[&obj_path, &runtime_obj, "-o", output_name, "-lm", "-lpthread", "-no-pie"])
         .status()
         .map_err(|e| format!("Failed to link: {}", e))?;
 

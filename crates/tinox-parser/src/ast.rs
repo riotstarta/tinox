@@ -331,6 +331,7 @@ pub struct Function {
     pub ret_type: Type,
     pub body: Stmt,
     pub span: Span,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +343,7 @@ pub struct Method {
     pub static_: bool,
     pub visibility: Visibility,
     pub span: Span,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone)]

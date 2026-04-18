@@ -30,6 +30,9 @@ pub struct CodeGen {
     vtable_sizes: HashMap<String, usize>,
     /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
     method_impl: HashMap<String, String>,
+    /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
+    fn_sigs: HashMap<String, (String, Vec<String>)>,
+    spawn_counter: usize,
 }
 
 impl CodeGen {
@@ -49,6 +52,8 @@ impl CodeGen {
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
             method_impl: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            spawn_counter: 0,
         }
     }
 
@@ -130,6 +135,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_newline()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_channel_create()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_channel_send(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_channel_recv(i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -211,6 +221,16 @@ impl CodeGen {
                     }
                     ancestor = ac.extends.clone();
                 }
+            }
+        }
+
+        // Pre-pass: collect all function signatures (needed for spawn wrapper generation)
+        for decl in &source.decls {
+            if let DeclKind::Function(f) = &decl.node {
+                let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
+                let ret_ty = Self::type_to_llvm(&f.ret_type);
+                let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
+                self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
             }
         }
 
@@ -2081,6 +2101,108 @@ impl CodeGen {
                 ctx.continue_target = old_continue;
                 Ok(("0".to_string(), "i64".to_string()))
             }
+            ExprKind::Spawn(inner) => {
+                let (fn_name, args) = match &inner.node {
+                    ExprKind::Call { func, args } => {
+                        let name = match &func.node {
+                            ExprKind::Ident(n) => n.clone(),
+                            _ => {
+                                let mut bag = ErrorBag::new();
+                                bag.push(Error::new(inner.span, "spawn requires a direct function call".to_string()));
+                                return Err(bag);
+                            }
+                        };
+                        (name, args.clone())
+                    }
+                    _ => {
+                        let mut bag = ErrorBag::new();
+                        bag.push(Error::new(inner.span, "spawn requires a function call expression".to_string()));
+                        return Err(bag);
+                    }
+                };
+
+                let mut arg_vals: Vec<(String, String)> = Vec::new();
+                for arg in &args {
+                    let (v, t) = self.gen_expr(arg, ctx)?;
+                    arg_vals.push((v, t));
+                }
+
+                let n_slots = arg_vals.len() + 1;
+                let wrapper_id = self.spawn_counter;
+                self.spawn_counter += 1;
+                let wrapper_name = format!("__spawn_wrapper_{}", wrapper_id);
+
+                let (ret_ty, param_tys) = self.fn_sigs.get(&fn_name).cloned().unwrap_or_else(|| {
+                    let ptys = arg_vals.iter().map(|(_, t)| t.clone()).collect();
+                    ("i64".to_string(), ptys)
+                });
+
+                // Allocate args array [n_slots x i64]
+                let raw_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_alloc(i64 {})", raw_ptr, n_slots * 8).unwrap();
+                let ap = self.temp();
+                writeln!(&mut self.ir, "  {} = bitcast i8* {} to [{} x i64]*", ap, raw_ptr, n_slots).unwrap();
+
+                // Store fn ptr at slot 0
+                let fp_sig = format!("{} ({})*", ret_ty, param_tys.join(", "));
+                let fp_i64 = self.temp();
+                writeln!(&mut self.ir, "  {} = ptrtoint {} @{} to i64", fp_i64, fp_sig, fn_name).unwrap();
+                let fp_slot = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 0", fp_slot, n_slots, n_slots, ap).unwrap();
+                writeln!(&mut self.ir, "  store i64 {}, i64* {}", fp_i64, fp_slot).unwrap();
+
+                // Store each arg coerced to i64
+                let arg_vals_clone = arg_vals.clone();
+                for (i, (val, ty)) in arg_vals_clone.iter().enumerate() {
+                    let slot = self.temp();
+                    writeln!(&mut self.ir, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 {}", slot, n_slots, n_slots, ap, i + 1).unwrap();
+                    let i64_val = self.coerce_to_i64(val, ty);
+                    writeln!(&mut self.ir, "  store i64 {}, i64* {}", i64_val, slot).unwrap();
+                }
+
+                // Call runtime spawn
+                let task_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_task_spawn(i8* (i8*)* @{}, i8* {})", task_ptr, wrapper_name, raw_ptr).unwrap();
+                let task_i64 = self.temp();
+                writeln!(&mut self.ir, "  {} = ptrtoint i8* {} to i64", task_i64, task_ptr).unwrap();
+
+                // Emit wrapper function into lambda_ir
+                self.emit_spawn_wrapper(&wrapper_name, n_slots, &ret_ty, &param_tys);
+
+                Ok((task_i64, "i64".to_string()))
+            }
+            ExprKind::Await(inner) => {
+                let (handle_i64, _) = self.gen_expr(inner, ctx)?;
+                let handle_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", handle_ptr, handle_i64).unwrap();
+                let result = self.temp();
+                writeln!(&mut self.ir, "  {} = call i64 @tinox_task_await(i8* {})", result, handle_ptr).unwrap();
+                Ok((result, "i64".to_string()))
+            }
+            ExprKind::Channel => {
+                let ch_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_channel_create()", ch_ptr).unwrap();
+                let ch_i64 = self.temp();
+                writeln!(&mut self.ir, "  {} = ptrtoint i8* {} to i64", ch_i64, ch_ptr).unwrap();
+                Ok((ch_i64, "i64".to_string()))
+            }
+            ExprKind::Send { channel, value } => {
+                let (ch_i64, _) = self.gen_expr(channel, ctx)?;
+                let (val_raw, val_ty) = self.gen_expr(value, ctx)?;
+                let ch_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ch_ptr, ch_i64).unwrap();
+                let val_i64 = self.coerce_to_i64(&val_raw, &val_ty);
+                writeln!(&mut self.ir, "  call void @tinox_channel_send(i8* {}, i64 {})", ch_ptr, val_i64).unwrap();
+                Ok(("0".to_string(), "void".to_string()))
+            }
+            ExprKind::Recv(inner) => {
+                let (ch_i64, _) = self.gen_expr(inner, ctx)?;
+                let ch_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ch_ptr, ch_i64).unwrap();
+                let result = self.temp();
+                writeln!(&mut self.ir, "  {} = call i64 @tinox_channel_recv(i8* {})", result, ch_ptr).unwrap();
+                Ok((result, "i64".to_string()))
+            }
             _ => {
                 let mut bag = ErrorBag::new();
                 bag.push(Error::new(
@@ -2496,7 +2618,7 @@ impl CodeGen {
     }
 
     fn temp(&mut self) -> String {
-        let t = format!("%t{}", self.temp_count);
+        let t = format!("%tmp.{}", self.temp_count);
         self.temp_count += 1;
         t
     }
@@ -2710,6 +2832,111 @@ impl CodeGen {
             ));
         }
         Ok(())
+    }
+
+    /// Coerce an LLVM value of the given type to i64, emitting cast instructions as needed.
+    fn coerce_to_i64(&mut self, val: &str, ty: &str) -> String {
+        if ty == "i64" {
+            val.to_string()
+        } else if ty == "double" {
+            let t = self.temp();
+            writeln!(&mut self.ir, "  {} = bitcast double {} to i64", t, val).unwrap();
+            t
+        } else if ty == "i1" {
+            let t = self.temp();
+            writeln!(&mut self.ir, "  {} = zext i1 {} to i64", t, val).unwrap();
+            t
+        } else if ty.ends_with('*') {
+            let t = self.temp();
+            writeln!(&mut self.ir, "  {} = ptrtoint {} {} to i64", t, ty, val).unwrap();
+            t
+        } else {
+            val.to_string()
+        }
+    }
+
+    /// Emit a spawn wrapper function into lambda_ir.
+    /// The wrapper has signature `i8* @name(i8* %raw)` and unpacks n_slots-1 args
+    /// from the flat [n_slots x i64] array (slot 0 = fn ptr).
+    fn emit_spawn_wrapper(&mut self, name: &str, n_slots: usize, ret_ty: &str, param_tys: &[String]) {
+        let mut w = String::new();
+        let mut tc = 0usize;
+        macro_rules! wt {
+            () => {{ tc += 1; format!("%w{}", tc) }};
+        }
+
+        writeln!(&mut w, "define i8* @{}(i8* %raw) {{", name).unwrap();
+        writeln!(&mut w, "entry:").unwrap();
+
+        let ap = wt!();
+        writeln!(&mut w, "  {} = bitcast i8* %raw to [{} x i64]*", ap, n_slots).unwrap();
+
+        // Load fn ptr from slot 0
+        let fp_slot = wt!();
+        writeln!(&mut w, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 0", fp_slot, n_slots, n_slots, ap).unwrap();
+        let fp_i64 = wt!();
+        writeln!(&mut w, "  {} = load i64, i64* {}", fp_i64, fp_slot).unwrap();
+        let fn_type_str = format!("{} ({})*", ret_ty, param_tys.join(", "));
+        let fp_typed = wt!();
+        writeln!(&mut w, "  {} = inttoptr i64 {} to {}", fp_typed, fp_i64, fn_type_str).unwrap();
+
+        // Load and cast each arg
+        let mut call_args: Vec<String> = Vec::new();
+        for (i, param_ty) in param_tys.iter().enumerate() {
+            let slot = wt!();
+            writeln!(&mut w, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 {}", slot, n_slots, n_slots, ap, i + 1).unwrap();
+            let raw = wt!();
+            writeln!(&mut w, "  {} = load i64, i64* {}", raw, slot).unwrap();
+            let typed = if param_ty == "i64" {
+                raw
+            } else if param_ty == "double" {
+                let t = wt!();
+                writeln!(&mut w, "  {} = bitcast i64 {} to double", t, raw).unwrap();
+                t
+            } else if param_ty == "i1" {
+                let t = wt!();
+                writeln!(&mut w, "  {} = trunc i64 {} to i1", t, raw).unwrap();
+                t
+            } else if param_ty.ends_with('*') {
+                let t = wt!();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to {}", t, raw, param_ty).unwrap();
+                t
+            } else {
+                raw
+            };
+            call_args.push(format!("{} {}", param_ty, typed));
+        }
+
+        // Call the function and return result as i8*
+        let call_str = call_args.join(", ");
+        if ret_ty == "void" {
+            writeln!(&mut w, "  call void {}({})", fp_typed, call_str).unwrap();
+            writeln!(&mut w, "  ret i8* null").unwrap();
+        } else {
+            let res = wt!();
+            writeln!(&mut w, "  {} = call {} {}({})", res, ret_ty, fp_typed, call_str).unwrap();
+            let ret_ptr = wt!();
+            if ret_ty == "i64" {
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, res).unwrap();
+            } else if ret_ty == "double" {
+                let as_i64 = wt!();
+                writeln!(&mut w, "  {} = bitcast double {} to i64", as_i64, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
+            } else if ret_ty == "i1" {
+                let as_i64 = wt!();
+                writeln!(&mut w, "  {} = zext i1 {} to i64", as_i64, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
+            } else if ret_ty.ends_with('*') {
+                writeln!(&mut w, "  {} = bitcast {} {} to i8*", ret_ptr, ret_ty, res).unwrap();
+            } else {
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, res).unwrap();
+            }
+            writeln!(&mut w, "  ret i8* {}", ret_ptr).unwrap();
+        }
+
+        writeln!(&mut w, "}}").unwrap();
+        writeln!(&mut w).unwrap();
+        self.lambda_ir.push_str(&w);
     }
 }
 

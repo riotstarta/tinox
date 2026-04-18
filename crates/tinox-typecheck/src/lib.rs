@@ -1331,14 +1331,24 @@ impl TypeChecker {
                     .unwrap_or(body_ty);
                 ValueType::Fn
             }
-            ExprKind::Spawn(_) => ValueType::Any,
-            ExprKind::Await(_) => ValueType::Any,
-            ExprKind::Channel => ValueType::Any,
-            ExprKind::Send { channel: _, value } => {
+            ExprKind::Spawn(inner) => {
+                self.infer_type(inner);
+                ValueType::Int // task handle (opaque i64)
+            }
+            ExprKind::Await(inner) => {
+                self.infer_type(inner);
+                ValueType::Int // task result
+            }
+            ExprKind::Channel => ValueType::Int, // channel handle (opaque i64)
+            ExprKind::Send { channel, value } => {
+                self.infer_type(channel);
                 self.infer_type(value);
                 ValueType::Unit
             }
-            ExprKind::Recv(_) => ValueType::Any,
+            ExprKind::Recv(inner) => {
+                self.infer_type(inner);
+                ValueType::Int // received value
+            }
             ExprKind::Cast { expr, ty } => {
                 self.infer_type(expr);
                 Self::type_to_value(ty)

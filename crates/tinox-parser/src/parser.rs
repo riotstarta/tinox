@@ -43,7 +43,15 @@ impl Parser {
     fn parse_decl(&mut self) -> Result<Decl, Error> {
         let start = self.mk_span();
 
-        let decl = if self.check_keyword(Keyword::Fn) {
+        let decl = if self.consume_keyword(Keyword::Async) {
+            if self.check_keyword(Keyword::Fn) {
+                let mut f = self.parse_fn()?;
+                f.is_async = true;
+                DeclKind::Function(f)
+            } else {
+                return Err(self.error("expected 'fn' after 'async'"));
+            }
+        } else if self.check_keyword(Keyword::Fn) {
             DeclKind::Function(self.parse_fn()?)
         } else if self.check_keyword(Keyword::Class) {
             DeclKind::Class(self.parse_class()?)
@@ -99,6 +107,7 @@ impl Parser {
             ret_type,
             body: Spanned::new(StmtKind::Empty, span),
             span,
+            is_async: false,
         }))
     }
 
@@ -131,6 +140,7 @@ impl Parser {
             ret_type,
             body,
             span,
+            is_async: false,
         })
     }
 
@@ -175,9 +185,12 @@ impl Parser {
         while !self.check(TokenKind::RBrace) {
             let vis = self.parse_visibility();
             let mutable = self.consume_keyword(Keyword::Mut);
+            let is_async = self.consume_keyword(Keyword::Async);
 
             if self.check_keyword(Keyword::Fn) {
-                methods.push(self.parse_method(vis, false)?);
+                let mut m = self.parse_method(vis, false)?;
+                m.is_async = is_async;
+                methods.push(m);
             } else {
                 fields.push(self.parse_field(vis, mutable)?);
             }
@@ -226,6 +239,7 @@ impl Parser {
             static_,
             visibility,
             span,
+            is_async: false,
         })
     }
 
