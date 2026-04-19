@@ -340,6 +340,23 @@ impl TypeChecker {
             },
         );
         symbols.functions.insert(
+            "push".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("arr".to_string(), ValueType::Array),
+                    ("val".to_string(), ValueType::Any),
+                ],
+                return_type: ValueType::Array,
+            },
+        );
+        symbols.functions.insert(
+            "pop".to_string(),
+            FunctionSignature {
+                params: vec![("arr".to_string(), ValueType::Array)],
+                return_type: ValueType::Array,
+            },
+        );
+        symbols.functions.insert(
             "charAt".to_string(),
             FunctionSignature {
                 params: vec![

@@ -161,6 +161,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_char_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_push(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_pop(i64*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -819,9 +821,12 @@ impl CodeGen {
             }
             StmtKind::For { var, iter, body } => {
                 let is_range = matches!(iter.node, ExprKind::Range { .. });
-                let (iter_ptr, _) = self.gen_expr(iter, ctx)?;
+                let (iter_ptr, iter_ty) = self.gen_expr(iter, ctx)?;
+                let is_string = iter_ty == "i8*";
 
-                let (start_val, end_val, arr_ptr) = if is_range {
+                // arr_ptr: Some(ptr) for array/string, None for range
+                // str_ptr: Some(i8*) for string iteration
+                let (start_val, end_val, arr_ptr, str_ptr) = if is_range {
                     let s_gep = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 0", s_gep, iter_ptr).unwrap();
                     let sv = self.temp();
@@ -830,18 +835,23 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 1", e_gep, iter_ptr).unwrap();
                     let ev = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, e_gep).unwrap();
-                    (sv, ev, None)
+                    (sv, ev, None, None)
+                } else if is_string {
+                    // String: iterate bytes, length via tinox_string_length
+                    let len_val = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", len_val, iter_ptr).unwrap();
+                    ("0".to_string(), len_val, None, Some(iter_ptr))
                 } else {
                     // Array: length at data_ptr[-1]
                     let len_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, iter_ptr).unwrap();
                     let len_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
-                    ("0".to_string(), len_val, Some(iter_ptr))
+                    ("0".to_string(), len_val, Some(iter_ptr), None)
                 };
 
-                // Loop index (i for arrays, var for ranges)
-                let idx_slot = if arr_ptr.is_some() {
+                let needs_separate_idx = arr_ptr.is_some() || str_ptr.is_some();
+                let idx_slot = if needs_separate_idx {
                     let s = format!("for_idx_{}", self.temp_count);
                     self.temp_count += 1;
                     writeln!(&mut self.ir, "%{} = alloca i64", s).unwrap();
@@ -874,12 +884,20 @@ impl CodeGen {
 
                 writeln!(&mut self.ir, "{}:", body_bb).unwrap();
                 if let Some(aptr) = &arr_ptr {
-                    // Load element at aptr[cur_idx] into var
                     let elem_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
                     let elem_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", elem_val, elem_ptr).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_val, var).unwrap();
+                } else if let Some(sptr) = &str_ptr {
+                    // Load byte at sptr[cur_idx], zext to i64, store to var
+                    let bptr = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i8, i8* {}, i64 {}", bptr, sptr, cur_idx).unwrap();
+                    let byte = self.temp();
+                    writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, bptr).unwrap();
+                    let ext = self.temp();
+                    writeln!(&mut self.ir, "{} = zext i8 {} to i64", ext, byte).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", ext, var).unwrap();
                 }
                 self.gen_stmt_body(body, ctx)?;
 
@@ -888,11 +906,6 @@ impl CodeGen {
                 let inc = self.temp();
                 writeln!(&mut self.ir, "{} = add i64 {}, 1", inc, next_idx).unwrap();
                 writeln!(&mut self.ir, "store i64 {}, i64* %{}", inc, idx_slot).unwrap();
-                if arr_ptr.is_none() {
-                    // For range: var IS the index
-                } else {
-                    // idx_slot is separate from var, var already updated above
-                }
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", end_bb).unwrap();
 
@@ -1271,6 +1284,19 @@ impl CodeGen {
                             writeln!(&mut self.ir, "unreachable").unwrap();
                             writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "push" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, arr, val).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "pop" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_pop(i64* {})", result, arr).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         "charAt" => {
                             let (ptr, _) = self.gen_expr(&args[0], ctx)?;
