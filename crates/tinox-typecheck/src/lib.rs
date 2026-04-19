@@ -325,6 +325,20 @@ impl TypeChecker {
                 return_type: ValueType::Unit,
             },
         );
+        symbols.functions.insert(
+            "len".to_string(),
+            FunctionSignature {
+                params: vec![("value".to_string(), ValueType::Any)],
+                return_type: ValueType::Int,
+            },
+        );
+        symbols.functions.insert(
+            "assert".to_string(),
+            FunctionSignature {
+                params: vec![("cond".to_string(), ValueType::Bool)],
+                return_type: ValueType::Unit,
+            },
+        );
         Self {
             errors: Vec::new(),
             symbols,
@@ -1490,8 +1504,12 @@ impl TypeChecker {
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
         let valid = match op {
-            BinaryOp::Add
-            | BinaryOp::Sub
+            BinaryOp::Add => {
+                (matches!(lhs, ValueType::Int | ValueType::Float)
+                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                    || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
+            }
+            BinaryOp::Sub
             | BinaryOp::Mul
             | BinaryOp::Div
             | BinaryOp::Mod
@@ -1553,6 +1571,7 @@ impl TypeChecker {
             | BinaryOp::Gt
             | BinaryOp::Ge => ValueType::Bool,
             BinaryOp::And | BinaryOp::Or => ValueType::Bool,
+            BinaryOp::Add if *lhs == ValueType::String => ValueType::String,
             _ => {
                 if *lhs == ValueType::Float || *rhs == ValueType::Float {
                     ValueType::Float

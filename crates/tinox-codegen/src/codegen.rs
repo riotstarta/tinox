@@ -152,6 +152,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_channel_recv(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i1 @tinox_channel_try_recv(i8*, i64*)").unwrap();
         writeln!(&mut self.ir, "declare i32 @sched_yield()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_length(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_concat(i8*, i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1074,7 +1076,9 @@ impl CodeGen {
                 let float = Self::is_float(&lt);
                 match op {
                     tinox_parser::BinaryOp::Add => {
-                        if float {
+                        if lt == "i8*" {
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, l, r).unwrap()
+                        } else if float {
                             writeln!(&mut self.ir, "{} = fadd {} {}, {}", result, lt, l, r).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = add {} {}, {}", result, lt, l, r).unwrap()
@@ -1210,28 +1214,42 @@ impl CodeGen {
                         "main" => "tinox_main".to_string(),
                         "print" | "println" => {
                             if !args.is_empty() {
-                                let arg = &args[0];
-                                if let ExprKind::Literal(Literal::String(s)) = &arg.node {
-                                    let str_name = format!("str{}", self.strings.len());
-                                    self.strings.insert(str_name.clone(), s.clone());
-                                    let len = s.len() + 1;
-                                    let ptr_name = self.temp();
-                                    writeln!(&mut self.ir, "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", ptr_name, len, len, str_name).unwrap();
-                                    writeln!(&mut self.ir, "call void @tinox_print_string(i8* {})", ptr_name).unwrap();
-                                } else {
-                                    let ty = &arg_types[0];
-                                    let llvm_fn = match ty.as_str() {
-                                        "i64" => "tinox_print_int",
-                                        "double" => "tinox_print_float",
-                                        "i1" => "tinox_print_bool",
-                                        _ => "tinox_print_int",
-                                    };
-                                    writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
-                                }
+                                let ty = &arg_types[0];
+                                let llvm_fn = match ty.as_str() {
+                                    "i8*" => "tinox_print_string",
+                                    "double" => "tinox_print_float",
+                                    "i1" => "tinox_print_bool",
+                                    _ => "tinox_print_int",
+                                };
+                                writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
                             }
                             if name == "println" {
                                 writeln!(&mut self.ir, "call void @tinox_print_newline()").unwrap();
                             }
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "len" => {
+                            let (ptr, ty) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            if ty == "i8*" {
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", result, ptr).unwrap();
+                            } else {
+                                // Array: length is stored at index -1 by convention (or 0 offset)
+                                let len_ptr = self.temp();
+                                writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, ptr).unwrap();
+                                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, len_ptr).unwrap();
+                            }
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "assert" => {
+                            let (cond, _) = self.gen_expr(&args[0], ctx)?;
+                            let ok_bb = self.new_bb("assert_ok");
+                            let fail_bb = self.new_bb("assert_fail");
+                            writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", cond, ok_bb, fail_bb).unwrap();
+                            writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
+                            writeln!(&mut self.ir, "call void @tinox_panic(i64 1)").unwrap();
+                            writeln!(&mut self.ir, "unreachable").unwrap();
+                            writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         _ => name.clone(),
@@ -2351,6 +2369,9 @@ impl CodeGen {
                 writeln!(&mut self.ir, "  {} = call i64 @tinox_channel_recv(i8* {})", result, ch_ptr).unwrap();
                 Ok((result, "i64".to_string()))
             }
+            ExprKind::CompoundAssign { op, target, value } => {
+                self.gen_compound_assign(op, target, value, ctx)
+            }
             _ => {
                 let mut bag = ErrorBag::new();
                 bag.push(Error::new(
@@ -2537,7 +2558,10 @@ impl CodeGen {
             Literal::String(s) => {
                 let name = format!("str{}", self.strings.len());
                 self.strings.insert(name.clone(), s.clone());
-                Ok((name, "i8*".to_string()))
+                let len = s.len() + 1;
+                let ptr = self.temp();
+                writeln!(&mut self.ir, "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", ptr, len, len, name).unwrap();
+                Ok((ptr, "i8*".to_string()))
             }
             Literal::Bool(b) => Ok((if *b { "1" } else { "0" }.to_string(), "i1".to_string())),
             Literal::Char(c) => Ok((format!("{}", *c as i64), "i32".to_string())),
