@@ -12,19 +12,14 @@
       priority="normal"/>
   </extension>
 
-  <!-- Language Server registrieren -->
+  <!-- Language Server registrieren und an Content-Type binden -->
   <extension point="org.eclipse.lsp4e.languageServer">
-    <languageServer
+    <server
       id="tinox.lsp"
       label="Tinox Language Server"
       class="tinox.eclipse.TinoxLanguageServer"/>
-  </extension>
-
-  <!-- Language Server an Content-Type binden -->
-  <extension point="org.eclipse.lsp4e.languageServerContentType">
-    <mapping
-      id="tinox.lsp.mapping"
-      languageServer="tinox.lsp"
+    <contentTypeMapping
+      id="tinox.lsp"
       contentType="tinox.contenttype"/>
   </extension>
 
@@ -40,6 +35,51 @@
   <!-- Preference-Store initialisieren -->
   <extension point="org.eclipse.core.runtime.preferences">
     <initializer class="tinox.eclipse.TinoxPreferenceInitializer"/>
+  </extension>
+
+  <!-- Run-Kommando -->
+  <extension point="org.eclipse.ui.commands">
+    <command id="tinox.run" name="Run Tinox File"/>
+  </extension>
+
+  <extension point="org.eclipse.ui.handlers">
+    <handler commandId="tinox.run" class="tinox.eclipse.RunTinoxHandler"/>
+  </extension>
+
+  <extension point="org.eclipse.ui.menus">
+    <menuContribution locationURI="popup:org.eclipse.ui.popup.any?after=additions">
+      <command commandId="tinox.run" label="Run Tinox File" style="push">
+        <visibleWhen checkEnabled="false">
+          <with variable="activeMenuSelection">
+            <iterate>
+              <adapt type="org.eclipse.core.resources.IFile">
+                <test property="org.eclipse.core.resources.extension" value="tinox"/>
+              </adapt>
+            </iterate>
+          </with>
+        </visibleWhen>
+      </command>
+    </menuContribution>
+    <menuContribution locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
+      <toolbar id="tinox.toolbar">
+        <command commandId="tinox.run" label="Run Tinox File" tooltip="Run Tinox File" style="push"/>
+      </toolbar>
+    </menuContribution>
+  </extension>
+
+  <!-- Keybinding: Ctrl+F11 für Tinox Run -->
+  <extension point="org.eclipse.ui.bindings">
+    <key sequence="M1+F11" commandId="tinox.run"
+        schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
+  </extension>
+
+  <!-- TextMate-Grammatik für Syntax Highlighting -->
+  <extension point="org.eclipse.tm4e.registry.grammars">
+    <grammar
+      scopeName="source.tinox"
+      path="grammars/tinox.tmLanguage.json">
+      <contentTypeBinding contentTypeId="tinox.contenttype"/>
+    </grammar>
   </extension>
 
 </plugin>

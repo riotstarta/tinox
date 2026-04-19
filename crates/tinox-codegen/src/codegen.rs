@@ -343,6 +343,7 @@ impl CodeGen {
             error_catch: None,
             defer_stack: Vec::new(),
             in_defer_exec: false,
+            ret_type: ret_type.clone(),
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -416,6 +417,7 @@ impl CodeGen {
             error_catch: None,
             defer_stack: Vec::new(),
             in_defer_exec: false,
+            ret_type: ret_type.clone(),
         };
 
         let mut params_str = "i64* %self".to_string();
@@ -554,8 +556,27 @@ impl CodeGen {
                     scope.clear();
                 }
                 let (val, ty) = self.gen_expr(expr, ctx)?;
-                let llvm_ty = Self::llvm_type_str(&ty);
-                writeln!(&mut self.ir, "ret {} {}", llvm_ty, val).unwrap();
+                let expected = &ctx.ret_type.clone();
+                let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
+                    let cast_op = match (ty.as_str(), expected.as_str()) {
+                        (from, to) if from.starts_with('i') && to.starts_with('i') => {
+                            let from_bits: u32 = from[1..].parse().unwrap_or(64);
+                            let to_bits: u32 = to[1..].parse().unwrap_or(64);
+                            if from_bits > to_bits { "trunc" } else { "zext" }
+                        }
+                        _ => "",
+                    };
+                    if !cast_op.is_empty() {
+                        let tmp = self.temp();
+                        writeln!(&mut self.ir, "{} = {} {} {}, {}", tmp, cast_op, ty, val, expected).unwrap();
+                        (tmp, expected.clone())
+                    } else {
+                        (val, ty)
+                    }
+                } else {
+                    (val, ty)
+                };
+                writeln!(&mut self.ir, "ret {} {}", final_ty, final_val).unwrap();
             }
             StmtKind::Return(None) => {
                 self.gen_defer_scope(ctx)?;
@@ -732,14 +753,13 @@ impl CodeGen {
                 .unwrap();
                 writeln!(&mut self.ir, "{}:", then_bb).unwrap();
                 self.gen_stmt_body(then_branch, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", else_bb).unwrap();
                 if let Some(else_stmt) = else_branch {
                     self.gen_stmt_body(else_stmt, ctx)?;
                 }
-                if !else_branch.is_some() {
-                    writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
-                    writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
-                }
+                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
             }
             StmtKind::While { cond, body } => {
                 let loop_bb = self.new_bb("loop");
@@ -1081,7 +1101,9 @@ impl CodeGen {
                 } else if let ExprKind::Index { obj, index } = &target.node {
                     let (idx_val, _) = self.gen_expr(index, ctx)?;
                     let (base_ptr, _) = if let ExprKind::Ident(name) = &obj.node {
-                        if ctx.locals.contains_key(name) {
+                        if ctx.params.contains(name) {
+                            self.gen_expr(obj, ctx)?
+                        } else if ctx.locals.contains_key(name) {
                             let (var_ty, _) = ctx.locals.get(name).unwrap();
                             let loaded_ptr = self.temp();
                             writeln!(
@@ -1185,6 +1207,7 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp eq {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Ne => {
                         if float {
@@ -1192,6 +1215,7 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp ne {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Lt => {
                         if float {
@@ -1199,6 +1223,7 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp slt {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Le => {
                         if float {
@@ -1206,6 +1231,7 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sle {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Gt => {
                         if float {
@@ -1213,6 +1239,7 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sgt {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Ge => {
                         if float {
@@ -1220,12 +1247,15 @@ impl CodeGen {
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sge {} {}, {}", result, lt, l, r).unwrap()
                         }
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::And => {
-                        writeln!(&mut self.ir, "{} = and {} {}, {}", result, lt, l, r).unwrap()
+                        writeln!(&mut self.ir, "{} = and i1 {}, {}", result, l, r).unwrap();
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Or => {
-                        writeln!(&mut self.ir, "{} = or {} {}, {}", result, lt, l, r).unwrap()
+                        writeln!(&mut self.ir, "{} = or i1 {}, {}", result, l, r).unwrap();
+                        return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::BitOr => {
                         writeln!(&mut self.ir, "{} = or {} {}, {}", result, lt, l, r).unwrap()
@@ -1657,6 +1687,13 @@ impl CodeGen {
                         )
                         .unwrap();
                     }
+                } else if ret_ty == "void" {
+                    writeln!(
+                        &mut self.ir,
+                        "call void @{}({})",
+                        fn_name, args_str
+                    )
+                    .unwrap();
                 } else {
                     writeln!(
                         &mut self.ir,
@@ -1802,7 +1839,9 @@ impl CodeGen {
             ExprKind::Index { obj, index } => {
                 let (idx_val, _) = self.gen_expr(index, ctx)?;
                 let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
-                    if ctx.locals.contains_key(name) {
+                    if ctx.params.contains(name) {
+                        self.gen_expr(obj, ctx)?
+                    } else if ctx.locals.contains_key(name) {
                         let (var_ty, _) = ctx.locals.get(name).unwrap();
                         let loaded_ptr = self.temp();
                         writeln!(&mut self.ir, "{} = load {}, {}* %{}", loaded_ptr, var_ty, var_ty, name).unwrap();
@@ -2918,6 +2957,7 @@ impl CodeGen {
             error_catch: None,
             defer_stack: Vec::new(),
             in_defer_exec: false,
+            ret_type: ret_ty.clone(),
         };
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
@@ -3788,6 +3828,8 @@ pub struct GenCtx {
     error_catch: Option<(String, String)>,
     defer_stack: Vec<Vec<Stmt>>,
     in_defer_exec: bool,
+    /// LLVM return type of the current function (for casting return values)
+    ret_type: String,
 }
 
 pub fn gen(source: &SourceFile) -> Result<CodeGen, ErrorBag> {

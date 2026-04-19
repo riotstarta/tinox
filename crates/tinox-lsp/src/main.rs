@@ -73,8 +73,15 @@ impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                            include_text: Some(true),
+                        })),
+                        ..Default::default()
+                    },
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
@@ -113,9 +120,11 @@ impl LanguageServer for Backend {
     }
 
     async fn did_save(&self, p: DidSaveTextDocumentParams) {
-        if let Some(text) = p.text.clone() {
-            self.update(p.text_document.uri, text).await;
-        }
+        let uri = p.text_document.uri;
+        let text = p.text
+            .or_else(|| self.docs.get(&uri).map(|t| t.clone()))
+            .unwrap_or_default();
+        self.update(uri, text).await;
     }
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {

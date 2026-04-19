@@ -581,12 +581,13 @@ impl Parser {
             }
             _ => {
                 if let TokenKind::Ident(_) = &self.peek().kind {
+                    let ident_span = self.peek().span;
                     let name = self.parse_ident()?;
                     if self.check(TokenKind::Equals) {
                         self.bump();
                         let value = self.parse_expr()?;
                         self.expect(TokenKind::Semicolon)?;
-                        let target = Spanned::new(ExprKind::Ident(name.clone()), Span::dummy());
+                        let target = Spanned::new(ExprKind::Ident(name.clone()), ident_span);
                         StmtKind::Assignment { target, value }
                     } else if self.check(TokenKind::PlusEquals)
                         || self.check(TokenKind::MinusEquals)
@@ -605,14 +606,14 @@ impl Parser {
                         self.bump();
                         let value = self.parse_expr()?;
                         self.expect(TokenKind::Semicolon)?;
-                        let target = Spanned::new(ExprKind::Ident(name), Span::dummy());
+                        let target = Spanned::new(ExprKind::Ident(name), ident_span);
                         StmtKind::Expr(Spanned::new(
                             ExprKind::CompoundAssign {
                                 op,
                                 target: Box::new(target),
                                 value: Box::new(value),
                             },
-                            Span::dummy(),
+                            ident_span,
                         ))
                     } else if self.check(TokenKind::LBracket) {
                         self.bump();
@@ -623,10 +624,10 @@ impl Parser {
                         self.expect(TokenKind::Semicolon)?;
                         let target = Spanned::new(
                             ExprKind::Index {
-                                obj: Box::new(Spanned::new(ExprKind::Ident(name), Span::dummy())),
+                                obj: Box::new(Spanned::new(ExprKind::Ident(name), ident_span)),
                                 index: Box::new(index),
                             },
-                            Span::dummy(),
+                            ident_span,
                         );
                         StmtKind::Assignment { target, value }
                     } else if self.check(TokenKind::LParen) {
@@ -642,14 +643,14 @@ impl Parser {
                         self.expect(TokenKind::Semicolon)?;
                         StmtKind::Expr(Spanned::new(
                             ExprKind::Call {
-                                func: Box::new(Spanned::new(ExprKind::Ident(name), Span::dummy())),
+                                func: Box::new(Spanned::new(ExprKind::Ident(name), ident_span)),
                                 args,
                             },
-                            Span::dummy(),
+                            ident_span,
                         ))
                     } else {
                         self.expect(TokenKind::Semicolon)?;
-                        StmtKind::Expr(Spanned::new(ExprKind::Ident(name), Span::dummy()))
+                        StmtKind::Expr(Spanned::new(ExprKind::Ident(name), ident_span))
                     }
                 } else {
                     let expr = self.parse_expr()?;
