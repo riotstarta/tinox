@@ -141,6 +141,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_int(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_string(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_float(double)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_newline()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
@@ -1216,26 +1217,20 @@ impl CodeGen {
                                     let len = s.len() + 1;
                                     let ptr_name = self.temp();
                                     writeln!(&mut self.ir, "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", ptr_name, len, len, str_name).unwrap();
-                                    writeln!(
-                                        &mut self.ir,
-                                        "call void @tinox_print_string(i8* {})",
-                                        ptr_name
-                                    )
-                                    .unwrap();
+                                    writeln!(&mut self.ir, "call void @tinox_print_string(i8* {})", ptr_name).unwrap();
                                 } else {
                                     let ty = &arg_types[0];
                                     let llvm_fn = match ty.as_str() {
                                         "i64" => "tinox_print_int",
                                         "double" => "tinox_print_float",
+                                        "i1" => "tinox_print_bool",
                                         _ => "tinox_print_int",
                                     };
-                                    writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str)
-                                        .unwrap();
+                                    writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
                                 }
-                                if name == "println" {
-                                    writeln!(&mut self.ir, "call void @tinox_print_newline()")
-                                        .unwrap();
-                                }
+                            }
+                            if name == "println" {
+                                writeln!(&mut self.ir, "call void @tinox_print_newline()").unwrap();
                             }
                             return Ok(("0".to_string(), "void".to_string()));
                         }

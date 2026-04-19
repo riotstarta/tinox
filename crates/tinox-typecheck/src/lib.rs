@@ -1430,7 +1430,8 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function
             if let Some(sig) = self.symbols.functions.get(name).cloned() {
-                if sig.params.len() != args.len() {
+                let is_variadic_print = matches!(name.as_str(), "print" | "println");
+                if !is_variadic_print && sig.params.len() != args.len() {
                     self.errors.push(
                         TypeError::InvalidArgumentCount {
                             expected: sig.params.len(),
