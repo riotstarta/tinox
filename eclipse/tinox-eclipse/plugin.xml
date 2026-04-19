@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+
+  <!-- Content-Type für .tinox Dateien -->
+  <extension point="org.eclipse.core.contenttype.contentTypes">
+    <content-type
+      id="tinox.contenttype"
+      name="Tinox Source File"
+      base-type="org.eclipse.core.runtime.text"
+      file-extensions="tinox"
+      priority="normal"/>
+  </extension>
+
+  <!-- Language Server registrieren -->
+  <extension point="org.eclipse.lsp4e.languageServer">
+    <languageServer
+      id="tinox.lsp"
+      label="Tinox Language Server"
+      class="tinox.eclipse.TinoxLanguageServer"/>
+  </extension>
+
+  <!-- Language Server an Content-Type binden -->
+  <extension point="org.eclipse.lsp4e.languageServerContentType">
+    <mapping
+      id="tinox.lsp.mapping"
+      languageServer="tinox.lsp"
+      contentType="tinox.contenttype"/>
+  </extension>
+
+  <!-- Preference-Page für Binary-Pfad -->
+  <extension point="org.eclipse.ui.preferencePages">
+    <page
+      id="tinox.preferences"
+      name="Tinox"
+      category="org.eclipse.ui.preferencePages.GeneralTextEditor"
+      class="tinox.eclipse.TinoxPreferencePage"/>
+  </extension>
+
+  <!-- Preference-Store initialisieren -->
+  <extension point="org.eclipse.core.runtime.preferences">
+    <initializer class="tinox.eclipse.TinoxPreferenceInitializer"/>
+  </extension>
+
+</plugin>
