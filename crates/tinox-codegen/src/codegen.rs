@@ -332,6 +332,8 @@ impl CodeGen {
         let mut params_str = String::new();
         let mut ctx = GenCtx {
             locals: HashMap::new(),
+            local_slots: HashMap::new(),
+            range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
             current_struct: None,
@@ -403,6 +405,8 @@ impl CodeGen {
 
         let mut ctx = GenCtx {
             locals: HashMap::new(),
+            local_slots: HashMap::new(),
+            range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
             current_struct: Some(class_name.to_string()),
@@ -601,6 +605,9 @@ impl CodeGen {
                     };
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
+                    if matches!(&val.node, ExprKind::Range { .. }) {
+                        ctx.range_vars.insert(name.clone());
+                    }
                     // If the declared type annotation is an interface, record the
                     // interface name so vtable dispatch is used for method calls.
                     let effective_type = if let Some(Type::Named(ann)) = ty {
@@ -839,7 +846,8 @@ impl CodeGen {
                 self.gen_try_stmt(body, catches, finally.as_deref(), ctx)?;
             }
             StmtKind::For { var, iter, body } => {
-                let is_range = matches!(iter.node, ExprKind::Range { .. });
+                let is_range = matches!(iter.node, ExprKind::Range { .. })
+                    || matches!(&iter.node, ExprKind::Ident(n) if ctx.range_vars.contains(n));
                 let (iter_ptr, iter_ty) = self.gen_expr(iter, ctx)?;
                 let is_string = iter_ty == "i8*";
 
@@ -869,6 +877,14 @@ impl CodeGen {
                     ("0".to_string(), len_val, Some(iter_ptr), None)
                 };
 
+                // Give loop variable a unique LLVM slot to avoid duplicate alloca on re-use
+                let var_slot = format!("{}_{}", var, self.temp_count);
+                self.temp_count += 1;
+                writeln!(&mut self.ir, "%{} = alloca i64", var_slot).unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var_slot).unwrap();
+                ctx.locals.insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
+                ctx.local_slots.insert(var.clone(), var_slot.clone());
+
                 let needs_separate_idx = arr_ptr.is_some() || str_ptr.is_some();
                 let idx_slot = if needs_separate_idx {
                     let s = format!("for_idx_{}", self.temp_count);
@@ -877,12 +893,9 @@ impl CodeGen {
                     writeln!(&mut self.ir, "store i64 0, i64* %{}", s).unwrap();
                     s
                 } else {
-                    var.clone()
+                    // Range: var_slot IS the counter
+                    var_slot.clone()
                 };
-
-                writeln!(&mut self.ir, "%{} = alloca i64", var).unwrap();
-                writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var).unwrap();
-                ctx.locals.insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
 
                 let cond_bb = self.new_bb("for_cond");
                 let body_bb = self.new_bb("for_body");
@@ -907,7 +920,7 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
                     let elem_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", elem_val, elem_ptr).unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_val, var).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_val, var_slot).unwrap();
                 } else if let Some(sptr) = &str_ptr {
                     // Load byte at sptr[cur_idx], zext to i64, store to var
                     let bptr = self.temp();
@@ -916,7 +929,7 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, bptr).unwrap();
                     let ext = self.temp();
                     writeln!(&mut self.ir, "{} = zext i8 {} to i64", ext, byte).unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", ext, var).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", ext, var_slot).unwrap();
                 }
                 self.gen_stmt_body(body, ctx)?;
 
@@ -1035,8 +1048,9 @@ impl CodeGen {
                     let name = name.clone();
                     if let Some((ty, _)) = ctx.locals.get(&name) {
                         let ty = ty.clone();
+                        let slot = ctx.local_slots.get(&name).cloned().unwrap_or_else(|| name.clone());
                         let (val, _) = self.gen_expr(value, ctx)?;
-                        writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, val, ty, name).unwrap();
+                        writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, val, ty, slot).unwrap();
                     }
                 } else if let ExprKind::FieldAccess { obj, field } = &target.node {
                     let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
@@ -1113,8 +1127,9 @@ impl CodeGen {
                         .unwrap_or_else(|| "i64".to_string());
                     Ok((format!("%{}", name), ty))
                 } else if let Some((ty, _)) = ctx.locals.get(name) {
+                    let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                     let val = self.temp();
-                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, name).unwrap();
+                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
                     Ok((val, ty.clone()))
                 } else {
                     Ok((format!("%{}", name), "i64".to_string()))
@@ -1419,6 +1434,10 @@ impl CodeGen {
                         }
                         "toString" => {
                             let (val, ty) = self.gen_expr(&args[0], ctx)?;
+                            if ty == "i8*" {
+                                // Already a string — return as-is
+                                return Ok((val, "i8*".to_string()));
+                            }
                             let result = self.temp();
                             let (fn_name, arg_ty) = match ty.as_str() {
                                 "double" => ("tinox_float_to_string", "double"),
@@ -2869,6 +2888,8 @@ impl CodeGen {
         let mut fn_type_str = String::new();
         let mut lambda_ctx = GenCtx {
             locals: HashMap::new(),
+            local_slots: HashMap::new(),
+            range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
             current_struct: None,
@@ -3730,6 +3751,10 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
 
 pub struct GenCtx {
     locals: HashMap<String, (String, usize)>,
+    /// Maps user variable name → unique LLVM alloca slot name (without %)
+    local_slots: HashMap<String, String>,
+    /// Variables that hold a range value (i64* with start/end, not an array)
+    range_vars: HashSet<String>,
     params: HashSet<String>,
     struct_fields: Vec<String>,
     current_struct: Option<String>,

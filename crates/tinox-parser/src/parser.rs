@@ -1,5 +1,5 @@
 use tinox_common::{Error, ErrorBag, Pos, Span, Spanned};
-use tinox_lexer::{Keyword, Lexer, Token, TokenKind};
+use tinox_lexer::{InterpPart, Keyword, Lexer, Token, TokenKind};
 
 use crate::ast::*;
 
@@ -16,6 +16,14 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
         }
+    }
+
+    /// Parse a single expression from a source string (used for string interpolation)
+    fn parse_expr_str(src: &str, span: Span) -> Result<Expr, Error> {
+        let tokens = Lexer::new(src).tokenize()
+            .map_err(|_| Error::new(span, format!("invalid expression in string interpolation: {}", src)))?;
+        let mut p = Parser::new(tokens);
+        p.parse_expr().map_err(|_| Error::new(span, format!("invalid expression in string interpolation: {}", src)))
     }
 
     pub fn parse(&mut self) -> Result<SourceFile, ErrorBag> {
@@ -1317,6 +1325,54 @@ impl Parser {
                     ExprKind::Literal(Literal::String(s.clone())),
                     token.span,
                 ))
+            }
+            TokenKind::InterpString(parts) => {
+                self.bump();
+                let span = token.span;
+                // Build concat tree: "" + toString(expr) + "str" + ...
+                // Start with empty string, then fold over parts
+                let mut result: Expr = Spanned::new(
+                    ExprKind::Literal(Literal::String(String::new())),
+                    span,
+                );
+                let mut is_first = true;
+                for part in parts {
+                    let part_expr: Expr = match part {
+                        InterpPart::Str(s) => Spanned::new(
+                            ExprKind::Literal(Literal::String(s.clone())),
+                            span,
+                        ),
+                        InterpPart::Expr(src) => {
+                            // Re-lex and re-parse the expression source
+                            let inner_expr = Parser::parse_expr_str(&src, span)?;
+                            // Wrap in toString(inner_expr)
+                            Spanned::new(
+                                ExprKind::Call {
+                                    func: Box::new(Spanned::new(
+                                        ExprKind::Ident("toString".to_string()),
+                                        span,
+                                    )),
+                                    args: vec![inner_expr],
+                                },
+                                span,
+                            )
+                        }
+                    };
+                    if is_first {
+                        result = part_expr;
+                        is_first = false;
+                    } else {
+                        result = Spanned::new(
+                            ExprKind::Binary {
+                                op: BinaryOp::Add,
+                                lhs: Box::new(result),
+                                rhs: Box::new(part_expr),
+                            },
+                            span,
+                        );
+                    }
+                }
+                Ok(result)
             }
             TokenKind::Byte(b) => {
                 self.bump();

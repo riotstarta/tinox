@@ -1,5 +1,12 @@
 use tinox_common::{Error, Pos, Span};
 
+/// A part of a string interpolation: either a literal segment or an expression source
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpPart {
+    Str(String),
+    Expr(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
@@ -9,6 +16,8 @@ pub enum TokenKind {
     FloatSuffix(FloatType),
     String(String),
     RawString(String),
+    /// Interpolated string: `"Hello ${name}!"` → parts
+    InterpString(Vec<InterpPart>),
     Char(char),
     Byte(u8),
     Bool(bool),
@@ -556,23 +565,45 @@ impl<'a> Lexer<'a> {
 
     fn read_string(&mut self) -> Result<Token, Error> {
         self.bump(); // opening "
-        let start = self.pos;
-        let mut value = String::new();
+        let _start = self.pos;
+        let mut current_str = String::new();
+        let mut parts: Vec<InterpPart> = Vec::new();
+        let mut has_interp = false;
 
         while self.pos < self.chars.len() && self.peek() != '"' {
             let ch = self.peek();
             if ch == '\n' {
                 return Err(Error::new(self.mk_span(), "unterminated string literal"));
             }
-            if ch == '\\' {
+            // Detect ${ for interpolation
+            if ch == '$' && self.pos + 1 < self.chars.len() && self.chars[self.pos + 1] == '{' {
+                has_interp = true;
+                parts.push(InterpPart::Str(std::mem::take(&mut current_str)));
+                self.bump(); // $
+                self.bump(); // {
+                // Collect expression source until matching }
+                let mut expr_src = String::new();
+                let mut depth = 1usize;
+                while self.pos < self.chars.len() && depth > 0 {
+                    let ec = self.peek();
+                    if ec == '{' { depth += 1; }
+                    if ec == '}' {
+                        depth -= 1;
+                        if depth == 0 { self.bump(); break; }
+                    }
+                    expr_src.push(ec);
+                    self.bump();
+                }
+                parts.push(InterpPart::Expr(expr_src));
+            } else if ch == '\\' {
                 self.bump();
                 if self.pos >= self.chars.len() {
                     return Err(Error::new(self.mk_span(), "unterminated escape sequence"));
                 }
                 let escaped = self.read_escape()?;
-                value.push(escaped);
+                current_str.push(escaped);
             } else {
-                value.push(ch);
+                current_str.push(ch);
                 self.bump();
             }
         }
@@ -582,7 +613,13 @@ impl<'a> Lexer<'a> {
         }
 
         self.bump(); // closing "
-        Ok(Token::new(TokenKind::String(value), self.mk_span()))
+
+        if has_interp {
+            parts.push(InterpPart::Str(current_str));
+            Ok(Token::new(TokenKind::InterpString(parts), self.mk_span()))
+        } else {
+            Ok(Token::new(TokenKind::String(current_str), self.mk_span()))
+        }
     }
 
     fn read_raw_string(&mut self) -> Result<Token, Error> {

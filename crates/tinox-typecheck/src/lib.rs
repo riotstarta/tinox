@@ -1094,8 +1094,15 @@ impl TypeChecker {
             }
             StmtKind::For { var, iter, body } => {
                 let iter_ty = self.infer_type(iter);
+                // The loop variable is always the element, not the container
+                let elem_ty = match iter_ty {
+                    ValueType::Range => ValueType::Int,
+                    ValueType::Array => ValueType::Int,
+                    ValueType::String => ValueType::String,
+                    other => other,
+                };
                 self.symbols.in_loop = true;
-                self.symbols.variables.insert(var.clone(), (iter_ty, false));
+                self.symbols.variables.insert(var.clone(), (elem_ty, false));
                 self.check_stmt(body);
                 self.symbols.in_loop = false;
                 false
