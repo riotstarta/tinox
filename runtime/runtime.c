@@ -131,6 +131,23 @@ int64_t tinox_channel_recv(void* handle) {
     return val;
 }
 
+// Non-blocking recv: returns 1 and stores value if a message is ready, else returns 0.
+int tinox_channel_try_recv(void* handle, int64_t* out) {
+    TinoxChannel* ch = (TinoxChannel*)handle;
+    pthread_mutex_lock(&ch->mutex);
+    if (!ch->head) {
+        pthread_mutex_unlock(&ch->mutex);
+        return 0;
+    }
+    TinoxChannelNode* node = ch->head;
+    ch->head = node->next;
+    if (!ch->head) ch->tail = NULL;
+    *out = node->value;
+    free(node);
+    pthread_mutex_unlock(&ch->mutex);
+    return 1;
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);

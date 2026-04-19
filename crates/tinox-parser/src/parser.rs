@@ -546,6 +546,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_stmt()?,
             TokenKind::Keyword(Keyword::Try) => self.parse_try_stmt()?,
             TokenKind::Keyword(Keyword::Defer) => self.parse_defer_stmt()?,
+            TokenKind::Keyword(Keyword::Select) => self.parse_select_stmt()?,
             TokenKind::LBrace => {
                 self.bump(); // consume LBrace
                 let stmts = self.parse_block_stmts();
@@ -1712,6 +1713,34 @@ impl Parser {
         self.expect_keyword(Keyword::Recv)?;
         let channel = Box::new(self.parse_expr()?);
         Ok(Spanned::new(ExprKind::Recv(channel), span))
+    }
+
+    /// select { recv ch -> v { body } ... default { body } }
+    fn parse_select_stmt(&mut self) -> Result<StmtKind, Error> {
+        self.expect_keyword(Keyword::Select)?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms: Vec<SelectArm> = Vec::new();
+        let mut default: Option<Box<Stmt>> = None;
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            let arm_span = self.mk_span();
+            if self.check_keyword(Keyword::Default) {
+                self.bump();
+                let body = self.parse_block()?;
+                default = Some(Box::new(body));
+            } else if self.check_keyword(Keyword::Recv) {
+                self.bump(); // consume recv
+                let channel = self.parse_expr()?;
+                self.expect(TokenKind::ThinArrow)?;
+                let var = self.parse_ident()?;
+                let body = self.parse_block()?;
+                arms.push(SelectArm { channel, var, body, span: arm_span });
+            } else {
+                let tok = self.peek().clone();
+                return Err(Error::new(tok.span, format!("expected 'recv' or 'default' in select, got {:?}", tok.kind)));
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(StmtKind::Select { arms, default })
     }
 
     fn parse_cast_expr(&mut self) -> Result<Expr, Error> {

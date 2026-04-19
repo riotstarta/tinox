@@ -149,6 +149,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_channel_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_channel_send(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_channel_recv(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_channel_try_recv(i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i32 @sched_yield()").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -892,6 +894,87 @@ impl CodeGen {
 
                 ctx.break_target = old_break;
                 ctx.continue_target = old_continue;
+            }
+            StmtKind::Select { arms, default } => {
+                let select_bb = self.new_bb("select_try");
+                let end_bb = self.new_bb("select_end");
+
+                // Allocate a slot for each arm's received value
+                let arm_slots: Vec<String> = arms.iter().map(|_| {
+                    let slot = format!("%sel_val_{}", self.temp_count);
+                    self.temp_count += 1;
+                    writeln!(&mut self.ir, "{} = alloca i64", slot).unwrap();
+                    slot
+                }).collect();
+
+                writeln!(&mut self.ir, "br label %{}", select_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", select_bb).unwrap();
+
+                let next_bb = if default.is_some() {
+                    self.new_bb("select_default")
+                } else {
+                    self.new_bb("select_retry")
+                };
+
+                let arm_body_bbs: Vec<String> = arms.iter().map(|arm| {
+                    format!("sel_arm_{}_{}", arm.var, self.temp_count)
+                }).collect();
+                // Patch arm_body_bbs to have unique names
+                let arm_body_bbs: Vec<String> = (0..arms.len()).map(|i| {
+                    format!("sel_arm_{}", self.temp_count + i)
+                }).collect();
+                self.temp_count += arms.len();
+
+                // Emit try_recv checks for each arm, chained
+                for (i, (arm, slot)) in arms.iter().zip(arm_slots.iter()).enumerate() {
+                    let fail_bb = if i + 1 < arms.len() {
+                        format!("sel_try_{}", self.temp_count + i)
+                    } else {
+                        next_bb.clone()
+                    };
+                    let (ch_ptr, _) = self.gen_expr(&arm.channel, ctx)?;
+                    // cast channel to i8* if needed
+                    let ch_i8 = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", ch_i8, ch_ptr).unwrap();
+                    let ok = self.temp();
+                    writeln!(&mut self.ir, "{} = call i1 @tinox_channel_try_recv(i8* {}, i64* {})", ok, ch_i8, slot).unwrap();
+                    writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", ok, arm_body_bbs[i], fail_bb).unwrap();
+                    if i + 1 < arms.len() {
+                        writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
+                    }
+                }
+                self.temp_count += arms.len();
+
+                // Emit arm bodies
+                for (i, (arm, slot)) in arms.iter().zip(arm_slots.iter()).enumerate() {
+                    writeln!(&mut self.ir, "{}:", arm_body_bbs[i]).unwrap();
+                    let val = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", val, slot).unwrap();
+                    // Bind the received value to arm.var
+                    writeln!(&mut self.ir, "%{} = alloca i64", arm.var).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", val, arm.var).unwrap();
+                    let slot_i = ctx.locals.len();
+                    ctx.locals.insert(arm.var.clone(), ("i64".to_string(), slot_i));
+                    ctx.params.insert(arm.var.clone());
+                    self.gen_stmt_body(&arm.body, ctx)?;
+                    ctx.locals.remove(&arm.var);
+                    ctx.params.remove(&arm.var);
+                    writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+                }
+
+                // Default or blocking retry with yield
+                if let Some(def_body) = default {
+                    writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+                    self.gen_stmt_body(def_body, ctx)?;
+                    writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+                    let yield_tmp = self.temp();
+                    writeln!(&mut self.ir, "{} = call i32 @sched_yield()", yield_tmp).unwrap();
+                    writeln!(&mut self.ir, "br label %{}", select_bb).unwrap();
+                }
+
+                writeln!(&mut self.ir, "{}:", end_bb).unwrap();
             }
             StmtKind::Assignment { target, value } => {
                 if let ExprKind::Ident(name) = &target.node {

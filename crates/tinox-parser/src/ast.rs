@@ -315,7 +315,19 @@ pub enum StmtKind {
     },
     Defer(Box<Stmt>),
     Block(Vec<Stmt>),
+    Select {
+        arms: Vec<SelectArm>,
+        default: Option<Box<Stmt>>,
+    },
     Empty,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectArm {
+    pub channel: Expr,
+    pub var: Ident,
+    pub body: Stmt,
+    pub span: Span,
 }
 
 pub type Stmt = Spanned<StmtKind>;

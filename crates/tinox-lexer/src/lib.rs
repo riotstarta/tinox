@@ -189,6 +189,7 @@ pub enum Keyword {
     Send,
     Recv,
     Select,
+    Default,
     Async,
     Await,
 
@@ -264,6 +265,7 @@ impl Keyword {
             "send" => Some(Keyword::Send),
             "recv" => Some(Keyword::Recv),
             "select" => Some(Keyword::Select),
+            "default" => Some(Keyword::Default),
             "async" => Some(Keyword::Async),
             "await" => Some(Keyword::Await),
             "module" => Some(Keyword::Module),

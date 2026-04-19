@@ -1011,6 +1011,19 @@ impl TypeChecker {
                 self.check_stmt(stmt);
                 false
             }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    self.infer_type(&arm.channel);
+                    let saved = self.symbols.enter_scope();
+                    self.symbols.variables.insert(arm.var.clone(), (ValueType::Int, false));
+                    self.check_stmt(&arm.body);
+                    self.symbols.exit_scope(saved);
+                }
+                if let Some(d) = default {
+                    self.check_stmt(d);
+                }
+                false
+            }
             StmtKind::ForC {
                 init,
                 cond,
