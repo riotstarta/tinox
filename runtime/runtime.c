@@ -86,6 +86,17 @@ char* tinox_float_to_string(double val) {
     return result;
 }
 
+char* tinox_char_at(const char* s, int64_t i) {
+    char* result = malloc(2);
+    result[0] = s[i];
+    result[1] = '\0';
+    return result;
+}
+
+void tinox_print_char(int32_t c) {
+    printf("%c", (char)c);
+}
+
 int64_t tinox_string_to_int(const char* s) {
     int64_t result = 0;
     int neg = 0;

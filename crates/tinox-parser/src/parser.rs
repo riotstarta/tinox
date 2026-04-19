@@ -707,7 +707,15 @@ impl Parser {
     }
 
     fn parse_for_stmt(&mut self) -> Result<StmtKind, Error> {
-        self.bump();
+        self.bump(); // consume 'for'
+        // for x in expr { body }
+        if !self.check(TokenKind::LParen) {
+            let var = self.parse_ident()?;
+            self.expect_keyword(Keyword::In)?;
+            let iter = self.parse_expr()?;
+            let body = Box::new(self.parse_block()?);
+            return Ok(StmtKind::For { var, iter, body });
+        }
         self.expect(TokenKind::LParen)?;
 
         let init = if !self.check(TokenKind::Semicolon) {
