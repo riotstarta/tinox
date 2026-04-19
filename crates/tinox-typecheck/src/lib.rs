@@ -339,6 +339,40 @@ impl TypeChecker {
                 return_type: ValueType::Unit,
             },
         );
+        for name in &["first", "last"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Int },
+            );
+        }
+        symbols.functions.insert(
+            "slice".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("arr".to_string(), ValueType::Array),
+                    ("from".to_string(), ValueType::Int),
+                    ("to".to_string(), ValueType::Int),
+                ],
+                return_type: ValueType::Array,
+            },
+        );
+        symbols.functions.insert(
+            "abs".to_string(),
+            FunctionSignature { params: vec![("x".to_string(), ValueType::Any)], return_type: ValueType::Any },
+        );
+        for name in &["min", "max"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("a".to_string(), ValueType::Any), ("b".to_string(), ValueType::Any)],
+                    return_type: ValueType::Any,
+                },
+            );
+        }
+        symbols.functions.insert(
+            "sqrt".to_string(),
+            FunctionSignature { params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Float },
+        );
         symbols.functions.insert(
             "push".to_string(),
             FunctionSignature {

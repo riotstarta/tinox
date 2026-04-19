@@ -86,6 +86,16 @@ char* tinox_float_to_string(double val) {
     return result;
 }
 
+int64_t* tinox_array_slice(int64_t* data, int64_t from, int64_t to) {
+    int64_t len = to - from;
+    if (len <= 0) { int64_t* r = (int64_t*)malloc(sizeof(int64_t)); r[0] = 0; return r + 1; }
+    int64_t* raw = (int64_t*)malloc((len + 1) * sizeof(int64_t));
+    raw[0] = len;
+    int64_t* nd = raw + 1;
+    for (int64_t i = 0; i < len; i++) nd[i] = data[from + i];
+    return nd;
+}
+
 int64_t* tinox_array_push(int64_t* data, int64_t val) {
     int64_t len = data[-1];
     int64_t* raw = (int64_t*)malloc((len + 2) * sizeof(int64_t));

@@ -163,6 +163,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_push(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_pop(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_slice(i64*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare double @sqrt(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @llvm.fabs.f64(double)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1297,6 +1300,87 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_pop(i64* {})", result, arr).unwrap();
                             return Ok((result, "i64*".to_string()));
+                        }
+                        "first" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let ptr = self.temp();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 0", ptr, arr).unwrap();
+                            let val = self.temp();
+                            writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr).unwrap();
+                            return Ok((val, "i64".to_string()));
+                        }
+                        "last" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let len_ptr = self.temp();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, arr).unwrap();
+                            let len_val = self.temp();
+                            writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
+                            let last_idx = self.temp();
+                            writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
+                            let elem_ptr = self.temp();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, arr, last_idx).unwrap();
+                            let val = self.temp();
+                            writeln!(&mut self.ir, "{} = load i64, i64* {}", val, elem_ptr).unwrap();
+                            return Ok((val, "i64".to_string()));
+                        }
+                        "slice" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let (from, _) = self.gen_expr(&args[1], ctx)?;
+                            let (to, _) = self.gen_expr(&args[2], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_slice(i64* {}, i64 {}, i64 {})", result, arr, from, to).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "abs" => {
+                            let (val, ty) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            if ty == "double" {
+                                writeln!(&mut self.ir, "{} = call double @llvm.fabs.f64(double {})", result, val).unwrap();
+                                return Ok((result, "double".to_string()));
+                            } else {
+                                let neg = self.temp();
+                                writeln!(&mut self.ir, "{} = sub i64 0, {}", neg, val).unwrap();
+                                let cond = self.temp();
+                                writeln!(&mut self.ir, "{} = icmp slt i64 {}, 0", cond, val).unwrap();
+                                writeln!(&mut self.ir, "{} = select i1 {}, i64 {}, i64 {}", result, cond, neg, val).unwrap();
+                                return Ok((result, "i64".to_string()));
+                            }
+                        }
+                        "min" => {
+                            let (a, ty) = self.gen_expr(&args[0], ctx)?;
+                            let (b, _) = self.gen_expr(&args[1], ctx)?;
+                            let cond = self.temp();
+                            let result = self.temp();
+                            if ty == "double" {
+                                writeln!(&mut self.ir, "{} = fcmp olt double {}, {}", cond, a, b).unwrap();
+                                writeln!(&mut self.ir, "{} = select i1 {}, double {}, double {}", result, cond, a, b).unwrap();
+                                return Ok((result, "double".to_string()));
+                            } else {
+                                writeln!(&mut self.ir, "{} = icmp slt i64 {}, {}", cond, a, b).unwrap();
+                                writeln!(&mut self.ir, "{} = select i1 {}, i64 {}, i64 {}", result, cond, a, b).unwrap();
+                                return Ok((result, "i64".to_string()));
+                            }
+                        }
+                        "max" => {
+                            let (a, ty) = self.gen_expr(&args[0], ctx)?;
+                            let (b, _) = self.gen_expr(&args[1], ctx)?;
+                            let cond = self.temp();
+                            let result = self.temp();
+                            if ty == "double" {
+                                writeln!(&mut self.ir, "{} = fcmp ogt double {}, {}", cond, a, b).unwrap();
+                                writeln!(&mut self.ir, "{} = select i1 {}, double {}, double {}", result, cond, a, b).unwrap();
+                                return Ok((result, "double".to_string()));
+                            } else {
+                                writeln!(&mut self.ir, "{} = icmp sgt i64 {}, {}", cond, a, b).unwrap();
+                                writeln!(&mut self.ir, "{} = select i1 {}, i64 {}, i64 {}", result, cond, a, b).unwrap();
+                                return Ok((result, "i64".to_string()));
+                            }
+                        }
+                        "sqrt" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
                         }
                         "charAt" => {
                             let (ptr, _) = self.gen_expr(&args[0], ctx)?;
