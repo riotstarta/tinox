@@ -421,6 +421,70 @@ impl TypeChecker {
                 return_type: ValueType::String,
             },
         );
+        // Math builtins
+        symbols.functions.insert(
+            "pow".to_string(),
+            FunctionSignature {
+                params: vec![("base".to_string(), ValueType::Any), ("exp".to_string(), ValueType::Any)],
+                return_type: ValueType::Float,
+            },
+        );
+        for name in &["floor", "ceil", "round"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("x".to_string(), ValueType::Any)],
+                    return_type: ValueType::Float,
+                },
+            );
+        }
+        // exit builtin
+        symbols.functions.insert(
+            "exit".to_string(),
+            FunctionSignature {
+                params: vec![("code".to_string(), ValueType::Int)],
+                return_type: ValueType::Unit,
+            },
+        );
+        // Polymorphic contains/indexOf (string or array)
+        for name in &["contains", "indexOf"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("col".to_string(), ValueType::Any), ("val".to_string(), ValueType::Any)],
+                    return_type: ValueType::Any,
+                },
+            );
+        }
+        // String builtins
+        for name in &["toUpper", "toLower", "trim"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("s".to_string(), ValueType::String)],
+                    return_type: ValueType::String,
+                },
+            );
+        }
+        for name in &["startsWith", "endsWith"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("s".to_string(), ValueType::String), ("pat".to_string(), ValueType::String)],
+                    return_type: ValueType::Bool,
+                },
+            );
+        }
+        // Array builtins
+        for name in &["sort", "reverse"] {
+            symbols.functions.insert(
+                name.to_string(),
+                FunctionSignature {
+                    params: vec![("arr".to_string(), ValueType::Array)],
+                    return_type: ValueType::Array,
+                },
+            );
+        }
         Self {
             errors: Vec::new(),
             symbols,

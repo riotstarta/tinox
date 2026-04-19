@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
+#include <math.h>
 #include <pthread.h>
 
 // Memory allocation
@@ -154,6 +156,90 @@ char* tinox_bool_to_string(int val) {
     char* result = malloc(len + 1);
     for (size_t i = 0; i <= len; i++) result[i] = s[i];
     return result;
+}
+
+// String utility functions
+int64_t tinox_string_contains(const char* haystack, const char* needle) {
+    return strstr(haystack, needle) != NULL ? 1 : 0;
+}
+
+int64_t tinox_string_index_of(const char* haystack, const char* needle) {
+    const char* pos = strstr(haystack, needle);
+    return pos ? (int64_t)(pos - haystack) : -1;
+}
+
+char* tinox_string_to_upper(const char* s) {
+    size_t len = strlen(s);
+    char* result = malloc(len + 1);
+    for (size_t i = 0; i <= len; i++)
+        result[i] = (s[i] >= 'a' && s[i] <= 'z') ? s[i] - 32 : s[i];
+    return result;
+}
+
+char* tinox_string_to_lower(const char* s) {
+    size_t len = strlen(s);
+    char* result = malloc(len + 1);
+    for (size_t i = 0; i <= len; i++)
+        result[i] = (s[i] >= 'A' && s[i] <= 'Z') ? s[i] + 32 : s[i];
+    return result;
+}
+
+int64_t tinox_string_starts_with(const char* s, const char* prefix) {
+    size_t plen = strlen(prefix);
+    return strncmp(s, prefix, plen) == 0 ? 1 : 0;
+}
+
+int64_t tinox_string_ends_with(const char* s, const char* suffix) {
+    size_t slen = strlen(s), suflen = strlen(suffix);
+    if (suflen > slen) return 0;
+    return strcmp(s + slen - suflen, suffix) == 0 ? 1 : 0;
+}
+
+char* tinox_string_trim(const char* s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    size_t len = strlen(s);
+    while (len > 0 && (s[len-1] == ' ' || s[len-1] == '\t' || s[len-1] == '\n' || s[len-1] == '\r')) len--;
+    char* result = malloc(len + 1);
+    memcpy(result, s, len);
+    result[len] = '\0';
+    return result;
+}
+
+// Array utility functions
+static int cmp_i64(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+    return (x > y) - (x < y);
+}
+
+int64_t* tinox_array_sort(int64_t* data) {
+    int64_t len = data[-1];
+    int64_t* raw = malloc((len + 1) * sizeof(int64_t));
+    raw[0] = len;
+    int64_t* nd = raw + 1;
+    for (int64_t i = 0; i < len; i++) nd[i] = data[i];
+    qsort(nd, (size_t)len, sizeof(int64_t), cmp_i64);
+    return nd;
+}
+
+int64_t* tinox_array_reverse(int64_t* data) {
+    int64_t len = data[-1];
+    int64_t* raw = malloc((len + 1) * sizeof(int64_t));
+    raw[0] = len;
+    int64_t* nd = raw + 1;
+    for (int64_t i = 0; i < len; i++) nd[i] = data[len - 1 - i];
+    return nd;
+}
+
+int64_t tinox_array_contains(int64_t* data, int64_t val) {
+    int64_t len = data[-1];
+    for (int64_t i = 0; i < len; i++) if (data[i] == val) return 1;
+    return 0;
+}
+
+int64_t tinox_array_index_of(int64_t* data, int64_t val) {
+    int64_t len = data[-1];
+    for (int64_t i = 0; i < len; i++) if (data[i] == val) return i;
+    return -1;
 }
 
 // ---- Async runtime ----

@@ -165,7 +165,23 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_pop(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_slice(i64*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare double @sqrt(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @pow(double, double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.fabs.f64(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @llvm.round.f64(double)").unwrap();
+        writeln!(&mut self.ir, "declare void @exit(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_to_lower(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_starts_with(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_ends_with(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_trim(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_index_of(i64*, i64)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1411,6 +1427,114 @@ impl CodeGen {
                             };
                             writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, val).unwrap();
                             return Ok((result, "i8*".to_string()));
+                        }
+                        "pow" => {
+                            let (base, _) = self.gen_expr(&args[0], ctx)?;
+                            let (exp, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @pow(double {}, double {})", result, base, exp).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "floor" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @llvm.floor.f64(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "ceil" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @llvm.ceil.f64(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "round" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @llvm.round.f64(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "exit" => {
+                            let (code, _) = self.gen_expr(&args[0], ctx)?;
+                            writeln!(&mut self.ir, "call void @exit(i64 {})", code).unwrap();
+                            writeln!(&mut self.ir, "unreachable").unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "contains" => {
+                            let (haystack, ty) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            if ty == "i8*" {
+                                let (needle, _) = self.gen_expr(&args[1], ctx)?;
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_string_contains(i8* {}, i8* {})", result, haystack, needle).unwrap();
+                                let bool_val = self.temp();
+                                writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
+                                return Ok((bool_val, "i1".to_string()));
+                            } else {
+                                let (val, _) = self.gen_expr(&args[1], ctx)?;
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_contains(i64* {}, i64 {})", result, haystack, val).unwrap();
+                                let bool_val = self.temp();
+                                writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
+                                return Ok((bool_val, "i1".to_string()));
+                            }
+                        }
+                        "indexOf" => {
+                            let (haystack, ty) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            if ty == "i8*" {
+                                let (needle, _) = self.gen_expr(&args[1], ctx)?;
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, haystack, needle).unwrap();
+                            } else {
+                                let (val, _) = self.gen_expr(&args[1], ctx)?;
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_index_of(i64* {}, i64 {})", result, haystack, val).unwrap();
+                            }
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "toUpper" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_upper(i8* {})", result, val).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "toLower" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_lower(i8* {})", result, val).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "startsWith" => {
+                            let (s, _) = self.gen_expr(&args[0], ctx)?;
+                            let (prefix, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", result, s, prefix).unwrap();
+                            let bool_val = self.temp();
+                            writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
+                            return Ok((bool_val, "i1".to_string()));
+                        }
+                        "endsWith" => {
+                            let (s, _) = self.gen_expr(&args[0], ctx)?;
+                            let (suffix, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", result, s, suffix).unwrap();
+                            let bool_val = self.temp();
+                            writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
+                            return Ok((bool_val, "i1".to_string()));
+                        }
+                        "trim" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_trim(i8* {})", result, val).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "sort" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_sort(i64* {})", result, arr).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "reverse" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_reverse(i64* {})", result, arr).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         _ => name.clone(),
                     },
