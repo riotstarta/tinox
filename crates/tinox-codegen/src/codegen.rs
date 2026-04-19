@@ -154,6 +154,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i32 @sched_yield()").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_length(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_concat(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_int_to_string(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_float_to_string(double)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1251,6 +1254,17 @@ impl CodeGen {
                             writeln!(&mut self.ir, "unreachable").unwrap();
                             writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "toString" => {
+                            let (val, ty) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            let (fn_name, arg_ty) = match ty.as_str() {
+                                "double" => ("tinox_float_to_string", "double"),
+                                "i1"     => ("tinox_bool_to_string", "i1"),
+                                _        => ("tinox_int_to_string", "i64"),
+                            };
+                            writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, val).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         }
                         _ => name.clone(),
                     },

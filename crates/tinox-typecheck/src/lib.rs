@@ -339,6 +339,13 @@ impl TypeChecker {
                 return_type: ValueType::Unit,
             },
         );
+        symbols.functions.insert(
+            "toString".to_string(),
+            FunctionSignature {
+                params: vec![("value".to_string(), ValueType::Any)],
+                return_type: ValueType::String,
+            },
+        );
         Self {
             errors: Vec::new(),
             symbols,

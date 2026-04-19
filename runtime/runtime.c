@@ -67,6 +67,33 @@ char* tinox_string_concat(const char* a, const char* b) {
     return result;
 }
 
+char* tinox_int_to_string(int64_t val) {
+    char buf[32];
+    int len = 0;
+    int neg = val < 0;
+    if (neg) val = -val;
+    do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
+    if (neg) buf[len++] = '-';
+    char* result = malloc(len + 1);
+    for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
+    result[len] = '\0';
+    return result;
+}
+
+char* tinox_float_to_string(double val) {
+    char* result = malloc(32);
+    snprintf(result, 32, "%g", val);
+    return result;
+}
+
+char* tinox_bool_to_string(int val) {
+    const char* s = val ? "true" : "false";
+    size_t len = val ? 4 : 5;
+    char* result = malloc(len + 1);
+    for (size_t i = 0; i <= len; i++) result[i] = s[i];
+    return result;
+}
+
 // ---- Async runtime ----
 
 typedef struct {
