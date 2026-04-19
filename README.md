@@ -1,84 +1,111 @@
 # Tinox Programming Language
 
-**Tinox** ist eine native, statisch typisierte Programmiersprache mit Garbage Collection und Concurrency-Support.
+**Tinox** ist eine native, statisch typisierte Programmiersprache mit LLVM-Backend, Garbage Collection und Concurrency-Support.
 
-> Benannt nach **Tino** + **Linux**/Unix - eine Sprache für moderne, lesbare Software.
+> Benannt nach **Tino** + **Linux**/Unix – eine Sprache für moderne, lesbare Software.
 
 ## Status
 
-**Phase:** V1 Minimal (In Development)
+**Phase:** V2 – Feature-Complete Core (In Development)
 
-| Component    | Status    | Notes                           |
-|--------------|-----------|---------------------------------|
-| Lexer        | ✅ Done   | Full Unicode support            |
-| Parser       | ✅ Done   | AST generation                  |
-| Type Checker | ⚠️ Placeholder | Pass-through for V1         |
-| Code Gen     | 🔄 In Progress | LLVM backend               |
-| Runtime      | ✅ Done   | C runtime                       |
-| CLI          | 🔄 In Progress | build, run, check           |
-
-## Design-Ziele
-
-- **Lesbare Syntax** - Java-ähnlich, explizite Typen
-- **Performant** - LLVM Backend für nativen Maschinencode
-- **Sicher** - Null-Safety, Bounds Checking
-- **Concurrent** - Goroutine-ähnliches Concurrency-Modell mit Channels
-- **Modern** - Generics, Traits, Pattern Matching, Async/Await
+| Komponente   | Status      | Notizen                              |
+|--------------|-------------|--------------------------------------|
+| Lexer        | ✅ Fertig   | Unicode, String-Interpolation, Ranges |
+| Parser       | ✅ Fertig   | Vollständiger AST                    |
+| Type Checker | ✅ Fertig   | Basistypen, Klassen, Enums, Generics |
+| Code Gen     | ✅ Fertig   | LLVM IR Backend                      |
+| Runtime      | ✅ Fertig   | C Runtime (pthread-basiert)          |
+| CLI          | ✅ Fertig   | build, run, check                    |
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-repo/tinox.git
+git clone https://github.com/subnix-work/tinox.git
 cd tinox
-
-# Build the compiler
 cargo build --release
-
-# The binary will be at target/release/tinox
+# Binary: target/release/tinox
 ```
+
+Voraussetzungen: `clang`, `llc` (LLVM-Tools)
 
 ## Usage
 
 ```bash
-# Check (type check without compiling)
-./target/release/tinox check program.tnx
-
-# Build
-./target/release/tinox build program.tnx -o myprogram
-
-# Run
-./target/release/tinox run program.tnx
+tinox run program.tinox      # Kompilieren und ausführen
+tinox build program.tinox    # Kompilieren (erzeugt ./a.out)
+tinox check program.tinox    # Nur Type-Check
 ```
 
 ## Hello World
 
 ```tinox
-fn main() -> Int32 {
-    print("Hello, World!");
+fn main() -> Int64 {
+    println("Hello, World!");
     return 0;
 }
 ```
 
-## Example Code
+## Syntax-Überblick
+
+### Variablen
 
 ```tinox
-// Functions
-fn add(a: Int32, b: Int32) -> Int32 {
+let x: Int64 = 42;          // immutable
+var y: Float64 = 3.14;      // mutable
+let name = "Tino";          // Typ-Inferenz
+let msg = "Hi ${name}!";    // String-Interpolation
+```
+
+### Funktionen
+
+```tinox
+fn add(a: Int64, b: Int64) -> Int64 {
     return a + b;
 }
 
-// Classes
-class Point {
-    x: Float64;
-    y: Float64;
-    
-    fn new(x: Float64, y: Float64) -> Point {
-        return Point { x: x, y: y };
+fn swap(a: Int64, b: Int64) -> (Int64, Int64) {
+    return (b, a);
+}
+```
+
+### Klassen & Vererbung
+
+```tinox
+class Animal {
+    name: String;
+
+    fn speak() -> String {
+        return "...";
     }
 }
 
-// Enums with pattern matching
+class Dog extends Animal {
+    fn speak() -> String {
+        return "Woof! I am ${this.name}";
+    }
+}
+```
+
+### Interfaces
+
+```tinox
+interface Printable {
+    fn toString() -> String;
+}
+
+class Point implements Printable {
+    x: Int64;
+    y: Int64;
+
+    fn toString() -> String {
+        return "(${this.x}, ${this.y})";
+    }
+}
+```
+
+### Enums & Pattern Matching
+
+```tinox
 enum Direction {
     North;
     South;
@@ -96,70 +123,136 @@ fn turn(d: Direction) -> Direction {
 }
 ```
 
+### Generics
+
+```tinox
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+class Box<T> {
+    value: T;
+
+    fn get() -> T {
+        return this.value;
+    }
+}
+
+let b = new Box<Int64>(42);
+println(b.get());
+```
+
+### Tuples
+
+```tinox
+let point = (10, 20);
+println(point.0 + point.1);
+
+let nested = ((1, 2), 3);
+println(nested.0.1);        // 2
+```
+
+### Arrays & Builtins
+
+```tinox
+let arr = [1, 2, 3, 4, 5];
+arr.push(6);
+println(arr.len());         // 6
+println(arr.first());       // 1
+println(arr.last());        // 6
+
+let s = "hello";
+println(s.toUpper());       // HELLO
+println(s.contains("ell")); // true
+```
+
+### Ranges & Schleifen
+
+```tinox
+for i in 0..5 {             // 0, 1, 2, 3, 4 (exklusiv)
+    println(i);
+}
+
+for i in 0...5 {            // 0, 1, 2, 3, 4, 5 (inklusiv)
+    println(i);
+}
+
+for ch in "hello" {         // Zeichen-Iteration
+    print(ch);
+}
+```
+
+### Async / Concurrency
+
+```tinox
+async fn fetchData(id: Int64) -> Int64 {
+    return id * 2;
+}
+
+fn main() -> Int64 {
+    let handle = spawn fetchData(21);
+    let result = await handle;      // 42
+    println(result);
+
+    let ch = channel;
+    send ch -> 99;
+    let val = recv ch;
+    println(val);
+    return 0;
+}
+```
+
+### Try / Catch
+
+```tinox
+try {
+    riskyOperation();
+} catch e: RuntimeError {
+    println("Fehler aufgetreten");
+} finally {
+    cleanup();
+}
+```
+
+## Feature-Übersicht
+
+| Feature                  | Status     |
+|--------------------------|------------|
+| Variablen (let/var)      | ✅ Fertig  |
+| Funktionen               | ✅ Fertig  |
+| Klassen + Vererbung      | ✅ Fertig  |
+| Interfaces + vtable      | ✅ Fertig  |
+| Enums + Pattern Matching | ✅ Fertig  |
+| Generics (Monomorphisierung) | ✅ Fertig |
+| Tuples                   | ✅ Fertig  |
+| Arrays + Builtins        | ✅ Fertig  |
+| String-Interpolation     | ✅ Fertig  |
+| Ranges (.. / ...)        | ✅ Fertig  |
+| Lambdas / Closures       | ✅ Fertig  |
+| Async / Spawn / Await    | ✅ Fertig  |
+| Channels + Select        | ✅ Fertig  |
+| Try / Catch / Finally    | ✅ Fertig  |
+| Modul / Import-System    | ✅ Fertig  |
+| Float32 / Float64        | ✅ Fertig  |
+| Map / Dict-Typ           | ⏳ Geplant |
+| `defer`-Statement        | ⏳ Geplant |
+| LSP                      | ⏳ Geplant |
+| REPL                     | ⏳ Geplant |
+
 ## Projekt-Struktur
 
 ```
 tinox/
-├── Cargo.toml              # Workspace configuration
+├── Cargo.toml
 ├── crates/
 │   ├── tinox-common/       # Shared types (Span, Error)
-│   ├── tinox-lexer/       # Lexer/Tokenizer
-│   ├── tinox-parser/      # Parser + AST
-│   ├── tinox-typecheck/   # Type checker
-│   ├── tinox-codegen/     # LLVM code generation
-│   └── tinox/             # Main CLI binary
-├── runtime/                # C runtime library
-├── docs/                   # Language specification
-└── examples/              # Example programs
+│   ├── tinox-lexer/        # Lexer / Tokenizer
+│   ├── tinox-parser/       # Parser + AST
+│   ├── tinox-typecheck/    # Type Checker
+│   ├── tinox-codegen/      # LLVM IR Code Generation
+│   └── tinox/              # CLI Binary
+└── runtime/                # C Runtime (tinox_alloc, threading, channels)
 ```
-
-## Sprache-Features (geplant)
-
-| Feature              | Status   |
-|----------------------|----------|
-| Variablen (let/var)  | ✅ Done   |
-| Funktionen           | ✅ Done   |
-| Klassen              | ✅ Done   |
-| Vererbung            | ✅ Done   |
-| Interfaces           | ✅ Done   |
-| Enums                | ✅ Done   |
-| Pattern Matching      | ✅ Done   |
-| Generics             | ⏳ Planned |
-| Traits               | ⏳ Planned |
-| Channels             | ⏳ Planned |
-| Async/Await          | ⏳ Planned |
-| Garbage Collection    | ⏳ Planned |
-| REPL                 | ⏳ Planned |
-| LSP                  | ⏳ Planned |
-
-## Development
-
-### Running Tests
-
-```bash
-cargo test
-```
-
-### Building for Release
-
-```bash
-cargo build --release
-```
-
-### Checking Dependencies
-
-```bash
-cargo check
-```
-
-## Dokumentation
-
-- [Sprach-Spezifikation](docs/SPEC.md) - Vollständige Sprachreferenz
-- [.tinox_progress](.tinox_progress) - Entwicklungsfortschritt
-
-## Contributing
-
-(TBD)
 
 ## Lizenz
 
