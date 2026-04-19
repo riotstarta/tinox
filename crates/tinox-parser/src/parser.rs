@@ -417,6 +417,20 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, Error> {
+        // Tuple type: (T1, T2, ...)
+        if self.check(TokenKind::LParen) {
+            self.bump();
+            let mut types = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                types.push(self.parse_type()?);
+                while self.consume(TokenKind::Comma) {
+                    types.push(self.parse_type()?);
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            return Ok(Type::Tuple(types));
+        }
+
         if self.check(TokenKind::Star) {
             self.bump();
             let inner = self.parse_type()?;
@@ -1171,6 +1185,19 @@ impl Parser {
         loop {
             if self.check(TokenKind::Dot) {
                 self.bump();
+                // Tuple index access: expr.0, expr.1, ...
+                if let TokenKind::Integer(idx) = self.peek().kind.clone() {
+                    let span = expr.span;
+                    self.bump();
+                    expr = Spanned::new(
+                        ExprKind::TupleIndex {
+                            tuple: Box::new(expr),
+                            index: idx as usize,
+                        },
+                        span,
+                    );
+                    continue;
+                }
                 let name = self.parse_ident()?;
                 if self.check(TokenKind::LParen) {
                     self.bump();

@@ -237,6 +237,7 @@ impl ValueType {
             Type::Named(name) => ValueType::Named(name.clone()),
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
+            Type::Tuple(_) => ValueType::Tuple,
             Type::Mutable(_) => ValueType::Ref,
             Type::Ref(_) => ValueType::Ref,
             Type::Fn { .. } => ValueType::Fn,
@@ -1571,6 +1572,10 @@ impl TypeChecker {
                 }
                 ValueType::Tuple
             }
+            ExprKind::TupleIndex { tuple, .. } => {
+                self.infer_type(tuple);
+                ValueType::Any
+            }
             ExprKind::EnumValue {
                 enum_name,
                 variant: _,
@@ -1656,6 +1661,10 @@ impl TypeChecker {
     }
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
+        // Any is a wildcard — skip checking (used for tuple index, generics, etc.)
+        if matches!(lhs, ValueType::Any) || matches!(rhs, ValueType::Any) {
+            return;
+        }
         let valid = match op {
             BinaryOp::Add => {
                 (matches!(lhs, ValueType::Int | ValueType::Float)

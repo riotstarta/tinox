@@ -28,6 +28,7 @@ pub enum Type {
     Mutable(Box<Type>),
     Ref(Box<Type>),
     Fn { params: Vec<Type>, ret: Box<Type> },
+    Tuple(Vec<Type>),
 }
 
 impl Type {
@@ -194,6 +195,10 @@ pub enum ExprKind {
         inclusive: bool,
     },
     Tuple(Vec<Expr>),
+    TupleIndex {
+        tuple: Box<Expr>,
+        index: usize,
+    },
     EnumValue {
         enum_name: Ident,
         variant: Ident,

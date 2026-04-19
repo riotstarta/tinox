@@ -814,8 +814,9 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
 
-        // Check for float
-        if self.peek() == '.' && (self.peek_next().is_ascii_digit() || self.peek_next() == '_') {
+        // Check for float — but not if this number was itself accessed via a dot (e.g. tuple.0.1)
+        let preceded_by_dot = start > 0 && self.chars[start - 1] == '.';
+        if !preceded_by_dot && self.peek() == '.' && (self.peek_next().is_ascii_digit() || self.peek_next() == '_') {
             self.bump(); // .
             while self.peek().is_ascii_digit() || self.peek() == '_' {
                 self.bump();

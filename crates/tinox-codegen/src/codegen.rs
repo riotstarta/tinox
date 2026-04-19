@@ -578,7 +578,7 @@ impl CodeGen {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(self.effective_class_name(class, type_args));
                         true
-                    } else if matches!(&v.node, ExprKind::ArrayLiteral(_)) {
+                    } else if matches!(&v.node, ExprKind::ArrayLiteral(_) | ExprKind::Tuple(_)) {
                         llvm_ty = "i64*".to_string();
                         true
                     } else if matches!(&v.node, ExprKind::Lambda { .. }) {
@@ -662,7 +662,7 @@ impl CodeGen {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(self.effective_class_name(class, type_args));
                         true
-                    } else if matches!(&v.node, ExprKind::ArrayLiteral(_)) {
+                    } else if matches!(&v.node, ExprKind::ArrayLiteral(_) | ExprKind::Tuple(_)) {
                         llvm_ty = "i64*".to_string();
                         true
                     } else if matches!(&v.node, ExprKind::Lambda { .. }) {
@@ -855,11 +855,11 @@ impl CodeGen {
                 // str_ptr: Some(i8*) for string iteration
                 let (start_val, end_val, arr_ptr, str_ptr) = if is_range {
                     let s_gep = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 0", s_gep, iter_ptr).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", s_gep, iter_ptr).unwrap();
                     let sv = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", sv, s_gep).unwrap();
                     let e_gep = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 1", e_gep, iter_ptr).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", e_gep, iter_ptr).unwrap();
                     let ev = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, e_gep).unwrap();
                     (sv, ev, None, None)
@@ -871,7 +871,7 @@ impl CodeGen {
                 } else {
                     // Array: length at data_ptr[-1]
                     let len_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, iter_ptr).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, iter_ptr).unwrap();
                     let len_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
                     ("0".to_string(), len_val, Some(iter_ptr), None)
@@ -917,14 +917,14 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{}:", body_bb).unwrap();
                 if let Some(aptr) = &arr_ptr {
                     let elem_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
                     let elem_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", elem_val, elem_ptr).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_val, var_slot).unwrap();
                 } else if let Some(sptr) = &str_ptr {
                     // Load byte at sptr[cur_idx], zext to i64, store to var
                     let bptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i8, i8* {}, i64 {}", bptr, sptr, cur_idx).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i8, ptr {}, i64 {}", bptr, sptr, cur_idx).unwrap();
                     let byte = self.temp();
                     writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, bptr).unwrap();
                     let ext = self.temp();
@@ -1072,7 +1072,7 @@ impl CodeGen {
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        "{} = getelementptr i64, ptr {}, i64 {}",
                         field_ptr, obj_ptr, offset
                     )
                     .unwrap();
@@ -1101,7 +1101,7 @@ impl CodeGen {
                     let ptr_name = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        "{} = getelementptr i64, ptr {}, i64 {}",
                         ptr_name, base_ptr, idx_val
                     )
                     .unwrap();
@@ -1127,10 +1127,11 @@ impl CodeGen {
                         .unwrap_or_else(|| "i64".to_string());
                     Ok((format!("%{}", name), ty))
                 } else if let Some((ty, _)) = ctx.locals.get(name) {
+                    let ty = ty.clone();
                     let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                     let val = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
-                    Ok((val, ty.clone()))
+                    Ok((val, ty))
                 } else {
                     Ok((format!("%{}", name), "i64".to_string()))
                 }
@@ -1303,7 +1304,7 @@ impl CodeGen {
                             } else {
                                 // Array: length is stored at index -1 by convention (or 0 offset)
                                 let len_ptr = self.temp();
-                                writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, ptr).unwrap();
+                                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, ptr).unwrap();
                                 writeln!(&mut self.ir, "{} = load i64, i64* {}", result, len_ptr).unwrap();
                             }
                             return Ok((result, "i64".to_string()));
@@ -1335,7 +1336,7 @@ impl CodeGen {
                         "first" => {
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
                             let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 0", ptr, arr).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, arr).unwrap();
                             let val = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr).unwrap();
                             return Ok((val, "i64".to_string()));
@@ -1343,13 +1344,13 @@ impl CodeGen {
                         "last" => {
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
                             let len_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 -1", len_ptr, arr).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, arr).unwrap();
                             let len_val = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
                             let last_idx = self.temp();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
                             let elem_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, arr, last_idx).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, arr, last_idx).unwrap();
                             let val = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", val, elem_ptr).unwrap();
                             return Ok((val, "i64".to_string()));
@@ -1594,10 +1595,14 @@ impl CodeGen {
                     }
                 }
 
-                let ret_ty = arg_types
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "i64".to_string());
+                // Look up actual return type from pre-collected signatures
+                let ret_ty = if let ExprKind::Ident(callee) = &func.node {
+                    self.fn_sigs.get(callee)
+                        .map(|(r, _)| r.clone())
+                        .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                } else {
+                    arg_types.first().cloned().unwrap_or_else(|| "i64".to_string())
+                };
                 let result = self.temp();
                 let is_local_fn = if let ExprKind::Ident(name) = &func.node {
                     ctx.locals.contains_key(name)
@@ -1612,7 +1617,7 @@ impl CodeGen {
                         let env_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
-                            "{} = getelementptr i64, i64* {}, i64 1",
+                            "{} = getelementptr i64, ptr {}, i64 1",
                             env_ptr, fn_ptr
                         )
                         .unwrap();
@@ -1704,7 +1709,7 @@ impl CodeGen {
                     let vtable_i64_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 0",
+                        "{} = getelementptr i64, ptr {}, i64 0",
                         vtable_i64_ptr, obj_ptr
                     )
                     .unwrap();
@@ -1728,7 +1733,7 @@ impl CodeGen {
                     let fn_slot_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        "{} = getelementptr i64, ptr {}, i64 {}",
                         fn_slot_ptr, vtable_ptr, slot_idx
                     )
                     .unwrap();
@@ -1811,7 +1816,7 @@ impl CodeGen {
                 if base_ty == "i8*" {
                     // String indexing → return byte as i64
                     let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i8, i8* {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i8, ptr {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
                     let byte = self.temp();
                     writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, ptr_name).unwrap();
                     let extended = self.temp();
@@ -1819,7 +1824,7 @@ impl CodeGen {
                     Ok((extended, "i64".to_string()))
                 } else {
                     let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
                     let val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr_name).unwrap();
                     Ok((val, "i64".to_string()))
@@ -1836,11 +1841,11 @@ impl CodeGen {
                 writeln!(&mut self.ir, "store i64 {}, i64* {}", n, full_ptr).unwrap();
                 // Data pointer starts at slot 1
                 let data_ptr = self.temp();
-                writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 1", data_ptr, full_ptr).unwrap();
+                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", data_ptr, full_ptr).unwrap();
                 for (i, elem) in elements.iter().enumerate() {
                     let (val, _) = self.gen_expr(elem, ctx)?;
                     let elem_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", elem_ptr, data_ptr, i).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, i).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", val, elem_ptr).unwrap();
                 }
                 Ok((data_ptr, "i64*".to_string()))
@@ -1868,7 +1873,7 @@ impl CodeGen {
                 let field_ptr = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 {}",
+                    "{} = getelementptr i64, ptr {}, i64 {}",
                     field_ptr, obj_ptr, offset
                 )
                 .unwrap();
@@ -1898,7 +1903,7 @@ impl CodeGen {
                     let vtable_gep = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 0",
+                        "{} = getelementptr i64, ptr {}, i64 0",
                         vtable_gep, typed_ptr
                     )
                     .unwrap();
@@ -1924,7 +1929,7 @@ impl CodeGen {
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        "{} = getelementptr i64, ptr {}, i64 {}",
                         field_ptr, typed_ptr, field_idx
                     )
                     .unwrap();
@@ -1932,27 +1937,41 @@ impl CodeGen {
                 }
                 Ok((typed_ptr, "i64*".to_string()))
             }
+            ExprKind::TupleIndex { tuple, index } => {
+                let (raw, raw_ty) = self.gen_expr(tuple, ctx)?;
+                // If inner expr returned a plain i64 (ptrtoint'd pointer), restore it to ptr
+                let ptr = if raw_ty == "i64" {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, raw).unwrap();
+                    cast
+                } else {
+                    raw
+                };
+                let field_ptr = self.temp();
+                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, ptr, index).unwrap();
+                let val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", val, field_ptr).unwrap();
+                Ok((val, "i64".to_string()))
+            }
             ExprKind::Tuple(exprs) => {
                 let ptr = self.temp();
                 let size = exprs.len() * 8;
-                writeln!(
-                    &mut self.ir,
-                    "{} = call i8* @tinox_alloc(i64 {})",
-                    ptr, size
-                )
-                .unwrap();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_alloc(i64 {})", ptr, size).unwrap();
                 let typed_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
                 for (i, expr) in exprs.iter().enumerate() {
-                    let (val, _) = self.gen_expr(expr, ctx)?;
+                    let (val, val_ty) = self.gen_expr(expr, ctx)?;
+                    // Pointer elements must be ptrtoint'd to i64 for uniform storage
+                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else {
+                        val
+                    };
                     let field_ptr = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
-                        field_ptr, typed_ptr, i
-                    )
-                    .unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", val, field_ptr).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, typed_ptr, i).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
                 Ok((typed_ptr, "i64*".to_string()))
             }
@@ -1989,7 +2008,7 @@ impl CodeGen {
                     let disc_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 0",
+                        "{} = getelementptr i64, ptr {}, i64 0",
                         disc_ptr, typed_ptr
                     )
                     .unwrap();
@@ -2006,7 +2025,7 @@ impl CodeGen {
                         let arg_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
-                            "{} = getelementptr i64, i64* {}, i64 {}",
+                            "{} = getelementptr i64, ptr {}, i64 {}",
                             arg_ptr,
                             typed_ptr,
                             i + 1
@@ -2128,7 +2147,7 @@ impl CodeGen {
                     let vtable_gep = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 0",
+                        "{} = getelementptr i64, ptr {}, i64 0",
                         vtable_gep, typed_ptr
                     )
                     .unwrap();
@@ -2157,7 +2176,7 @@ impl CodeGen {
                             let field_ptr = self.temp();
                             writeln!(
                                 &mut self.ir,
-                                "{} = getelementptr i64, i64* {}, i64 {}",
+                                "{} = getelementptr i64, ptr {}, i64 {}",
                                 field_ptr, typed_ptr, layout_idx
                             )
                             .unwrap();
@@ -2187,7 +2206,7 @@ impl CodeGen {
                 let start_ptr = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 0",
+                    "{} = getelementptr i64, ptr {}, i64 0",
                     start_ptr, typed_ptr
                 )
                 .unwrap();
@@ -2195,7 +2214,7 @@ impl CodeGen {
                 let end_ptr = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 1",
+                    "{} = getelementptr i64, ptr {}, i64 1",
                     end_ptr, typed_ptr
                 )
                 .unwrap();
@@ -2270,7 +2289,7 @@ impl CodeGen {
                                 let disc_ptr = self.temp();
                                 writeln!(
                                     &mut self.ir,
-                                    "{} = getelementptr i64, i64* {}, i64 0",
+                                    "{} = getelementptr i64, ptr {}, i64 0",
                                     disc_ptr, val
                                 )
                                 .unwrap();
@@ -2306,7 +2325,7 @@ impl CodeGen {
                                         let arg_ptr = self.temp();
                                         writeln!(
                                             &mut self.ir,
-                                            "{} = getelementptr i64, i64* {}, i64 {}",
+                                            "{} = getelementptr i64, ptr {}, i64 {}",
                                             arg_ptr,
                                             val,
                                             i + 1
@@ -2487,7 +2506,7 @@ impl CodeGen {
                 let start_gep = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 0",
+                    "{} = getelementptr i64, ptr {}, i64 0",
                     start_gep, range_ptr
                 )
                 .unwrap();
@@ -2497,7 +2516,7 @@ impl CodeGen {
                 let end_gep = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 1",
+                    "{} = getelementptr i64, ptr {}, i64 1",
                     end_gep, range_ptr
                 )
                 .unwrap();
@@ -2781,7 +2800,7 @@ impl CodeGen {
                 let ptr_name = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 {}",
+                    "{} = getelementptr i64, ptr {}, i64 {}",
                     ptr_name, base_ptr, idx_val
                 )
                 .unwrap();
@@ -2944,7 +2963,7 @@ impl CodeGen {
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
-                        "{} = getelementptr i64, i64* {}, i64 {}",
+                        "{} = getelementptr i64, ptr {}, i64 {}",
                         field_ptr, env_typed, i
                     )
                     .unwrap();
@@ -2980,7 +2999,7 @@ impl CodeGen {
                 let env_field = self.temp();
                 writeln!(
                     &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 {}",
+                    "{} = getelementptr i64, ptr {}, i64 {}",
                     env_field, env, i
                 )
                 .unwrap();
@@ -3034,7 +3053,7 @@ impl CodeGen {
             let fp_field = self.temp();
             writeln!(
                 &mut self.ir,
-                "{} = getelementptr i64, i64* {}, i64 0",
+                "{} = getelementptr i64, ptr {}, i64 0",
                 fp_field, closure_ptr_int
             )
             .unwrap();
@@ -3043,7 +3062,7 @@ impl CodeGen {
             let env_ptr_clean = env_ptr.trim_start_matches('%');
             writeln!(
                 &mut self.ir,
-                "{} = getelementptr i64, i64* {}, i64 1",
+                "{} = getelementptr i64, ptr {}, i64 1",
                 env_field, closure_ptr_int
             )
             .unwrap();
@@ -3088,6 +3107,7 @@ impl CodeGen {
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
+            Type::Tuple(_) => "i64*".to_string(),
             _ => "i64".to_string(),
         }
     }
@@ -3650,6 +3670,7 @@ fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Is { .. } => "Is",
         ExprKind::Range { .. } => "Range",
         ExprKind::Tuple(_) => "Tuple",
+        ExprKind::TupleIndex { .. } => "TupleIndex",
         ExprKind::EnumValue { .. } => "EnumValue",
     }
 }
@@ -3711,6 +3732,9 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
             for e in exprs {
                 collect_free_vars_inner(e, param_names, vars);
             }
+        }
+        ExprKind::TupleIndex { tuple, .. } => {
+            collect_free_vars_inner(tuple, param_names, vars);
         }
         ExprKind::Cast { expr, ty: _ } => {
             collect_free_vars_inner(expr, param_names, vars);
