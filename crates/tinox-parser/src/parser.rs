@@ -2001,19 +2001,7 @@ impl Parser {
             .tokens
             .get(pos)
             .unwrap_or(&self.tokens[pos.saturating_sub(1)]);
-        let end_offset = tok.span.end.offset;
-        Span::new(
-            Pos {
-                offset: end_offset,
-                line: tok.span.end.line,
-                column: tok.span.end.column,
-            },
-            Pos {
-                offset: end_offset,
-                line: tok.span.end.line,
-                column: tok.span.end.column,
-            },
-        )
+        Span::new(tok.span.start, tok.span.start)
     }
 
     fn error(&self, msg: &str) -> Error {

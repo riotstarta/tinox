@@ -1,7 +1,10 @@
+mod analysis;
+
+use analysis::{completions, definition_at, document_symbols, hover_at, lsp_pos_to_offset, pos_to_lsp};
 use dashmap::DashMap;
-use tinox_common::Pos;
+use tinox_common::Error;
 use tinox_lexer::Lexer;
-use tinox_parser::Parser;
+use tinox_parser::{ast::SourceFile, Parser};
 use tinox_typecheck::typecheck;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -10,6 +13,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 struct Backend {
     client: Client,
     docs: DashMap<Url, String>,
+    asts: DashMap<Url, SourceFile>,
 }
 
 impl Backend {
@@ -17,78 +21,50 @@ impl Backend {
         Self {
             client,
             docs: DashMap::new(),
+            asts: DashMap::new(),
         }
     }
 
-    async fn diagnose(&self, uri: Url, text: &str) {
-        let diags = compile_diagnostics(text);
+    async fn update(&self, uri: Url, text: String) {
+        let diags = compile(&text, |ast| {
+            self.asts.insert(uri.clone(), ast);
+        });
+        self.docs.insert(uri.clone(), text);
         self.client.publish_diagnostics(uri, diags, None).await;
     }
 }
 
-fn pos_to_lsp(p: Pos) -> Position {
-    Position {
-        line: p.line.saturating_sub(1),
-        character: p.column.saturating_sub(1),
+fn err_to_diag(e: Error) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: pos_to_lsp(e.span.start),
+            end: pos_to_lsp(e.span.end),
+        },
+        severity: Some(DiagnosticSeverity::ERROR),
+        message: e.message,
+        source: Some("tinox".into()),
+        ..Default::default()
     }
 }
 
-fn compile_diagnostics(src: &str) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-
+// Lex → parse → typecheck; calls on_ast if parsing succeeded; returns diagnostics.
+fn compile(src: &str, on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
     let tokens = match Lexer::new(src).tokenize() {
         Ok(t) => t,
-        Err(errs) => {
-            for e in errs {
-                diags.push(Diagnostic {
-                    range: Range {
-                        start: pos_to_lsp(e.span.start),
-                        end: pos_to_lsp(e.span.end),
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: e.message,
-                    source: Some("tinox".into()),
-                    ..Default::default()
-                });
-            }
-            return diags;
-        }
+        Err(errs) => return errs.into_iter().map(err_to_diag).collect(),
     };
 
     let ast = match Parser::new(tokens).parse() {
         Ok(a) => a,
-        Err(bag) => {
-            for e in bag.errors {
-                diags.push(Diagnostic {
-                    range: Range {
-                        start: pos_to_lsp(e.span.start),
-                        end: pos_to_lsp(e.span.end),
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    message: e.message,
-                    source: Some("tinox".into()),
-                    ..Default::default()
-                });
-            }
-            return diags;
-        }
+        Err(bag) => return bag.errors.into_iter().map(err_to_diag).collect(),
     };
 
-    if let Err(bag) = typecheck(&ast) {
-        for e in bag.errors {
-            diags.push(Diagnostic {
-                range: Range {
-                    start: pos_to_lsp(e.span.start),
-                    end: pos_to_lsp(e.span.end),
-                },
-                severity: Some(DiagnosticSeverity::ERROR),
-                message: e.message,
-                source: Some("tinox".into()),
-                ..Default::default()
-            });
-        }
-    }
+    let diags = match typecheck(&ast) {
+        Ok(_) => vec![],
+        Err(bag) => bag.errors.into_iter().map(err_to_diag).collect(),
+    };
 
+    on_ast(ast);
     diags
 }
 
@@ -100,6 +76,13 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".into(), " ".into()]),
+                    ..Default::default()
+                }),
+                definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -119,31 +102,89 @@ impl LanguageServer for Backend {
         Ok(())
     }
 
-    async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri;
-        let text = params.text_document.text;
-        self.docs.insert(uri.clone(), text.clone());
-        self.diagnose(uri, &text).await;
+    async fn did_open(&self, p: DidOpenTextDocumentParams) {
+        self.update(p.text_document.uri, p.text_document.text).await;
     }
 
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        if let Some(change) = params.content_changes.into_iter().last() {
-            let uri = params.text_document.uri;
-            let text = change.text;
-            self.docs.insert(uri.clone(), text.clone());
-            self.diagnose(uri, &text).await;
+    async fn did_change(&self, p: DidChangeTextDocumentParams) {
+        if let Some(change) = p.content_changes.into_iter().last() {
+            self.update(p.text_document.uri, change.text).await;
         }
     }
 
-    async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        let uri = params.text_document.uri;
-        if let Some(text) = self.docs.get(&uri) {
-            self.diagnose(uri, &text).await;
+    async fn did_save(&self, p: DidSaveTextDocumentParams) {
+        if let Some(text) = p.text.clone() {
+            self.update(p.text_document.uri, text).await;
         }
     }
 
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.docs.remove(&params.text_document.uri);
+    async fn did_close(&self, p: DidCloseTextDocumentParams) {
+        self.docs.remove(&p.text_document.uri);
+        self.asts.remove(&p.text_document.uri);
+    }
+
+    async fn hover(&self, p: HoverParams) -> Result<Option<Hover>> {
+        let uri = &p.text_document_position_params.text_document.uri;
+        let pos = p.text_document_position_params.position;
+
+        let Some(text) = self.docs.get(uri) else {
+            return Ok(None);
+        };
+        let Some(ast) = self.asts.get(uri) else {
+            return Ok(None);
+        };
+
+        let offset = lsp_pos_to_offset(&text, pos);
+        let content = hover_at(&ast, offset).unwrap_or_default();
+        if content.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```tinox\n{}\n```", content),
+            }),
+            range: None,
+        }))
+    }
+
+    async fn completion(&self, p: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = &p.text_document_position.text_document.uri;
+        let Some(ast) = self.asts.get(uri) else {
+            return Ok(None);
+        };
+        Ok(Some(CompletionResponse::Array(completions(&ast))))
+    }
+
+    async fn goto_definition(
+        &self,
+        p: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &p.text_document_position_params.text_document.uri;
+        let pos = p.text_document_position_params.position;
+
+        let Some(text) = self.docs.get(uri) else {
+            return Ok(None);
+        };
+        let Some(ast) = self.asts.get(uri) else {
+            return Ok(None);
+        };
+
+        let offset = lsp_pos_to_offset(&text, pos);
+        let loc = definition_at(&ast, uri, offset);
+        Ok(loc.map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn document_symbol(
+        &self,
+        p: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &p.text_document.uri;
+        let Some(ast) = self.asts.get(uri) else {
+            return Ok(None);
+        };
+        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
     }
 }
 
