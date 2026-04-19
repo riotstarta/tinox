@@ -157,6 +157,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_int_to_string(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_float_to_string(double)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1255,6 +1257,18 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
+                        "toInt" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_to_int(i8* {})", result, val).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "toFloat" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "toString" => {
                             let (val, ty) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
@@ -1507,16 +1521,11 @@ impl CodeGen {
             }
             ExprKind::Index { obj, index } => {
                 let (idx_val, _) = self.gen_expr(index, ctx)?;
-                let (base_ptr, _) = if let ExprKind::Ident(name) = &obj.node {
+                let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
                     if ctx.locals.contains_key(name) {
                         let (var_ty, _) = ctx.locals.get(name).unwrap();
                         let loaded_ptr = self.temp();
-                        writeln!(
-                            &mut self.ir,
-                            "{} = load {}, {}* %{}",
-                            loaded_ptr, var_ty, var_ty, name
-                        )
-                        .unwrap();
+                        writeln!(&mut self.ir, "{} = load {}, {}* %{}", loaded_ptr, var_ty, var_ty, name).unwrap();
                         (loaded_ptr, var_ty.clone())
                     } else {
                         self.gen_expr(obj, ctx)?
@@ -1524,16 +1533,22 @@ impl CodeGen {
                 } else {
                     self.gen_expr(obj, ctx)?
                 };
-                let ptr_name = self.temp();
-                writeln!(
-                    &mut self.ir,
-                    "{} = getelementptr i64, i64* {}, i64 {}",
-                    ptr_name, base_ptr, idx_val
-                )
-                .unwrap();
-                let val = self.temp();
-                writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr_name).unwrap();
-                Ok((val, "i64".to_string()))
+                if base_ty == "i8*" {
+                    // String indexing → return byte as i64
+                    let ptr_name = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i8, i8* {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
+                    let byte = self.temp();
+                    writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, ptr_name).unwrap();
+                    let extended = self.temp();
+                    writeln!(&mut self.ir, "{} = zext i8 {} to i64", extended, byte).unwrap();
+                    Ok((extended, "i64".to_string()))
+                } else {
+                    let ptr_name = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
+                    let val = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr_name).unwrap();
+                    Ok((val, "i64".to_string()))
+                }
             }
             ExprKind::ArrayLiteral(elements) => {
                 let ptr = self.temp();

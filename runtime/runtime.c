@@ -86,6 +86,27 @@ char* tinox_float_to_string(double val) {
     return result;
 }
 
+int64_t tinox_string_to_int(const char* s) {
+    int64_t result = 0;
+    int neg = 0;
+    if (*s == '-') { neg = 1; s++; }
+    while (*s >= '0' && *s <= '9') { result = result * 10 + (*s++ - '0'); }
+    return neg ? -result : result;
+}
+
+double tinox_string_to_float(const char* s) {
+    double result = 0.0, frac = 0.1;
+    int neg = 0, in_frac = 0;
+    if (*s == '-') { neg = 1; s++; }
+    while (*s) {
+        if (*s == '.') { in_frac = 1; }
+        else if (in_frac) { result += (*s - '0') * frac; frac *= 0.1; }
+        else { result = result * 10 + (*s - '0'); }
+        s++;
+    }
+    return neg ? -result : result;
+}
+
 char* tinox_bool_to_string(int val) {
     const char* s = val ? "true" : "false";
     size_t len = val ? 4 : 5;

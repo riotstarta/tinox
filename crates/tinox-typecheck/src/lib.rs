@@ -340,6 +340,20 @@ impl TypeChecker {
             },
         );
         symbols.functions.insert(
+            "toInt".to_string(),
+            FunctionSignature {
+                params: vec![("value".to_string(), ValueType::String)],
+                return_type: ValueType::Int,
+            },
+        );
+        symbols.functions.insert(
+            "toFloat".to_string(),
+            FunctionSignature {
+                params: vec![("value".to_string(), ValueType::String)],
+                return_type: ValueType::Float,
+            },
+        );
+        symbols.functions.insert(
             "toString".to_string(),
             FunctionSignature {
                 params: vec![("value".to_string(), ValueType::Any)],
