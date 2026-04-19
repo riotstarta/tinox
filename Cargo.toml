@@ -7,6 +7,7 @@ members = [
     "crates/tinox-parser",
     "crates/tinox-typecheck",
     "crates/tinox-codegen",
+    "crates/tinox-lsp",
 ]
 
 [workspace.package]

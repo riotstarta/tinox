@@ -1,0 +1,22 @@
+[package]
+name = "tinox-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Language Server Protocol implementation for Tinox"
+
+[[bin]]
+name = "tinox-lsp"
+path = "src/main.rs"
+
+[dependencies]
+tinox-common = { path = "../tinox-common" }
+tinox-lexer = { path = "../tinox-lexer" }
+tinox-parser = { path = "../tinox-parser" }
+tinox-typecheck = { path = "../tinox-typecheck" }
+
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"
