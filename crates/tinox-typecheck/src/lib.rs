@@ -515,7 +515,7 @@ impl TypeChecker {
         for name in &["String_toUpper", "String_toLower", "String_trim"] {
             symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         }
-        // Map builtins (method-call style: Map_get, Map_set, etc.)
+        // Map builtins (method-call style: Map_get, Map_insert, etc.)
         symbols.functions.insert(
             "Map_get".to_string(),
             FunctionSignature {
@@ -524,7 +524,7 @@ impl TypeChecker {
             },
         );
         symbols.functions.insert(
-            "Map_set".to_string(),
+            "Map_insert".to_string(),
             FunctionSignature {
                 params: vec![
                     ("m".to_string(), ValueType::Map),

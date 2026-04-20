@@ -1866,7 +1866,7 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, obj_ptr, key).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
-                        "set" => {
+                        "insert" => {
                             let (key, _) = self.gen_expr(&args[0], ctx)?;
                             let (val, _) = self.gen_expr(&args[1], ctx)?;
                             writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", obj_ptr, key, val).unwrap();
