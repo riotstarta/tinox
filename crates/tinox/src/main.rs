@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tinox_codegen::CodeGen;
+use tinox_common;
 use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Parser};
 
@@ -83,22 +84,89 @@ fn run_file(args: &[String]) {
 fn check(args: &[String]) {
     if args.is_empty() {
         eprintln!("Error: No input file specified");
-        return;
+        std::process::exit(1);
     }
 
     let input_file = &args[0];
     let source = match fs::read_to_string(input_file) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to read file: {}", e);
-            return;
+            eprintln!("error: cannot read '{}': {}", input_file, e);
+            std::process::exit(1);
         }
     };
 
-    println!("=== Tinox Check ===");
-    println!("File: {}", input_file);
-    println!("Source length: {} characters", source.len());
-    println!("(Full parsing not yet implemented - V1 minimal)");
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Lex
+    let mut lexer = Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(errors) => {
+            for e in &errors {
+                print_error(input_file, &lines, e.span, &e.message);
+            }
+            eprintln!("\naborting: {} error{}", errors.len(), if errors.len() == 1 { "" } else { "s" });
+            std::process::exit(1);
+        }
+    };
+
+    // Parse
+    let mut parser = tinox_parser::Parser::new(tokens);
+    let mut ast = match parser.parse() {
+        Ok(a) => a,
+        Err(bag) => {
+            let count = bag.errors.len();
+            for e in &bag.errors {
+                print_error(input_file, &lines, e.span, &e.message);
+            }
+            eprintln!("\naborting: {} error{}", count, if count == 1 { "" } else { "s" });
+            std::process::exit(1);
+        }
+    };
+
+    // Resolve imports
+    let base_dir = Path::new(input_file)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let mut visited = HashSet::new();
+    if let Ok(canonical) = Path::new(input_file).canonicalize() {
+        visited.insert(canonical);
+    }
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+
+    // Type-check
+    let mut typechecker = tinox_typecheck::TypeChecker::new();
+    match typechecker.check(&ast) {
+        Ok(_) => {
+            println!("{}: no errors", input_file);
+            std::process::exit(0);
+        }
+        Err(bag) => {
+            let count = bag.errors.len();
+            for e in &bag.errors {
+                print_error(input_file, &lines, e.span, &e.message);
+            }
+            eprintln!("\n{} error{} found", count, if count == 1 { "" } else { "s" });
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &str) {
+    let line = span.start.line as usize;
+    let col = span.start.column as usize;
+    eprintln!("{}:{}:{}: error: {}", file, line, col, message);
+    if line > 0 && line <= lines.len() {
+        let src_line = lines[line - 1];
+        eprintln!("{:>4} | {}", line, src_line);
+        let padding = " ".repeat(col.saturating_sub(1));
+        eprintln!("     | {}^", padding);
+    }
 }
 
 fn resolve_imports(
