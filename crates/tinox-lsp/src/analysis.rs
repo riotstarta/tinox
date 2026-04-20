@@ -215,6 +215,7 @@ pub fn type_str(ty: &Type) -> String {
         }
         Type::Mutable(inner) => format!("mut {}", type_str(inner)),
         Type::Ref(inner) => format!("&{}", type_str(inner)),
+        Type::Map(k, v) => format!("Map<{}, {}>", type_str(k), type_str(v)),
     }
 }
 

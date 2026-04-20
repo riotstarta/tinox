@@ -7,7 +7,7 @@ use std::process::Command;
 use tinox_codegen::CodeGen;
 use tinox_common;
 use tinox_lexer::Lexer;
-use tinox_parser::{DeclKind, Parser};
+use tinox_parser::{DeclKind, Formatter, Parser};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -21,6 +21,7 @@ fn main() {
         "build" => build(&args[2..]),
         "run" => run_file(&args[2..]),
         "check" => check(&args[2..]),
+        "fmt" => fmt(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -33,10 +34,65 @@ fn print_help() {
     println!("Tinox Compiler v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Usage:");
-    println!("  tinox build <file>    Compile a Tinox file to an executable");
-    println!("  tinox run <file>      Compile and run a Tinox file");
-    println!("  tinox check <file>    Type-check a Tinox file without compiling");
-    println!("  tinox help            Show this help message");
+    println!("  tinox build <file>         Compile a Tinox file to an executable");
+    println!("  tinox run <file>           Compile and run a Tinox file");
+    println!("  tinox check <file>         Type-check a Tinox file without compiling");
+    println!("  tinox fmt <file>           Format a Tinox file (print to stdout)");
+    println!("  tinox fmt --write <file>   Format a Tinox file in place");
+    println!("  tinox help                 Show this help message");
+}
+
+fn fmt(args: &[String]) {
+    let (write_mode, file_arg) = if args.first().map(|s| s.as_str()) == Some("--write") {
+        (true, args.get(1))
+    } else {
+        (false, args.first())
+    };
+
+    let input_file = match file_arg {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: No input file specified");
+            return;
+        }
+    };
+
+    let source = match fs::read_to_string(input_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read '{}': {}", input_file, e);
+            return;
+        }
+    };
+
+    let mut lexer = Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(errors) => {
+            eprintln!("Lex error: {:?}", errors);
+            return;
+        }
+    };
+
+    let mut parser = Parser::new(tokens);
+    let ast = match parser.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Parse error: {:?}", e);
+            return;
+        }
+    };
+
+    let mut formatter = Formatter::new();
+    let formatted = formatter.format(&ast);
+
+    if write_mode {
+        if let Err(e) = fs::write(input_file, &formatted) {
+            eprintln!("error: cannot write '{}': {}", input_file, e);
+        }
+    } else {
+        print!("{}", formatted);
+    }
 }
 
 fn build(args: &[String]) {
