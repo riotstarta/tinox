@@ -236,7 +236,8 @@ try {
 | Float32 / Float64        | ✅ Fertig  |
 | Map / Dict-Typ           | ⏳ Geplant |
 | `defer`-Statement        | ⏳ Geplant |
-| LSP                      | ⏳ Geplant |
+| LSP (tinox-lsp)          | ✅ Fertig  |
+| Eclipse Plugin           | ✅ Fertig  |
 | REPL                     | ⏳ Geplant |
 
 ## Projekt-Struktur
@@ -250,6 +251,7 @@ tinox/
 │   ├── tinox-parser/       # Parser + AST
 │   ├── tinox-typecheck/    # Type Checker
 │   ├── tinox-codegen/      # LLVM IR Code Generation
+│   ├── tinox-lsp/          # Language Server Protocol
 │   └── tinox/              # CLI Binary
 └── runtime/                # C Runtime (tinox_alloc, threading, channels)
 ```
