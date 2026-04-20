@@ -25,6 +25,7 @@ pub enum Type {
     /// A named type instantiated with concrete type arguments, e.g. `Box<Int64>`.
     Generic { name: Ident, args: Vec<Type> },
     Array(Box<Type>),
+    Map(Box<Type>, Box<Type>),
     Mutable(Box<Type>),
     Ref(Box<Type>),
     Fn { params: Vec<Type>, ret: Box<Type> },
@@ -87,6 +88,7 @@ impl Literal {
 pub enum ExprKind {
     Literal(Literal),
     ArrayLiteral(Vec<Expr>),
+    MapLiteral(Vec<(Expr, Expr)>),
     Ident(Ident),
     Binary {
         op: BinaryOp,

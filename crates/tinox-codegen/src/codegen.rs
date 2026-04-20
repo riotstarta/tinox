@@ -182,6 +182,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_index_of(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_map_create()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_map_contains(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_map_free(i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -599,6 +606,10 @@ impl CodeGen {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(self.effective_class_name(class, type_args));
                         true
+                    } else if let ExprKind::MapLiteral(_) = &v.node {
+                        llvm_ty = "i8*".to_string();
+                        struct_name = Some("Map".to_string());
+                        true
                     } else if matches!(&v.node, ExprKind::ArrayLiteral(_) | ExprKind::Tuple(_)) {
                         llvm_ty = "i64*".to_string();
                         true
@@ -682,6 +693,10 @@ impl CodeGen {
                     } else if let ExprKind::New { class, type_args, .. } = &v.node {
                         llvm_ty = "i64*".to_string();
                         struct_name = Some(self.effective_class_name(class, type_args));
+                        true
+                    } else if let ExprKind::MapLiteral(_) = &v.node {
+                        llvm_ty = "i8*".to_string();
+                        struct_name = Some("Map".to_string());
                         true
                     } else if matches!(&v.node, ExprKind::ArrayLiteral(_) | ExprKind::Tuple(_)) {
                         llvm_ty = "i64*".to_string();
@@ -1713,6 +1728,43 @@ impl CodeGen {
                     _ => None,
                 };
 
+                // Map method dispatch
+                if declared_type.as_deref() == Some("Map") {
+                    match method.as_str() {
+                        "get" => {
+                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, obj_ptr, key).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "set" => {
+                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, _) = self.gen_expr(&args[1], ctx)?;
+                            writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", obj_ptr, key, val).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "contains" => {
+                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_contains(i8* {}, i8* {})", raw, obj_ptr, key).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        "remove" => {
+                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            writeln!(&mut self.ir, "call void @tinox_map_remove(i8* {}, i8* {})", obj_ptr, key).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "len" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_len(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Check if the declared type is an interface — if so, use vtable dispatch.
                 let is_interface_dispatch = declared_type
                     .as_deref()
@@ -1888,6 +1940,16 @@ impl CodeGen {
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", val, elem_ptr).unwrap();
                 }
                 Ok((data_ptr, "i64*".to_string()))
+            }
+            ExprKind::MapLiteral(entries) => {
+                let map_ptr = self.temp();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_map_create()", map_ptr).unwrap();
+                for (key_expr, val_expr) in entries {
+                    let (key_val, _) = self.gen_expr(key_expr, ctx)?;
+                    let (val_val, _) = self.gen_expr(val_expr, ctx)?;
+                    writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_ptr, key_val, val_val).unwrap();
+                }
+                Ok((map_ptr, "i8*".to_string()))
             }
             ExprKind::FieldAccess { obj, field } => {
                 let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
@@ -3147,6 +3209,7 @@ impl CodeGen {
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
+            Type::Map(_, _) => "i8*".to_string(),
             Type::Tuple(_) => "i64*".to_string(),
             _ => "i64".to_string(),
         }
@@ -3676,6 +3739,7 @@ fn expr_kind_name(kind: &ExprKind) -> &'static str {
     match kind {
         ExprKind::Literal(_) => "Literal",
         ExprKind::ArrayLiteral(_) => "ArrayLiteral",
+        ExprKind::MapLiteral(_) => "MapLiteral",
         ExprKind::Ident(_) => "Ident",
         ExprKind::Binary { .. } => "Binary",
         ExprKind::Unary { .. } => "Unary",

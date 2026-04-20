@@ -323,6 +323,127 @@ int tinox_channel_try_recv(void* handle, int64_t* out) {
     return 1;
 }
 
+// ---- Map (open-addressing hash table, string keys, i64 values) ----
+
+#define TINOX_MAP_INIT_CAP 16
+#define TINOX_MAP_LOAD_NUM 3
+#define TINOX_MAP_LOAD_DEN 4
+
+typedef struct TinoxMapEntry {
+    char*   key;   // NULL = empty slot, (char*)1 = tombstone
+    int64_t value;
+} TinoxMapEntry;
+
+typedef struct TinoxMap {
+    TinoxMapEntry* entries;
+    size_t cap;
+    size_t len;
+} TinoxMap;
+
+static size_t map_hash(const char* key, size_t cap) {
+    size_t h = 14695981039346656037ULL;
+    for (const unsigned char* p = (const unsigned char*)key; *p; p++)
+        h = (h ^ *p) * 1099511628211ULL;
+    return h & (cap - 1);
+}
+
+static void map_rehash(TinoxMap* m) {
+    size_t new_cap = m->cap * 2;
+    TinoxMapEntry* new_entries = calloc(new_cap, sizeof(TinoxMapEntry));
+    for (size_t i = 0; i < m->cap; i++) {
+        char* k = m->entries[i].key;
+        if (!k || k == (char*)1) continue;
+        size_t idx = map_hash(k, new_cap);
+        while (new_entries[idx].key) idx = (idx + 1) & (new_cap - 1);
+        new_entries[idx].key   = k;
+        new_entries[idx].value = m->entries[i].value;
+    }
+    free(m->entries);
+    m->entries = new_entries;
+    m->cap     = new_cap;
+}
+
+void* tinox_map_create(void) {
+    TinoxMap* m = malloc(sizeof(TinoxMap));
+    m->cap     = TINOX_MAP_INIT_CAP;
+    m->len     = 0;
+    m->entries = calloc(m->cap, sizeof(TinoxMapEntry));
+    return m;
+}
+
+void tinox_map_set(void* map, const char* key, int64_t value) {
+    TinoxMap* m = (TinoxMap*)map;
+    if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM)
+        map_rehash(m);
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k || k == (char*)1) {
+            m->entries[idx].key   = strdup(key);
+            m->entries[idx].value = value;
+            m->len++;
+            return;
+        }
+        if (strcmp(k, key) == 0) {
+            m->entries[idx].value = value;
+            return;
+        }
+        idx = (idx + 1) & (m->cap - 1);
+    }
+}
+
+int64_t tinox_map_get(void* map, const char* key) {
+    TinoxMap* m = (TinoxMap*)map;
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k) return 0;
+        if (k != (char*)1 && strcmp(k, key) == 0) return m->entries[idx].value;
+        idx = (idx + 1) & (m->cap - 1);
+    }
+}
+
+int64_t tinox_map_contains(void* map, const char* key) {
+    TinoxMap* m = (TinoxMap*)map;
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k) return 0;
+        if (k != (char*)1 && strcmp(k, key) == 0) return 1;
+        idx = (idx + 1) & (m->cap - 1);
+    }
+}
+
+void tinox_map_remove(void* map, const char* key) {
+    TinoxMap* m = (TinoxMap*)map;
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k) return;
+        if (k != (char*)1 && strcmp(k, key) == 0) {
+            free(m->entries[idx].key);
+            m->entries[idx].key = (char*)1; // tombstone
+            m->len--;
+            return;
+        }
+        idx = (idx + 1) & (m->cap - 1);
+    }
+}
+
+int64_t tinox_map_len(void* map) {
+    return (int64_t)((TinoxMap*)map)->len;
+}
+
+void tinox_map_free(void* map) {
+    TinoxMap* m = (TinoxMap*)map;
+    for (size_t i = 0; i < m->cap; i++) {
+        char* k = m->entries[i].key;
+        if (k && k != (char*)1) free(k);
+    }
+    free(m->entries);
+    free(m);
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);

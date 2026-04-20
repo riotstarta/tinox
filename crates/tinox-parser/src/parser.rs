@@ -502,6 +502,14 @@ impl Parser {
             "Unit" => Ok(Type::Unit),
             "Never" => Ok(Type::Never),
             "Any" => Ok(Type::Any),
+            "Map" => {
+                self.expect(TokenKind::Less)?;
+                let k = self.parse_type()?;
+                self.expect(TokenKind::Comma)?;
+                let v = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                Ok(Type::Map(Box::new(k), Box::new(v)))
+            }
             s => {
                 // Check for generic type arguments: Box<Int64>
                 if self.check(TokenKind::Less) {
@@ -648,6 +656,34 @@ impl Parser {
                             },
                             ident_span,
                         ))
+                    } else if self.check(TokenKind::Dot) {
+                        // Method call / field-access chain: m.set(...); obj.field.method();
+                        let mut expr = Spanned::new(ExprKind::Ident(name), ident_span);
+                        while self.consume(TokenKind::Dot) {
+                            let field = self.parse_ident()?;
+                            if self.check(TokenKind::LParen) {
+                                self.bump();
+                                let mut args = Vec::new();
+                                if !self.check(TokenKind::RParen) {
+                                    args.push(self.parse_expr()?);
+                                    while self.consume(TokenKind::Comma) {
+                                        args.push(self.parse_expr()?);
+                                    }
+                                }
+                                self.expect(TokenKind::RParen)?;
+                                expr = Spanned::new(ExprKind::MethodCall { obj: Box::new(expr), method: field, args }, ident_span);
+                            } else if self.check(TokenKind::Equals) {
+                                self.bump();
+                                let value = self.parse_expr()?;
+                                self.expect(TokenKind::Semicolon)?;
+                                let target = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
+                                return Ok(Spanned::new(StmtKind::Assignment { target, value }, span));
+                            } else {
+                                expr = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
+                            }
+                        }
+                        self.expect(TokenKind::Semicolon)?;
+                        StmtKind::Expr(expr)
                     } else {
                         self.expect(TokenKind::Semicolon)?;
                         StmtKind::Expr(Spanned::new(ExprKind::Ident(name), ident_span))
@@ -1314,6 +1350,26 @@ impl Parser {
         let token = self.peek();
 
         match &token.kind {
+            TokenKind::At => {
+                self.bump(); // consume @
+                self.expect(TokenKind::LBrace)?;
+                let mut entries = Vec::new();
+                if !self.check(TokenKind::RBrace) {
+                    let key = self.parse_expr()?;
+                    self.expect(TokenKind::FatArrow)?;
+                    let val = self.parse_expr()?;
+                    entries.push((key, val));
+                    while self.consume(TokenKind::Comma) {
+                        if self.check(TokenKind::RBrace) { break; }
+                        let key = self.parse_expr()?;
+                        self.expect(TokenKind::FatArrow)?;
+                        let val = self.parse_expr()?;
+                        entries.push((key, val));
+                    }
+                }
+                self.expect(TokenKind::RBrace)?;
+                Ok(Spanned::new(ExprKind::MapLiteral(entries), token.span))
+            }
             TokenKind::LBracket => {
                 self.bump();
                 let mut elements = Vec::new();

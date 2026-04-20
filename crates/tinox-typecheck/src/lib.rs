@@ -208,6 +208,7 @@ pub enum ValueType {
     Never,
     Any,
     Array,
+    Map,
     Ref,
     Fn,
     Named(String),
@@ -237,6 +238,7 @@ impl ValueType {
             Type::Named(name) => ValueType::Named(name.clone()),
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
+            Type::Map(_, _) => ValueType::Map,
             Type::Tuple(_) => ValueType::Tuple,
             Type::Mutable(_) => ValueType::Ref,
             Type::Ref(_) => ValueType::Ref,
@@ -255,6 +257,7 @@ impl ValueType {
             ValueType::Never => "Never".to_string(),
             ValueType::Any => "Any".to_string(),
             ValueType::Array => "Array".to_string(),
+            ValueType::Map => "Map".to_string(),
             ValueType::Ref => "Ref".to_string(),
             ValueType::Fn => "Fn".to_string(),
             ValueType::Named(name) => name.clone(),
@@ -486,6 +489,46 @@ impl TypeChecker {
                 },
             );
         }
+        // Map builtins (method-call style: Map_get, Map_set, etc.)
+        symbols.functions.insert(
+            "Map_get".to_string(),
+            FunctionSignature {
+                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                return_type: ValueType::Any,
+            },
+        );
+        symbols.functions.insert(
+            "Map_set".to_string(),
+            FunctionSignature {
+                params: vec![
+                    ("m".to_string(), ValueType::Map),
+                    ("key".to_string(), ValueType::Any),
+                    ("val".to_string(), ValueType::Any),
+                ],
+                return_type: ValueType::Unit,
+            },
+        );
+        symbols.functions.insert(
+            "Map_contains".to_string(),
+            FunctionSignature {
+                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                return_type: ValueType::Bool,
+            },
+        );
+        symbols.functions.insert(
+            "Map_remove".to_string(),
+            FunctionSignature {
+                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                return_type: ValueType::Unit,
+            },
+        );
+        symbols.functions.insert(
+            "Map_len".to_string(),
+            FunctionSignature {
+                params: vec![("m".to_string(), ValueType::Map)],
+                return_type: ValueType::Int,
+            },
+        );
         Self {
             errors: Vec::new(),
             symbols,
@@ -1593,6 +1636,13 @@ impl TypeChecker {
                     self.infer_type(e);
                 }
                 ValueType::Array
+            }
+            ExprKind::MapLiteral(entries) => {
+                for (k, v) in entries {
+                    self.infer_type(k);
+                    self.infer_type(v);
+                }
+                ValueType::Map
             }
         }
     }
