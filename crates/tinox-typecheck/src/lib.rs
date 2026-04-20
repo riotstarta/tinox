@@ -515,6 +515,22 @@ impl TypeChecker {
         for name in &["String_toUpper", "String_toLower", "String_trim"] {
             symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         }
+        symbols.functions.insert("split".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
+            return_type: ValueType::Array,
+        });
+        symbols.functions.insert("String_split".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
+            return_type: ValueType::Array,
+        });
+        symbols.functions.insert("join".to_string(), FunctionSignature {
+            params: vec![("arr".to_string(), ValueType::Array), ("sep".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("Array_join".to_string(), FunctionSignature {
+            params: vec![("arr".to_string(), ValueType::Array), ("sep".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
         // Map builtins (method-call style: Map_get, Map_insert, etc.)
         symbols.functions.insert(
             "Map_get".to_string(),
@@ -555,6 +571,40 @@ impl TypeChecker {
                 return_type: ValueType::Int,
             },
         );
+        // File I/O builtins
+        symbols.functions.insert("open".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
+            return_type: ValueType::Named("File".to_string()),
+        });
+        symbols.functions.insert("fileExists".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String)],
+            return_type: ValueType::Bool,
+        });
+        symbols.functions.insert("deleteFile".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String)],
+            return_type: ValueType::Unit,
+        });
+        let file_ty = ValueType::Named("File".to_string());
+        symbols.functions.insert("File_read".to_string(), FunctionSignature {
+            params: vec![("f".to_string(), file_ty.clone())],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("File_readLine".to_string(), FunctionSignature {
+            params: vec![("f".to_string(), file_ty.clone())],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("File_write".to_string(), FunctionSignature {
+            params: vec![("f".to_string(), file_ty.clone()), ("s".to_string(), ValueType::String)],
+            return_type: ValueType::Unit,
+        });
+        symbols.functions.insert("File_close".to_string(), FunctionSignature {
+            params: vec![("f".to_string(), file_ty.clone())],
+            return_type: ValueType::Unit,
+        });
+        symbols.functions.insert("File_eof".to_string(), FunctionSignature {
+            params: vec![("f".to_string(), file_ty)],
+            return_type: ValueType::Bool,
+        });
         Self {
             errors: Vec::new(),
             symbols,
@@ -1676,7 +1726,7 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function
             if let Some(sig) = self.symbols.functions.get(name).cloned() {
-                let is_variadic_print = matches!(name.as_str(), "print" | "println");
+                let is_variadic_print = matches!(name.as_str(), "print" | "println" | "open");
                 if !is_variadic_print && sig.params.len() != args.len() {
                     self.errors.push(
                         TypeError::InvalidArgumentCount {

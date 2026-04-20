@@ -444,6 +444,131 @@ void tinox_map_free(void* map) {
     free(m);
 }
 
+// ---- String split / Array join ----
+
+int64_t* tinox_string_split(const char* str, const char* delim) {
+    size_t dlen = strlen(delim);
+    size_t count = 1;
+    if (dlen > 0) {
+        const char* p = str;
+        while ((p = strstr(p, delim)) != NULL) { count++; p += dlen; }
+    } else {
+        count = strlen(str);
+        if (count == 0) count = 1;
+    }
+    int64_t* raw = (int64_t*)malloc((count + 1) * sizeof(int64_t));
+    raw[0] = (int64_t)count;
+    int64_t* nd = raw + 1;
+    if (dlen == 0) {
+        for (size_t i = 0; i < count; i++) {
+            char* s = (char*)malloc(2);
+            s[0] = str[i]; s[1] = '\0';
+            nd[i] = (int64_t)(uintptr_t)s;
+        }
+        return nd;
+    }
+    size_t i = 0;
+    const char* start = str;
+    const char* found;
+    while ((found = strstr(start, delim)) != NULL) {
+        size_t plen = (size_t)(found - start);
+        char* part = (char*)malloc(plen + 1);
+        memcpy(part, start, plen); part[plen] = '\0';
+        nd[i++] = (int64_t)(uintptr_t)part;
+        start = found + dlen;
+    }
+    size_t plen = strlen(start);
+    char* part = (char*)malloc(plen + 1);
+    memcpy(part, start, plen); part[plen] = '\0';
+    nd[i] = (int64_t)(uintptr_t)part;
+    return nd;
+}
+
+char* tinox_string_join(int64_t* arr, const char* sep) {
+    int64_t len = arr[-1];
+    if (len == 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    size_t seplen = strlen(sep);
+    size_t total = 0;
+    for (int64_t i = 0; i < len; i++) {
+        const char* s = (const char*)(uintptr_t)arr[i];
+        total += strlen(s);
+        if (i < len - 1) total += seplen;
+    }
+    char* result = (char*)malloc(total + 1);
+    char* p = result;
+    for (int64_t i = 0; i < len; i++) {
+        const char* s = (const char*)(uintptr_t)arr[i];
+        size_t slen = strlen(s);
+        memcpy(p, s, slen); p += slen;
+        if (i < len - 1) { memcpy(p, sep, seplen); p += seplen; }
+    }
+    *p = '\0';
+    return result;
+}
+
+// ---- File I/O ----
+
+void* tinox_file_open(const char* path, const char* mode) {
+    FILE* f = fopen(path, mode);
+    return (void*)f;
+}
+
+void tinox_file_close(void* handle) {
+    if (handle) fclose((FILE*)handle);
+}
+
+char* tinox_file_read(void* handle) {
+    if (!handle) return (char*)tinox_alloc(1);
+    FILE* f = (FILE*)handle;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)tinox_alloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = '\0';
+    return buf;
+}
+
+char* tinox_file_readline(void* handle) {
+    if (!handle) return (char*)tinox_alloc(1);
+    FILE* f = (FILE*)handle;
+    size_t cap = 256;
+    char* buf = (char*)tinox_alloc(cap);
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF && c != '\n') {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char* nb = (char*)tinox_alloc(cap);
+            memcpy(nb, buf, len);
+            free(buf);
+            buf = nb;
+        }
+        buf[len++] = (char)c;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+void tinox_file_write(void* handle, const char* s) {
+    if (handle) fputs(s, (FILE*)handle);
+}
+
+int64_t tinox_file_eof(void* handle) {
+    if (!handle) return 1;
+    return feof((FILE*)handle) ? 1 : 0;
+}
+
+int64_t tinox_file_exists(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (f) { fclose(f); return 1; }
+    return 0;
+}
+
+void tinox_file_delete(const char* path) {
+    remove(path);
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);

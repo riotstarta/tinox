@@ -178,6 +178,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_starts_with(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_ends_with(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_trim(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
@@ -189,6 +191,14 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_file_open(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_file_close(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_file_read(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_file_readline(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_file_write(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_file_eof(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_file_exists(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_file_delete(i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -610,6 +620,22 @@ impl CodeGen {
                         llvm_ty = "i8*".to_string();
                         struct_name = Some("Map".to_string());
                         true
+                    } else if let ExprKind::Call { func, .. } = &v.node {
+                        if matches!(&func.node, ExprKind::Ident(n) if n == "open") {
+                            llvm_ty = "i8*".to_string();
+                            struct_name = Some("File".to_string());
+                            true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split") {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else { false }
+                    } else if let ExprKind::MethodCall { method, .. } = &v.node {
+                        if method == "split" {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
@@ -708,6 +734,22 @@ impl CodeGen {
                         llvm_ty = "i8*".to_string();
                         struct_name = Some("Map".to_string());
                         true
+                    } else if let ExprKind::Call { func, .. } = &v.node {
+                        if matches!(&func.node, ExprKind::Ident(n) if n == "open") {
+                            llvm_ty = "i8*".to_string();
+                            struct_name = Some("File".to_string());
+                            true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split") {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else { false }
+                    } else if let ExprKind::MethodCall { method, .. } = &v.node {
+                        if method == "split" {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
@@ -1636,6 +1678,49 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_reverse(i64* {})", result, arr).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
+                        "split" => {
+                            let (s, _) = self.gen_expr(&args[0], ctx)?;
+                            let (delim, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_split(i8* {}, i8* {})", result, s, delim).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "join" => {
+                            let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let (sep, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_join(i64* {}, i8* {})", result, arr, sep).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "open" => {
+                            let (path, _) = self.gen_expr(&args[0], ctx)?;
+                            let mode = if args.len() > 1 {
+                                let (m, _) = self.gen_expr(&args[1], ctx)?;
+                                m
+                            } else {
+                                let sname = format!("str{}", self.strings.len());
+                                self.strings.insert(sname.clone(), "r".to_string());
+                                let ptr = self.temp();
+                                writeln!(&mut self.ir, "{} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", ptr, sname).unwrap();
+                                ptr
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_file_open(i8* {}, i8* {})", result, path, mode).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "fileExists" => {
+                            let (path, _) = self.gen_expr(&args[0], ctx)?;
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_file_exists(i8* {})", raw, path).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        "deleteFile" => {
+                            let (path, _) = self.gen_expr(&args[0], ctx)?;
+                            writeln!(&mut self.ir, "call void @tinox_file_delete(i8* {})", path).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
                         _ => name.clone(),
                     },
                     _ => "unknown_fn".to_string(),
@@ -1853,6 +1938,25 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_slice(i64* {}, i64 {}, i64 {})", result, obj_ptr, from, to).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
+                        "join" => {
+                            let (sep, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_join(i64* {}, i8* {})", result, obj_ptr, sep).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // String method dispatch for split
+                if obj_ty == "i8*" {
+                    match method.as_str() {
+                        "split" => {
+                            let (delim, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_split(i8* {}, i8* {})", result, obj_ptr, delim).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
                         _ => {}
                     }
                 }
@@ -1891,6 +1995,42 @@ impl CodeGen {
                             return Ok((result, "i64".to_string()));
                         }
                         _ => {}
+                    }
+                }
+
+                // File method dispatch
+                if declared_type.as_deref() == Some("File") || obj_ty == "i8*" && matches!(declared_type.as_deref(), Some("File") | None) {
+                    let is_file = declared_type.as_deref() == Some("File");
+                    if is_file {
+                        match method.as_str() {
+                            "read" => {
+                                let result = self.temp();
+                                writeln!(&mut self.ir, "{} = call i8* @tinox_file_read(i8* {})", result, obj_ptr).unwrap();
+                                return Ok((result, "i8*".to_string()));
+                            }
+                            "readLine" => {
+                                let result = self.temp();
+                                writeln!(&mut self.ir, "{} = call i8* @tinox_file_readline(i8* {})", result, obj_ptr).unwrap();
+                                return Ok((result, "i8*".to_string()));
+                            }
+                            "write" => {
+                                let (s, _) = self.gen_expr(&args[0], ctx)?;
+                                writeln!(&mut self.ir, "call void @tinox_file_write(i8* {}, i8* {})", obj_ptr, s).unwrap();
+                                return Ok(("0".to_string(), "void".to_string()));
+                            }
+                            "close" => {
+                                writeln!(&mut self.ir, "call void @tinox_file_close(i8* {})", obj_ptr).unwrap();
+                                return Ok(("0".to_string(), "void".to_string()));
+                            }
+                            "eof" => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir, "{} = call i64 @tinox_file_eof(i8* {})", raw, obj_ptr).unwrap();
+                                let result = self.temp();
+                                writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                                return Ok((result, "i1".to_string()));
+                            }
+                            _ => {}
+                        }
                     }
                 }
 
