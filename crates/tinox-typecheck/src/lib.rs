@@ -236,6 +236,8 @@ impl ValueType {
             Type::Any => ValueType::Any,
             Type::Infer => ValueType::Any,
             Type::Named(name) => ValueType::Named(name.clone()),
+            Type::Generic { name, .. } if name == "Array" => ValueType::Array,
+            Type::Generic { name, .. } if name == "Map" => ValueType::Map,
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
             Type::Map(_, _) => ValueType::Map,
@@ -488,6 +490,30 @@ impl TypeChecker {
                     return_type: ValueType::Array,
                 },
             );
+        }
+        // Array method builtins (MethodCall dispatch: Array_len, Array_push, etc.)
+        symbols.functions.insert("Array_len".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Int });
+        symbols.functions.insert("Array_push".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Array });
+        symbols.functions.insert("Array_pop".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
+        symbols.functions.insert("Array_first".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Any });
+        symbols.functions.insert("Array_last".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Any });
+        symbols.functions.insert("Array_sort".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
+        symbols.functions.insert("Array_reverse".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
+        symbols.functions.insert("Array_contains".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Bool });
+        symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
+        symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::Array });
+        // String method builtins (MethodCall dispatch: String_len, String_toUpper, etc.)
+        symbols.functions.insert("String_len".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("String_charAt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("i".to_string(), ValueType::Int)], return_type: ValueType::String });
+        symbols.functions.insert("String_toInt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("String_toFloat".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Float });
+        symbols.functions.insert("String_toString".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
+        symbols.functions.insert("String_contains".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
+        symbols.functions.insert("String_indexOf".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("String_startsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
+        symbols.functions.insert("String_endsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
+        for name in &["String_toUpper", "String_toLower", "String_trim"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         }
         // Map builtins (method-call style: Map_get, Map_set, etc.)
         symbols.functions.insert(
@@ -1309,15 +1335,13 @@ impl TypeChecker {
                 self.check_call(&func_expr, &call_args, expr.span)
             }
             ExprKind::Index { obj, index } => {
-                self.infer_type(obj);
+                let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
-                if !matches!(index_ty, ValueType::Int) {
+                if !matches!(index_ty, ValueType::Int) && !matches!(obj_ty, ValueType::String) {
                     self.errors
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
-                // Array indexing returns the element type
-                // For now, arrays are assumed to contain Int64 values
-                ValueType::Int
+                if obj_ty == ValueType::String { ValueType::String } else { ValueType::Any }
             }
             ExprKind::FieldAccess { obj, field } => {
                 let obj_ty = self.infer_type(obj);
