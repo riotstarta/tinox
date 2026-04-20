@@ -787,8 +787,8 @@ impl TypeChecker {
                                 .params
                                 .iter()
                                 .zip(parent_sig.params.iter())
-                                .all(|((_, a), (_, b))| Self::types_compatible(a, b));
-                        let ret_match = Self::types_compatible(
+                                .all(|((_, a), (_, b))| self.types_compatible(a, b));
+                        let ret_match = self.types_compatible(
                             &own_sig.return_type,
                             &parent_sig.return_type,
                         );
@@ -1047,7 +1047,7 @@ impl TypeChecker {
                                 .zip(required_sig.params.iter())
                                 .enumerate()
                             {
-                                if !Self::types_compatible(class_ty, req_ty) {
+                                if !self.types_compatible(class_ty, req_ty) {
                                     self.errors.push(Error::new(
                                         c.span,
                                         format!(
@@ -1057,7 +1057,7 @@ impl TypeChecker {
                                     ));
                                 }
                             }
-                            if !Self::types_compatible(&class_sig.return_type, &required_sig.return_type) {
+                            if !self.types_compatible(&class_sig.return_type, &required_sig.return_type) {
                                 self.errors.push(Error::new(
                                     c.span,
                                     format!(
@@ -1096,7 +1096,7 @@ impl TypeChecker {
                     (Some(v), Some(t)) => {
                         let val_ty = self.infer_type(v);
                         let ann_ty = Self::type_to_value(t);
-                        if !Self::types_compatible(&ann_ty, &val_ty) {
+                        if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
                                     expected: ann_ty.to_string(),
@@ -1149,7 +1149,7 @@ impl TypeChecker {
             StmtKind::Assignment { target, value } => {
                 let target_ty = self.infer_type(target);
                 let value_ty = self.infer_type(value);
-                if !Self::types_compatible(&target_ty, &value_ty) {
+                if !self.types_compatible(&target_ty, &value_ty) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: target_ty.to_string(),
@@ -1280,8 +1280,8 @@ impl TypeChecker {
                 false
             }
             StmtKind::Expr(expr) => {
-                self.infer_type(expr);
-                false
+                let ty = self.infer_type(expr);
+                ty == ValueType::Never
             }
             StmtKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
@@ -1480,7 +1480,7 @@ impl TypeChecker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter().skip(1)) {
                     let arg_ty = self.infer_type(arg);
-                    if !Self::types_compatible(expected_ty, &arg_ty) {
+                    if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
                                 expected: expected_ty.to_string(),
@@ -1584,8 +1584,8 @@ impl TypeChecker {
                 }
                 unified
             }
-            ExprKind::Return(Some(val)) => self.infer_type(val),
-            ExprKind::Return(None) => ValueType::Unit,
+            ExprKind::Return(Some(val)) => { self.infer_type(val); ValueType::Never }
+            ExprKind::Return(None) => ValueType::Never,
             ExprKind::Break => ValueType::Never,
             ExprKind::Continue => ValueType::Never,
             ExprKind::Throw(expr) => {
@@ -1739,7 +1739,7 @@ impl TypeChecker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let arg_ty = self.infer_type(arg);
-                    if !Self::types_compatible(expected_ty, &arg_ty) {
+                    if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
                                 expected: expected_ty.to_string(),
@@ -1970,7 +1970,7 @@ impl TypeChecker {
         }
     }
 
-    fn types_compatible(a: &ValueType, b: &ValueType) -> bool {
+    fn types_compatible(&self, a: &ValueType, b: &ValueType) -> bool {
         if a == b {
             return true;
         }
@@ -1978,6 +1978,13 @@ impl TypeChecker {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
+            // Allow passing a class where an interface it implements is expected
+            (ValueType::Named(iface), ValueType::Named(class)) => {
+                self.interface_implementations
+                    .get(class)
+                    .map(|ifaces| ifaces.iter().any(|i| i == iface))
+                    .unwrap_or(false)
+            }
             _ => false,
         }
     }

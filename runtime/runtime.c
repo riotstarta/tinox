@@ -23,7 +23,7 @@ void tinox_print_int(int64_t val) {
 }
 
 void tinox_print_float(double val) {
-    printf("%f", val);
+    printf("%g", val);
 }
 
 void tinox_print_string(const char* val) {

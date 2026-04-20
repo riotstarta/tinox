@@ -344,9 +344,12 @@ impl Parser {
         while !self.check(TokenKind::RBrace) {
             variants.push(self.parse_enum_variant()?);
             if !self.check(TokenKind::RBrace) {
-                if !self.consume(TokenKind::Comma) {
-                    return Err(self.error("expected ','"));
+                if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
+                    return Err(self.error("expected ',' or ';'"));
                 }
+            } else {
+                self.consume(TokenKind::Comma);
+                self.consume(TokenKind::Semicolon);
             }
         }
 
@@ -690,7 +693,9 @@ impl Parser {
                     }
                 } else {
                     let expr = self.parse_expr()?;
-                    self.expect(TokenKind::Semicolon)?;
+                    if !self.check(TokenKind::RBrace) {
+                        self.expect(TokenKind::Semicolon)?;
+                    }
                     StmtKind::Expr(expr)
                 }
             }
@@ -849,11 +854,11 @@ impl Parser {
 
         let mut catches = Vec::new();
         while self.consume_keyword(Keyword::Catch) {
-            self.expect(TokenKind::LParen)?;
+            let has_paren = self.consume(TokenKind::LParen);
             let param = self.parse_ident()?;
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type()?;
-            self.expect(TokenKind::RParen)?;
+            if has_paren { self.expect(TokenKind::RParen)?; }
             let catch_body = self.parse_block()?;
             catches.push(CatchClause {
                 param,
@@ -1556,6 +1561,7 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Channel, token.span))
             }
             TokenKind::Backslash => self.parse_lambda(),
+            TokenKind::Keyword(Keyword::Fn) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fn_lambda(),
             TokenKind::LParen => self.parse_tuple_or_grouped(),
             TokenKind::LBrace => {
                 let block_stmt = self.parse_block()?;
@@ -1691,9 +1697,12 @@ impl Parser {
             });
 
             if !self.check(TokenKind::RBrace) {
-                if !self.consume(TokenKind::Comma) {
-                    return Err(self.error("expected ','"));
+                if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
+                    return Err(self.error("expected ',' or ';'"));
                 }
+            } else {
+                self.consume(TokenKind::Comma);
+                self.consume(TokenKind::Semicolon);
             }
         }
 
@@ -1935,6 +1944,46 @@ impl Parser {
         ))
     }
 
+    fn parse_fn_lambda(&mut self) -> Result<Expr, Error> {
+        let span = self.mk_span();
+        self.expect_keyword(Keyword::Fn)?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            params.push(self.parse_fn_lambda_param()?);
+            while self.consume(TokenKind::Comma) {
+                if self.check(TokenKind::RParen) { break; }
+                params.push(self.parse_fn_lambda_param()?);
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret_type = if self.consume(TokenKind::ThinArrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_expr()?;
+        Ok(Spanned::new(
+            ExprKind::Lambda {
+                params,
+                ret_type,
+                body: Box::new(body),
+            },
+            span,
+        ))
+    }
+
+    fn parse_fn_lambda_param(&mut self) -> Result<Param, Error> {
+        let span = self.mk_span();
+        let name = self.parse_ident()?;
+        let param_type = if self.consume(TokenKind::Colon) {
+            self.parse_type()?
+        } else {
+            Type::Infer
+        };
+        Ok(Param { name, param_type, span })
+    }
+
     fn parse_lambda_param(&mut self) -> Result<Param, Error> {
         let span = self.mk_span();
         let name = self.parse_ident()?;
@@ -1998,6 +2047,10 @@ impl Parser {
             .get(self.pos)
             .cloned()
             .unwrap_or(Token::dummy(TokenKind::Eof))
+    }
+
+    fn peek_ahead(&self, offset: usize) -> Option<Token> {
+        self.tokens.get(self.pos + offset).cloned()
     }
 
     fn bump(&mut self) {

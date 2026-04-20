@@ -39,6 +39,10 @@ pub struct CodeGen {
     generic_classes: HashMap<String, tinox_parser::Class>,
     /// Already-generated specializations (mangled_name already emitted)
     generated_specializations: HashSet<String>,
+    /// Set of all enum variant names (for bare-name match patterns)
+    known_enum_variants: HashSet<String>,
+    /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
+    known_enum_types: HashSet<String>,
 }
 
 impl CodeGen {
@@ -63,6 +67,8 @@ impl CodeGen {
             generic_fns: HashMap::new(),
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
+            known_enum_variants: HashSet::new(),
+            known_enum_types: HashSet::new(),
         }
     }
 
@@ -292,13 +298,19 @@ impl CodeGen {
                         self.generic_fns.insert(f.name.clone(), f.clone());
                     } else {
                         let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
-                        let ret_ty = Self::type_to_llvm(&f.ret_type);
+                        let ret_ty = self.type_to_llvm_inst(&f.ret_type);
                         let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
                         self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
                     }
                 }
                 DeclKind::Class(c) if !c.type_params.is_empty() => {
                     self.generic_classes.insert(c.name.clone(), c.clone());
+                }
+                DeclKind::Enum(e) => {
+                    self.known_enum_types.insert(e.name.clone());
+                    for variant in &e.variants {
+                        self.known_enum_variants.insert(variant.name.clone());
+                    }
                 }
                 _ => {}
             }
@@ -345,7 +357,7 @@ impl CodeGen {
     }
 
     fn gen_fn(&mut self, f: &tinox_parser::Function) -> Result<(), ErrorBag> {
-        let ret_type = Self::type_to_llvm(&f.ret_type);
+        let ret_type = self.type_to_llvm_inst(&f.ret_type);
         let mut params_str = String::new();
         let mut ctx = GenCtx {
             locals: HashMap::new(),
@@ -367,7 +379,7 @@ impl CodeGen {
             if i > 0 {
                 params_str.push_str(", ");
             }
-            let llvm_ty = Self::type_to_llvm(&p.param_type);
+            let llvm_ty = self.type_to_llvm_inst(&p.param_type);
             params_str.push_str(&format!("{} %{}", llvm_ty, p.name));
             ctx.locals.insert(p.name.clone(), (llvm_ty.clone(), i));
             ctx.params.insert(p.name.clone());
@@ -401,6 +413,8 @@ impl CodeGen {
         if !has_terminator {
             if ret_type == "void" {
                 writeln!(&mut self.ir, "ret void").unwrap();
+            } else if ret_type.ends_with('*') {
+                writeln!(&mut self.ir, "ret {} null", ret_type).unwrap();
             } else {
                 writeln!(&mut self.ir, "ret {} 0", ret_type).unwrap();
             }
@@ -417,7 +431,7 @@ impl CodeGen {
         class_name: &str,
         method: &Method,
     ) -> Result<(), ErrorBag> {
-        let ret_type = Self::type_to_llvm(&method.ret_type);
+        let ret_type = self.type_to_llvm_inst(&method.ret_type);
         let fn_name = format!("{}_{}", class_name, method.name);
         self.method_ret_types.insert(fn_name.clone(), ret_type.clone());
 
@@ -445,7 +459,7 @@ impl CodeGen {
             .insert("self".to_string(), class_name.to_string());
 
         for p in &method.params {
-            let llvm_ty = Self::type_to_llvm(&p.param_type);
+            let llvm_ty = self.type_to_llvm_inst(&p.param_type);
             params_str.push_str(&format!(", {} %{}", llvm_ty, p.name));
             ctx.locals
                 .insert(p.name.clone(), (llvm_ty.clone(), ctx.locals.len()));
@@ -472,6 +486,8 @@ impl CodeGen {
         if !has_terminator {
             if ret_type == "void" {
                 writeln!(&mut self.ir, "ret void").unwrap();
+            } else if ret_type.ends_with('*') {
+                writeln!(&mut self.ir, "ret {} null", ret_type).unwrap();
             } else {
                 writeln!(&mut self.ir, "ret {} 0", ret_type).unwrap();
             }
@@ -1999,38 +2015,108 @@ impl CodeGen {
                 }
 
                 // File method dispatch
-                if declared_type.as_deref() == Some("File") || obj_ty == "i8*" && matches!(declared_type.as_deref(), Some("File") | None) {
-                    let is_file = declared_type.as_deref() == Some("File");
-                    if is_file {
-                        match method.as_str() {
-                            "read" => {
-                                let result = self.temp();
-                                writeln!(&mut self.ir, "{} = call i8* @tinox_file_read(i8* {})", result, obj_ptr).unwrap();
-                                return Ok((result, "i8*".to_string()));
-                            }
-                            "readLine" => {
-                                let result = self.temp();
-                                writeln!(&mut self.ir, "{} = call i8* @tinox_file_readline(i8* {})", result, obj_ptr).unwrap();
-                                return Ok((result, "i8*".to_string()));
-                            }
-                            "write" => {
-                                let (s, _) = self.gen_expr(&args[0], ctx)?;
-                                writeln!(&mut self.ir, "call void @tinox_file_write(i8* {}, i8* {})", obj_ptr, s).unwrap();
-                                return Ok(("0".to_string(), "void".to_string()));
-                            }
-                            "close" => {
-                                writeln!(&mut self.ir, "call void @tinox_file_close(i8* {})", obj_ptr).unwrap();
-                                return Ok(("0".to_string(), "void".to_string()));
-                            }
-                            "eof" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir, "{} = call i64 @tinox_file_eof(i8* {})", raw, obj_ptr).unwrap();
-                                let result = self.temp();
-                                writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
-                                return Ok((result, "i1".to_string()));
-                            }
-                            _ => {}
+                if declared_type.as_deref() == Some("File") {
+                    match method.as_str() {
+                        "read" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_file_read(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         }
+                        "readLine" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_file_readline(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "write" => {
+                            let (s, _) = self.gen_expr(&args[0], ctx)?;
+                            writeln!(&mut self.ir, "call void @tinox_file_write(i8* {}, i8* {})", obj_ptr, s).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "close" => {
+                            writeln!(&mut self.ir, "call void @tinox_file_close(i8* {})", obj_ptr).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "eof" => {
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_file_eof(i8* {})", raw, obj_ptr).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // String method dispatch (obj_ty == "i8*")
+                if obj_ty == "i8*" {
+                    match method.as_str() {
+                        "len" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "toUpper" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_upper(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "toLower" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_lower(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "trim" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_trim(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "contains" => {
+                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_contains(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        "startsWith" => {
+                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        "endsWith" => {
+                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
+                        "indexOf" => {
+                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "charAt" => {
+                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_char_at(i8* {}, i64 {})", result, obj_ptr, arg).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "toInt" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_to_int(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "toFloat" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        _ => {}
                     }
                 }
 
@@ -2239,10 +2325,10 @@ impl CodeGen {
                 let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
 
                 // Find the struct type and field offset
-                let struct_name = if let ExprKind::Ident(name) = &obj.node {
-                    ctx.local_types.get(name).cloned()
-                } else {
-                    None
+                let struct_name = match &obj.node {
+                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+                    ExprKind::This => ctx.current_struct.clone(),
+                    _ => None,
                 };
 
                 let offset = if let Some(sname) = struct_name {
@@ -2557,7 +2643,14 @@ impl CodeGen {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         let layout_idx = field_start + arg_idx;
                         if layout_idx < layout.len() {
-                            let (val, _) = self.gen_expr(arg, ctx)?;
+                            let (val, val_ty) = self.gen_expr(arg, ctx)?;
+                            let store_val = if val_ty == "i8*" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", c, val).unwrap();
+                                c
+                            } else {
+                                val
+                            };
                             let field_ptr = self.temp();
                             writeln!(
                                 &mut self.ir,
@@ -2565,7 +2658,7 @@ impl CodeGen {
                                 field_ptr, typed_ptr, layout_idx
                             )
                             .unwrap();
-                            writeln!(&mut self.ir, "store i64 {}, i64* {}", val, field_ptr)
+                            writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr)
                                 .unwrap();
                         }
                     }
@@ -2631,6 +2724,30 @@ impl CodeGen {
                                 &mut self.ir,
                                 "{} = icmp eq {} {}, {}",
                                 cmp, val_ty, val, lit_val
+                            )
+                            .unwrap();
+                            let case_bb = self.new_bb("match_case");
+                            let next_bb = self.new_bb("match_next");
+                            writeln!(
+                                &mut self.ir,
+                                "br i1 {}, label %{}, label %{}",
+                                cmp, case_bb, next_bb
+                            )
+                            .unwrap();
+                            writeln!(&mut self.ir, "{}:", case_bb).unwrap();
+                            let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            last_result = (body_val, body_ty);
+                            writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                            writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+                        }
+                        Pattern::Ident(name, _, _) if self.known_enum_variants.contains(name) => {
+                            // Bare enum variant name (e.g. `North` instead of `Dir::North`)
+                            let discriminator = name.chars().map(|c| c as i64).sum::<i64>();
+                            let cmp = self.temp();
+                            writeln!(
+                                &mut self.ir,
+                                "{} = icmp eq i64 {}, {}",
+                                cmp, val, discriminator
                             )
                             .unwrap();
                             let case_bb = self.new_bb("match_case");
@@ -2769,6 +2886,7 @@ impl CodeGen {
                         _ => {}
                     }
                 }
+                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
                 Ok(last_result)
             }
@@ -3489,7 +3607,7 @@ impl CodeGen {
             Type::String => "i8*".to_string(),
             Type::Unit => "void".to_string(),
             Type::Named(_) => "i64*".to_string(),
-            Type::Generic { .. } => "i64*".to_string(), // Generic class instances are pointers
+            Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
@@ -3500,6 +3618,15 @@ impl CodeGen {
             Type::Tuple(_) => "i64*".to_string(),
             _ => "i64".to_string(),
         }
+    }
+
+    fn type_to_llvm_inst(&self, ty: &Type) -> String {
+        if let Type::Named(name) = ty {
+            if self.known_enum_types.contains(name) {
+                return "i64".to_string();
+            }
+        }
+        Self::type_to_llvm(ty)
     }
 
     fn temp(&mut self) -> String {
@@ -3571,8 +3698,8 @@ impl CodeGen {
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone()));
         self.gen_stmt_body(body, ctx)?;
         ctx.error_catch = old_error_catch;
-        // unreachable block swallows any double-terminator after a throw
         let try_ok_bb = self.new_bb("try_ok");
+        writeln!(&mut self.ir, "br label %{}", try_ok_bb).unwrap();
         writeln!(&mut self.ir, "{}:", try_ok_bb).unwrap();
         writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
 
@@ -3641,13 +3768,13 @@ impl CodeGen {
                 .unwrap();
                 self.gen_stmt_body(&catch.body, ctx)?;
 
-                // Guard block: falls through to next clause or merge.
                 let next = if i + 1 < clause_bbs.len() {
                     clause_bbs[i + 1].clone()
                 } else {
                     merge_target.clone()
                 };
                 let guard_bb = self.new_bb(&format!("catch_{}_ok", i));
+                writeln!(&mut self.ir, "br label %{}", guard_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", next).unwrap();
             }
@@ -3660,6 +3787,7 @@ impl CodeGen {
                 self.gen_stmt_body(finally_stmt, ctx)?;
             }
             let finally_ok_bb = self.new_bb("finally_ok");
+            writeln!(&mut self.ir, "br label %{}", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "{}:", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
         }
@@ -4132,8 +4260,15 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Block(stmts) => {
             for stmt in stmts {
-                if let StmtKind::Expr(e) = &stmt.node {
-                    collect_free_vars_inner(e, param_names, vars);
+                match &stmt.node {
+                    StmtKind::Expr(e) => collect_free_vars_inner(e, param_names, vars),
+                    StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
+                    StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
+                    StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
+                    StmtKind::If { cond, .. } => {
+                        collect_free_vars_inner(cond, param_names, vars);
+                    }
+                    _ => {}
                 }
             }
         }
