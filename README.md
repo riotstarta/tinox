@@ -31,15 +31,18 @@ Voraussetzungen: `clang`, `llc` (LLVM-Tools)
 ## Usage
 
 ```bash
-tinox run program.tinox      # Kompilieren und ausführen
-tinox build program.tinox    # Kompilieren (erzeugt ./a.out)
-tinox check program.tinox    # Nur Type-Check
+tinox run program.tinox           # Kompilieren und ausführen
+tinox build program.tinox         # Kompilieren (erzeugt ./a.out)
+tinox check program.tinox         # Nur Type-Check
+tinox fmt program.tinox           # Formatieren (Ausgabe auf stdout)
+tinox fmt --write program.tinox   # Formatieren und Datei überschreiben
 ```
 
 ## Hello World
 
 ```tinox
-fn main() -> Int64 {
+fn main() -> Int64
+{
     println("Hello, World!");
     return 0;
 }
@@ -59,11 +62,13 @@ let msg = "Hi ${name}!";    // String-Interpolation
 ### Funktionen
 
 ```tinox
-fn add(a: Int64, b: Int64) -> Int64 {
+fn add(a: Int64, b: Int64) -> Int64
+{
     return a + b;
 }
 
-fn swap(a: Int64, b: Int64) -> (Int64, Int64) {
+fn swap(a: Int64, b: Int64) -> (Int64, Int64)
+{
     return (b, a);
 }
 ```
@@ -71,16 +76,20 @@ fn swap(a: Int64, b: Int64) -> (Int64, Int64) {
 ### Klassen & Vererbung
 
 ```tinox
-class Animal {
+class Animal
+{
     name: String;
 
-    fn speak() -> String {
+    fn speak() -> String
+    {
         return "...";
     }
 }
 
-class Dog extends Animal {
-    fn speak() -> String {
+class Dog extends Animal
+{
+    fn speak() -> String
+    {
         return "Woof! I am ${this.name}";
     }
 }
@@ -89,15 +98,18 @@ class Dog extends Animal {
 ### Interfaces
 
 ```tinox
-interface Printable {
+interface Printable
+{
     fn toString() -> String;
 }
 
-class Point implements Printable {
+class Point implements Printable
+{
     x: Int64;
     y: Int64;
 
-    fn toString() -> String {
+    fn toString() -> String
+    {
         return "(${this.x}, ${this.y})";
     }
 }
@@ -106,15 +118,18 @@ class Point implements Printable {
 ### Enums & Pattern Matching
 
 ```tinox
-enum Direction {
+enum Direction
+{
     North;
     South;
     East;
     West;
 }
 
-fn turn(d: Direction) -> Direction {
-    match d {
+fn turn(d: Direction) -> Direction
+{
+    match d
+    {
         North => return East;
         East  => return South;
         South => return West;
@@ -126,14 +141,17 @@ fn turn(d: Direction) -> Direction {
 ### Generics
 
 ```tinox
-fn identity<T>(x: T) -> T {
+fn identity<T>(x: T) -> T
+{
     return x;
 }
 
-class Box<T> {
+class Box<T>
+{
     value: T;
 
-    fn get() -> T {
+    fn get() -> T
+    {
         return this.value;
     }
 }
@@ -164,20 +182,38 @@ println(arr.last());        // 6
 let s = "hello";
 println(s.toUpper());       // HELLO
 println(s.contains("ell")); // true
+
+let parts = "a,b,c".split(",");
+println(parts.len());       // 3
+println(parts.join(" - ")); // a - b - c
+```
+
+### Maps
+
+```tinox
+let m = @{"one" => 1, "two" => 2};
+m.insert("three", 3);
+println(m.get("one"));      // 1
+println(m.contains("two")); // true
+println(m.len());           // 3
+m.remove("one");
 ```
 
 ### Ranges & Schleifen
 
 ```tinox
-for i in 0..5 {             // 0, 1, 2, 3, 4 (exklusiv)
+for i in 0..5               // 0, 1, 2, 3, 4 (exklusiv)
+{
     println(i);
 }
 
-for i in 0...5 {            // 0, 1, 2, 3, 4, 5 (inklusiv)
+for i in 0...5              // 0, 1, 2, 3, 4, 5 (inklusiv)
+{
     println(i);
 }
 
-for ch in "hello" {         // Zeichen-Iteration
+for ch in "hello"           // Zeichen-Iteration
+{
     print(ch);
 }
 ```
@@ -185,11 +221,13 @@ for ch in "hello" {         // Zeichen-Iteration
 ### Async / Concurrency
 
 ```tinox
-async fn fetchData(id: Int64) -> Int64 {
+async fn fetchData(id: Int64) -> Int64
+{
     return id * 2;
 }
 
-fn main() -> Int64 {
+fn main() -> Int64
+{
     let handle = spawn fetchData(21);
     let result = await handle;      // 42
     println(result);
@@ -202,14 +240,70 @@ fn main() -> Int64 {
 }
 ```
 
+### File I/O
+
+```tinox
+// Schreiben
+let f = open("output.txt", "w");
+f.write("Hallo Tinox!\n");
+f.close();
+
+// Lesen (ganzer Inhalt)
+let f = open("output.txt");
+let content = f.read();
+f.close();
+println(content);
+
+// Zeilenweise lesen
+let f = open("log.txt");
+while !f.eof()
+{
+    let line = f.readLine();
+    println(line);
+}
+f.close();
+
+// Hilfsfunktionen
+println(fileExists("output.txt")); // true
+deleteFile("output.txt");
+```
+
+Modi: `"r"` (lesen, default), `"w"` (schreiben), `"a"` (anhängen), `"rb"` / `"wb"` (binär)
+
+### Defer
+
+```tinox
+fn readFile(path: String) -> String
+{
+    let f = open(path);
+    defer { f.close(); }   // wird automatisch am Funktionsende ausgeführt
+
+    return f.read();
+}
+```
+
+Mehrere `defer`s werden in umgekehrter Reihenfolge ausgeführt (LIFO):
+
+```tinox
+defer { println("3"); }
+defer { println("2"); }
+defer { println("1"); }
+// Ausgabe beim Return: 1, 2, 3
+```
+
 ### Try / Catch
 
 ```tinox
-try {
+try
+{
     riskyOperation();
-} catch e: RuntimeError {
+}
+catch e: RuntimeError
+{
     println("Fehler aufgetreten");
-} finally {
+}
+finally
+{
     cleanup();
 }
 ```
@@ -234,10 +328,12 @@ try {
 | Try / Catch / Finally    | ✅ Fertig  |
 | Modul / Import-System    | ✅ Fertig  |
 | Float32 / Float64        | ✅ Fertig  |
-| Map / Dict-Typ           | ⏳ Geplant |
-| `defer`-Statement        | ⏳ Geplant |
+| Map / Dict-Typ           | ✅ Fertig  |
+| `defer`-Statement        | ✅ Fertig  |
 | LSP (tinox-lsp)          | ✅ Fertig  |
 | Eclipse Plugin           | ✅ Fertig  |
+| File I/O                 | ✅ Fertig  |
+| Formatter (`tinox fmt`)  | ✅ Fertig  |
 | REPL                     | ⏳ Geplant |
 
 ## Projekt-Struktur
