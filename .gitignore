@@ -26,6 +26,8 @@ Thumbs.db
 *.ll
 *.o
 *.s
+a.out
+test_*
 test
 test2
 test_manual
@@ -36,5 +38,4 @@ runtime.o
 build.rs
 hello_out
 test_out
-*.tnx
 work.sh
