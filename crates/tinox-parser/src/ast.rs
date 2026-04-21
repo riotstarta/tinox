@@ -434,7 +434,7 @@ pub struct Trait {
 
 #[derive(Debug, Clone)]
 pub struct Namespace {
-    pub name: Ident,
+    pub name: Vec<Ident>,
     pub decls: Vec<Decl>,
     pub span: Span,
 }

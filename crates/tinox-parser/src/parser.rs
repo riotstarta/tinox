@@ -445,7 +445,10 @@ impl Parser {
     fn parse_namespace(&mut self) -> Result<Namespace, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Namespace)?;
-        let name = self.parse_ident()?;
+        let mut name = vec![self.parse_ident()?];
+        while self.consume(TokenKind::Dot) {
+            name.push(self.parse_ident()?);
+        }
         self.expect(TokenKind::LBrace)?;
 
         let mut decls = Vec::new();

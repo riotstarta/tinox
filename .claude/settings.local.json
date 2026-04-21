@@ -12,7 +12,28 @@
       "Bash(echo \"exit: $?\")",
       "Bash(echo \"exit=$?\")",
       "Bash(/tmp/test_fc)",
-      "Bash(echo \"result=$?\")"
+      "Bash(echo \"result=$?\")",
+      "Bash(echo 'fn main\\(\\) -> Int64 { let x: Int64 = 42; return x; }')",
+      "Bash(./target/debug/tinox fmt *)",
+      "Bash(./target/debug/tinox run *)",
+      "Bash(git stash *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git checkout *)",
+      "Bash(cp crates/tinox-codegen/src/codegen.rs /tmp/codegen_full.rs)",
+      "Bash(cp crates/tinox-typecheck/src/lib.rs /tmp/typecheck_full.rs)",
+      "Bash(cp runtime/runtime.c /tmp/runtime_full.c)",
+      "Bash(cp README.md /tmp/readme_full.md)",
+      "Bash(git restore *)",
+      "Bash(cp /tmp/codegen_full.rs crates/tinox-codegen/src/codegen.rs)",
+      "Bash(cp /tmp/typecheck_full.rs crates/tinox-typecheck/src/lib.rs)",
+      "Bash(git push *)",
+      "Bash(git -C /home/tg7c49/git/tinox ls-files --others --exclude-standard)",
+      "Bash(git -C /home/tg7c49/git/tinox ls-files)",
+      "Bash(git rm *)",
+      "Bash(git *)",
+      "Bash(cargo test *)",
+      "Bash(grep -v \"^warning\\\\|^ \\\\+-\\\\-> \\\\|^ *|\\\\|^ *=\\\\|^$\\\\|^ *\\\\^\\\\|^ *help\\\\|^  \\\\+note\")"
     ]
   }
 }

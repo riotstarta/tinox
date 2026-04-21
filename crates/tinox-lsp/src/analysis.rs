@@ -213,9 +213,9 @@ pub fn type_str(ty: &Type) -> String {
             let as_: Vec<_> = args.iter().map(type_str).collect();
             format!("{}<{}>", name, as_.join(", "))
         }
+        Type::Map(k, v) => format!("Map<{}, {}>", type_str(k), type_str(v)),
         Type::Mutable(inner) => format!("mut {}", type_str(inner)),
         Type::Ref(inner) => format!("&{}", type_str(inner)),
-        Type::Map(k, v) => format!("Map<{}, {}>", type_str(k), type_str(v)),
     }
 }
 

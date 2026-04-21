@@ -67,7 +67,7 @@ impl Formatter {
             body.push_str(&format!("{}{}\n", self.ind(), self.fmt_decl(&decl.node)));
         }
         self.indent -= 1;
-        format!("namespace {}\n{{\n{}{}}}", ns.name, body, self.ind())
+        format!("namespace {}\n{{\n{}{}}}", ns.name.join("."), body, self.ind())
     }
 
     fn fmt_class(&mut self, c: &Class) -> String {
