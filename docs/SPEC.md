@@ -25,13 +25,13 @@ identifier ::= (letter | '_') (letter | digit | '_')*
 if          else        while       for         loop        return
 break       continue    match       case        class       interface
 extends     implements  trait       enum        new         this
-super       self       public      private     protected   static
-final       var        val         let         const       mut
-fn          try        catch       finally     throw       spawn
-channel     send       recv        async       await       module
-import      export     as          in          where       extern
-unsafe      ref        sizeof      typeof      null        true
-false       Unit       Never       Any
+super       self        public      private     protected   static
+final       var         val         let         const       mut
+fn          fnc         try         catch       finally     throw
+spawn       channel     send        recv        async       await
+namespace   module      import      export      as          in
+where       extern      unsafe      ref         sizeof      typeof
+null        true        false       Unit        Never       Any
 ```
 
 ### Literals
@@ -132,33 +132,52 @@ var counter: Int32 = 0;
 counter = counter + 1;
 ```
 
-### Function Declarations
+### Namespaces
+
+Namespaces group related classes under a common name. Every class must live inside a namespace or at the top level of a file.
 
 ```tinox
-fn greet(name: String) -> Unit {
-    print("Hello, ");
-    print(name);
-    print("!");
+namespace geometry {
+    class Point { ... }
+    class Circle { ... }
 }
-
-fn add(a: Int32, b: Int32) -> Int32 {
-    return a + b;
-}
-
-// Expression body (implicit return)
-fn square(x: Int32) -> Int32 => x * x
 ```
 
-### Class Declarations
+Import an entire namespace or a single class:
+
+```tinox
+import geometry;          // all classes from geometry
+import geometry.Point;    // only Point
+```
+
+### Static Methods (`fnc`)
+
+Static methods belong to a class but do not require an object instance. They are declared with `fnc` and called via `ClassName.method(args)`.
+
+```tinox
+namespace math {
+    class Utils {
+        fnc add(a: Int64, b: Int64) -> Int64 {
+            return a + b;
+        }
+        fnc square(x: Int64) -> Int64 {
+            return x * x;
+        }
+    }
+}
+
+Utils.add(3, 4);     // 7
+Utils.square(5);     // 25
+```
+
+### Instance Methods (`fn`)
+
+Instance methods have access to `this` and are called on an object.
 
 ```tinox
 class Point {
     x: Float64;
     y: Float64;
-
-    fn new(x: Float64, y: Float64) -> Point {
-        return Point { x: x, y: y };
-    }
 
     fn distanceTo(other: Point) -> Float64 {
         let dx: Float64 = this.x - other.x;
@@ -166,26 +185,54 @@ class Point {
         return (dx * dx + dy * dy).sqrt();
     }
 }
+
+let p = new Point(1.0, 2.0);
+p.distanceTo(other);
+```
+
+### Entry Point
+
+The program entry point is always a top-level `fn main() -> Int64`:
+
+```tinox
+fn main() -> Int64 {
+    println("Hello!");
+    return 0;
+}
+```
+
+### Class Declarations
+
+```tinox
+namespace shapes {
+    class Circle {
+        radius: Float64;
+
+        fn area() -> Float64 {
+            return 3.14159 * this.radius * this.radius;
+        }
+
+        fnc unitCircle() -> Circle {
+            return new Circle(1.0);
+        }
+    }
+}
 ```
 
 ### Class Inheritance
 
 ```tinox
-class Shape {
-    fn area() -> Float64 {
-        return 0.0;
+class Animal {
+    name: String;
+
+    fn speak() -> String {
+        return "...";
     }
 }
 
-class Circle extends Shape {
-    radius: Float64;
-
-    fn new(radius: Float64) -> Circle {
-        return Circle { radius: radius };
-    }
-
-    override fn area() -> Float64 {
-        return 3.14159 * this.radius * this.radius;
+class Dog extends Animal {
+    fn speak() -> String {
+        return "Woof!";
     }
 }
 ```
@@ -216,16 +263,16 @@ enum Color {
     Red;
     Green;
     Blue;
-    RGB(r: UInt8, g: UInt8, b: UInt8);
+    RGB(UInt8, UInt8, UInt8);
 }
 
-fn main() -> Int32 {
-    let c: Color = Color.RGB(r: 255, g: 128, b: 0);
+fn main() -> Int64 {
+    let c = Color::Red;
     match c {
-        Red   => print("Red");
-        Green => print("Green");
-        Blue  => print("Blue");
-        RGB(r, g, b) => print("Custom RGB");
+        Red         => println("Red");
+        Green       => println("Green");
+        Blue        => println("Blue");
+        RGB(r, g, b) => println("Custom RGB");
     }
     return 0;
 }
@@ -366,25 +413,32 @@ fn main() -> Unit {
 ```
 source-file     ::= declaration*
 
-declaration     ::= function
+declaration     ::= 'fn' 'main' '(' ')' '->' type block   // entry point
+                  | 'fn' identifier type-params? '(' param-list? ')' '->' type block  // generic fn
+                  | namespace
                   | class
                   | interface
                   | enum
                   | trait
                   | import
+                  | 'extern' 'fn' identifier '(' param-list? ')' '->' type ';'
 
-function        ::= 'fn' identifier '(' param-list? ')' '->' type block
-                  | 'fn' identifier '(' param-list? ')' block
+namespace       ::= 'namespace' identifier '{' namespace-member* '}'
+namespace-member ::= class | interface | enum | trait
 
-class           ::= 'class' identifier ('extends' type)? ('implements' type-list)? '{' class-body* '}'
-class-body     ::= visibility? ('static'? ('fn' method | field-decl)) ';'
+class           ::= 'class' identifier type-params? ('extends' identifier)? ('implements' identifier-list)? '{' class-member* '}'
+class-member    ::= visibility? 'fn' identifier '(' param-list? ')' '->' type block   // instance method
+                  | visibility? 'fnc' identifier '(' param-list? ')' '->' type block  // static method
+                  | visibility? 'mut'? field-decl
 
-interface       ::= 'interface' identifier ('extends' type-list)? '{' fn-signature* '}'
+interface       ::= 'interface' identifier ('extends' identifier-list)? '{' fn-signature* '}'
 
-enum            ::= 'enum' identifier '{' variant (',' variant)* '}'
+enum            ::= 'enum' identifier '{' variant (';' variant)* '}'
 variant         ::= identifier ('(' type-list? ')')?
 
 trait           ::= 'trait' identifier '{' fn-signature* '}'
+
+import          ::= 'import' identifier ('.' identifier)* (as identifier)? ';'
 
 param-list      ::= param (',' param)*
 param           ::= identifier ':' type
@@ -447,16 +501,19 @@ pattern         ::= '_' | identifier | literal | pattern ',' pattern
 
 ## Implementation Status
 
-| Component    | Status    | Notes                           |
-|--------------|-----------|---------------------------------|
-| Lexer        | ✅ Done   | Full Unicode support            |
-| Parser       | ✅ Done   | AST generation                  |
-| Type Checker | ⚠️ Placeholder | Pass-through for V1         |
-| Code Gen     | 🔄 In Progress | LLVM backend               |
-| Runtime      | ✅ Done   | C runtime                       |
-| Standard Lib | ⏳ Planned | V2+                           |
-| Concurrency  | ⏳ Planned | Channels, async/await          |
-| Tooling      | ⏳ Planned | REPL, LSP, Debugger           |
+| Component    | Status    | Notes                                        |
+|--------------|-----------|----------------------------------------------|
+| Lexer        | ✅ Done   | Full Unicode support, string interpolation    |
+| Parser       | ✅ Done   | AST, namespace/fnc, generics                 |
+| Type Checker | ✅ Done   | Classes, interfaces, enums, generics, static |
+| Code Gen     | ✅ Done   | LLVM IR backend                              |
+| Runtime      | ✅ Done   | C runtime (alloc, I/O, threading, channels)  |
+| Formatter    | ✅ Done   | `tinox fmt` — Allman-style brace output      |
+| LSP          | ✅ Done   | tinox-lsp, Eclipse plugin                    |
+| Standard Lib | ⏳ Partial | Arrays, Maps, Strings, File I/O done        |
+| Concurrency  | ✅ Done   | Channels, spawn, async/await                 |
+| REPL         | ⏳ Planned |                                             |
+| Debugger     | ⏳ Planned |                                             |
 
 ---
 
@@ -464,10 +521,7 @@ pattern         ::= '_' | identifier | literal | pattern ',' pattern
 
 - [ ] Generics with bounds
 - [ ] Pattern matching exhaustiveness
-- [ ] Channels and goroutine-style concurrency
-- [ ] Async/await
 - [ ] Traits with default implementations
 - [ ] Macros
 - [ ] REPL
-- [ ] Language Server Protocol (LSP)
 - [ ] Debugger support

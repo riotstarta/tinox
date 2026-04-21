@@ -59,21 +59,43 @@ let name = "Tino";          // Typ-Inferenz
 let msg = "Hi ${name}!";    // String-Interpolation
 ```
 
-### Funktionen
+### Namespaces & statische Methoden
+
+Alle Funktionen leben in Klassen. Statische Methoden (kein Objekt nötig) verwenden `fnc`:
 
 ```tinox
-fn add(a: Int64, b: Int64) -> Int64
-{
-    return a + b;
+namespace math {
+    class Utils {
+        fnc add(a: Int64, b: Int64) -> Int64
+        {
+            return a + b;
+        }
+
+        fnc square(x: Int64) -> Int64
+        {
+            return x * x;
+        }
+    }
 }
 
-fn swap(a: Int64, b: Int64) -> (Int64, Int64)
+fn main() -> Int64
 {
-    return (b, a);
+    println(Utils.add(3, 4));    // 7
+    println(Utils.square(5));    // 25
+    return 0;
 }
 ```
 
+Import des ganzen Namespaces oder einer einzelnen Klasse:
+
+```tinox
+import math;          // alle Klassen aus math
+import math.Utils;    // nur Utils
+```
+
 ### Klassen & Vererbung
+
+Instanzmethoden verwenden `fn` und haben Zugriff auf `this`:
 
 ```tinox
 class Animal
@@ -126,14 +148,18 @@ enum Direction
     West;
 }
 
-fn turn(d: Direction) -> Direction
-{
-    match d
-    {
-        North => return East;
-        East  => return South;
-        South => return West;
-        West  => return North;
+namespace nav {
+    class DirUtils {
+        fnc turn(d: Direction) -> Direction
+        {
+            match d
+            {
+                North => return East;
+                East  => return South;
+                South => return West;
+                West  => return North;
+            }
+        }
     }
 }
 ```
@@ -310,31 +336,32 @@ finally
 
 ## Feature-Übersicht
 
-| Feature                  | Status     |
-|--------------------------|------------|
-| Variablen (let/var)      | ✅ Fertig  |
-| Funktionen               | ✅ Fertig  |
-| Klassen + Vererbung      | ✅ Fertig  |
-| Interfaces + vtable      | ✅ Fertig  |
-| Enums + Pattern Matching | ✅ Fertig  |
-| Generics (Monomorphisierung) | ✅ Fertig |
-| Tuples                   | ✅ Fertig  |
-| Arrays + Builtins        | ✅ Fertig  |
-| String-Interpolation     | ✅ Fertig  |
-| Ranges (.. / ...)        | ✅ Fertig  |
-| Lambdas / Closures       | ✅ Fertig  |
-| Async / Spawn / Await    | ✅ Fertig  |
-| Channels + Select        | ✅ Fertig  |
-| Try / Catch / Finally    | ✅ Fertig  |
-| Modul / Import-System    | ✅ Fertig  |
-| Float32 / Float64        | ✅ Fertig  |
-| Map / Dict-Typ           | ✅ Fertig  |
-| `defer`-Statement        | ✅ Fertig  |
-| LSP (tinox-lsp)          | ✅ Fertig  |
-| Eclipse Plugin           | ✅ Fertig  |
-| File I/O                 | ✅ Fertig  |
-| Formatter (`tinox fmt`)  | ✅ Fertig  |
-| REPL                     | ⏳ Geplant |
+| Feature                      | Status     |
+|------------------------------|------------|
+| Variablen (let/var)          | ✅ Fertig  |
+| Namespaces                   | ✅ Fertig  |
+| Klassen + Vererbung          | ✅ Fertig  |
+| Statische Methoden (`fnc`)   | ✅ Fertig  |
+| Interfaces + vtable          | ✅ Fertig  |
+| Enums + Pattern Matching     | ✅ Fertig  |
+| Generics (Monomorphisierung) | ✅ Fertig  |
+| Tuples                       | ✅ Fertig  |
+| Arrays + Builtins            | ✅ Fertig  |
+| String-Interpolation         | ✅ Fertig  |
+| Ranges (.. / ...)            | ✅ Fertig  |
+| Lambdas / Closures           | ✅ Fertig  |
+| Async / Spawn / Await        | ✅ Fertig  |
+| Channels + Select            | ✅ Fertig  |
+| Try / Catch / Finally        | ✅ Fertig  |
+| Import-System                | ✅ Fertig  |
+| Float32 / Float64            | ✅ Fertig  |
+| Map / Dict-Typ               | ✅ Fertig  |
+| `defer`-Statement            | ✅ Fertig  |
+| LSP (tinox-lsp)              | ✅ Fertig  |
+| Eclipse Plugin               | ✅ Fertig  |
+| File I/O                     | ✅ Fertig  |
+| Formatter (`tinox fmt`)      | ✅ Fertig  |
+| REPL                         | ⏳ Geplant |
 
 ## Projekt-Struktur
 
