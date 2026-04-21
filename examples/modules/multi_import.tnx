@@ -1,5 +1,5 @@
-import test_modules.utils.math;
-import test_lib;
+import utils.math;
+import math_lib;
 
 fn main() -> Int64 {
     println(square(5));

@@ -1,4 +1,4 @@
-import test_lib;
+import math_lib;
 
 fn main() -> Int64 {
     let x = add(3, 4);
