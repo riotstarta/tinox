@@ -186,6 +186,7 @@ pub enum Keyword {
     Mut,
 
     Fn,
+    Fnc,
     Throws,
     Throw,
     Try,
@@ -203,6 +204,7 @@ pub enum Keyword {
     Await,
 
     Module,
+    Namespace,
     Import,
     Export,
     As,
@@ -264,6 +266,7 @@ impl Keyword {
             "const" => Some(Keyword::Const),
             "mut" => Some(Keyword::Mut),
             "fn" => Some(Keyword::Fn),
+            "fnc" => Some(Keyword::Fnc),
             "throws" => Some(Keyword::Throws),
             "try" => Some(Keyword::Try),
             "catch" => Some(Keyword::Catch),
@@ -278,6 +281,7 @@ impl Keyword {
             "async" => Some(Keyword::Async),
             "await" => Some(Keyword::Await),
             "module" => Some(Keyword::Module),
+            "namespace" => Some(Keyword::Namespace),
             "import" => Some(Keyword::Import),
             "export" => Some(Keyword::Export),
             "as" => Some(Keyword::As),

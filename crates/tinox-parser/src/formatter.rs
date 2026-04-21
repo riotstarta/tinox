@@ -34,6 +34,7 @@ impl Formatter {
             DeclKind::Trait(t) => self.fmt_trait(t),
             DeclKind::Import(i) => self.fmt_import(i),
             DeclKind::Module(name) => format!("module {};", name),
+            DeclKind::Namespace(ns) => self.fmt_namespace(ns),
         }
     }
 
@@ -49,11 +50,24 @@ impl Formatter {
     fn fmt_method(&mut self, m: &Method) -> String {
         let async_ = if m.is_async { "async " } else { "" };
         let vis = fmt_visibility(&m.visibility);
-        let static_ = if m.static_ { "static " } else { "" };
+        let fn_kw = if m.static_ { "fnc" } else { "fn" };
         let params = self.fmt_params(&m.params);
         let ret = self.fmt_type(&m.ret_type);
-        let sig = format!("{}{}{}{}fn {}({}) -> {}", self.ind(), vis, static_, async_, m.name, params, ret);
+        let sig = format!("{}{}{}{} {}({}) -> {}", self.ind(), vis, async_, fn_kw, m.name, params, ret);
         format!("{}\n{}", sig, self.fmt_block_stmt(&m.body))
+    }
+
+    fn fmt_namespace(&mut self, ns: &Namespace) -> String {
+        let mut body = String::new();
+        self.indent += 1;
+        for (i, decl) in ns.decls.iter().enumerate() {
+            if i > 0 {
+                body.push('\n');
+            }
+            body.push_str(&format!("{}{}\n", self.ind(), self.fmt_decl(&decl.node)));
+        }
+        self.indent -= 1;
+        format!("namespace {}\n{{\n{}{}}}", ns.name, body, self.ind())
     }
 
     fn fmt_class(&mut self, c: &Class) -> String {

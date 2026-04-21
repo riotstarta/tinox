@@ -76,6 +76,8 @@ impl Parser {
             let name = self.parse_ident()?;
             self.consume(TokenKind::Semicolon);
             DeclKind::Module(name)
+        } else if self.check_keyword(Keyword::Namespace) {
+            DeclKind::Namespace(self.parse_namespace()?)
         } else if self.check_keyword(Keyword::Extern) {
             self.parse_extern_fn()?
         } else {
@@ -221,6 +223,10 @@ impl Parser {
                 let mut m = self.parse_method(vis, false)?;
                 m.is_async = is_async;
                 methods.push(m);
+            } else if self.check_keyword(Keyword::Fnc) {
+                let mut m = self.parse_method(vis, true)?;
+                m.is_async = is_async;
+                methods.push(m);
             } else {
                 fields.push(self.parse_field(vis, mutable)?);
             }
@@ -241,7 +247,11 @@ impl Parser {
 
     fn parse_method(&mut self, visibility: Visibility, static_: bool) -> Result<Method, Error> {
         let span = self.mk_span();
-        self.expect_keyword(Keyword::Fn)?;
+        if static_ {
+            self.expect_keyword(Keyword::Fnc)?;
+        } else {
+            self.expect_keyword(Keyword::Fn)?;
+        }
         let name = self.parse_ident()?;
         self.expect(TokenKind::LParen)?;
 
@@ -417,6 +427,36 @@ impl Parser {
         self.expect(TokenKind::Semicolon)?;
 
         Ok(Import { path, alias, span })
+    }
+
+    fn parse_namespace(&mut self) -> Result<Namespace, Error> {
+        let span = self.mk_span();
+        self.expect_keyword(Keyword::Namespace)?;
+        let name = self.parse_ident()?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut decls = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            let decl_start = self.mk_span();
+            let inner = if self.check_keyword(Keyword::Class) {
+                DeclKind::Class(self.parse_class()?)
+            } else if self.check_keyword(Keyword::Interface) {
+                DeclKind::Interface(self.parse_interface()?)
+            } else if self.check_keyword(Keyword::Enum) {
+                DeclKind::Enum(self.parse_enum()?)
+            } else if self.check_keyword(Keyword::Trait) {
+                DeclKind::Trait(self.parse_trait()?)
+            } else {
+                let e = self.error("expected 'class', 'interface', 'enum', or 'trait' inside namespace");
+                self.errors.push(e);
+                self.synchronize();
+                continue;
+            };
+            decls.push(Spanned::new(inner, decl_start));
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        Ok(Namespace { name, decls, span })
     }
 
     fn parse_type(&mut self) -> Result<Type, Error> {
@@ -2127,10 +2167,12 @@ impl Parser {
                 }
                 TokenKind::Keyword(
                     Keyword::Fn
+                    | Keyword::Fnc
                     | Keyword::Class
                     | Keyword::Interface
                     | Keyword::Enum
                     | Keyword::Trait
+                    | Keyword::Namespace
                     | Keyword::If
                     | Keyword::While
                     | Keyword::For

@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Param, Pattern, SourceFile,
-    Stmt, StmtKind, Type, UnaryOp,
+    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Namespace, Param, Pattern,
+    SourceFile, Stmt, StmtKind, Type, UnaryOp,
 };
 
 pub struct CodeGen {
@@ -211,20 +211,44 @@ impl CodeGen {
         let class_ast_map: HashMap<String, tinox_parser::Class> = source
             .decls
             .iter()
-            .filter_map(|d| {
-                if let DeclKind::Class(c) = &d.node {
-                    Some((c.name.clone(), c.clone()))
-                } else {
-                    None
+            .flat_map(|d| {
+                let mut v: Vec<tinox_parser::Class> = Vec::new();
+                match &d.node {
+                    DeclKind::Class(c) => v.push(c.clone()),
+                    DeclKind::Namespace(ns) => {
+                        for inner in &ns.decls {
+                            if let DeclKind::Class(c) = &inner.node {
+                                v.push(c.clone());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
+                v
             })
+            .map(|c| (c.name.clone(), c))
             .collect();
 
         // First pass: build struct_layouts (with vtable slot at index 0 where needed)
-        // and method_impl (for inherited method dispatch).
-        for decl in &source.decls {
-            if let DeclKind::Class(c) = &decl.node {
-                if !c.type_params.is_empty() { continue; } // generics are monomorphized on demand
+        // and method_impl (for inherited method dispatch). Handles both top-level and
+        // namespace-scoped classes.
+        let all_classes: Vec<tinox_parser::Class> = source.decls.iter().flat_map(|d| {
+            let mut v: Vec<tinox_parser::Class> = Vec::new();
+            match &d.node {
+                DeclKind::Class(c) => v.push(c.clone()),
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node { v.push(c.clone()); }
+                    }
+                }
+                _ => {}
+            }
+            v
+        }).collect();
+
+        for c in &all_classes {
+            {
+                if !c.type_params.is_empty() { continue; }
                 if let Some(parent) = &c.extends {
                     self.class_parents.insert(c.name.clone(), parent.clone());
                 }
@@ -234,7 +258,6 @@ impl CodeGen {
                 if has_vtable {
                     fields.push("__vtable__".to_string());
                     self.classes_with_vtable.insert(c.name.clone());
-                    // Compute vtable size (union of all methods from all interfaces)
                     let mut vtable_methods: Vec<String> = Vec::new();
                     let mut seen: HashSet<String> = HashSet::new();
                     for iface in &c.implements {
@@ -248,12 +271,9 @@ impl CodeGen {
                     }
                     self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
                 }
-                // Use inherited field layout (parent fields first, own last).
                 fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
                 self.struct_layouts.insert(c.name.clone(), fields);
 
-                // Build method_impl: resolve each accessible method to its implementing class.
-                // Own methods map to themselves.
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
                     self.method_impl.insert(key.clone(), key);
@@ -262,26 +282,20 @@ impl CodeGen {
                         Self::type_to_llvm(&method.ret_type),
                     );
                 }
-                // Inherited methods (not overridden) map to the ancestor's implementation.
                 let own_method_names: HashSet<String> =
                     c.methods.iter().map(|m| m.name.clone()).collect();
                 let mut ancestor = c.extends.clone();
                 while let Some(ref aname) = ancestor.clone() {
-                    let Some(ac) = class_ast_map.get(aname) else {
-                        break;
-                    };
+                    let Some(ac) = class_ast_map.get(aname) else { break; };
                     for method in &ac.methods {
                         if !own_method_names.contains(&method.name) {
                             let child_key = format!("{}_{}", c.name, method.name);
                             if !self.method_impl.contains_key(&child_key) {
                                 let owner_key = Self::resolve_method_owner(
-                                    aname,
-                                    &method.name,
-                                    &class_ast_map,
+                                    aname, &method.name, &class_ast_map,
                                 );
                                 self.method_impl.insert(child_key.clone(), owner_key.clone());
-                                let ret_ty = Self::type_to_llvm(&method.ret_type);
-                                self.method_ret_types.insert(child_key, ret_ty);
+                                self.method_ret_types.insert(child_key, Self::type_to_llvm(&method.ret_type));
                             }
                         }
                     }
@@ -312,6 +326,20 @@ impl CodeGen {
                         self.known_enum_variants.insert(variant.name.clone());
                     }
                 }
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node {
+                            if !c.type_params.is_empty() {
+                                self.generic_classes.insert(c.name.clone(), c.clone());
+                            }
+                        } else if let DeclKind::Enum(e) = &inner.node {
+                            self.known_enum_types.insert(e.name.clone());
+                            for variant in &e.variants {
+                                self.known_enum_variants.insert(variant.name.clone());
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -327,6 +355,17 @@ impl CodeGen {
                 DeclKind::Class(c) if c.type_params.is_empty() => {
                     for method in &c.methods {
                         self.gen_class_method(&c.name, method)?;
+                    }
+                }
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node {
+                            if c.type_params.is_empty() {
+                                for method in &c.methods {
+                                    self.gen_class_method(&c.name, method)?;
+                                }
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -451,16 +490,23 @@ impl CodeGen {
             ret_type: ret_type.clone(),
         };
 
-        let mut params_str = "i64* %self".to_string();
-        ctx.locals
-            .insert("self".to_string(), ("i64*".to_string(), 0));
-        ctx.params.insert("self".to_string());
-        ctx.local_types
-            .insert("self".to_string(), class_name.to_string());
+        let mut params_str = if method.static_ {
+            String::new()
+        } else {
+            "i64* %self".to_string()
+        };
+        if !method.static_ {
+            ctx.locals.insert("self".to_string(), ("i64*".to_string(), 0));
+            ctx.params.insert("self".to_string());
+            ctx.local_types.insert("self".to_string(), class_name.to_string());
+        }
 
         for p in &method.params {
             let llvm_ty = self.type_to_llvm_inst(&p.param_type);
-            params_str.push_str(&format!(", {} %{}", llvm_ty, p.name));
+            if !params_str.is_empty() {
+                params_str.push_str(", ");
+            }
+            params_str.push_str(&format!("{} %{}", llvm_ty, p.name));
             ctx.locals
                 .insert(p.name.clone(), (llvm_ty.clone(), ctx.locals.len()));
             ctx.params.insert(p.name.clone());
@@ -504,16 +550,24 @@ impl CodeGen {
         let class_names: Vec<(String, Vec<String>)> = source
             .decls
             .iter()
-            .filter_map(|d| {
-                if let DeclKind::Class(c) = &d.node {
-                    if !c.implements.is_empty() {
-                        Some((c.name.clone(), c.implements.clone()))
-                    } else {
-                        None
+            .flat_map(|d| {
+                let mut v = Vec::new();
+                match &d.node {
+                    DeclKind::Class(c) if !c.implements.is_empty() => {
+                        v.push((c.name.clone(), c.implements.clone()));
                     }
-                } else {
-                    None
+                    DeclKind::Namespace(ns) => {
+                        for inner in &ns.decls {
+                            if let DeclKind::Class(c) = &inner.node {
+                                if !c.implements.is_empty() {
+                                    v.push((c.name.clone(), c.implements.clone()));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
+                v
             })
             .collect();
 
@@ -1856,6 +1910,34 @@ impl CodeGen {
                 Ok((result, ret_ty))
             }
             ExprKind::MethodCall { obj, method, args } => {
+                // Static method call: ClassName.fnc(args) — obj is a class name, not an instance
+                if let ExprKind::Ident(class_name) = &obj.node {
+                    let method_key = format!("{}_{}", class_name, method);
+                    if self.method_ret_types.contains_key(&method_key) {
+                        // Check it really is a static method (no self in fn signature)
+                        if let Some((_, param_tys)) = self.fn_sigs.get(&method_key) {
+                            let _ = param_tys; // static confirmed via fn_sigs absence of self
+                        }
+                        // Only treat as static if the class name is not a local variable
+                        if !ctx.locals.contains_key(class_name.as_str()) && !ctx.params.contains(class_name.as_str()) {
+                            if self.struct_layouts.contains_key(class_name.as_str()) {
+                                let mut args_str = String::new();
+                                for (i, arg) in args.iter().enumerate() {
+                                    if i > 0 { args_str.push_str(", "); }
+                                    let (v, t) = self.gen_expr(arg, ctx)?;
+                                    args_str.push_str(&format!("{} {}", t, v));
+                                }
+                                let ret_ty = self.method_ret_types.get(&method_key).cloned()
+                                    .unwrap_or_else(|| "i64".to_string());
+                                let result = self.temp();
+                                writeln!(&mut self.ir, "{} = call {} @{}({})",
+                                    result, ret_ty, method_key, args_str).unwrap();
+                                return Ok((result, ret_ty));
+                            }
+                        }
+                    }
+                }
+
                 let (obj_ptr, obj_ty) = self.gen_expr(obj, ctx)?;
 
                 let declared_type = match &obj.node {

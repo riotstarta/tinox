@@ -673,8 +673,11 @@ impl TypeChecker {
                         self.field_visibility.insert(key, field.visibility.clone());
                     }
                     for method in &c.methods {
-                        let mut params =
-                            vec![("self".to_string(), ValueType::Named(c.name.clone()))];
+                        let mut params = if method.static_ {
+                            vec![]
+                        } else {
+                            vec![("self".to_string(), ValueType::Named(c.name.clone()))]
+                        };
                         params.extend(
                             method
                                 .params
@@ -742,6 +745,40 @@ impl TypeChecker {
                         })
                         .collect();
                     self.interfaces.insert(t.name.clone(), methods);
+                }
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        // Reuse the same symbol-collection logic for namespace-scoped decls
+                        if let DeclKind::Class(c) = &inner.node {
+                            if let Some(parent) = &c.extends {
+                                self.class_parents.insert(c.name.clone(), parent.clone());
+                            }
+                            for field in &c.fields {
+                                let ty = Self::type_to_value(&field.field_type);
+                                let key = format!("{}.{}", c.name, field.name);
+                                self.symbols.variables.insert(key.clone(), (ty, true));
+                                self.field_visibility.insert(key, field.visibility.clone());
+                            }
+                            for method in &c.methods {
+                                let mut params = if method.static_ {
+                                    vec![]
+                                } else {
+                                    vec![("self".to_string(), ValueType::Named(c.name.clone()))]
+                                };
+                                params.extend(
+                                    method.params.iter()
+                                        .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type))),
+                                );
+                                let sig = FunctionSignature {
+                                    params,
+                                    return_type: Self::type_to_value(&method.ret_type),
+                                };
+                                let key = format!("{}_{}", c.name, method.name);
+                                self.symbols.functions.insert(key.clone(), sig);
+                                self.method_visibility.insert(key, method.visibility.clone());
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -857,13 +894,22 @@ impl TypeChecker {
             let class_map: HashMap<String, tinox_parser::Class> = source
                 .decls
                 .iter()
-                .filter_map(|d| {
-                    if let DeclKind::Class(c) = &d.node {
-                        Some((c.name.clone(), c.clone()))
-                    } else {
-                        None
+                .flat_map(|d| {
+                    let mut v: Vec<tinox_parser::Class> = Vec::new();
+                    match &d.node {
+                        DeclKind::Class(c) => v.push(c.clone()),
+                        DeclKind::Namespace(ns) => {
+                            for inner in &ns.decls {
+                                if let DeclKind::Class(c) = &inner.node {
+                                    v.push(c.clone());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
+                    v
                 })
+                .map(|c| (c.name.clone(), c))
                 .collect();
 
             let class_names: Vec<String> = class_map.keys().cloned().collect();
@@ -969,6 +1015,15 @@ impl TypeChecker {
                 }
                 DeclKind::Class(c) => {
                     self.check_class(c);
+                }
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        match &inner.node {
+                            DeclKind::Class(c) => self.check_class(c),
+                            DeclKind::Function(f) => self.check_function(f),
+                            _ => {}
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1371,6 +1426,18 @@ impl TypeChecker {
             }
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
             ExprKind::MethodCall { obj, method, args } => {
+                // Static method call: ClassName.fnc(args) — obj is a class name, not an instance
+                if let ExprKind::Ident(class_name) = &obj.node {
+                    let method_key = format!("{}_{}", class_name, method);
+                    let is_static = self.symbols.functions.get(&method_key)
+                        .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
+                        .unwrap_or(false);
+                    if is_static {
+                        let func_expr = Spanned::new(ExprKind::Ident(method_key), expr.span);
+                        return self.check_call(&func_expr, args, expr.span);
+                    }
+                }
+
                 let obj_ty = self.infer_type(obj);
                 let class_name = obj_ty.to_string();
                 let method_name = format!("{}_{}", class_name, method);

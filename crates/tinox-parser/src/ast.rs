@@ -433,6 +433,13 @@ pub struct Trait {
 }
 
 #[derive(Debug, Clone)]
+pub struct Namespace {
+    pub name: Ident,
+    pub decls: Vec<Decl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum DeclKind {
     Function(Function),
     Class(Class),
@@ -441,6 +448,7 @@ pub enum DeclKind {
     Trait(Trait),
     Import(Import),
     Module(Ident),
+    Namespace(Namespace),
 }
 
 pub type Decl = Spanned<DeclKind>;
