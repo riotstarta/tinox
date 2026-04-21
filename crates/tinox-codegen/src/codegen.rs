@@ -4445,7 +4445,7 @@ mod tests {
 
     #[test]
     fn test_float_ops() {
-        let src = "fn add_floats(a: Float64, b: Float64) -> Float64 {\n  return a + b;\n}";
+        let src = "namespace math { class Ops { fnc add_floats(a: Float64, b: Float64) -> Float64 { return a + b; } } }";
         let ir = compile_to_ir(src);
         assert!(ir.contains("fadd double"), "should use fadd for float addition");
     }
@@ -4511,21 +4511,21 @@ mod tests {
 
     #[test]
     fn test_cast_float_to_int() {
-        let src = "fn f(x: Float64) -> Int64 {\n  return cast x as Int64;\n}";
+        let src = "namespace test { class C { fnc f(x: Float64) -> Int64 { return cast x as Int64; } } }";
         let ir = compile_to_ir(src);
         assert!(ir.contains("fptosi double"), "should use fptosi for float→int");
     }
 
     #[test]
     fn test_cast_int_to_float() {
-        let src = "fn f(x: Int64) -> Float64 {\n  return cast x as Float64;\n}";
+        let src = "namespace test { class C { fnc f(x: Int64) -> Float64 { return cast x as Float64; } } }";
         let ir = compile_to_ir(src);
         assert!(ir.contains("sitofp i64"), "should use sitofp for int→float");
     }
 
     #[test]
     fn test_cast_double_to_float() {
-        let src = "fn f(x: Float64) -> Float32 {\n  return cast x as Float32;\n}";
+        let src = "namespace test { class C { fnc f(x: Float64) -> Float32 { return cast x as Float32; } } }";
         let ir = compile_to_ir(src);
         assert!(ir.contains("fptrunc double"), "should use fptrunc for double→float");
     }
@@ -4542,10 +4542,10 @@ mod tests {
     fn test_return_as_expr() {
         // return used in expression position (right side of let)
         let src = concat!(
-            "fn f() -> Int64 {\n",
+            "namespace test { class C { fnc f() -> Int64 {\n",
             "  let _ = return 42;\n",
             "  return 0;\n",
-            "}"
+            "} } }"
         );
         let ir = compile_to_ir(src);
         assert!(ir.contains("ret i64 42"), "should emit ret for return-expr");

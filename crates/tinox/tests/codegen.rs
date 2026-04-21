@@ -202,11 +202,15 @@ fn main() -> Int64 {
 #[test]
 fn test_function_call() {
     assert_eq!(run(r#"
-fn add(a: Int64, b: Int64) -> Int64 {
-    return a + b;
+namespace math {
+    class Ops {
+        fnc add(a: Int64, b: Int64) -> Int64 {
+            return a + b;
+        }
+    }
 }
 fn main() -> Int64 {
-    println(add(3, 4));
+    println(Ops.add(3, 4));
     return 0;
 }
 "#), "7");
@@ -215,14 +219,18 @@ fn main() -> Int64 {
 #[test]
 fn test_recursive_function() {
     assert_eq!(run(r#"
-fn fib(n: Int64) -> Int64 {
-    if n <= 1 {
-        return n;
+namespace math {
+    class Seq {
+        fnc fib(n: Int64) -> Int64 {
+            if n <= 1 {
+                return n;
+            }
+            return Seq.fib(n - 1) + Seq.fib(n - 2);
+        }
     }
-    return fib(n - 1) + fib(n - 2);
 }
 fn main() -> Int64 {
-    println(fib(10));
+    println(Seq.fib(10));
     return 0;
 }
 "#), "55");
@@ -467,13 +475,17 @@ class Square implements Shape {
         return this.side * this.side;
     }
 }
-fn print_area(s: Shape) -> Int64 {
-    println(s.area());
-    return 0;
+namespace shapes {
+    class ShapeUtils {
+        fnc print_area(s: Shape) -> Int64 {
+            println(s.area());
+            return 0;
+        }
+    }
 }
 fn main() -> Int64 {
     let sq = new Square(5);
-    print_area(sq);
+    ShapeUtils.print_area(sq);
     return 0;
 }
 "#), "25");
@@ -485,17 +497,21 @@ fn main() -> Int64 {
 fn test_enum_match() {
     assert_eq!(run(r#"
 enum Dir { North; South; East; West; }
-fn label(d: Dir) -> String {
-    match d {
-        North => return "N";
-        South => return "S";
-        East  => return "E";
-        West  => return "W";
+namespace dir {
+    class DirUtils {
+        fnc label(d: Dir) -> String {
+            match d {
+                North => return "N";
+                South => return "S";
+                East  => return "E";
+                West  => return "W";
+            }
+        }
     }
 }
 fn main() -> Int64 {
-    println(label(Dir::North));
-    println(label(Dir::West));
+    println(DirUtils.label(Dir::North));
+    println(DirUtils.label(Dir::West));
     return 0;
 }
 "#), "N\nW");
@@ -596,11 +612,15 @@ fn main() -> Int64 {
 #[test]
 fn test_multiple_functions() {
     assert_eq!(run(r#"
-fn square(x: Int64) -> Int64 { return x * x; }
-fn cube(x: Int64) -> Int64 { return x * x * x; }
+namespace math {
+    class MathUtils {
+        fnc square(x: Int64) -> Int64 { return x * x; }
+        fnc cube(x: Int64) -> Int64 { return x * x * x; }
+    }
+}
 fn main() -> Int64 {
-    println(square(4));
-    println(cube(3));
+    println(MathUtils.square(4));
+    println(MathUtils.cube(3));
     return 0;
 }
 "#), "16\n27");

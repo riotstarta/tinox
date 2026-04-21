@@ -54,13 +54,26 @@ impl Parser {
         let decl = if self.consume_keyword(Keyword::Async) {
             if self.check_keyword(Keyword::Fn) {
                 let mut f = self.parse_fn()?;
+                if f.name != "main" && f.type_params.is_empty() {
+                    return Err(Error::new(f.span, format!(
+                        "standalone function '{}' is not allowed; use 'fnc' inside a class within a namespace",
+                        f.name
+                    )));
+                }
                 f.is_async = true;
                 DeclKind::Function(f)
             } else {
                 return Err(self.error("expected 'fn' after 'async'"));
             }
         } else if self.check_keyword(Keyword::Fn) {
-            DeclKind::Function(self.parse_fn()?)
+            let f = self.parse_fn()?;
+            if f.name != "main" && f.type_params.is_empty() {
+                return Err(Error::new(f.span, format!(
+                    "standalone function '{}' is not allowed; use 'fnc' inside a class within a namespace",
+                    f.name
+                )));
+            }
+            DeclKind::Function(f)
         } else if self.check_keyword(Keyword::Class) {
             DeclKind::Class(self.parse_class()?)
         } else if self.check_keyword(Keyword::Interface) {
