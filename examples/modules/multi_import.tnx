@@ -1,7 +1,9 @@
-import utils.math;
+import utils::math;
+
 import math_lib;
 
-fn main() -> Int64 {
+fn main() -> Int64
+{
     println(square(5));
     println(add(10, 20));
     return 0;

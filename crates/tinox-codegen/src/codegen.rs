@@ -4003,6 +4003,7 @@ impl CodeGen {
             body: f.body.clone(),
             span: f.span,
             is_async: f.is_async,
+            doc: f.doc.clone(),
         }
     }
 
@@ -4087,6 +4088,7 @@ impl CodeGen {
                 visibility: f.visibility.clone(),
                 mutable: f.mutable,
                 span: f.span,
+                doc: f.doc.clone(),
             }).collect(),
             methods: c.methods.iter().map(|m| tinox_parser::Method {
                 name: m.name.clone(),
@@ -4101,8 +4103,10 @@ impl CodeGen {
                 visibility: m.visibility.clone(),
                 span: m.span,
                 is_async: m.is_async,
+                doc: m.doc.clone(),
             }).collect(),
             span: c.span,
+            doc: c.doc.clone(),
         }
     }
 

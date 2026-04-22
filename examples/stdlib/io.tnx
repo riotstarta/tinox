@@ -1,0 +1,254 @@
+/**
+ * Tinox Standard Library - IO Module
+ * Input/Output utilities including file operations,
+ * path manipulation, console output, and string buffering
+ */
+module tinox.core.io;
+
+namespace tinox.core.io
+{
+    /**
+     * IO utility class providing console output helpers
+     * and factory methods for creating IO objects
+     */
+    class Io
+    {
+        /**
+         * Creates a new empty Buffer
+         *
+         * @return a new Buffer instance
+         */
+        fnc newBuffer() -> Buffer
+        {
+            return Buffer::new();
+        }
+
+        /**
+         * Prints a string followed by a newline
+         *
+         * @param value the string to print
+         */
+        fnc printLine(value: String) -> Unit
+        {
+            print(value);
+            print("\n");
+        }
+
+        /**
+         * Prints a formatted header with separator lines
+         *
+         * @param title the header text to display
+         */
+        fnc printHeader(title: String) -> Unit
+        {
+            print("=== ");
+            print(title);
+            print(" ===\n");
+        }
+    }
+
+    /**
+     * Represents a file handle for reading and writing
+     *
+     * Provides methods for opening, reading, writing, and closing files.
+     * Uses the underlying runtime file operations.
+     */
+    class File
+    {
+        /** The file path */
+        path: String;
+
+        /** The file handle (0 if not open) */
+        handle: Int64;
+
+        /**
+         * Creates a new File instance (not yet opened)
+         *
+         * @param path the file path
+         * @return a new File instance
+         */
+        fnc new(path: String) -> File
+        {
+            return File { path: path, handle: 0 };
+        }
+
+        /**
+         * Returns the file path
+         *
+         * @return the path string
+         */
+        fn getPath() -> String
+        {
+            return this.path;
+        }
+
+        /**
+         * Closes the file if it is open
+         */
+        fn close() -> Unit
+        {
+            if this.handle != 0
+            {
+                fileClose(this.handle);
+                this.handle = 0;
+            }
+        }
+
+        /**
+         * Checks if a file exists at the given path
+         *
+         * @param path the file path to check
+         * @return true if the file exists
+         */
+        fn exists(path: String) -> Bool
+        {
+            return fileExists(path);
+        }
+    }
+
+    /**
+     * Path manipulation utilities for working with file paths
+     */
+    class Paths
+    {
+        /**
+         * Extracts the file extension from a filename
+         *
+         * @param filename the filename (e.g., "file.txt")
+         * @return the extension without the dot (e.g., "txt"), or empty string
+         */
+        fnc getExtension(filename: String) -> String
+        {
+            var dotIndex: Int64 = filename.lastIndexOf(".");
+            if dotIndex == -1
+            {
+                return "";
+            }
+            return filename.substring(dotIndex + 1, filename.len());
+        }
+
+        /**
+         * Extracts the filename from a full path
+         *
+         * @param filePath the full path (e.g., "/path/to/file.txt")
+         * @return the filename portion (e.g., "file.txt")
+         */
+        fnc getFileName(filePath: String) -> String
+        {
+            var lastSlash: Int64 = filePath.lastIndexOf("/");
+            if lastSlash == -1
+            {
+                return filePath;
+            }
+            return filePath.substring(lastSlash + 1, filePath.len());
+        }
+
+        /**
+         * Extracts the directory portion from a full path
+         *
+         * @param filePath the full path (e.g., "/path/to/file.txt")
+         * @return the directory portion (e.g., "/path/to"), or empty string
+         */
+        fnc getDirectory(filePath: String) -> String
+        {
+            var lastSlash: Int64 = filePath.lastIndexOf("/");
+            if lastSlash == -1
+            {
+                return "";
+            }
+            return filePath.substring(0, lastSlash);
+        }
+
+        /**
+         * Joins a directory and filename with a path separator
+         *
+         * @param dir the directory path
+         * @param file the filename
+         * @return the combined path (e.g., "dir/file")
+         */
+        fnc join(dir: String, file: String) -> String
+        {
+            return dir + "/" + file;
+        }
+    }
+
+    /**
+     * A mutable string buffer for efficient string concatenation
+     *
+     * Useful for building up strings incrementally without
+     * creating intermediate string objects.
+     */
+    class Buffer
+    {
+        /** The accumulated string data */
+        var data: String;
+
+        /**
+         * Creates a new empty Buffer
+         *
+         * @return a new Buffer instance
+         */
+        fnc new() -> Buffer
+        {
+            return Buffer { data: "" };
+        }
+
+        /**
+         * Appends a string to the buffer
+         *
+         * @param s the string to append
+         */
+        fn append(s: String) -> Unit
+        {
+            this.data = this.data + s;
+        }
+
+        /**
+         * Appends the string representation of an integer
+         *
+         * @param n the integer to append
+         */
+        fn appendInt(n: Int64) -> Unit
+        {
+            this.data = this.data + n.toString();
+        }
+
+        /**
+         * Appends a string followed by a newline
+         *
+         * @param s the string to append
+         */
+        fn appendLine(s: String) -> Unit
+        {
+            this.data = this.data + s + "\n";
+        }
+
+        /**
+         * Clears all content from the buffer
+         */
+        fn clear() -> Unit
+        {
+            this.data = "";
+        }
+
+        /**
+         * Returns the accumulated string
+         *
+         * @return the buffer contents as a string
+         */
+        fn toString() -> String
+        {
+            return this.data;
+        }
+
+        /**
+         * Checks if the buffer is empty
+         *
+         * @return true if no content has been appended
+         */
+        fn isEmpty() -> Bool
+        {
+            return this.data.len() == 0;
+        }
+    }
+}

@@ -1,22 +1,30 @@
-interface IDrawable {
-    fn draw() -> i64;
+interface IDrawable
+{
+    fn draw() -> Int64;
 }
 
-class Circle implements IDrawable {
-    radius: i64
-    fn draw() -> i64 {
-        return self.radius;
+class Circle implements IDrawable
+{
+    radius: Int64;
+
+    fnc draw() -> Int64
+    {
+        return this.radius;
     }
 }
 
-class Square implements IDrawable {
-    side: i64
-    fn draw() -> i64 {
-        return self.side;
+class Square implements IDrawable
+{
+    side: Int64;
+
+    fnc draw() -> Int64
+    {
+        return this.side;
     }
 }
 
-fn main() -> i64 {
+fn main() -> Int64
+{
     // Direct (concrete) dispatch — should work as before
     let c: Circle = Circle { radius: 5 };
     let s: Square = Square { side: 10 };

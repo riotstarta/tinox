@@ -1,0 +1,98 @@
+import tinox::core::math;
+
+import tinox::core::array;
+
+import tinox::core::collections;
+
+/**
+ * Main entry point for the stdlib demo
+ * Runs through examples of each module and prints results.
+ * @return 0 on success
+ */
+fn main() -> Int64
+{
+    print("=== Tinox Standard Library Demo ===
+
+");
+    print("--- Math Module ---
+");
+    let sq: Int64 = Math::square(7);
+    print("square(7): ");
+    println(sq);
+    let pow: Int64 = Math::pow(2, 10);
+    print("pow(2, 10): ");
+    println(pow);
+    let fact: Int64 = Math::factorial(10);
+    print("factorial(10): ");
+    println(fact);
+    let abs: Int64 = Math::abs(-42);
+    print("abs(-42): ");
+    println(abs);
+    let minVal: Int64 = Math::min(10, 20);
+    print("min(10, 20): ");
+    println(minVal);
+    let maxVal: Int64 = Math::max(10, 20);
+    print("max(10, 20): ");
+    println(maxVal);
+    let rand: Int64 = Math::randomSeed(42);
+    print("randomSeed(42): ");
+    println(rand);
+    print("
+");
+    print("--- Array Module ---
+");
+    let numbers: List<Int64> = [5, 2, 8, 1, 9, 3, 7, 4, 6];
+    let sum: Int64 = Arrays::sum(numbers);
+    print("sum: ");
+    println(sum);
+    let arrMin: Int64 = Arrays::findMin(numbers);
+    print("min: ");
+    println(arrMin);
+    let arrMax: Int64 = Arrays::findMax(numbers);
+    print("max: ");
+    println(arrMax);
+    let avg: Int64 = Arrays::average(numbers);
+    print("average: ");
+    println(avg);
+    let sorted: List<Int64> = Arrays::bubbleSort(numbers);
+    print("sorted first: ");
+    println(sorted[0]);
+    print("sorted last: ");
+    println(sorted[sorted.len() - 1]);
+    let range: List<Int64> = Arrays::range(0, 5);
+    print("range(0, 5) len: ");
+    println(range.len());
+    print("
+");
+    print("--- Collections Module ---
+");
+    let stack: Stack = new Stack();
+    stack.push(1);
+    stack.push(2);
+    stack.push(3);
+    print("Stack peek: ");
+    println(stack.peek());
+    print("Stack pop: ");
+    println(stack.pop());
+    print("Stack size: ");
+    println(stack.size());
+    let queue: Queue = new Queue();
+    queue.enqueue(10);
+    queue.enqueue(20);
+    queue.enqueue(30);
+    print("Queue peek: ");
+    println(queue.peek());
+    print("Queue dequeue: ");
+    println(queue.dequeue());
+    print("Queue size: ");
+    println(queue.size());
+    let pair: Pair = new Pair(100, 200);
+    print("Pair first: ");
+    println(pair.getFirst());
+    print("Pair second: ");
+    println(pair.getSecond());
+    print("
+=== Demo Complete ===
+");
+    return 0;
+}

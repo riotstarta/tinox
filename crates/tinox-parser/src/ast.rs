@@ -355,6 +355,7 @@ pub struct Function {
     pub body: Stmt,
     pub span: Span,
     pub is_async: bool,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +368,7 @@ pub struct Method {
     pub visibility: Visibility,
     pub span: Span,
     pub is_async: bool,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +392,7 @@ pub struct FieldDef {
     pub visibility: Visibility,
     pub mutable: bool,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +404,7 @@ pub struct Class {
     pub fields: Vec<FieldDef>,
     pub methods: Vec<Method>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -409,6 +413,7 @@ pub struct Interface {
     pub extends: Vec<Ident>,
     pub methods: Vec<Function>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -416,6 +421,7 @@ pub struct EnumVariant {
     pub name: Ident,
     pub args: Vec<Type>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +429,7 @@ pub struct Enum {
     pub name: Ident,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +437,7 @@ pub struct Trait {
     pub name: Ident,
     pub methods: Vec<Function>,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]

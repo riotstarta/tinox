@@ -49,6 +49,7 @@ impl Parser {
     }
 
     fn parse_decl(&mut self) -> Result<Decl, Error> {
+        let doc = self.take_doc();
         let start = self.mk_span();
 
         let decl = if self.consume_keyword(Keyword::Async) {
@@ -61,32 +62,46 @@ impl Parser {
                     )));
                 }
                 f.is_async = true;
+                f.doc = doc;
                 DeclKind::Function(f)
             } else {
                 return Err(self.error("expected 'fn' after 'async'"));
             }
         } else if self.check_keyword(Keyword::Fn) {
-            let f = self.parse_fn()?;
+            let mut f = self.parse_fn()?;
             if f.name != "main" && f.type_params.is_empty() {
                 return Err(Error::new(f.span, format!(
                     "standalone function '{}' is not allowed; use 'fnc' inside a class within a namespace",
                     f.name
                 )));
             }
+            f.doc = doc;
             DeclKind::Function(f)
         } else if self.check_keyword(Keyword::Class) {
-            DeclKind::Class(self.parse_class()?)
+            let mut c = self.parse_class()?;
+            c.doc = doc;
+            DeclKind::Class(c)
         } else if self.check_keyword(Keyword::Interface) {
-            DeclKind::Interface(self.parse_interface()?)
+            let mut i = self.parse_interface()?;
+            i.doc = doc;
+            DeclKind::Interface(i)
         } else if self.check_keyword(Keyword::Enum) {
-            DeclKind::Enum(self.parse_enum()?)
+            let mut e = self.parse_enum()?;
+            e.doc = doc;
+            DeclKind::Enum(e)
         } else if self.check_keyword(Keyword::Trait) {
-            DeclKind::Trait(self.parse_trait()?)
+            let mut t = self.parse_trait()?;
+            t.doc = doc;
+            DeclKind::Trait(t)
         } else if self.check_keyword(Keyword::Import) {
             DeclKind::Import(self.parse_import()?)
         } else if self.check_keyword(Keyword::Module) {
             self.bump();
-            let name = self.parse_ident()?;
+            let mut name = self.parse_ident()?;
+            while self.consume(TokenKind::Dot) {
+                name.push('.');
+                name.push_str(&self.parse_ident()?);
+            }
             self.consume(TokenKind::Semicolon);
             DeclKind::Module(name)
         } else if self.check_keyword(Keyword::Namespace) {
@@ -132,6 +147,7 @@ impl Parser {
             body: Spanned::new(StmtKind::Empty, span),
             span,
             is_async: false,
+            doc: None,
         }))
     }
 
@@ -181,6 +197,7 @@ impl Parser {
             body,
             span,
             is_async: false,
+            doc: None,
         })
     }
 
@@ -228,6 +245,7 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(TokenKind::RBrace) {
+            let doc = self.take_doc();
             let vis = self.parse_visibility();
             let mutable = self.consume_keyword(Keyword::Mut);
             let is_async = self.consume_keyword(Keyword::Async);
@@ -235,13 +253,17 @@ impl Parser {
             if self.check_keyword(Keyword::Fn) {
                 let mut m = self.parse_method(vis, false)?;
                 m.is_async = is_async;
+                m.doc = doc;
                 methods.push(m);
             } else if self.check_keyword(Keyword::Fnc) {
                 let mut m = self.parse_method(vis, true)?;
                 m.is_async = is_async;
+                m.doc = doc;
                 methods.push(m);
             } else {
-                fields.push(self.parse_field(vis, mutable)?);
+                let mut f = self.parse_field(vis, mutable)?;
+                f.doc = doc;
+                fields.push(f);
             }
         }
 
@@ -255,6 +277,7 @@ impl Parser {
             fields,
             methods,
             span,
+            doc: None,
         })
     }
 
@@ -294,6 +317,7 @@ impl Parser {
             visibility,
             span,
             is_async: false,
+            doc: None,
         })
     }
 
@@ -310,6 +334,7 @@ impl Parser {
             visibility,
             mutable,
             span,
+            doc: None,
         })
     }
 
@@ -344,7 +369,10 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) {
-            methods.push(self.parse_fn()?);
+            let doc = self.take_doc();
+            let mut m = self.parse_fn()?;
+            m.doc = doc;
+            methods.push(m);
         }
 
         self.expect(TokenKind::RBrace)?;
@@ -354,6 +382,7 @@ impl Parser {
             extends,
             methods,
             span,
+            doc: None,
         })
     }
 
@@ -365,7 +394,10 @@ impl Parser {
 
         let mut variants = Vec::new();
         while !self.check(TokenKind::RBrace) {
-            variants.push(self.parse_enum_variant()?);
+            let doc = self.take_doc();
+            let mut v = self.parse_enum_variant()?;
+            v.doc = doc;
+            variants.push(v);
             if !self.check(TokenKind::RBrace) {
                 if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
                     return Err(self.error("expected ',' or ';'"));
@@ -382,6 +414,7 @@ impl Parser {
             name,
             variants,
             span,
+            doc: None,
         })
     }
 
@@ -400,7 +433,7 @@ impl Parser {
             self.expect(TokenKind::RParen)?;
         }
 
-        Ok(EnumVariant { name, args, span })
+        Ok(EnumVariant { name, args, span, doc: None })
     }
 
     fn parse_trait(&mut self) -> Result<Trait, Error> {
@@ -411,7 +444,10 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) {
-            methods.push(self.parse_fn()?);
+            let doc = self.take_doc();
+            let mut m = self.parse_fn()?;
+            m.doc = doc;
+            methods.push(m);
         }
 
         self.expect(TokenKind::RBrace)?;
@@ -420,6 +456,7 @@ impl Parser {
             name,
             methods,
             span,
+            doc: None,
         })
     }
 
@@ -453,15 +490,24 @@ impl Parser {
 
         let mut decls = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            let doc = self.take_doc();
             let decl_start = self.mk_span();
             let inner = if self.check_keyword(Keyword::Class) {
-                DeclKind::Class(self.parse_class()?)
+                let mut c = self.parse_class()?;
+                c.doc = doc;
+                DeclKind::Class(c)
             } else if self.check_keyword(Keyword::Interface) {
-                DeclKind::Interface(self.parse_interface()?)
+                let mut i = self.parse_interface()?;
+                i.doc = doc;
+                DeclKind::Interface(i)
             } else if self.check_keyword(Keyword::Enum) {
-                DeclKind::Enum(self.parse_enum()?)
+                let mut e = self.parse_enum()?;
+                e.doc = doc;
+                DeclKind::Enum(e)
             } else if self.check_keyword(Keyword::Trait) {
-                DeclKind::Trait(self.parse_trait()?)
+                let mut t = self.parse_trait()?;
+                t.doc = doc;
+                DeclKind::Trait(t)
             } else {
                 let e = self.error("expected 'class', 'interface', 'enum', or 'trait' inside namespace");
                 self.errors.push(e);
@@ -2134,6 +2180,26 @@ impl Parser {
             true
         } else {
             false
+        }
+    }
+
+    fn take_doc(&mut self) -> Option<String> {
+        // Skip trivia to find doc comment
+        while self.peek().kind.is_trivia() && !self.is_at_end() {
+            if let TokenKind::DocComment(text) = &self.peek().kind {
+                let doc = text.clone();
+                self.bump();
+                return Some(doc);
+            }
+            self.bump();
+        }
+        // Check current token after skipping trivia
+        if let TokenKind::DocComment(text) = &self.peek().kind {
+            let doc = text.clone();
+            self.bump();
+            Some(doc)
+        } else {
+            None
         }
     }
 

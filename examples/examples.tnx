@@ -4,7 +4,8 @@
 // ============================================================
 // Example 1: Hello World
 // ============================================================
-fn main() -> Int32 {
+fn main() -> Int32
+{
     print("Hello, World!");
     return 0;
 }
@@ -12,77 +13,91 @@ fn main() -> Int32 {
 // ============================================================
 // Example 2: Functions and Arithmetic
 // ============================================================
-fn add(a: Int32, b: Int32) -> Int32 {
+fn add(a: Int32, b: Int32) -> Int32
+{
     return a + b;
 }
 
-fn multiply(x: Int32, y: Int32) -> Int32 {
+fn multiply(x: Int32, y: Int32) -> Int32
+{
     return x * y;
 }
 
-fn factorial(n: Int32) -> Int32 {
-    if n <= 1 {
+fn factorial(n: Int32) -> Int32
+{
+    if n <= 1
+    {
         return 1;
     }
     return n * factorial(n - 1);
 }
 
-fn example_arithmetic() -> Int32 {
+fn example_arithmetic() -> Int32
+{
     let a: Int32 = 10;
     let b: Int32 = 20;
-    
+
     let sum: Int32 = add(a, b);
     let product: Int32 = multiply(a, b);
     let fact: Int32 = factorial(5);
-    
+
     print("Sum: ");
     print(sum);
     print("\n");
-    
+
     print("Product: ");
     print(product);
     print("\n");
-    
+
     print("Factorial(5): ");
     print(fact);
     print("\n");
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 3: Control Flow
 // ============================================================
-fn example_control_flow(x: Int32) -> Int32 {
+fn example_control_flow(x: Int32) -> Int32
+{
     // If-else
-    if x > 0 {
+    if x > 0
+    {
         print("positive\n");
-    } else if x < 0 {
+    }
+    else if x < 0
+    {
         print("negative\n");
-    } else {
+    }
+    else
+    {
         print("zero\n");
     }
-    
+
     // While loop
     var counter: Int32 = 0;
-    while counter < 5 {
+    while counter < 5
+    {
         print(counter);
         print(" ");
         counter = counter + 1;
     }
     print("\n");
-    
+
     // For loop (sum 1 to 10)
     var sum: Int32 = 0;
-    for i in 1..11 {
+    for i in 1..11
+    {
         sum = sum + i;
     }
     print("Sum 1-10: ");
     print(sum);
     print("\n");
-    
+
     // Match expression
-    let message: String = match x {
+    let message: String = match x
+    {
         1 => "one";
         2 => "two";
         3 => "three";
@@ -90,28 +105,32 @@ fn example_control_flow(x: Int32) -> Int32 {
     };
     print(message);
     print("\n");
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 4: Classes and Objects
 // ============================================================
-class Point {
+class Point
+{
     x: Float64;
     y: Float64;
-    
-    fn new(x: Float64, y: Float64) -> Point {
+
+    fn new(x: Float64, y: Float64) -> Point
+    {
         return Point { x: x, y: y };
     }
-    
-    fn distanceTo(other: Point) -> Float64 {
+
+    fn distanceTo(other: Point) -> Float64
+    {
         let dx: Float64 = this.x - other.x;
         let dy: Float64 = this.y - other.y;
         return ((dx * dx) + (dy * dy)).sqrt();
     }
-    
-    fn describe() -> Unit {
+
+    fn describe() -> Unit
+    {
         print("Point(");
         print(this.x);
         print(", ");
@@ -120,25 +139,27 @@ class Point {
     }
 }
 
-fn example_classes() -> Int32 {
+fn example_classes() -> Int32
+{
     let p1: Point = Point.new(0.0, 0.0);
     let p2: Point = Point.new(3.0, 4.0);
-    
+
     p1.describe();
     p2.describe();
-    
+
     let dist: Float64 = p1.distanceTo(p2);
     print("Distance: ");
     print(dist);
     print("\n");
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 5: Enums and Pattern Matching
 // ============================================================
-enum Direction {
+enum Direction
+{
     North;
     South;
     East;
@@ -146,8 +167,10 @@ enum Direction {
     Diagonal(dx: Int32, dy: Int32);
 }
 
-fn move(d: Direction, steps: Int32) -> Point {
-    match d {
+fn move(d: Direction, steps: Int32) -> Point
+{
+    match d
+    {
         North    => return Point.new(0.0, steps as Float64);
         South    => return Point.new(0.0, -(steps as Float64));
         East     => return Point.new(steps as Float64, 0.0);
@@ -156,7 +179,8 @@ fn move(d: Direction, steps: Int32) -> Point {
     }
 }
 
-fn example_enums() -> Int32 {
+fn example_enums() -> Int32
+{
     let dirs: List<Direction> = [
         Direction.North,
         Direction.South,
@@ -164,14 +188,17 @@ fn example_enums() -> Int32 {
         Direction.West,
         Direction.Diagonal(dx: 1, dy: 1)
     ];
-    
-    for dir in dirs {
-        match dir {
+
+    for dir in dirs
+    {
+        match dir
+        {
             North => print("Going North\n");
             South => print("Going South\n");
             East  => print("Going East\n");
             West  => print("Going West\n");
-            Diagonal(dx, dy) => {
+            Diagonal(dx, dy) =>
+            {
                 print("Diagonal: ");
                 print(dx);
                 print(", ");
@@ -180,112 +207,135 @@ fn example_enums() -> Int32 {
             }
         }
     }
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 6: Interfaces
 // ============================================================
-interface Drawable {
+interface Drawable
+{
     fn draw() -> Unit;
     fn getArea() -> Float64;
 }
 
-class Circle implements Drawable {
+class Circle implements Drawable
+{
     radius: Float64;
-    
-    fn new(radius: Float64) -> Circle {
+
+    fn new(radius: Float64) -> Circle
+    {
         return Circle { radius: radius };
     }
-    
-    fn draw() -> Unit {
+
+    fn draw() -> Unit
+    {
         print("Drawing circle with radius ");
         print(this.radius);
         print("\n");
     }
-    
-    fn getArea() -> Float64 {
+
+    fn getArea() -> Float64
+    {
         return 3.14159 * this.radius * this.radius;
     }
 }
 
-class Rectangle implements Drawable {
+class Rectangle implements Drawable
+{
     width: Float64;
     height: Float64;
-    
-    fn new(w: Float64, h: Float64) -> Rectangle {
+
+    fn new(w: Float64, h: Float64) -> Rectangle
+    {
         return Rectangle { width: w, height: h };
     }
-    
-    fn draw() -> Unit {
+
+    fn draw() -> Unit
+    {
         print("Drawing rectangle ");
         print(this.width);
         print(" x ");
         print(this.height);
         print("\n");
     }
-    
-    fn getArea() -> Float64 {
+
+    fn getArea() -> Float64
+    {
         return this.width * this.height;
     }
 }
 
-fn example_interfaces() -> Int32 {
+fn example_interfaces() -> Int32
+{
     let shapes: List<Drawable> = [
         Circle.new(5.0),
         Rectangle.new(4.0, 3.0)
     ];
-    
-    for shape in shapes {
+
+    for shape in shapes
+    {
         shape.draw();
         print("Area: ");
         print(shape.getArea());
         print("\n");
     }
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 7: Error Handling
 // ============================================================
-fn divide(a: Int32, b: Int32) -> Int32 {
-    if b == 0 {
+fn divide(a: Int32, b: Int32) -> Int32
+{
+    if b == 0
+    {
         throw "Division by zero";
     }
     return a / b;
 }
 
-fn example_error_handling() -> Int32 {
-    try {
+fn example_error_handling() -> Int32
+{
+    try
+    {
         let result: Int32 = divide(10, 0);
         print("Result: ");
         print(result);
         print("\n");
-    } catch e: String {
+    }
+    catch e: String
+    {
         print("Error caught: ");
         print(e);
         print("\n");
-    } finally {
+    }
+    finally
+    {
         print("Cleanup done\n");
     }
-    
+
     return 0;
 }
 
 // ============================================================
 // Example 8: Recursion
 // ============================================================
-fn fibonacci(n: Int32) -> Int32 {
-    if n <= 1 {
+fn fibonacci(n: Int32) -> Int32
+{
+    if n <= 1
+    {
         return n;
     }
     return fibonacci(n - 1) + fibonacci(n - 2);
 }
 
-fn example_recursion() -> Int32 {
-    for i in 0..10 {
+fn example_recursion() -> Int32
+{
+    for i in 0..10
+    {
         let fib: Int32 = fibonacci(i);
         print(fib);
         print(" ");
@@ -297,30 +347,31 @@ fn example_recursion() -> Int32 {
 // ============================================================
 // Main entry point
 // ============================================================
-fn main() -> Int32 {
+fn main() -> Int32
+{
     print("=== Tinox Examples ===\n\n");
-    
+
     print("--- Hello World ---\n");
     // Hello World is defined above
-    
+
     print("\n--- Arithmetic ---\n");
     example_arithmetic();
-    
+
     print("\n--- Control Flow ---\n");
     example_control_flow(5);
-    
+
     print("\n--- Classes ---\n");
     example_classes();
-    
+
     print("\n--- Enums ---\n");
     example_enums();
-    
+
     print("\n--- Error Handling ---\n");
     example_error_handling();
-    
+
     print("\n--- Recursion ---\n");
     example_recursion();
-    
+
     print("\n=== Done ===\n");
     return 0;
 }

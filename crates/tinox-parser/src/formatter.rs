@@ -25,6 +25,38 @@ impl Formatter {
         "    ".repeat(self.indent)
     }
 
+    fn fmt_doc(&self, doc: &Option<String>) -> String {
+        match doc {
+            Some(d) => {
+                let lines: Vec<&str> = d.lines().collect();
+                if lines.len() <= 1 {
+                    let content = d.trim();
+                    let content = content.strip_suffix("*/").unwrap_or(content).trim();
+                    format!("{}/** {} */\n", self.ind(), content)
+                } else {
+                    let mut out = String::new();
+                    out.push_str(&format!("{}/**\n", self.ind()));
+                    for line in &lines {
+                        let trimmed = line.trim();
+                        // Skip the closing */
+                        if trimmed == "*/" || trimmed.is_empty() {
+                            continue;
+                        }
+                        let mut cleaned = trimmed.trim_start_matches('*');
+                        cleaned = cleaned.strip_suffix("*/").unwrap_or(cleaned);
+                        let cleaned = cleaned.trim();
+                        if !cleaned.is_empty() {
+                            out.push_str(&format!("{} * {}\n", self.ind(), cleaned));
+                        }
+                    }
+                    out.push_str(&format!("{} */\n", self.ind()));
+                    out
+                }
+            }
+            None => String::new(),
+        }
+    }
+
     fn fmt_decl(&mut self, decl: &DeclKind) -> String {
         match decl {
             DeclKind::Function(f) => self.fmt_fn(f),
@@ -39,22 +71,24 @@ impl Formatter {
     }
 
     fn fmt_fn(&mut self, f: &Function) -> String {
+        let doc = self.fmt_doc(&f.doc);
         let async_ = if f.is_async { "async " } else { "" };
         let type_params = fmt_type_params(&f.type_params);
         let params = self.fmt_params(&f.params);
         let ret = self.fmt_type(&f.ret_type);
         let sig = format!("{}fn {}{}({}) -> {}", async_, f.name, type_params, params, ret);
-        format!("{}\n{}", sig, self.fmt_block_stmt(&f.body))
+        format!("{}{}\n{}", doc, sig, self.fmt_block_stmt(&f.body))
     }
 
     fn fmt_method(&mut self, m: &Method) -> String {
+        let doc = self.fmt_doc(&m.doc);
         let async_ = if m.is_async { "async " } else { "" };
         let vis = fmt_visibility(&m.visibility);
         let fn_kw = if m.static_ { "fnc" } else { "fn" };
         let params = self.fmt_params(&m.params);
         let ret = self.fmt_type(&m.ret_type);
         let sig = format!("{}{}{}{} {}({}) -> {}", self.ind(), vis, async_, fn_kw, m.name, params, ret);
-        format!("{}\n{}", sig, self.fmt_block_stmt(&m.body))
+        format!("{}{}\n{}", doc, sig, self.fmt_block_stmt(&m.body))
     }
 
     fn fmt_namespace(&mut self, ns: &Namespace) -> String {
@@ -67,10 +101,11 @@ impl Formatter {
             body.push_str(&format!("{}{}\n", self.ind(), self.fmt_decl(&decl.node)));
         }
         self.indent -= 1;
-        format!("namespace {}\n{{\n{}{}}}", ns.name.join("."), body, self.ind())
+        format!("namespace {}\n{}{{\n{}{}}}", ns.name.join("."), self.ind(), body, self.ind())
     }
 
     fn fmt_class(&mut self, c: &Class) -> String {
+        let doc = self.fmt_doc(&c.doc);
         let type_params = fmt_type_params(&c.type_params);
         let mut header = format!("class {}{}", c.name, type_params);
         if let Some(ext) = &c.extends {
@@ -82,7 +117,9 @@ impl Formatter {
         let mut body = String::new();
         self.indent += 1;
         for field in &c.fields {
-            body.push_str(&format!("{}{}{}{};\n",
+            let field_doc = self.fmt_doc(&field.doc);
+            body.push_str(&format!("{}{}{}{}{};\n",
+                field_doc,
                 self.ind(),
                 fmt_visibility(&field.visibility),
                 if field.mutable { "var " } else { "" },
@@ -100,10 +137,11 @@ impl Formatter {
             body.push('\n');
         }
         self.indent -= 1;
-        format!("{}\n{{\n{}{}}}", header, body, self.ind())
+        format!("{}{}{}\n{}{{\n{}{}}}", doc, self.ind(), header, self.ind(), body, self.ind())
     }
 
     fn fmt_interface(&mut self, i: &Interface) -> String {
+        let doc = self.fmt_doc(&i.doc);
         let mut header = format!("interface {}", i.name);
         if !i.extends.is_empty() {
             header.push_str(&format!(" extends {}", i.extends.join(", ")));
@@ -111,43 +149,48 @@ impl Formatter {
         let mut body = String::new();
         self.indent += 1;
         for f in &i.methods {
+            let method_doc = self.fmt_doc(&f.doc);
             let type_params = fmt_type_params(&f.type_params);
             let params = self.fmt_params(&f.params);
             let ret = self.fmt_type(&f.ret_type);
-            body.push_str(&format!("{}fn {}{}({}) -> {};\n",
-                self.ind(), f.name, type_params, params, ret));
+            body.push_str(&format!("{}{}fn {}{}({}) -> {};\n",
+                self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
-        format!("{}\n{{\n{}{}}}", header, body, self.ind())
+        format!("{}{}{}\n{}{{\n{}{}}}", doc, self.ind(), header, self.ind(), body, self.ind())
     }
 
     fn fmt_enum(&mut self, e: &Enum) -> String {
+        let doc = self.fmt_doc(&e.doc);
         let mut body = String::new();
         self.indent += 1;
         for v in &e.variants {
+            let variant_doc = self.fmt_doc(&v.doc);
             if v.args.is_empty() {
-                body.push_str(&format!("{}{};\n", self.ind(), v.name));
+                body.push_str(&format!("{}{}{};\n", self.ind(), variant_doc, v.name));
             } else {
                 let args: Vec<String> = v.args.iter().map(|t| self.fmt_type(t)).collect();
-                body.push_str(&format!("{}{}({});\n", self.ind(), v.name, args.join(", ")));
+                body.push_str(&format!("{}{}{}({});\n", self.ind(), variant_doc, v.name, args.join(", ")));
             }
         }
         self.indent -= 1;
-        format!("enum {}\n{{\n{}{}}}", e.name, body, self.ind())
+        format!("{}{}enum {}\n{}{{\n{}{}}}", doc, self.ind(), e.name, self.ind(), body, self.ind())
     }
 
     fn fmt_trait(&mut self, t: &Trait) -> String {
+        let doc = self.fmt_doc(&t.doc);
         let mut body = String::new();
         self.indent += 1;
         for f in &t.methods {
+            let method_doc = self.fmt_doc(&f.doc);
             let type_params = fmt_type_params(&f.type_params);
             let params = self.fmt_params(&f.params);
             let ret = self.fmt_type(&f.ret_type);
-            body.push_str(&format!("{}fn {}{}({}) -> {};\n",
-                self.ind(), f.name, type_params, params, ret));
+            body.push_str(&format!("{}{}fn {}{}({}) -> {};\n",
+                self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
-        format!("trait {}\n{{\n{}{}}}", t.name, body, self.ind())
+        format!("{}{}trait {}\n{}{{\n{}{}}}", doc, self.ind(), t.name, self.ind(), body, self.ind())
     }
 
     fn fmt_import(&self, i: &Import) -> String {
@@ -501,7 +544,7 @@ fn fmt_visibility(vis: &Visibility) -> &'static str {
         Visibility::Public => "",
         Visibility::Private => "private ",
         Visibility::Protected => "protected ",
-        Visibility::Package => "package ",
+        Visibility::Package => "",
     }
 }
 

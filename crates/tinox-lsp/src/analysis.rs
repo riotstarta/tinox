@@ -58,22 +58,137 @@ fn hover_decl(decl: &Decl, offset: u32) -> Option<String> {
             // f.span is a point at the start of `fn` keyword
             // Show full signature when hovering the fn keyword or name (before the body starts)
             if offset < f.body.span.start.offset {
-                return Some(fn_signature(f));
+                let mut content = fn_signature(f);
+                if let Some(doc) = &f.doc {
+                    content.push_str("\n\n---\n\n");
+                    content.push_str(&format_doc(doc));
+                }
+                return Some(content);
             }
             hover_stmt(&f.body, offset)
         }
         DeclKind::Class(c) => {
+            // Check if hovering on class declaration itself
+            if offset < c.span.start.offset + c.name.len() as u32 + 10 {
+                let mut content = format!("class {}", c.name);
+                if let Some(doc) = &c.doc {
+                    content.push_str("\n\n---\n\n");
+                    content.push_str(&format_doc(doc));
+                }
+                return Some(content);
+            }
             for m in &c.methods {
                 if let Some(s) = hover_stmt(&m.body, offset) {
                     return Some(s);
                 }
                 if span_contains(m.span, offset) {
-                    return Some(method_signature(&c.name, m));
+                    let mut content = method_signature(&c.name, m);
+                    if let Some(doc) = &m.doc {
+                        content.push_str("\n\n---\n\n");
+                        content.push_str(&format_doc(doc));
+                    }
+                    return Some(content);
+                }
+            }
+            // Check fields
+            for f in &c.fields {
+                if span_contains(f.span, offset) {
+                    let mut content = format!("{}: {}", f.name, type_str(&f.field_type));
+                    if let Some(doc) = &f.doc {
+                        content.push_str("\n\n---\n\n");
+                        content.push_str(&format_doc(doc));
+                    }
+                    return Some(content);
+                }
+            }
+            None
+        }
+        DeclKind::Enum(e) => {
+            if offset < e.span.start.offset + e.name.len() as u32 + 10 {
+                let mut content = format!("enum {}", e.name);
+                if let Some(doc) = &e.doc {
+                    content.push_str("\n\n---\n\n");
+                    content.push_str(&format_doc(doc));
+                }
+                return Some(content);
+            }
+            for v in &e.variants {
+                if span_contains(v.span, offset) {
+                    let mut content = format!("{}.{}", e.name, v.name);
+                    if let Some(doc) = &v.doc {
+                        content.push_str("\n\n---\n\n");
+                        content.push_str(&format_doc(doc));
+                    }
+                    return Some(content);
+                }
+            }
+            None
+        }
+        DeclKind::Interface(i) => {
+            if offset < i.span.start.offset + i.name.len() as u32 + 10 {
+                let mut content = format!("interface {}", i.name);
+                if let Some(doc) = &i.doc {
+                    content.push_str("\n\n---\n\n");
+                    content.push_str(&format_doc(doc));
+                }
+                return Some(content);
+            }
+            for m in &i.methods {
+                if span_contains(m.span, offset) {
+                    let mut content = fn_signature(m);
+                    if let Some(doc) = &m.doc {
+                        content.push_str("\n\n---\n\n");
+                        content.push_str(&format_doc(doc));
+                    }
+                    return Some(content);
+                }
+            }
+            None
+        }
+        DeclKind::Trait(t) => {
+            if offset < t.span.start.offset + t.name.len() as u32 + 10 {
+                let mut content = format!("trait {}", t.name);
+                if let Some(doc) = &t.doc {
+                    content.push_str("\n\n---\n\n");
+                    content.push_str(&format_doc(doc));
+                }
+                return Some(content);
+            }
+            for m in &t.methods {
+                if span_contains(m.span, offset) {
+                    let mut content = fn_signature(m);
+                    if let Some(doc) = &m.doc {
+                        content.push_str("\n\n---\n\n");
+                        content.push_str(&format_doc(doc));
+                    }
+                    return Some(content);
                 }
             }
             None
         }
         _ => None,
+    }
+}
+
+fn format_doc(doc: &str) -> String {
+    let lines: Vec<&str> = doc.lines().collect();
+    if lines.len() <= 1 {
+        doc.trim().to_string()
+    } else {
+        let mut out = String::new();
+        for line in &lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                out.push('\n');
+                continue;
+            }
+            let cleaned = trimmed.trim_start_matches('*').trim_end_matches("*/").trim();
+            if !cleaned.is_empty() {
+                out.push_str(cleaned);
+                out.push('\n');
+            }
+        }
+        out.trim_end().to_string()
     }
 }
 
@@ -307,40 +422,75 @@ pub fn completions(source: &SourceFile) -> Vec<CompletionItem> {
     for decl in &source.decls {
         match &decl.node {
             DeclKind::Function(f) => {
+                let doc = f.doc.as_ref().map(|d| format_doc(d));
                 items.push(CompletionItem {
                     label: f.name.clone(),
                     kind: Some(CompletionItemKind::FUNCTION),
                     detail: Some(fn_signature(f)),
+                    documentation: doc.map(|d| tower_lsp::lsp_types::Documentation::MarkupContent(
+                        tower_lsp::lsp_types::MarkupContent {
+                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                            value: d,
+                        }
+                    )),
                     ..Default::default()
                 });
             }
             DeclKind::Class(c) => {
+                let doc = c.doc.as_ref().map(|d| format_doc(d));
                 items.push(CompletionItem {
                     label: c.name.clone(),
                     kind: Some(CompletionItemKind::CLASS),
                     detail: Some(format!("class {}", c.name)),
+                    documentation: doc.map(|d| tower_lsp::lsp_types::Documentation::MarkupContent(
+                        tower_lsp::lsp_types::MarkupContent {
+                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                            value: d,
+                        }
+                    )),
                     ..Default::default()
                 });
             }
             DeclKind::Enum(e) => {
+                let doc = e.doc.as_ref().map(|d| format_doc(d));
                 items.push(CompletionItem {
                     label: e.name.clone(),
                     kind: Some(CompletionItemKind::ENUM),
+                    documentation: doc.map(|d| tower_lsp::lsp_types::Documentation::MarkupContent(
+                        tower_lsp::lsp_types::MarkupContent {
+                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                            value: d,
+                        }
+                    )),
                     ..Default::default()
                 });
                 for v in &e.variants {
+                    let doc = v.doc.as_ref().map(|d| format_doc(d));
                     items.push(CompletionItem {
                         label: format!("{}.{}", e.name, v.name),
                         kind: Some(CompletionItemKind::ENUM_MEMBER),
+                        documentation: doc.map(|d| tower_lsp::lsp_types::Documentation::MarkupContent(
+                            tower_lsp::lsp_types::MarkupContent {
+                                kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                                value: d,
+                            }
+                        )),
                         ..Default::default()
                     });
                 }
             }
             DeclKind::Interface(i) => {
+                let doc = i.doc.as_ref().map(|d| format_doc(d));
                 items.push(CompletionItem {
                     label: i.name.clone(),
                     kind: Some(CompletionItemKind::INTERFACE),
                     detail: Some(format!("interface {}", i.name)),
+                    documentation: doc.map(|d| tower_lsp::lsp_types::Documentation::MarkupContent(
+                        tower_lsp::lsp_types::MarkupContent {
+                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                            value: d,
+                        }
+                    )),
                     ..Default::default()
                 });
             }
@@ -461,34 +611,53 @@ pub fn document_symbols(source: &SourceFile) -> Vec<tower_lsp::lsp_types::Docume
 fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
     use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
     match &decl.node {
-        DeclKind::Function(f) => Some(DocumentSymbol {
-            name: f.name.clone(),
-            detail: Some(fn_signature(f)),
-            kind: SymbolKind::FUNCTION,
-            range: span_to_range(f.span),
-            selection_range: span_to_range(f.span),
-            children: None,
-            tags: None,
-            deprecated: None,
-        }),
+        DeclKind::Function(f) => {
+            let detail = if let Some(doc) = &f.doc {
+                Some(format!("{}\n\n{}", fn_signature(f), format_doc(doc)))
+            } else {
+                Some(fn_signature(f))
+            };
+            Some(DocumentSymbol {
+                name: f.name.clone(),
+                detail,
+                kind: SymbolKind::FUNCTION,
+                range: span_to_range(f.span),
+                selection_range: span_to_range(f.span),
+                children: None,
+                tags: None,
+                deprecated: None,
+            })
+        }
         DeclKind::Class(c) => {
+            let detail = if let Some(doc) = &c.doc {
+                Some(format_doc(doc))
+            } else {
+                None
+            };
             let children: Vec<_> = c
                 .methods
                 .iter()
-                .map(|m| DocumentSymbol {
-                    name: m.name.clone(),
-                    detail: Some(method_signature(&c.name, m)),
-                    kind: SymbolKind::METHOD,
-                    range: span_to_range(m.span),
-                    selection_range: span_to_range(m.span),
-                    children: None,
-                    tags: None,
-                    deprecated: None,
+                .map(|m| {
+                    let method_detail = if let Some(doc) = &m.doc {
+                        Some(format!("{}\n\n{}", method_signature(&c.name, m), format_doc(doc)))
+                    } else {
+                        Some(method_signature(&c.name, m))
+                    };
+                    DocumentSymbol {
+                        name: m.name.clone(),
+                        detail: method_detail,
+                        kind: SymbolKind::METHOD,
+                        range: span_to_range(m.span),
+                        selection_range: span_to_range(m.span),
+                        children: None,
+                        tags: None,
+                        deprecated: None,
+                    }
                 })
                 .collect();
             Some(DocumentSymbol {
                 name: c.name.clone(),
-                detail: None,
+                detail,
                 kind: SymbolKind::CLASS,
                 range: span_to_range(c.span),
                 selection_range: span_to_range(c.span),
@@ -498,23 +667,35 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             })
         }
         DeclKind::Enum(e) => {
+            let detail = if let Some(doc) = &e.doc {
+                Some(format_doc(doc))
+            } else {
+                None
+            };
             let children: Vec<_> = e
                 .variants
                 .iter()
-                .map(|v| DocumentSymbol {
-                    name: v.name.clone(),
-                    detail: None,
-                    kind: SymbolKind::ENUM_MEMBER,
-                    range: span_to_range(v.span),
-                    selection_range: span_to_range(v.span),
-                    children: None,
-                    tags: None,
-                    deprecated: None,
+                .map(|v| {
+                    let variant_detail = if let Some(doc) = &v.doc {
+                        Some(format_doc(doc))
+                    } else {
+                        None
+                    };
+                    DocumentSymbol {
+                        name: v.name.clone(),
+                        detail: variant_detail,
+                        kind: SymbolKind::ENUM_MEMBER,
+                        range: span_to_range(v.span),
+                        selection_range: span_to_range(v.span),
+                        children: None,
+                        tags: None,
+                        deprecated: None,
+                    }
                 })
                 .collect();
             Some(DocumentSymbol {
                 name: e.name.clone(),
-                detail: None,
+                detail,
                 kind: SymbolKind::ENUM,
                 range: span_to_range(e.span),
                 selection_range: span_to_range(e.span),
@@ -523,16 +704,23 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
                 deprecated: None,
             })
         }
-        DeclKind::Interface(i) => Some(DocumentSymbol {
-            name: i.name.clone(),
-            detail: None,
-            kind: SymbolKind::INTERFACE,
-            range: span_to_range(i.span),
-            selection_range: span_to_range(i.span),
-            children: None,
-            tags: None,
-            deprecated: None,
-        }),
+        DeclKind::Interface(i) => {
+            let detail = if let Some(doc) = &i.doc {
+                Some(format_doc(doc))
+            } else {
+                None
+            };
+            Some(DocumentSymbol {
+                name: i.name.clone(),
+                detail,
+                kind: SymbolKind::INTERFACE,
+                range: span_to_range(i.span),
+                selection_range: span_to_range(i.span),
+                children: None,
+                tags: None,
+                deprecated: None,
+            })
+        }
         _ => None,
     }
 }

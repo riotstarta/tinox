@@ -90,6 +90,7 @@ pub enum TokenKind {
 
     // Special
     Comment(String),
+    DocComment(String),
     Whitespace,
     Newline,
     Underscore,
@@ -544,6 +545,10 @@ impl<'a> Lexer<'a> {
     fn read_block_comment(&mut self) -> Token {
         self.bump(); // /
         self.bump(); // *
+        let is_doc = self.peek() == '*';
+        if is_doc {
+            self.bump(); // *
+        }
         let start = self.pos;
         let mut depth = 1;
         while depth > 0 && self.pos < self.chars.len() {
@@ -564,7 +569,11 @@ impl<'a> Lexer<'a> {
             }
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        Token::new(TokenKind::Comment(text), self.mk_span())
+        if is_doc {
+            Token::new(TokenKind::DocComment(text), self.mk_span())
+        } else {
+            Token::new(TokenKind::Comment(text), self.mk_span())
+        }
     }
 
     fn read_string(&mut self) -> Result<Token, Error> {
@@ -1216,6 +1225,29 @@ mod tests {
         let mut lexer = Lexer::new("// this is a comment\n42");
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::Integer(42)));
+    }
+
+    #[test]
+    fn test_lexer_doc_comment() {
+        let mut lexer = Lexer::new("/** doc comment */\n42");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocComment(s) if s.contains("doc comment")));
+        // Find the integer token (skip whitespace/newline tokens)
+        let int_token = tokens.iter().find(|t| matches!(t.kind, TokenKind::Integer(_))).unwrap();
+        assert!(matches!(int_token.kind, TokenKind::Integer(42)));
+    }
+
+    #[test]
+    fn test_lexer_doc_comment_multiline() {
+        let mut lexer = Lexer::new("/**\n * line 1\n * line 2\n */\nclass Foo");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocComment(_)));
+        if let TokenKind::DocComment(s) = &tokens[0].kind {
+            eprintln!("DocComment text: [{}]", s);
+            for (i, c) in s.chars().enumerate() {
+                eprintln!("  char {}: {:?}", i, c);
+            }
+        }
     }
 
     #[test]

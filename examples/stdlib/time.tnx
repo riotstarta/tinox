@@ -1,0 +1,321 @@
+/**
+ * Tinox Standard Library - Time Module
+ * Time and date utilities including Duration, Timer, and Stopwatch
+ */
+module tinox.core.time;
+
+namespace tinox.core.time
+{
+    /**
+     * Time utility class providing factory methods for time-related objects
+     * and access to system time functions
+     */
+    class Time
+    {
+        /**
+         * Returns the current system time in milliseconds
+         *
+         * @return current time in milliseconds since epoch
+         */
+        fnc now() -> Int64
+        {
+            return now();
+        }
+
+        /**
+         * Pauses execution for the specified duration
+         *
+         * @param ms the number of milliseconds to sleep
+         */
+        fnc sleep(ms: Int64) -> Unit
+        {
+            sleep(ms);
+        }
+
+        /**
+         * Creates a new Timer instance
+         *
+         * @return a new Timer ready to measure elapsed time
+         */
+        fnc newTimer() -> Timer
+        {
+            return Timer::new();
+        }
+
+        /**
+         * Creates a new Stopwatch instance
+         *
+         * @return a new Stopwatch ready to measure elapsed time
+         */
+        fnc newStopwatch() -> Stopwatch
+        {
+            return Stopwatch::new();
+        }
+
+        /**
+         * Creates a Duration from seconds
+         *
+         * @param seconds the number of seconds
+         * @return a new Duration instance
+         */
+        fnc newDuration(seconds: Int64) -> Duration
+        {
+            return Duration::new(seconds);
+        }
+
+        /**
+         * Creates a Duration from minutes
+         *
+         * @param minutes the number of minutes
+         * @return a new Duration instance
+         */
+        fnc durationFromMinutes(minutes: Int64) -> Duration
+        {
+            return Duration::fromMinutes(minutes);
+        }
+
+        /**
+         * Creates a Duration from hours
+         *
+         * @param hours the number of hours
+         * @return a new Duration instance
+         */
+        fnc durationFromHours(hours: Int64) -> Duration
+        {
+            return Duration::fromHours(hours);
+        }
+    }
+
+    /**
+     * Represents a duration of time in seconds
+     *
+     * Provides factory methods for creating durations from
+     * different time units and arithmetic operations.
+     */
+    class Duration
+    {
+        /** The duration in seconds */
+        seconds: Int64;
+
+        /**
+         * Creates a Duration from seconds
+         *
+         * @param seconds the number of seconds
+         * @return a new Duration instance
+         */
+        fnc new(seconds: Int64) -> Duration
+        {
+            return Duration { seconds: seconds };
+        }
+
+        /**
+         * Creates a Duration from minutes
+         *
+         * @param minutes the number of minutes
+         * @return a new Duration instance
+         */
+        fnc fromMinutes(minutes: Int64) -> Duration
+        {
+            return Duration { seconds: minutes * 60 };
+        }
+
+        /**
+         * Creates a Duration from hours
+         *
+         * @param hours the number of hours
+         * @return a new Duration instance
+         */
+        fnc fromHours(hours: Int64) -> Duration
+        {
+            return Duration { seconds: hours * 3600 };
+        }
+
+        /**
+         * Returns the duration in seconds
+         *
+         * @return the number of seconds
+         */
+        fn getSeconds() -> Int64
+        {
+            return this.seconds;
+        }
+
+        /**
+         * Returns the duration in whole minutes
+         *
+         * @return the number of minutes (truncated)
+         */
+        fn getMinutes() -> Int64
+        {
+            return this.seconds / 60;
+        }
+
+        /**
+         * Returns the duration in whole hours
+         *
+         * @return the number of hours (truncated)
+         */
+        fn getHours() -> Int64
+        {
+            return this.seconds / 3600;
+        }
+
+        /**
+         * Adds another duration to this one
+         *
+         * @param other the duration to add
+         * @return a new Duration with the combined time
+         */
+        fn add(other: Duration) -> Duration
+        {
+            return Duration { seconds: this.seconds + other.seconds };
+        }
+
+        /**
+         * Subtracts another duration from this one
+         *
+         * @param other the duration to subtract
+         * @return a new Duration with the difference
+         */
+        fn sub(other: Duration) -> Duration
+        {
+            return Duration { seconds: this.seconds - other.seconds };
+        }
+    }
+
+    /**
+     * A timer for measuring elapsed time between start and stop
+     *
+     * Call start() to begin timing, stop() to end timing,
+     * and elapsed() to get the measured duration.
+     */
+    class Timer
+    {
+        /** The start time in milliseconds */
+        var startTime: Int64;
+
+        /** The stop time in milliseconds (0 if not stopped) */
+        var endTime: Int64;
+
+        /**
+         * Creates a new Timer (not started)
+         *
+         * @return a new Timer instance
+         */
+        fnc new() -> Timer
+        {
+            return Timer { startTime: 0, endTime: 0 };
+        }
+
+        /**
+         * Starts the timer, recording the current time
+         */
+        fn start() -> Unit
+        {
+            this.startTime = now();
+        }
+
+        /**
+         * Stops the timer, recording the end time
+         */
+        fn stop() -> Unit
+        {
+            this.endTime = now();
+        }
+
+        /**
+         * Returns the elapsed time in milliseconds
+         *
+         * If the timer is still running (stop not called),
+         * returns the time from start to now.
+         *
+         * @return elapsed time in milliseconds
+         */
+        fn elapsed() -> Int64
+        {
+            if this.endTime == 0
+            {
+                return now() - this.startTime;
+            }
+            return this.endTime - this.startTime;
+        }
+
+        /**
+         * Returns the elapsed time in whole seconds
+         *
+         * @return elapsed time in seconds (truncated)
+         */
+        fn elapsedSeconds() -> Int64
+        {
+            return this.elapsed() / 1000;
+        }
+    }
+
+    /**
+     * A stopwatch for measuring elapsed time while running
+     *
+     * Unlike Timer, Stopwatch only reports elapsed time
+     * while it is actively running (between start and stop).
+     */
+    class Stopwatch
+    {
+        /** The time when start() was called */
+        var startTime: Int64;
+
+        /** Whether the stopwatch is currently running */
+        var running: Bool;
+
+        /**
+         * Creates a new Stopwatch (not running)
+         *
+         * @return a new Stopwatch instance
+         */
+        fnc new() -> Stopwatch
+        {
+            return Stopwatch { startTime: 0, running: false };
+        }
+
+        /**
+         * Starts the stopwatch, recording the current time
+         */
+        fn start() -> Unit
+        {
+            this.startTime = now();
+            this.running = true;
+        }
+
+        /**
+         * Stops the stopwatch
+         */
+        fn stop() -> Unit
+        {
+            this.running = false;
+        }
+
+        /**
+         * Checks if the stopwatch is currently running
+         *
+         * @return true if start() was called without a subsequent stop()
+         */
+        fn isRunning() -> Bool
+        {
+            return this.running;
+        }
+
+        /**
+         * Returns the elapsed time while running
+         *
+         * If the stopwatch is not running, returns 0.
+         *
+         * @return elapsed time in milliseconds, or 0 if not running
+         */
+        fn elapsed() -> Int64
+        {
+            if this.running
+            {
+                return now() - this.startTime;
+            }
+            return 0;
+        }
+    }
+}

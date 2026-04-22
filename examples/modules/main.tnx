@@ -1,6 +1,7 @@
 import math_lib;
 
-fn main() -> Int64 {
+fn main() -> Int64
+{
     let x = add(3, 4);
     println(x);
     let y = mul(3, 4);

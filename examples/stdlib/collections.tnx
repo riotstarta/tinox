@@ -1,0 +1,264 @@
+/**
+ * Tinox Standard Library - Collections Module
+ * Data structure implementations including Stack, Queue, and Pair
+ */
+module tinox.core.collections;
+
+namespace tinox.core.collections
+{
+    /**
+     * Collections factory class for creating collection instances
+     */
+    class Collections
+    {
+        /**
+         * Creates a new empty Stack
+         *
+         * @return a new Stack instance
+         */
+        fnc newStack() -> Stack
+        {
+            return Stack::new();
+        }
+
+        /**
+         * Creates a new empty Queue
+         *
+         * @return a new Queue instance
+         */
+        fnc newQueue() -> Queue
+        {
+            return Queue::new();
+        }
+
+        /**
+         * Creates a new Pair with the given values
+         *
+         * @param first the first value
+         * @param second the second value
+         * @return a new Pair instance
+         */
+        fnc newPair(first: Int64, second: Int64) -> Pair
+        {
+            return Pair::new(first, second);
+        }
+    }
+
+    /**
+     * A Last-In-First-Out (LIFO) stack of integers
+     *
+     * Supports push, pop, and peek operations with O(1) complexity.
+     * Throws an error when popping or peeking an empty stack.
+     */
+    class Stack
+    {
+        /** Internal storage for stack elements */
+        var data: List<Int64>;
+
+        /**
+         * Creates a new empty Stack
+         *
+         * @return a new Stack instance
+         */
+        fnc new() -> Stack
+        {
+            return Stack { data: [] };
+        }
+
+        /**
+         * Pushes a value onto the top of the stack
+         *
+         * @param value the value to push
+         */
+        fn push(value: Int64) -> Unit
+        {
+            this.data.push(value);
+        }
+
+        /**
+         * Removes and returns the top element from the stack
+         *
+         * @return the top element
+         * @throws "Stack is empty" if the stack has no elements
+         */
+        fn pop() -> Int64
+        {
+            let len: Int64 = this.data.len();
+            if len == 0
+            {
+                throw "Stack is empty";
+            }
+            let value: Int64 = this.data[len - 1];
+            this.data.pop();
+            return value;
+        }
+
+        /**
+         * Returns the top element without removing it
+         *
+         * @return the top element
+         * @throws "Stack is empty" if the stack has no elements
+         */
+        fn peek() -> Int64
+        {
+            let len: Int64 = this.data.len();
+            if len == 0
+            {
+                throw "Stack is empty";
+            }
+            return this.data[len - 1];
+        }
+
+        /**
+         * Checks if the stack is empty
+         *
+         * @return true if the stack contains no elements
+         */
+        fn isEmpty() -> Bool
+        {
+            return this.data.len() == 0;
+        }
+
+        /**
+         * Returns the number of elements in the stack
+         *
+         * @return the stack size
+         */
+        fn size() -> Int64
+        {
+            return this.data.len();
+        }
+    }
+
+    /**
+     * A First-In-First-Out (FIFO) queue of integers
+     *
+     * Supports enqueue and dequeue operations.
+     * Throws an error when dequeuing or peeking an empty queue.
+     */
+    class Queue
+    {
+        /** Internal storage for queue elements */
+        var data: List<Int64>;
+
+        /**
+         * Creates a new empty Queue
+         *
+         * @return a new Queue instance
+         */
+        fnc new() -> Queue
+        {
+            return Queue { data: [] };
+        }
+
+        /**
+         * Adds a value to the back of the queue
+         *
+         * @param value the value to enqueue
+         */
+        fn enqueue(value: Int64) -> Unit
+        {
+            this.data.push(value);
+        }
+
+        /**
+         * Removes and returns the front element from the queue
+         *
+         * @return the front element
+         * @throws "Queue is empty" if the queue has no elements
+         */
+        fn dequeue() -> Int64
+        {
+            let len: Int64 = this.data.len();
+            if len == 0
+            {
+                throw "Queue is empty";
+            }
+            let value: Int64 = this.data[0];
+            this.data.removeAt(0);
+            return value;
+        }
+
+        /**
+         * Returns the front element without removing it
+         *
+         * @return the front element
+         * @throws "Queue is empty" if the queue has no elements
+         */
+        fn peek() -> Int64
+        {
+            if this.data.len() == 0
+            {
+                throw "Queue is empty";
+            }
+            return this.data[0];
+        }
+
+        /**
+         * Checks if the queue is empty
+         *
+         * @return true if the queue contains no elements
+         */
+        fn isEmpty() -> Bool
+        {
+            return this.data.len() == 0;
+        }
+
+        /**
+         * Returns the number of elements in the queue
+         *
+         * @return the queue size
+         */
+        fn size() -> Int64
+        {
+            return this.data.len();
+        }
+    }
+
+    /**
+     * A simple pair of two integer values
+     *
+     * Useful for returning two related values from a function
+     * or storing key-value associations.
+     */
+    class Pair
+    {
+        /** The first value of the pair */
+        first: Int64;
+
+        /** The second value of the pair */
+        second: Int64;
+
+        /**
+         * Creates a new Pair with the given values
+         *
+         * @param first the first value
+         * @param second the second value
+         * @return a new Pair instance
+         */
+        fnc new(first: Int64, second: Int64) -> Pair
+        {
+            return Pair { first: first, second: second };
+        }
+
+        /**
+         * Returns the first value
+         *
+         * @return the first value of the pair
+         */
+        fn getFirst() -> Int64
+        {
+            return this.first;
+        }
+
+        /**
+         * Returns the second value
+         *
+         * @return the second value of the pair
+         */
+        fn getSecond() -> Int64
+        {
+            return this.second;
+        }
+    }
+}

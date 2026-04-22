@@ -1,18 +1,21 @@
-// Tinox V2 — interface extends inheritance example
-//
-// Demonstrates that a class implementing IDrawable (which extends IShape)
-// must provide implementations for methods from BOTH interfaces.
-
-interface IShape {
-    fn area() -> Int64 { return 0; }
+interface IShape
+{
+    fn area() -> Int64;
 }
 
-interface IDrawable extends IShape {
-    fn draw() { }
+interface IDrawable extends IShape
+{
+    fn draw() -> Unit;
 }
 
-// Circle must implement both draw() (from IDrawable) and area() (from IShape).
-class Circle implements IDrawable {
-    fn draw() { }
-    fn area() -> Int64 { return 42; }
+class Circle implements IDrawable
+{
+    package fn draw() -> Unit
+    {
+    }
+
+    package fn area() -> Int64
+    {
+        return 42;
+    }
 }
