@@ -4004,6 +4004,7 @@ impl CodeGen {
             span: f.span,
             is_async: f.is_async,
             doc: f.doc.clone(),
+            annotations: vec![],
         }
     }
 
@@ -4089,6 +4090,7 @@ impl CodeGen {
                 mutable: f.mutable,
                 span: f.span,
                 doc: f.doc.clone(),
+                annotations: vec![],
             }).collect(),
             methods: c.methods.iter().map(|m| tinox_parser::Method {
                 name: m.name.clone(),
@@ -4104,9 +4106,11 @@ impl CodeGen {
                 span: m.span,
                 is_async: m.is_async,
                 doc: m.doc.clone(),
+                annotations: vec![],
             }).collect(),
             span: c.span,
             doc: c.doc.clone(),
+            annotations: vec![],
         }
     }
 

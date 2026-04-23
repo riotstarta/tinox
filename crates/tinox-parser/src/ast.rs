@@ -356,6 +356,7 @@ pub struct Function {
     pub span: Span,
     pub is_async: bool,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +370,7 @@ pub struct Method {
     pub span: Span,
     pub is_async: bool,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +395,7 @@ pub struct FieldDef {
     pub mutable: bool,
     pub span: Span,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -405,6 +408,7 @@ pub struct Class {
     pub methods: Vec<Method>,
     pub span: Span,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -414,6 +418,7 @@ pub struct Interface {
     pub methods: Vec<Function>,
     pub span: Span,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +435,7 @@ pub struct Enum {
     pub variants: Vec<EnumVariant>,
     pub span: Span,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
@@ -438,12 +444,21 @@ pub struct Trait {
     pub methods: Vec<Function>,
     pub span: Span,
     pub doc: Option<String>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub name: Vec<Ident>,
     pub decls: Vec<Decl>,
+    pub span: Span,
+    pub annotations: Vec<Annotation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Annotation {
+    pub name: Ident,
+    pub args: Vec<Literal>,
     pub span: Span,
 }
 

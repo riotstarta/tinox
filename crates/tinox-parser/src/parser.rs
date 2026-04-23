@@ -49,6 +49,7 @@ impl Parser {
     }
 
     fn parse_decl(&mut self) -> Result<Decl, Error> {
+        let annotations = self.parse_annotations();
         let doc = self.take_doc();
         let start = self.mk_span();
 
@@ -63,6 +64,7 @@ impl Parser {
                 }
                 f.is_async = true;
                 f.doc = doc;
+                f.annotations = annotations;
                 DeclKind::Function(f)
             } else {
                 return Err(self.error("expected 'fn' after 'async'"));
@@ -76,22 +78,27 @@ impl Parser {
                 )));
             }
             f.doc = doc;
+            f.annotations = annotations;
             DeclKind::Function(f)
         } else if self.check_keyword(Keyword::Class) {
             let mut c = self.parse_class()?;
             c.doc = doc;
+            c.annotations = annotations;
             DeclKind::Class(c)
         } else if self.check_keyword(Keyword::Interface) {
             let mut i = self.parse_interface()?;
             i.doc = doc;
+            i.annotations = annotations;
             DeclKind::Interface(i)
         } else if self.check_keyword(Keyword::Enum) {
             let mut e = self.parse_enum()?;
             e.doc = doc;
+            e.annotations = annotations;
             DeclKind::Enum(e)
         } else if self.check_keyword(Keyword::Trait) {
             let mut t = self.parse_trait()?;
             t.doc = doc;
+            t.annotations = annotations;
             DeclKind::Trait(t)
         } else if self.check_keyword(Keyword::Import) {
             DeclKind::Import(self.parse_import()?)
@@ -105,7 +112,9 @@ impl Parser {
             self.consume(TokenKind::Semicolon);
             DeclKind::Module(name)
         } else if self.check_keyword(Keyword::Namespace) {
-            DeclKind::Namespace(self.parse_namespace()?)
+            let mut ns = self.parse_namespace()?;
+            ns.annotations = annotations;
+            DeclKind::Namespace(ns)
         } else if self.check_keyword(Keyword::Extern) {
             self.parse_extern_fn()?
         } else {
@@ -148,6 +157,7 @@ impl Parser {
             span,
             is_async: false,
             doc: None,
+            annotations: vec![],
         }))
     }
 
@@ -198,6 +208,7 @@ impl Parser {
             span,
             is_async: false,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -245,6 +256,7 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(TokenKind::RBrace) {
+            let member_annotations = self.parse_annotations();
             let doc = self.take_doc();
             let vis = self.parse_visibility();
             let mutable = self.consume_keyword(Keyword::Mut);
@@ -254,15 +266,18 @@ impl Parser {
                 let mut m = self.parse_method(vis, false)?;
                 m.is_async = is_async;
                 m.doc = doc;
+                m.annotations = member_annotations;
                 methods.push(m);
             } else if self.check_keyword(Keyword::Fnc) {
                 let mut m = self.parse_method(vis, true)?;
                 m.is_async = is_async;
                 m.doc = doc;
+                m.annotations = member_annotations;
                 methods.push(m);
             } else {
                 let mut f = self.parse_field(vis, mutable)?;
                 f.doc = doc;
+                f.annotations = member_annotations;
                 fields.push(f);
             }
         }
@@ -278,6 +293,7 @@ impl Parser {
             methods,
             span,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -318,6 +334,7 @@ impl Parser {
             span,
             is_async: false,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -335,6 +352,7 @@ impl Parser {
             mutable,
             span,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -383,6 +401,7 @@ impl Parser {
             methods,
             span,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -415,6 +434,7 @@ impl Parser {
             variants,
             span,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -457,6 +477,7 @@ impl Parser {
             methods,
             span,
             doc: None,
+            annotations: vec![],
         })
     }
 
@@ -518,7 +539,7 @@ impl Parser {
         }
 
         self.expect(TokenKind::RBrace)?;
-        Ok(Namespace { name, decls, span })
+        Ok(Namespace { name, decls, span, annotations: vec![] })
     }
 
     fn parse_type(&mut self) -> Result<Type, Error> {
@@ -2184,7 +2205,6 @@ impl Parser {
     }
 
     fn take_doc(&mut self) -> Option<String> {
-        // Skip trivia to find doc comment
         while self.peek().kind.is_trivia() && !self.is_at_end() {
             if let TokenKind::DocComment(text) = &self.peek().kind {
                 let doc = text.clone();
@@ -2193,13 +2213,82 @@ impl Parser {
             }
             self.bump();
         }
-        // Check current token after skipping trivia
         if let TokenKind::DocComment(text) = &self.peek().kind {
             let doc = text.clone();
             self.bump();
             Some(doc)
         } else {
             None
+        }
+    }
+
+    fn parse_annotations(&mut self) -> Vec<Annotation> {
+        let mut annotations = Vec::new();
+        loop {
+            if self.check(TokenKind::At) {
+                let next = self.peek_ahead(1);
+                if let Some(tok) = next {
+                    if matches!(tok.kind, TokenKind::Ident(_)) {
+                        let span = self.mk_span();
+                        self.bump(); // consume @
+                        let name = self.parse_ident().unwrap_or_default();
+                        let mut args = Vec::new();
+                        if self.check(TokenKind::LParen) {
+                            self.bump(); // consume (
+                            if !self.check(TokenKind::RParen) {
+                                if let Ok(arg) = self.parse_annotation_arg() {
+                                    args.push(arg);
+                                    while self.consume(TokenKind::Comma) {
+                                        if let Ok(arg) = self.parse_annotation_arg() {
+                                            args.push(arg);
+                                        }
+                                    }
+                                }
+                            }
+                            self.expect(TokenKind::RParen).ok();
+                        }
+                        annotations.push(Annotation { name, args, span });
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+        annotations
+    }
+
+    fn parse_annotation_arg(&mut self) -> Result<Literal, Error> {
+        let token = self.peek();
+        match &token.kind {
+            TokenKind::Integer(n) => {
+                let val = *n;
+                self.bump();
+                Ok(Literal::Integer(val))
+            }
+            TokenKind::Float(f) => {
+                let val = *f;
+                self.bump();
+                Ok(Literal::Float(val))
+            }
+            TokenKind::String(s) => {
+                let val = s.clone();
+                self.bump();
+                Ok(Literal::String(val))
+            }
+            TokenKind::Bool(b) => {
+                let val = *b;
+                self.bump();
+                Ok(Literal::Bool(val))
+            }
+            TokenKind::Keyword(Keyword::True) => {
+                self.bump();
+                Ok(Literal::Bool(true))
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.bump();
+                Ok(Literal::Bool(false))
+            }
+            _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, or bool)")),
         }
     }
 

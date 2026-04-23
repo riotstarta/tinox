@@ -70,17 +70,32 @@ impl Formatter {
         }
     }
 
+fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
+        let mut out = String::new();
+        for ann in annotations {
+            if ann.args.is_empty() {
+                out.push_str(&format!("{}@{}\n", self.ind(), ann.name));
+            } else {
+                let args: Vec<String> = ann.args.iter().map(fmt_literal).collect();
+                out.push_str(&format!("{}@{}({})\n", self.ind(), ann.name, args.join(", ")));
+            }
+        }
+        out
+    }
+
     fn fmt_fn(&mut self, f: &Function) -> String {
+        let ann = self.fmt_annotations(&f.annotations);
         let doc = self.fmt_doc(&f.doc);
         let async_ = if f.is_async { "async " } else { "" };
         let type_params = fmt_type_params(&f.type_params);
         let params = self.fmt_params(&f.params);
         let ret = self.fmt_type(&f.ret_type);
         let sig = format!("{}fn {}{}({}) -> {}", async_, f.name, type_params, params, ret);
-        format!("{}{}\n{}", doc, sig, self.fmt_block_stmt(&f.body))
+        format!("{}{}{}\n{}", ann, doc, sig, self.fmt_block_stmt(&f.body))
     }
 
     fn fmt_method(&mut self, m: &Method) -> String {
+        let ann = self.fmt_annotations(&m.annotations);
         let doc = self.fmt_doc(&m.doc);
         let async_ = if m.is_async { "async " } else { "" };
         let vis = fmt_visibility(&m.visibility);
@@ -88,7 +103,7 @@ impl Formatter {
         let params = self.fmt_params(&m.params);
         let ret = self.fmt_type(&m.ret_type);
         let sig = format!("{}{}{}{} {}({}) -> {}", self.ind(), vis, async_, fn_kw, m.name, params, ret);
-        format!("{}{}\n{}", doc, sig, self.fmt_block_stmt(&m.body))
+        format!("{}{}{}\n{}", ann, doc, sig, self.fmt_block_stmt(&m.body))
     }
 
     fn fmt_namespace(&mut self, ns: &Namespace) -> String {
@@ -105,6 +120,7 @@ impl Formatter {
     }
 
     fn fmt_class(&mut self, c: &Class) -> String {
+        let ann = self.fmt_annotations(&c.annotations);
         let doc = self.fmt_doc(&c.doc);
         let type_params = fmt_type_params(&c.type_params);
         let mut header = format!("class {}{}", c.name, type_params);
@@ -117,13 +133,16 @@ impl Formatter {
         let mut body = String::new();
         self.indent += 1;
         for field in &c.fields {
+            let field_ann = self.fmt_annotations(&field.annotations);
             let field_doc = self.fmt_doc(&field.doc);
-            body.push_str(&format!("{}{}{}{}{};\n",
+            body.push_str(&format!("{}{}{}{}{}{}{};\n",
+                field_ann,
                 field_doc,
                 self.ind(),
                 fmt_visibility(&field.visibility),
                 if field.mutable { "var " } else { "" },
-                format!("{}: {}", field.name, self.fmt_type(&field.field_type))
+                field.name,
+                format!(": {}", self.fmt_type(&field.field_type))
             ));
         }
         if !c.fields.is_empty() && !c.methods.is_empty() {
@@ -137,10 +156,11 @@ impl Formatter {
             body.push('\n');
         }
         self.indent -= 1;
-        format!("{}{}{}\n{}{{\n{}{}}}", doc, self.ind(), header, self.ind(), body, self.ind())
+        format!("{}{}{}{}\n{}{{\n{}{}}}", ann, doc, self.ind(), header, self.ind(), body, self.ind())
     }
 
     fn fmt_interface(&mut self, i: &Interface) -> String {
+        let ann = self.fmt_annotations(&i.annotations);
         let doc = self.fmt_doc(&i.doc);
         let mut header = format!("interface {}", i.name);
         if !i.extends.is_empty() {
@@ -157,10 +177,11 @@ impl Formatter {
                 self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
-        format!("{}{}{}\n{}{{\n{}{}}}", doc, self.ind(), header, self.ind(), body, self.ind())
+        format!("{}{}{}{}\n{}{{\n{}{}}}", ann, doc, self.ind(), header, self.ind(), body, self.ind())
     }
 
     fn fmt_enum(&mut self, e: &Enum) -> String {
+        let ann = self.fmt_annotations(&e.annotations);
         let doc = self.fmt_doc(&e.doc);
         let mut body = String::new();
         self.indent += 1;
@@ -174,10 +195,11 @@ impl Formatter {
             }
         }
         self.indent -= 1;
-        format!("{}{}enum {}\n{}{{\n{}{}}}", doc, self.ind(), e.name, self.ind(), body, self.ind())
+        format!("{}{}{}enum {}\n{}{{\n{}{}}}", ann, doc, self.ind(), e.name, self.ind(), body, self.ind())
     }
 
     fn fmt_trait(&mut self, t: &Trait) -> String {
+        let ann = self.fmt_annotations(&t.annotations);
         let doc = self.fmt_doc(&t.doc);
         let mut body = String::new();
         self.indent += 1;
@@ -190,7 +212,7 @@ impl Formatter {
                 self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
-        format!("{}{}trait {}\n{}{{\n{}{}}}", doc, self.ind(), t.name, self.ind(), body, self.ind())
+        format!("{}{}{}trait {}\n{}{{\n{}{}}}", ann, doc, self.ind(), t.name, self.ind(), body, self.ind())
     }
 
     fn fmt_import(&self, i: &Import) -> String {
