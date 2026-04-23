@@ -1,0 +1,60 @@
+module tinox.core.http;
+
+namespace tinox.core.http
+{
+    class Http
+    {
+        fnc get(url: String) -> HttpResponse
+        {
+            return httpGet(url);
+        }
+
+        fnc post(url: String, body: String) -> HttpResponse
+        {
+            return httpPost(url, body);
+        }
+
+        fnc put(url: String, body: String) -> HttpResponse
+        {
+            return httpPut(url, body);
+        }
+
+        fnc delete(url: String) -> HttpResponse
+        {
+            return httpDelete(url);
+        }
+
+        fnc patch(url: String, body: String) -> HttpResponse
+        {
+            return httpPatch(url, body);
+        }
+
+        fnc setHeader(name: String, value: String) -> Unit
+        {
+            httpSetHeader(name, value);
+        }
+
+        fnc clearHeaders() -> Unit
+        {
+            httpClearHeaders();
+        }
+    }
+
+    class HttpResponse
+    {
+        fnc statusCode() -> Int64
+        {
+            return httpStatusCode(this);
+        }
+
+        fnc body() -> String
+        {
+            return httpBody(this);
+        }
+
+        fnc header(name: String) -> String
+        {
+            return httpHeader(this, name);
+        }
+    }
+}

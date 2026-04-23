@@ -1,0 +1,69 @@
+module tinox.core.jwt;
+
+namespace tinox.core.jwt
+{
+    class Jwt
+    {
+        fnc encode(payload: Map<String, JsonValue>, secret: String) -> String
+        {
+            let header: String = Base64::encode("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
+            let payloadJson: String = Json::stringify(payload);
+            let payloadB64: String = Base64::encode(payloadJson);
+            let message: String = header + "." + payloadB64;
+            let signature: String = Crypto::hmacSha256(message, secret);
+            return message + "." + signature;
+        }
+
+        fnc decode(token: String, secret: String) -> Map<String, JsonValue>
+        {
+            let parts: List<String> = token.split(".");
+            if parts.len() != 3
+            {
+                throw "Invalid JWT format";
+            }
+            let message: String = parts[0] + "." + parts[1];
+            let expectedSig: String = Crypto::hmacSha256(message, secret);
+            if expectedSig != parts[2]
+            {
+                throw "Invalid signature";
+            }
+            let payloadJson: String = Base64::decode(parts[1]);
+            return Json::parse(payloadJson).asTable();
+        }
+
+        fnc verify(token: String, secret: String) -> Bool
+        {
+            let parts: List<String> = token.split(".");
+            if parts.len() != 3
+            {
+                return false;
+            }
+            let message: String = parts[0] + "." + parts[1];
+            let expectedSig: String = Crypto::hmacSha256(message, secret);
+            return expectedSig == parts[2];
+        }
+
+        fnc extractPayload(token: String) -> Map<String, JsonValue>
+        {
+            let parts: List<String> = token.split(".");
+            if parts.len() != 3
+            {
+                throw "Invalid JWT format";
+            }
+            let payloadJson: String = Base64::decode(parts[1]);
+            return Json::parse(payloadJson).asTable();
+        }
+
+        fnc isExpired(token: String) -> Bool
+        {
+            let payload: Map<String, JsonValue> = Jwt::extractPayload(token);
+            if payload.contains("exp")
+            {
+                let exp: Int64 = payload["exp"].asInt();
+                let now: Int64 = Time::now() / 1000;
+                return now > exp;
+            }
+            return false;
+        }
+    }
+}

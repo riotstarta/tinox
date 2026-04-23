@@ -1,0 +1,107 @@
+module tinox.core.bitmap;
+
+namespace tinox.core.bitmap
+{
+    class Bitmap
+    {
+        fnc create(width: Int64, height: Int64, color: Int64) -> Bitmap
+        {
+            var pixels: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < width * height
+            {
+                pixels.push(color);
+                i = i + 1;
+            }
+            return Bitmap { width: width, height: height, pixels: pixels };
+        }
+
+        fnc getPixel(bitmap: Bitmap, x: Int64, y: Int64) -> Int64
+        {
+            if x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height
+            {
+                return 0;
+            }
+            return bitmap.pixels[y * bitmap.width + x];
+        }
+
+        fnc setPixel(bitmap: Bitmap, x: Int64, y: Int64, color: Int64) -> Unit
+        {
+            if x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height
+            {
+                return;
+            }
+            bitmap.pixels[y * bitmap.width + x] = color;
+        }
+
+        fnc fillRect(bitmap: Bitmap, x: Int64, y: Int64, w: Int64, h: Int64, color: Int64) -> Unit
+        {
+            var j: Int64 = y;
+            while j < y + h
+            {
+                var i: Int64 = x;
+                while i < x + w
+                {
+                    Bitmap::setPixel(bitmap, i, j, color);
+                    i = i + 1;
+                }
+                j = j + 1;
+            }
+        }
+
+        fnc drawLine(bitmap: Bitmap, x0: Int64, y0: Int64, x1: Int64, y1: Int64, color: Int64) -> Unit
+        {
+            let dx: Int64 = Mathf::abs(x1 - x0);
+            let dy: Int64 = Mathf::abs(y1 - y0);
+            let sx: Int64 = (x0 < x1) ? 1 : -1;
+            let sy: Int64 = (y0 < y1) ? 1 : -1;
+            var err: Int64 = dx - dy;
+            var x: Int64 = x0;
+            var y: Int64 = y0;
+            while true
+            {
+                Bitmap::setPixel(bitmap, x, y, color);
+                if x == x1 && y == y1
+                {
+                    break;
+                }
+                let e2: Int64 = 2 * err;
+                if e2 > -dy
+                {
+                    err = err - dy;
+                    x = x + sx;
+                }
+                if e2 < dx
+                {
+                    err = err + dx;
+                    y = y + sy;
+                }
+            }
+        }
+
+        fnc drawCircle(bitmap: Bitmap, cx: Int64, cy: Int64, radius: Int64, color: Int64) -> Unit
+        {
+            var x: Int64 = radius;
+            var y: Int64 = 0;
+            var err: Int64 = 0;
+            while x >= y
+            {
+                Bitmap::setPixel(bitmap, cx + x, cy + y, color);
+                Bitmap::setPixel(bitmap, cx + y, cy + x, color);
+                Bitmap::setPixel(bitmap, cx - y, cy + x, color);
+                Bitmap::setPixel(bitmap, cx - x, cy + y, color);
+                Bitmap::setPixel(bitmap, cx - x, cy - y, color);
+                Bitmap::setPixel(bitmap, cx - y, cy - x, color);
+                Bitmap::setPixel(bitmap, cx + y, cy - x, color);
+                Bitmap::setPixel(bitmap, cx + x, cy - y, color);
+                y = y + 1;
+                err = err + 1 + 2 * y;
+                if 2 * (err - x) + dx > dy
+                {
+                    x = x - 1;
+                    err = err - 2 * x;
+                }
+            }
+        }
+    }
+}

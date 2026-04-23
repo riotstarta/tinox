@@ -1,0 +1,70 @@
+module tinox.core.logger;
+
+namespace tinox.core.logger
+{
+    class Logger
+    {
+        fnc new(name: String) -> Logger
+        {
+            return Logger { name: name, level: LogLevel::Info };
+        }
+
+        fnc debug(logger: Logger, message: String) -> Unit
+        {
+            if logger.level <= LogLevel::Debug
+            {
+                Logger::log(logger, "DEBUG", message);
+            }
+        }
+
+        fnc info(logger: Logger, message: String) -> Unit
+        {
+            if logger.level <= LogLevel::Info
+            {
+                Logger::log(logger, "INFO", message);
+            }
+        }
+
+        fnc warn(logger: Logger, message: String) -> Unit
+        {
+            if logger.level <= LogLevel::Warn
+            {
+                Logger::log(logger, "WARN", message);
+            }
+        }
+
+        fnc error(logger: Logger, message: String) -> Unit
+        {
+            if logger.level <= LogLevel::Error
+            {
+                Logger::log(logger, "ERROR", message);
+            }
+        }
+
+        fnc setLevel(logger: Logger, level: LogLevel) -> Unit
+        {
+            logger.level = level;
+        }
+
+        fnc log(logger: Logger, level: String, message: String) -> Unit
+        {
+            let timestamp: String = Time::now().toString();
+            print("[");
+            print(timestamp);
+            print("] [");
+            print(level);
+            print("] [");
+            print(logger.name);
+            print("] ");
+            println(message);
+        }
+    }
+
+    class LogLevel
+    {
+        fnc Debug() -> LogLevel { return LogLevel { value: 0 }; }
+        fnc Info() -> LogLevel { return LogLevel { value: 1 }; }
+        fnc Warn() -> LogLevel { return LogLevel { value: 2 }; }
+        fnc Error() -> LogLevel { return LogLevel { value: 3 }; }
+    }
+}

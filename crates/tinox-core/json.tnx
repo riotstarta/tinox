@@ -1,0 +1,95 @@
+module tinox.core.json;
+
+namespace tinox.core.json
+{
+    class Json
+    {
+        fnc parse(text: String) -> JsonValue
+        {
+            return jsonParse(text);
+        }
+
+        fnc stringify(value: JsonValue) -> String
+        {
+            return jsonStringify(value);
+        }
+
+        fnc toJson(value: String) -> JsonValue
+        {
+            return jsonParse(value);
+        }
+
+        fnc fromJson(value: JsonValue) -> String
+        {
+            return jsonStringify(value);
+        }
+    }
+
+    class JsonValue
+    {
+        fnc getString() -> String
+        {
+            return jsonGetString(this);
+        }
+
+        fnc getInt() -> Int64
+        {
+            return jsonGetInt(this);
+        }
+
+        fnc getFloat() -> Float64
+        {
+            return jsonGetFloat(this);
+        }
+
+        fnc getBool() -> Bool
+        {
+            return jsonGetBool(this);
+        }
+
+        fnc getObject() -> Map<String, JsonValue>
+        {
+            return jsonGetObject(this);
+        }
+
+        fnc getArray() -> List<JsonValue>
+        {
+            return jsonGetArray(this);
+        }
+
+        fnc isNull() -> Bool
+        {
+            return jsonIsNull(this);
+        }
+
+        fnc isString() -> Bool
+        {
+            return jsonIsString(this);
+        }
+
+        fnc isInt() -> Bool
+        {
+            return jsonIsInt(this);
+        }
+
+        fnc isFloat() -> Bool
+        {
+            return jsonIsFloat(this);
+        }
+
+        fnc isBool() -> Bool
+        {
+            return jsonIsBool(this);
+        }
+
+        fnc isObject() -> Bool
+        {
+            return jsonIsObject(this);
+        }
+
+        fnc isArray() -> Bool
+        {
+            return jsonIsArray(this);
+        }
+    }
+}

@@ -1,0 +1,80 @@
+module tinox.core.hex;
+
+namespace tinox.core.hex
+{
+    class Hex
+    {
+        fnc encode(data: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < data.len()
+            {
+                let byte: Int64 = data.charCodeAt(i);
+                let high: Int64 = (byte >> 4) && 15;
+                let low: Int64 = byte && 15;
+                result = result + Hex::nibbleToChar(high) + Hex::nibbleToChar(low);
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fnc decode(hex: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < hex.len() step 2
+            {
+                let high: Int64 = Hex::charToNibble(hex.substring(i, i + 1));
+                let low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2));
+                result = result + fromCharCode((high << 4) | low);
+                i = i + 2;
+            }
+            return result;
+        }
+
+        fnc nibbleToChar(n: Int64) -> String
+        {
+            if n < 10
+            {
+                return (n + 48).toString();
+            }
+            return (n + 87).toString();
+        }
+
+        fnc charToNibble(c: String) -> Int64
+        {
+            let code: Int64 = c.charCodeAt(0);
+            if code >= 48 && code <= 57
+            {
+                return code - 48;
+            }
+            if code >= 97 && code <= 102
+            {
+                return code - 87;
+            }
+            if code >= 65 && code <= 70
+            {
+                return code - 55;
+            }
+            return 0;
+        }
+
+        fnc dump(data: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < data.len()
+            {
+                if i > 0
+                {
+                    result = result + " ";
+                }
+                let byte: Int64 = data.charCodeAt(i);
+                result = result + Hex::encode(data.substring(i, i + 1));
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

@@ -1,0 +1,112 @@
+module tinox.core.queue;
+
+namespace tinox.core.queue
+{
+    class PriorityQueue<T>
+    {
+        fnc new() -> PriorityQueue<T>
+        {
+            return PriorityQueue<T> { items: [] };
+        }
+
+        fnc enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Unit
+        {
+            q.items.push(PriorityItem { item: item, priority: priority });
+            PriorityQueue::sort(q);
+        }
+
+        fnc dequeue(q: PriorityQueue<T>) -> T
+        {
+            if q.items.len() == 0
+            {
+                throw "Priority queue is empty";
+            }
+            let item: T = q.items[0].item;
+            q.items.removeAt(0);
+            return item;
+        }
+
+        fnc peek(q: PriorityQueue<T>) -> T
+        {
+            if q.items.len() == 0
+            {
+                throw "Priority queue is empty";
+            }
+            return q.items[0].item;
+        }
+
+        fnc sort(q: PriorityQueue<T>) -> Unit
+        {
+            var i: Int64 = 1;
+            while i < q.items.len()
+            {
+                let key: PriorityItem = q.items[i];
+                var j: Int64 = i - 1;
+                while j >= 0 && q.items[j].priority > key.priority
+                {
+                    q.items[j + 1] = q.items[j];
+                    j = j - 1;
+                }
+                q.items[j + 1] = key;
+                i = i + 1;
+            }
+        }
+
+        fnc isEmpty(q: PriorityQueue<T>) -> Bool
+        {
+            return q.items.len() == 0;
+        }
+
+        fnc size(q: PriorityQueue<T>) -> Int64
+        {
+            return q.items.len();
+        }
+    }
+
+    class PriorityItem<T>
+    {
+        item: T;
+        priority: Int64;
+    }
+
+    class CircularBuffer<T>
+    {
+        fnc new(size: Int64) -> CircularBuffer<T>
+        {
+            return CircularBuffer<T> { data: [], size: size, head: 0, tail: 0, count: 0 };
+        }
+
+        fnc push(buf: CircularBuffer<T>, item: T) -> Bool
+        {
+            if buf.count >= buf.size
+            {
+                return false;
+            }
+            buf.data.push(item);
+            buf.count = buf.count + 1;
+            return true;
+        }
+
+        fnc pop(buf: CircularBuffer<T>) -> T
+        {
+            if buf.count == 0
+            {
+                throw "Buffer is empty";
+            }
+            let item: T = buf.data[0];
+            buf.data.removeAt(0);
+            buf.count = buf.count - 1;
+            return item;
+        }
+
+        fnc isFull(buf: CircularBuffer<T>) -> Bool
+        {
+            return buf.count >= buf.size;
+        }
+
+        fnc isEmpty(buf: CircularBuffer<T>) -> Bool
+        {
+            return buf.count == 0;
+        }
+    }
+}

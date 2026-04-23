@@ -1,0 +1,32 @@
+module tinox.core.uuid;
+
+namespace tinox.core.uuid
+{
+    class Uuid
+    {
+        fnc generate() -> String
+        {
+            return uuidGenerate();
+        }
+
+        fnc fromString(s: String) -> Uuid
+        {
+            return Uuid { value: s };
+        }
+
+        fnc toString() -> String
+        {
+            return this.value;
+        }
+
+        fnc isValid(s: String) -> Bool
+        {
+            if s.len() != 36
+            {
+                return false;
+            }
+            let pattern: String = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+            return regexIsMatch(pattern, s);
+        }
+    }
+}

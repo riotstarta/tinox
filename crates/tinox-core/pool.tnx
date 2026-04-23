@@ -1,0 +1,53 @@
+module tinox.core.pool;
+
+namespace tinox.core.pool
+{
+    class Pool<T>
+    {
+        fnc new(maxSize: Int64) -> Pool<T>
+        {
+            return Pool<T> { available: [], inUse: [], maxSize: maxSize };
+        }
+
+        fnc acquire(pool: Pool<T>) -> T
+        {
+            if pool.available.len() > 0
+            {
+                return pool.available.pop();
+            }
+            if pool.inUse.len() < pool.maxSize
+            {
+                let obj: T = pool.factory();
+                pool.inUse.push(obj);
+                return obj;
+            }
+            throw "Pool exhausted";
+        }
+
+        fnc release(pool: Pool<T>, obj: T) -> Unit
+        {
+            var found: Bool = false;
+            var i: Int64 = 0;
+            while i < pool.inUse.len()
+            {
+                if pool.inUse[i] == obj
+                {
+                    found = true;
+                    break;
+                }
+                i = i + 1;
+            }
+            if found
+            {
+                pool.inUse.removeAt(i);
+                pool.available.push(obj);
+            }
+        }
+
+        fnc clear(pool: Pool<T>) -> Unit
+        {
+            pool.available = [];
+            pool.inUse = [];
+        }
+    }
+}

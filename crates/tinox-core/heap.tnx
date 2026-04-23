@@ -1,0 +1,165 @@
+module tinox.core.heap;
+
+namespace tinox.core.heap
+{
+    class Heap<T>
+    {
+        fnc new() -> Heap<T>
+        {
+            return Heap<T> { items: [], comparator: fnc(a: T, b: T) -> Bool { return a < b; } };
+        }
+
+        fnc newWithCompare(comparator: fnc(T, T) -> Bool) -> Heap<T>
+        {
+            return Heap<T> { items: [], comparator: comparator };
+        }
+
+        fnc push(heap: Heap<T>, item: T) -> Unit
+        {
+            heap.items.push(item);
+            Heap::siftUp(heap, heap.items.len() - 1);
+        }
+
+        fnc pop(heap: Heap<T>) -> T
+        {
+            if heap.items.len() == 0
+            {
+                throw "Heap is empty";
+            }
+            let result: T = heap.items[0];
+            let last: T = heap.items.pop();
+            if heap.items.len() > 0
+            {
+                heap.items[0] = last;
+                Heap::siftDown(heap, 0);
+            }
+            return result;
+        }
+
+        fnc peek(heap: Heap<T>) -> T
+        {
+            if heap.items.len() == 0
+            {
+                throw "Heap is empty";
+            }
+            return heap.items[0];
+        }
+
+        fnc siftUp(heap: Heap<T>, index: Int64) -> Unit
+        {
+            while index > 0
+            {
+                let parent: Int64 = (index - 1) / 2;
+                if heap.comparator(heap.items[index], heap.items[parent])
+                {
+                    let temp: T = heap.items[index];
+                    heap.items[index] = heap.items[parent];
+                    heap.items[parent] = temp;
+                    index = parent;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        fnc siftDown(heap: Heap<T>, index: Int64) -> Unit
+        {
+            let len: Int64 = heap.items.len();
+            while true
+            {
+                let left: Int64 = 2 * index + 1;
+                let right: Int64 = 2 * index + 2;
+                var smallest: Int64 = index;
+                if left < len && heap.comparator(heap.items[left], heap.items[smallest])
+                {
+                    smallest = left;
+                }
+                if right < len && heap.comparator(heap.items[right], heap.items[smallest])
+                {
+                    smallest = right;
+                }
+                if smallest != index
+                {
+                    let temp: T = heap.items[index];
+                    heap.items[index] = heap.items[smallest];
+                    heap.items[smallest] = temp;
+                    index = smallest;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        fnc isEmpty(heap: Heap<T>) -> Bool
+        {
+            return heap.items.len() == 0;
+        }
+
+        fnc size(heap: Heap<T>) -> Int64
+        {
+            return heap.items.len();
+        }
+
+        fnc buildHeap(heap: Heap<T>, items: List<T>) -> Unit
+        {
+            heap.items = items;
+            var i: Int64 = (heap.items.len() / 2) - 1;
+            while i >= 0
+            {
+                Heap::siftDown(heap, i);
+                i = i - 1;
+            }
+        }
+    }
+
+    class MinHeap<T>
+    {
+        fnc new() -> MinHeap<T>
+        {
+            return MinHeap<T> { heap: Heap::new() };
+        }
+
+        fnc push(h: MinHeap<T>, item: T) -> Unit
+        {
+            Heap::push(h.heap, item);
+        }
+
+        fnc pop(h: MinHeap<T>) -> T
+        {
+            return Heap::pop(h.heap);
+        }
+
+        fnc peek(h: MinHeap<T>) -> T
+        {
+            return Heap::peek(h.heap);
+        }
+    }
+
+    class MaxHeap<T>
+    {
+        fnc new() -> MaxHeap<T>
+        {
+            let comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };
+            return MaxHeap<T> { heap: Heap::newWithCompare(comp) };
+        }
+
+        fnc push(h: MaxHeap<T>, item: T) -> Unit
+        {
+            Heap::push(h.heap, item);
+        }
+
+        fnc pop(h: MaxHeap<T>) -> T
+        {
+            return Heap::pop(h.heap);
+        }
+
+        fnc peek(h: MaxHeap<T>) -> T
+        {
+            return Heap::peek(h.heap);
+        }
+    }
+}

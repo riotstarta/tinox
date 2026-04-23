@@ -1,0 +1,55 @@
+module tinox.core.fs;
+
+namespace tinox.core.fs
+{
+    class Fs
+    {
+        fnc readFile(path: String) -> String
+        {
+            return fileReadAllText(path);
+        }
+
+        fnc writeFile(path: String, content: String) -> Unit
+        {
+            fileWriteAllText(path, content);
+        }
+
+        fnc appendFile(path: String, content: String) -> Unit
+        {
+            let existing: String = Fs::readFile(path);
+            Fs::writeFile(path, existing + content);
+        }
+
+        fnc deleteFile(path: String) -> Unit
+        {
+            fileDelete(path);
+        }
+
+        fnc copyFile(src: String, dest: String) -> Unit
+        {
+            let content: String = Fs::readFile(src);
+            Fs::writeFile(dest, content);
+        }
+
+        fnc moveFile(src: String, dest: String) -> Unit
+        {
+            Fs::copyFile(src, dest);
+            Fs::deleteFile(src);
+        }
+
+        fnc listDirectory(path: String) -> List<String>
+        {
+            return dirList(path);
+        }
+
+        fnc createDirectory(path: String) -> Unit
+        {
+            dirCreate(path);
+        }
+
+        fnc deleteDirectory(path: String) -> Unit
+        {
+            dirDelete(path);
+        }
+    }
+}

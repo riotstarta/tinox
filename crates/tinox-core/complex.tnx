@@ -1,0 +1,89 @@
+module tinox.core.complex;
+
+namespace tinox.core.complex
+{
+    class Complex
+    {
+        fnc new(real: Float64, imag: Float64) -> Complex
+        {
+            return Complex { real: real, imag: imag };
+        }
+
+        fnc fromPolar(r: Float64, theta: Float64) -> Complex
+        {
+            return Complex { real: r * Mathf::cos(theta), imag: r * Mathf::sin(theta) };
+        }
+
+        fnc add(a: Complex, b: Complex) -> Complex
+        {
+            return Complex::new(a.real + b.real, a.imag + b.imag);
+        }
+
+        fnc subtract(a: Complex, b: Complex) -> Complex
+        {
+            return Complex::new(a.real - b.real, a.imag - b.imag);
+        }
+
+        fnc multiply(a: Complex, b: Complex) -> Complex
+        {
+            let real: Float64 = a.real * b.real - a.imag * b.imag;
+            let imag: Float64 = a.real * b.imag + a.imag * b.real;
+            return Complex::new(real, imag);
+        }
+
+        fnc divide(a: Complex, b: Complex) -> Complex
+        {
+            let denom: Float64 = b.real * b.real + b.imag * b.imag;
+            let real: Float64 = (a.real * b.real + a.imag * b.imag) / denom;
+            let imag: Float64 = (a.imag * b.real - a.real * b.imag) / denom;
+            return Complex::new(real, imag);
+        }
+
+        fnc magnitude(c: Complex) -> Float64
+        {
+            return Mathf::sqrt(c.real * c.real + c.imag * c.imag);
+        }
+
+        fnc phase(c: Complex) -> Float64
+        {
+            return Mathf::atan2(c.imag, c.real);
+        }
+
+        fnc conjugate(c: Complex) -> Complex
+        {
+            return Complex::new(c.real, -c.imag);
+        }
+
+        fnc reciprocal(c: Complex) -> Complex
+        {
+            let denom: Float64 = c.real * c.real + c.imag * c.imag;
+            return Complex::new(c.real / denom, -c.imag / denom);
+        }
+
+        fnc toString(c: Complex) -> String
+        {
+            let sign: String = (c.imag >= 0.0) ? "+" : "-";
+            return c.real.toString() + sign + Mathf::abs(c.imag).toString() + "i";
+        }
+
+        fnc exp(c: Complex) -> Complex
+        {
+            let r: Float64 = Mathf::exp(c.real);
+            return Complex::new(r * Mathf::cos(c.imag), r * Mathf::sin(c.imag));
+        }
+
+        fnc log(c: Complex) -> Complex
+        {
+            return Complex::new(Mathf::log(Complex::magnitude(c)), Complex::phase(c));
+        }
+
+        fnc pow(c: Complex, n: Float64) -> Complex
+        {
+            let mag: Float64 = Complex::magnitude(c);
+            let phase: Float64 = Complex::phase(c);
+            let newMag: Float64 = Mathf::pow(mag, n);
+            let newPhase: Float64 = phase * n;
+            return Complex::fromPolar(newMag, newPhase);
+        }
+    }
+}

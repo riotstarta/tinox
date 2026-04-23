@@ -1,0 +1,40 @@
+module tinox.core.debug;
+
+namespace tinox.core.debug
+{
+    class Debug
+    {
+        fnc assert(condition: Bool, message: String) -> Unit
+        {
+            if condition == false
+            {
+                Debug::panic(message);
+            }
+        }
+
+        fnc panic(message: String) -> Unit
+        {
+            throw "Assertion failed: " + message;
+        }
+
+        fnc printStackTrace() -> Unit
+        {
+            printStackTrace();
+        }
+
+        fnc typeName<T>() -> String
+        {
+            return typeNameOf<T>();
+        }
+
+        fnc memoryUsage() -> Int64
+        {
+            return memoryUsage();
+        }
+
+        fnc gcCollect() -> Unit
+        {
+            gcCollect();
+        }
+    }
+}

@@ -1,0 +1,102 @@
+module tinox.core.semaphore;
+
+namespace tinox.core.semaphore
+{
+    class Semaphore
+    {
+        fnc new(count: Int64) -> Semaphore
+        {
+            return Semaphore { count: count, waiting: [] };
+        }
+
+        fnc acquire(sem: Semaphore) -> Unit
+        {
+            if sem.count > 0
+            {
+                sem.count = sem.count - 1;
+                return;
+            }
+            throw "Semaphore locked";
+        }
+
+        fnc release(sem: Semaphore) -> Unit
+        {
+            sem.count = sem.count + 1;
+        }
+
+        fnc tryAcquire(sem: Semaphore) -> Bool
+        {
+            if sem.count > 0
+            {
+                sem.count = sem.count - 1;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    class Mutex
+    {
+        fnc new() -> Mutex
+        {
+            return Mutex { locked: false, queue: [] };
+        }
+
+        fnc lock(mutex: Mutex) -> Unit
+        {
+            if mutex.locked == false
+            {
+                mutex.locked = true;
+                return;
+            }
+            throw "Mutex already locked";
+        }
+
+        fnc unlock(mutex: Mutex) -> Unit
+        {
+            mutex.locked = false;
+        }
+
+        fnc tryLock(mutex: Mutex) -> Bool
+        {
+            if mutex.locked == false
+            {
+                mutex.locked = true;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    class RWLock
+    {
+        fnc new() -> RWLock
+        {
+            return RWLock { readers: 0, writers: 0 };
+        }
+
+        fnc readLock(lock: RWLock) -> Unit
+        {
+            if lock.writers > 0
+            {
+                throw "Write lock held";
+            }
+            lock.readers = lock.readers + 1;
+        }
+
+        fnc readUnlock(lock: RWLock) -> Unit
+        {
+            lock.readers = lock.readers - 1;
+        }
+
+        fnc writeLock(lock: RWLock) -> Unit
+        {
+            lock.writers = lock.writers + 1;
+        }
+
+        fnc writeUnlock(lock: RWLock) -> Unit
+        {
+            lock.writers = lock.writers - 1;
+        }
+    }
+}

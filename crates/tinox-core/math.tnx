@@ -120,7 +120,12 @@ namespace tinox.core.math
             {
                 return 1;
             }
-            return n * Math::factorial(n - 1);
+            var result: Int64 = 1;
+            for i in 2..n+1
+            {
+                result = result * i;
+            }
+            return result;
         }
 
         /**
@@ -132,7 +137,7 @@ namespace tinox.core.math
          */
         fnc randomSeed(seed: Int64) -> Int64
         {
-            return seed * 1103515245 + 12345 && 2147483647;
+            return (seed * 1103515245 + 12345) & 2147483647;
         }
     }
 }

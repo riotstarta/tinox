@@ -1,0 +1,67 @@
+module tinox.core.encoding;
+
+namespace tinox.core.encoding
+{
+    class Encoding
+    {
+        fnc toCharCode(s: String) -> Int64
+        {
+            if s.len() == 0
+            {
+                return 0;
+            }
+            return s.charCodeAt(0);
+        }
+
+        fnc fromCharCode(code: Int64) -> String
+        {
+            return fromCharCode(code);
+        }
+
+        fnc toUtf8(s: String) -> List<Int64>
+        {
+            var result: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < s.len()
+            {
+                result.push(s.charCodeAt(i));
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fnc fromUtf8(codes: List<Int64>) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < codes.len()
+            {
+                result = result + fromCharCode(codes[i]);
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fnc htmlEncode(s: String) -> String
+        {
+            var result: String = s;
+            result = result.replace("&", "&amp;");
+            result = result.replace("<", "&lt;");
+            result = result.replace(">", "&gt;");
+            result = result.replace("\"", "&quot;");
+            result = result.replace("'", "&#39;");
+            return result;
+        }
+
+        fnc htmlDecode(s: String) -> String
+        {
+            var result: String = s;
+            result = result.replace("&amp;", "&");
+            result = result.replace("&lt;", "<");
+            result = result.replace("&gt;", ">");
+            result = result.replace("&quot;", "\"");
+            result = result.replace("&#39;", "'");
+            return result;
+        }
+    }
+}

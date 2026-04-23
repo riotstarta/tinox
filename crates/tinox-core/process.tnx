@@ -1,0 +1,37 @@
+module tinox.core.process;
+
+namespace tinox.core.process
+{
+    class Process
+    {
+        fnc exit(code: Int64) -> Unit
+        {
+            processExit(code);
+        }
+
+        fnc sleep(ms: Int64) -> Unit
+        {
+            sleep(ms);
+        }
+
+        fnc pid() -> Int64
+        {
+            return processId();
+        }
+
+        fnc args() -> List<String>
+        {
+            return processArgs();
+        }
+
+        fnc env(name: String) -> String
+        {
+            return envGet(name);
+        }
+
+        fnc setEnv(name: String, value: String) -> Unit
+        {
+            envSet(name, value);
+        }
+    }
+}

@@ -655,7 +655,7 @@ impl CodeGen {
                     };
                     if !cast_op.is_empty() {
                         let tmp = self.temp();
-                        writeln!(&mut self.ir, "{} = {} {} {}, {}", tmp, cast_op, ty, val, expected).unwrap();
+                        writeln!(&mut self.ir, "{} = {} {} {} to {}", tmp, cast_op, ty, val, expected).unwrap();
                         (tmp, expected.clone())
                     } else {
                         (val, ty)

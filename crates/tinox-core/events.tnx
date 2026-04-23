@@ -1,0 +1,79 @@
+module tinox.core.events;
+
+namespace tinox.core.events
+{
+    class EventEmitter
+    {
+        fnc new() -> EventEmitter
+        {
+            return EventEmitter { listeners: Map::new() };
+        }
+
+        fnc on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        {
+            if emitter.listeners.contains(event) == false
+            {
+                emitter.listeners[event] = [];
+            }
+            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            handlers.push(handler);
+        }
+
+        fnc once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        {
+            let wrapper: fnc(JsonValue) -> Unit = event => {
+                handler(event);
+                EventEmitter::removeListener(emitter, event, wrapper);
+            };
+            EventEmitter::on(emitter, event, wrapper);
+        }
+
+        fnc emit(emitter: EventEmitter, event: String, data: JsonValue) -> Unit
+        {
+            if emitter.listeners.contains(event) == false
+            {
+                return;
+            }
+            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            var i: Int64 = 0;
+            while i < handlers.len()
+            {
+                handlers[i](data);
+                i = i + 1;
+            }
+        }
+
+        fnc removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        {
+            if emitter.listeners.contains(event) == false
+            {
+                return;
+            }
+            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            var i: Int64 = 0;
+            while i < handlers.len()
+            {
+                if handlers[i] == handler
+                {
+                    handlers.removeAt(i);
+                    break;
+                }
+                i = i + 1;
+            }
+        }
+
+        fnc removeAllListeners(emitter: EventEmitter, event: String) -> Unit
+        {
+            emitter.listeners.remove(event);
+        }
+
+        fnc listenerCount(emitter: EventEmitter, event: String) -> Int64
+        {
+            if emitter.listeners.contains(event) == false
+            {
+                return 0;
+            }
+            return emitter.listeners[event].len();
+        }
+    }
+}

@@ -1,0 +1,84 @@
+module tinox.core.ratelimit;
+
+namespace tinox.core.ratelimit
+{
+    class RateLimiter
+    {
+        fnc new(maxRequests: Int64, windowMs: Int64) -> RateLimiter
+        {
+            return RateLimiter { maxRequests: maxRequests, windowMs: windowMs, requests: [] };
+        }
+
+        fnc allow(limiter: RateLimiter) -> Bool
+        {
+            let now: Int64 = Time::now();
+            let windowStart: Int64 = now - limiter.windowMs;
+            var validRequests: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < limiter.requests.len()
+            {
+                if limiter.requests[i] > windowStart
+                {
+                    validRequests.push(limiter.requests[i]);
+                }
+                i = i + 1;
+            }
+            limiter.requests = validRequests;
+            if limiter.requests.len() < limiter.maxRequests
+            {
+                limiter.requests.push(now);
+                return true;
+            }
+            return false;
+        }
+
+        fnc reset(limiter: RateLimiter) -> Unit
+        {
+            limiter.requests = [];
+        }
+
+        fnc remaining(limiter: RateLimiter) -> Int64
+        {
+            let now: Int64 = Time::now();
+            let windowStart: Int64 = now - limiter.windowMs;
+            var count: Int64 = 0;
+            var i: Int64 = 0;
+            while i < limiter.requests.len()
+            {
+                if limiter.requests[i] > windowStart
+                {
+                    count = count + 1;
+                }
+                i = i + 1;
+            }
+            return limiter.maxRequests - count;
+        }
+    }
+
+    class TokenBucket
+    {
+        fnc new(capacity: Int64, refillRate: Float64) -> TokenBucket
+        {
+            return TokenBucket { capacity: capacity, tokens: capacity, refillRate: refillRate, lastRefill: Time::now() };
+        }
+
+        fnc allow(bucket: TokenBucket) -> Bool
+        {
+            TokenBucket::refill(bucket);
+            if bucket.tokens >= 1.0
+            {
+                bucket.tokens = bucket.tokens - 1.0;
+                return true;
+            }
+            return false;
+        }
+
+        fnc refill(bucket: TokenBucket) -> Unit
+        {
+            let now: Int64 = Time::now();
+            let elapsed: Float64 = (Float64)(now - bucket.lastRefill) / 1000.0;
+            bucket.tokens = Mathf::min((Float64)bucket.capacity, bucket.tokens + elapsed * bucket.refillRate);
+            bucket.lastRefill = now;
+        }
+    }
+}

@@ -1,0 +1,53 @@
+module tinox.core.socket;
+
+namespace tinox.core.socket
+{
+    class Socket
+    {
+        fnc createTcp() -> Socket
+        {
+            return Socket { handle: socketCreateTcp(), mode: "tcp" };
+        }
+
+        fnc createUdp() -> Socket
+        {
+            return Socket { handle: socketCreateUdp(), mode: "udp" };
+        }
+
+        fnc connect(socket: Socket, host: String, port: Int64) -> Bool
+        {
+            return socketConnect(socket.handle, host, port);
+        }
+
+        fnc bind(socket: Socket, port: Int64) -> Bool
+        {
+            return socketBind(socket.handle, port);
+        }
+
+        fnc listen(socket: Socket) -> Bool
+        {
+            return socketListen(socket.handle);
+        }
+
+        fnc accept(socket: Socket) -> Socket
+        {
+            let newHandle: Int64 = socketAccept(socket.handle);
+            return Socket { handle: newHandle, mode: socket.mode };
+        }
+
+        fnc send(socket: Socket, data: String) -> Int64
+        {
+            return socketSend(socket.handle, data);
+        }
+
+        fnc receive(socket: Socket, size: Int64) -> String
+        {
+            return socketReceive(socket.handle, size);
+        }
+
+        fnc close(socket: Socket) -> Unit
+        {
+            socketClose(socket.handle);
+        }
+    }
+}
