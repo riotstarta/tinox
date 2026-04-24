@@ -1,3 +1,5 @@
+pub mod annotations;
+
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
@@ -1028,6 +1030,10 @@ impl TypeChecker {
                 _ => {}
             }
         }
+
+        // Annotation validation pass
+        let ann_errors = annotations::validate_annotations(source);
+        self.errors.extend(ann_errors);
     }
 
     fn check_function(&mut self, f: &Function) {

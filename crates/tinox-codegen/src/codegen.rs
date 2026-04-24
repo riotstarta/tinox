@@ -43,6 +43,10 @@ pub struct CodeGen {
     known_enum_variants: HashSet<String>,
     /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
     known_enum_types: HashSet<String>,
+    /// Annotation processing: functions annotated @inline
+    inline_functions: HashSet<String>,
+    /// Annotation processing: (class_name, method_name) pairs for methods annotated @inline
+    inline_methods: HashSet<(String, String)>,
 }
 
 impl CodeGen {
@@ -69,7 +73,19 @@ impl CodeGen {
             generated_specializations: HashSet::new(),
             known_enum_variants: HashSet::new(),
             known_enum_types: HashSet::new(),
+            inline_functions: HashSet::new(),
+            inline_methods: HashSet::new(),
         }
+    }
+
+    /// Provide annotation metadata from the type checker annotation processing.
+    pub fn set_annotation_info(
+        &mut self,
+        inline_fns: HashSet<String>,
+        inline_meths: HashSet<(String, String)>,
+    ) {
+        self.inline_functions = inline_fns;
+        self.inline_methods = inline_meths;
     }
 
     /// Provide interface metadata from the type checker.
@@ -430,15 +446,23 @@ impl CodeGen {
         }
 
         let fn_name = if f.name == "main" {
-            "tinox_main"
+            "tinox_main".to_string()
         } else {
-            &f.name
+            f.name.clone()
+        };
+
+        let is_inline = f.annotations.iter().any(|a| a.name == "inline")
+            || self.inline_functions.contains(&fn_name);
+        let linkage = if is_inline {
+            "define alwaysinline "
+        } else {
+            "define "
         };
 
         writeln!(
             &mut self.ir,
-            "define {} @{}({}) {{",
-            ret_type, fn_name, params_str
+            "{}{} @{}({}) {{",
+            linkage, ret_type, fn_name, params_str
         )
         .unwrap();
         writeln!(&mut self.ir, "entry:").unwrap();
@@ -515,10 +539,18 @@ impl CodeGen {
             }
         }
 
+        let is_inline = method.annotations.iter().any(|a| a.name == "inline")
+            || self.inline_methods.contains(&(class_name.to_string(), method.name.clone()));
+        let linkage = if is_inline {
+            "define alwaysinline "
+        } else {
+            "define "
+        };
+
         writeln!(
             &mut self.ir,
-            "define {} @{}({}) {{",
-            ret_type, fn_name, params_str
+            "{}{} @{}({}) {{",
+            linkage, ret_type, fn_name, params_str
         )
         .unwrap();
         writeln!(&mut self.ir, "entry:").unwrap();

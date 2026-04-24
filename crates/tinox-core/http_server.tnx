@@ -1,0 +1,827 @@
+/**
+ * Tinox Standard Library - HTTP Server Module
+ * HTTP server implementation for building RESTful APIs
+ * with route registration, middleware support, and request/response handling
+ */
+module tinox.core.http_server;
+
+namespace tinox.core.http_server
+{
+    /**
+     * HTTP server for handling incoming HTTP requests
+     *
+     * Supports route registration for GET, POST, PUT, PATCH, DELETE,
+     * middleware chains, and automatic request parsing.
+     *
+     * Example usage:
+     *   let server: HttpServer = HttpServer::new(8080);
+     *   server.get("/hello", ctx => {
+     *       ctx.response.text("Hello, World!");
+     *   });
+     *   server.post("/users", ctx => {
+     *       let data: JsonValue = ctx.request.json();
+     *       ctx.response.status(201).json("{\"id\": 1}");
+     *   });
+     *   server.listen();
+     */
+    class HttpServer
+    {
+        /** The port to listen on */
+        var port: Int64;
+
+        /** Registered routes */
+        var routes: List<Route>;
+
+        /** Registered middleware functions */
+        var middleware: List<fnc(HttpContext) -> Bool>;
+
+        /** The underlying socket handle */
+        var socketHandle: Int64;
+
+        /** Whether the server is running */
+        var running: Bool;
+
+        /**
+         * Creates a new HttpServer listening on the given port
+         *
+         * @param port the port number to bind to
+         * @return a new HttpServer instance
+         */
+        fnc new(port: Int64) -> HttpServer
+        {
+            return HttpServer { port: port, routes: [], middleware: [], socketHandle: -1, running: false };
+        }
+
+        /**
+         * Registers a GET route handler
+         *
+         * @param path the URL path pattern (e.g., "/users/:id")
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        {
+            this.routes.push(Route { method: "GET", path: path, handler: handler });
+            return this;
+        }
+
+        /**
+         * Registers a POST route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        {
+            this.routes.push(Route { method: "POST", path: path, handler: handler });
+            return this;
+        }
+
+        /**
+         * Registers a PUT route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn put(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        {
+            this.routes.push(Route { method: "PUT", path: path, handler: handler });
+            return this;
+        }
+
+        /**
+         * Registers a PATCH route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn patch(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        {
+            this.routes.push(Route { method: "PATCH", path: path, handler: handler });
+            return this;
+        }
+
+        /**
+         * Registers a DELETE route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn delete(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        {
+            this.routes.push(Route { method: "DELETE", path: path, handler: handler });
+            return this;
+        }
+
+        /**
+         * Registers a middleware function
+         *
+         * Middleware is executed in the order it is registered.
+         * If a middleware returns false, the request chain is interrupted.
+         *
+         * @param mware the middleware function
+         * @return this server for chaining
+         */
+        fn use(mware: fnc(HttpContext) -> Bool) -> HttpServer
+        {
+            this.middleware.push(mware);
+            return this;
+        }
+
+        /**
+         * Starts the server and begins listening for connections
+         *
+         * This is a blocking call that enters the server event loop.
+         * Use stop() to shut down the server.
+         */
+        fn listen() -> Unit
+        {
+            this.socketHandle = httpServerCreate(this.port);
+            if this.socketHandle < 0
+            {
+                throw "Failed to create HTTP server on port " + this.port.toString();
+            }
+            this.running = true;
+            while this.running
+            {
+                let ctx: HttpContext = httpServerAccept(this.socketHandle);
+                if ctx.request.method.len() > 0
+                {
+                    this.handleRequest(ctx);
+                }
+            }
+            httpServerClose(this.socketHandle);
+        }
+
+        /**
+         * Stops the running server
+         */
+        fn stop() -> Unit
+        {
+            this.running = false;
+        }
+
+        /**
+         * Processes an incoming request through middleware and route matching
+         *
+         * @param ctx the request context
+         */
+        fn handleRequest(ctx: HttpContext) -> Unit
+        {
+            let middlewareContinue: Bool = this.runMiddleware(ctx);
+            if middlewareContinue == false
+            {
+                ctx.response.statusCode = 403;
+                ctx.response.text("Forbidden");
+                httpServerSendResponse(ctx);
+                return;
+            }
+
+            let matched: Bool = this.matchRoute(ctx);
+            if matched == false
+            {
+                ctx.response.statusCode = 404;
+                ctx.response.text("Not Found");
+            }
+            httpServerSendResponse(ctx);
+        }
+
+        /**
+         * Runs all registered middleware functions
+         *
+         * @param ctx the request context
+         * @return true if all middleware passed, false if any rejected
+         */
+        fn runMiddleware(ctx: HttpContext) -> Bool
+        {
+            var i: Int64 = 0;
+            while i < this.middleware.len()
+            {
+                let result: Bool = this.middleware[i](ctx);
+                if result == false
+                {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+
+        /**
+         * Matches an incoming request against registered routes
+         *
+         * Supports path parameters via :param syntax.
+         * For example, "/users/:id" matches "/users/42" with params { id: "42" }
+         *
+         * @param ctx the request context (modified in place with params)
+         * @return true if a matching route was found and executed
+         */
+        fn matchRoute(ctx: HttpContext) -> Bool
+        {
+            var i: Int64 = 0;
+            while i < this.routes.len()
+            {
+                let route: Route = this.routes[i];
+                if route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path)
+                {
+                    let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
+                    ctx.request.setParams(params);
+                    route.handler(ctx);
+                    return true;
+                }
+                i = i + 1;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Represents an incoming HTTP request
+     *
+     * Provides access to the method, path, headers, query parameters,
+     * body, and path parameters.
+     */
+    class HttpRequest
+    {
+        /** The HTTP method (GET, POST, PUT, PATCH, DELETE) */
+        var method: String;
+
+        /** The request path (e.g., "/users/42") */
+        var path: String;
+
+        /** The raw query string (e.g., "page=1&limit=10") */
+        var queryString: String;
+
+        /** Request headers as key-value pairs */
+        var headers: Map<String, String>;
+
+        /** The raw request body */
+        var body: String;
+
+        /** Path parameters extracted from route patterns */
+        var params: Map<String, String>;
+
+        /**
+         * Creates a new HttpRequest
+         *
+         * @param method the HTTP method
+         * @param path the request path
+         * @param queryString the query string
+         * @param headers the request headers
+         * @param body the request body
+         * @return a new HttpRequest instance
+         */
+        fnc new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
+        {
+            return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() };
+        }
+
+        /**
+         * Returns the value of a request header
+         *
+         * @param name the header name (case-insensitive lookup)
+         * @return the header value, or empty string if not found
+         */
+        fn getHeader(name: String) -> String
+        {
+            if this.headers.contains(name)
+            {
+                return this.headers[name];
+            }
+            let lower: String = name.toLowerCase();
+            var key: Int64 = 0;
+            let keys: List<String> = this.headers.keys();
+            while key < keys.len()
+            {
+                if keys[key].toLowerCase() == lower
+                {
+                    return this.headers[keys[key]];
+                }
+                key = key + 1;
+            }
+            return "";
+        }
+
+        /**
+         * Returns the value of a path parameter
+         *
+         * @param name the parameter name
+         * @return the parameter value, or empty string if not found
+         */
+        fn getParam(name: String) -> String
+        {
+            if this.params.contains(name)
+            {
+                return this.params[name];
+            }
+            return "";
+        }
+
+        /**
+         * Returns the value of a query parameter
+         *
+         * @param name the query parameter name
+         * @return the parameter value, or empty string if not found
+         */
+        fn getQuery(name: String) -> String
+        {
+            return QueryString::get(this.queryString, name);
+        }
+
+        /**
+         * Parses the request body as JSON
+         *
+         * @return a JsonValue representing the parsed body
+         */
+        fn json() -> JsonValue
+        {
+            return Json::parse(this.body);
+        }
+
+        /**
+         * Returns the raw request body as a string
+         *
+         * @return the request body
+         */
+        fn text() -> String
+        {
+            return this.body;
+        }
+
+        /**
+         * Sets path parameters (internal use by route matching)
+         *
+         * @param params the extracted path parameters
+         */
+        fn setParams(params: Map<String, String>) -> Unit
+        {
+            this.params = params;
+        }
+
+        /**
+         * Checks the Content-Type header
+         *
+         * @param contentType the content type to check for
+         * @return true if the request Content-Type matches
+         */
+        fn isContentType(contentType: String) -> Bool
+        {
+            let ct: String = this.getHeader("Content-Type");
+            return ct.startsWith(contentType);
+        }
+    }
+
+    /**
+     * Represents an outgoing HTTP response
+     *
+     * Provides a fluent API for building responses with
+     * status codes, headers, and body content.
+     */
+    class HttpResponse
+    {
+        /** The HTTP status code */
+        var statusCode: Int64;
+
+        /** Response headers */
+        var headers: Map<String, String>;
+
+        /** The response body */
+        var body: String;
+
+        /**
+         * Creates a new HttpResponse with default status 200
+         *
+         * @return a new HttpResponse instance
+         */
+        fnc new() -> HttpResponse
+        {
+            return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
+        }
+
+        /**
+         * Sets the HTTP status code
+         *
+         * @param code the status code (e.g., 200, 404)
+         * @return this response for chaining
+         */
+        fn status(code: Int64) -> HttpResponse
+        {
+            this.statusCode = code;
+            return this;
+        }
+
+        /**
+         * Sets a response header
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this response for chaining
+         */
+        fn header(name: String, value: String) -> HttpResponse
+        {
+            this.headers[name] = value;
+            return this;
+        }
+
+        /**
+         * Sets the response body as plain text with Content-Type: text/plain
+         *
+         * @param text the response text
+         * @return this response for chaining
+         */
+        fn text(text: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = text;
+            return this;
+        }
+
+        /**
+         * Sets the response body as JSON with Content-Type: application/json
+         *
+         * @param json the JSON string
+         * @return this response for chaining
+         */
+        fn json(json: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = json;
+            return this;
+        }
+
+        /**
+         * Sets the response body as HTML with Content-Type: text/html
+         *
+         * @param html the HTML string
+         * @return this response for chaining
+         */
+        fn html(html: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "text/html; charset=utf-8";
+            this.body = html;
+            return this;
+        }
+
+        /**
+         * Sets the response body with a custom Content-Type
+         *
+         * @param content the response body
+         * @param contentType the MIME type
+         * @return this response for chaining
+         */
+        fn content(content: String, contentType: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = contentType;
+            this.body = content;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 404 Not Found with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn notFound(message: String) -> HttpResponse
+        {
+            this.statusCode = 404;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 400 Bad Request with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn badRequest(message: String) -> HttpResponse
+        {
+            this.statusCode = 400;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 500 Internal Server Error with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn internalError(message: String) -> HttpResponse
+        {
+            this.statusCode = 500;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 201 Created with a JSON body
+         *
+         * @param json the JSON response body
+         * @return this response for chaining
+         */
+        fn created(json: String) -> HttpResponse
+        {
+            this.statusCode = 201;
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = json;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 204 No Content (empty body)
+         *
+         * @return this response for chaining
+         */
+        fn noContent() -> HttpResponse
+        {
+            this.statusCode = 204;
+            this.body = "";
+            return this;
+        }
+
+        /**
+         * Sets the response to a redirect (302 Found)
+         *
+         * @param url the URL to redirect to
+         * @return this response for chaining
+         */
+        fn redirect(url: String) -> HttpResponse
+        {
+            this.statusCode = 302;
+            this.headers["Location"] = url;
+            return this;
+        }
+
+        /**
+         * Sets CORS headers to allow cross-origin requests
+         *
+         * @param origin the allowed origin (defaults to "*")
+         * @return this response for chaining
+         */
+        fn cors(origin: String) -> HttpResponse
+        {
+            this.headers["Access-Control-Allow-Origin"] = origin;
+            this.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
+            this.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+            return this;
+        }
+    }
+
+    /**
+     * Request context passed to route handlers and middleware
+     *
+     * Contains both the incoming request and the outgoing response,
+     * enabling handlers to read request data and modify the response.
+     */
+    class HttpContext
+    {
+        /** The incoming HTTP request */
+        var request: HttpRequest;
+
+        /** The outgoing HTTP response */
+        var response: HttpResponse;
+
+        /**
+         * Creates a new HttpContext
+         *
+         * @param request the incoming request
+         * @param response the outgoing response (defaults to new 200 response)
+         * @return a new HttpContext instance
+         */
+        fnc new(request: HttpRequest, response: HttpResponse) -> HttpContext
+        {
+            return HttpContext { request: request, response: response };
+        }
+
+        /**
+         * Creates a context with a new default response
+         *
+         * @param request the incoming request
+         * @return a new HttpContext with a fresh 200 response
+         */
+        fnc fromRequest(request: HttpRequest) -> HttpContext
+        {
+            return HttpContext { request: request, response: HttpResponse::new() };
+        }
+    }
+
+    /**
+     * A route definition mapping an HTTP method and path pattern to a handler
+     */
+    class Route
+    {
+        /** The HTTP method (GET, POST, etc.) */
+        var method: String;
+
+        /** The path pattern (e.g., "/users/:id") */
+        var path: String;
+
+        /** The handler function to execute */
+        var handler: fnc(HttpContext) -> Unit;
+    }
+
+    /**
+     * Utility for matching URL paths against route patterns
+     * with support for path parameters (:param syntax)
+     */
+    class RouteMatcher
+    {
+        /**
+         * Checks if a request path matches a route pattern
+         *
+         * Pattern syntax:
+         *   "/users"      - exact match
+         *   "/users/:id"  - match with path parameter
+         *   "/static/*"   - wildcard match for remaining path
+         *
+         * @param pattern the route pattern
+         * @param path the actual request path
+         * @return true if the path matches the pattern
+         */
+        fnc matches(pattern: String, path: String) -> Bool
+        {
+            let patternParts: List<String> = RouteMatcher::splitPath(pattern);
+            let pathParts: List<String> = RouteMatcher::splitPath(path);
+
+            if patternParts.len() != pathParts.len()
+            {
+                if patternParts.len() > 0 && patternParts[patternParts.len() - 1] == "*"
+                {
+                    if pathParts.len() >= patternParts.len() - 1
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            var i: Int64 = 0;
+            while i < patternParts.len()
+            {
+                let pPart: String = patternParts[i];
+                let pathPart: String = pathParts[i];
+
+                if pPart.startsWith(":") || pPart == "*"
+                {
+                    i = i + 1;
+                    continue;
+                }
+
+                if pPart != pathPart
+                {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+
+        /**
+         * Extracts path parameters from a request path based on a route pattern
+         *
+         * @param pattern the route pattern with :param placeholders
+         * @param path the actual request path
+         * @return a map of parameter names to their values
+         */
+        fnc extractParams(pattern: String, path: String) -> Map<String, String>
+        {
+            let params: Map<String, String> = Map::new();
+            let patternParts: List<String> = RouteMatcher::splitPath(pattern);
+            let pathParts: List<String> = RouteMatcher::splitPath(path);
+
+            var i: Int64 = 0;
+            while i < patternParts.len() && i < pathParts.len()
+            {
+                let pPart: String = patternParts[i];
+                if pPart.startsWith(":")
+                {
+                    let paramName: String = pPart.substring(1, pPart.len());
+                    params[paramName] = pathParts[i];
+                }
+                i = i + 1;
+            }
+            return params;
+        }
+
+        /**
+         * Splits a path into segments, filtering empty segments
+         *
+         * @param path the path to split
+         * @return a list of non-empty path segments
+         */
+        fnc splitPath(path: String) -> List<String>
+        {
+            let parts: List<String> = [];
+            var current: String = "";
+            var i: Int64 = 0;
+            while i < path.len()
+            {
+                let ch: String = path.substring(i, i + 1);
+                if ch == "/"
+                {
+                    if current.len() > 0
+                    {
+                        parts.push(current);
+                        current = "";
+                    }
+                }
+                else
+                {
+                    current = current + ch;
+                }
+                i = i + 1;
+            }
+            if current.len() > 0
+            {
+                parts.push(current);
+            }
+            return parts;
+        }
+    }
+
+    /**
+     * Utility for parsing and working with query strings
+     */
+    class QueryString
+    {
+        /**
+         * Parses a query string into a map of key-value pairs
+         *
+         * @param qs the raw query string (e.g., "page=1&limit=10")
+         * @return a map of parameter names to values
+         */
+        fnc parse(qs: String) -> Map<String, String>
+        {
+            let params: Map<String, String> = Map::new();
+            if qs.len() == 0
+            {
+                return params;
+            }
+
+            var i: Int64 = 0;
+            var key: String = "";
+            var value: String = "";
+            var inKey: Bool = true;
+
+            while i < qs.len()
+            {
+                let ch: String = qs.substring(i, i + 1);
+                if ch == "&"
+                {
+                    if key.len() > 0
+                    {
+                        params[key] = value;
+                    }
+                    key = "";
+                    value = "";
+                    inKey = true;
+                }
+                else if ch == "=" && inKey
+                {
+                    inKey = false;
+                }
+                else if inKey
+                {
+                    key = key + ch;
+                }
+                else
+                {
+                    value = value + ch;
+                }
+                i = i + 1;
+            }
+
+            if key.len() > 0
+            {
+                params[key] = value;
+            }
+            return params;
+        }
+
+        /**
+         * Gets a single value from a query string by parameter name
+         *
+         * @param qs the raw query string
+         * @param name the parameter name
+         * @return the parameter value, or empty string if not found
+         */
+        fnc get(qs: String, name: String) -> String
+        {
+            let params: Map<String, String> = QueryString::parse(qs);
+            if params.contains(name)
+            {
+                return params[name];
+            }
+            return "";
+        }
+    }
+}

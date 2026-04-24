@@ -1,0 +1,693 @@
+/**
+ * Tinox Standard Library - REST Framework Module
+ * Annotation-driven REST framework for building APIs with declarative routing.
+ *
+ * Annotations are parsed by the Tinox compiler but not yet processed at runtime.
+ * Use RestApi to explicitly register controllers and their annotated routes
+ * until native annotation processing is available.
+ *
+ * Example usage:
+ *   @Path("/api")
+ *   class UserController
+ *   {
+ *       @GET("/users")
+ *       @Produces("application/json")
+ *       fnc listUsers(ctx: HttpContext) -> Unit
+ *       {
+ *           ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
+ *       }
+ *
+ *       @GET("/users/:id")
+ *       @Produces("application/json")
+ *       fnc getUser(ctx: HttpContext) -> Unit
+ *       {
+ *           let id: String = ctx.request.getParam("id");
+ *           ctx.response.json("{\"id\": " + id + "}");
+ *       }
+ *
+ *       @POST("/users")
+ *       @Consumes("application/json")
+ *       @StatusCode(201)
+ *       @Produces("application/json")
+ *       fnc createUser(ctx: HttpContext) -> Unit
+ *       {
+ *           let data: JsonValue = ctx.request.json();
+ *           ctx.response.status(201).json("{\"created\": true}");
+ *       }
+ *   }
+ *
+ *   let app: RestApi = RestApi::new(8080);
+ *   app.register(new UserController());
+ *   app.start();
+ */
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    // ========================================================================
+    // Annotations
+    // ========================================================================
+
+    /**
+     * Marks a method as a GET endpoint.
+     * @GET("/path") or @GET for the class base path
+     */
+    @annotation
+    class GET
+    {
+        var path: String;
+
+        fnc new(path: String) -> GET
+        {
+            return GET { path: path };
+        }
+
+        fnc default() -> GET
+        {
+            return GET { path: "" };
+        }
+    }
+
+    /**
+     * Marks a method as a POST endpoint.
+     * @POST("/path") or @POST for the class base path
+     */
+    @annotation
+    class POST
+    {
+        var path: String;
+
+        fnc new(path: String) -> POST
+        {
+            return POST { path: path };
+        }
+
+        fnc default() -> POST
+        {
+            return POST { path: "" };
+        }
+    }
+
+    /**
+     * Marks a method as a PUT endpoint.
+     * @PUT("/path") or @PUT for the class base path
+     */
+    @annotation
+    class PUT
+    {
+        var path: String;
+
+        fnc new(path: String) -> PUT
+        {
+            return PUT { path: path };
+        }
+
+        fnc default() -> PUT
+        {
+            return PUT { path: "" };
+        }
+    }
+
+    /**
+     * Marks a method as a PATCH endpoint.
+     * @PATCH("/path") or @PATCH for the class base path
+     */
+    @annotation
+    class PATCH
+    {
+        var path: String;
+
+        fnc new(path: String) -> PATCH
+        {
+            return PATCH { path: path };
+        }
+
+        fnc default() -> PATCH
+        {
+            return PATCH { path: "" };
+        }
+    }
+
+    /**
+     * Marks a method as a DELETE endpoint.
+     * @DELETE("/path") or @DELETE for the class base path
+     */
+    @annotation
+    class DELETE
+    {
+        var path: String;
+
+        fnc new(path: String) -> DELETE
+        {
+            return DELETE { path: path };
+        }
+
+        fnc default() -> DELETE
+        {
+            return DELETE { path: "" };
+        }
+    }
+
+    /**
+     * Sets the base path for a controller class or a path prefix for a method.
+     * @Path("/api/v1")
+     */
+    @annotation
+    class Path
+    {
+        var value: String;
+
+        fnc new(value: String) -> Path
+        {
+            return Path { value: value };
+        }
+    }
+
+    /**
+     * Specifies the response content type (Content-Type header).
+     * @Produces("application/json")
+     */
+    @annotation
+    class Produces
+    {
+        var value: String;
+
+        fnc new(value: String) -> Produces
+        {
+            return Produces { value: value };
+        }
+    }
+
+    /**
+     * Specifies the accepted request content type.
+     * @Consumes("application/json")
+     */
+    @annotation
+    class Consumes
+    {
+        var value: String;
+
+        fnc new(value: String) -> Consumes
+        {
+            return Consumes { value: value };
+        }
+    }
+
+    /**
+     * Sets the default HTTP status code for the response.
+     * @StatusCode(201)
+     */
+    @annotation
+    class StatusCode
+    {
+        var value: Int64;
+
+        fnc new(value: Int64) -> StatusCode
+        {
+            return StatusCode { value: value };
+        }
+    }
+
+    /**
+     * Marks a method or class as requiring authentication.
+     * @Auth("bearer")
+     * @Auth("basic")
+     */
+    @annotation
+    class Auth
+    {
+        var value: String;
+
+        fnc new(value: String) -> Auth
+        {
+            return Auth { value: value };
+        }
+    }
+
+    // ========================================================================
+    // Route Registration
+    // ========================================================================
+
+    /**
+     * Represents a registered route with its method, path, handler,
+     * and metadata extracted from annotations.
+     */
+    class RouteEntry
+    {
+        /** HTTP method (GET, POST, PUT, PATCH, DELETE) */
+        var method: String;
+
+        /** Full URL path pattern */
+        var path: String;
+
+        /** Handler function */
+        var handler: fnc(HttpContext) -> Unit;
+
+        /** Default status code from @StatusCode annotation */
+        var statusCode: Int64;
+
+        /** Response content type from @Produces annotation */
+        var produces: String;
+
+        /** Request content type from @Consumes annotation */
+        var consumes: String;
+
+        /** Auth type from @Auth annotation ("bearer", "basic", or empty) */
+        var authType: String;
+
+        fnc new(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
+        {
+            return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: "", consumes: "", authType: "" };
+        }
+
+        fnc withStatus(code: Int64) -> RouteEntry
+        {
+            this.statusCode = code;
+            return this;
+        }
+
+        fnc withProduces(contentType: String) -> RouteEntry
+        {
+            this.produces = contentType;
+            return this;
+        }
+
+        fnc withConsumes(contentType: String) -> RouteEntry
+        {
+            this.consumes = contentType;
+            return this;
+        }
+
+        fnc withAuth(authType: String) -> RouteEntry
+        {
+            this.authType = authType;
+            return this;
+        }
+    }
+
+    /**
+     * Abstract base class for REST controllers.
+     *
+     * Extend this class and use annotations on your methods.
+     * Register the controller with RestApi.register().
+     *
+     * Example:
+     *   @Path("/api/users")
+     *   class UserController : RestController
+     *   {
+     *       @GET("/")
+     *       @Produces("application/json")
+     *       fnc list(ctx: HttpContext) -> Unit
+     *       {
+     *           ctx.response.json("[]");
+     *       }
+     *   }
+     */
+    class RestController
+    {
+        /** Route entries registered for this controller */
+        var routes: List<RouteEntry>;
+
+        /** Base path for all routes in this controller */
+        var basePath: String;
+
+        fnc new() -> RestController
+        {
+            return RestController { routes: [], basePath: "" };
+        }
+
+        /**
+         * Manually registers a route on this controller.
+         * Called by the framework during register() to wire up annotated methods.
+         *
+         * @param method the HTTP method
+         * @param path the route path (appended to basePath)
+         * @param handler the handler function
+         * @return the RouteEntry for further configuration
+         */
+        fn route(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
+        {
+            let entry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
+            this.routes.push(entry);
+            return entry;
+        }
+    }
+
+    // ========================================================================
+    // REST Framework Application
+    // ========================================================================
+
+    /**
+     * Main REST framework class for building and starting an HTTP API server.
+     *
+     * Combines the annotation-driven approach with explicit registration,
+     * supporting graceful migration once the compiler processes annotations natively.
+     *
+     * Example:
+     *   let app: RestApi = RestApi::new(8080);
+     *
+     *   // Register an annotated controller
+     *   app.register(userController);
+     *
+     *   // Or use fluent API directly
+     *   app.get("/ping", ctx => {
+     *       ctx.response.text("pong");
+     *   });
+     *
+     *   // Add global middleware
+     *   app.use(loggingMiddleware);
+     *   app.use(corsMiddleware);
+     *
+     *   app.start();
+     */
+    class RestApi
+    {
+        /** The underlying HTTP server */
+        var server: HttpServer;
+
+        /** All registered route entries from controllers */
+        var routeEntries: List<RouteEntry>;
+
+        /** Global middleware functions */
+        var globalMiddleware: List<fnc(HttpContext) -> Bool>;
+
+        /** Whether CORS is enabled */
+        var corsEnabled: Bool;
+
+        /** Allowed origins for CORS */
+        var corsOrigin: String;
+
+        fnc new(port: Int64) -> RestApi
+        {
+            return RestApi { server: HttpServer::new(port), routeEntries: [], globalMiddleware: [], corsEnabled: false, corsOrigin: "" };
+        }
+
+        /**
+         * Registers all routes from a RestController.
+         *
+         * Routes defined via the controller's .route() calls are added
+         * to the framework's routing table and the underlying server.
+         *
+         * @param controller the controller to register
+         * @return this RestApi for chaining
+         */
+        fn register(controller: RestController) -> RestApi
+        {
+            var i: Int64 = 0;
+            while i < controller.routes.len()
+            {
+                let entry: RouteEntry = controller.routes[i];
+                this.addRouteEntry(entry);
+                i = i + 1;
+            }
+            return this;
+        }
+
+        /**
+         * Registers a GET route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         */
+        fn get(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        {
+            this.addRouteEntry(RouteEntry::new("GET", path, handler));
+            return this;
+        }
+
+        /**
+         * Registers a POST route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         */
+        fn post(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        {
+            this.addRouteEntry(RouteEntry::new("POST", path, handler));
+            return this;
+        }
+
+        /**
+         * Registers a PUT route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         */
+        fn put(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        {
+            this.addRouteEntry(RouteEntry::new("PUT", path, handler));
+            return this;
+        }
+
+        /**
+         * Registers a PATCH route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         */
+        fn patch(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        {
+            this.addRouteEntry(RouteEntry::new("PATCH", path, handler));
+            return this;
+        }
+
+        /**
+         * Registers a DELETE route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         */
+        fn delete(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        {
+            this.addRouteEntry(RouteEntry::new("DELETE", path, handler));
+            return this;
+        }
+
+        /**
+         * Adds a global middleware function.
+         * Middleware runs before route handlers in registration order.
+         * Return false to stop the request chain (sends 403).
+         *
+         * @param mware the middleware function
+         * @return this RestApi for chaining
+         */
+        fn use(mware: fnc(HttpContext) -> Bool) -> RestApi
+        {
+            this.globalMiddleware.push(mware);
+            this.server.use(mware);
+            return this;
+        }
+
+        /**
+         * Enables CORS for all responses
+         *
+         * @param origin the allowed origin (default "*")
+         * @return this RestApi for chaining
+         */
+        fn enableCors(origin: String) -> RestApi
+        {
+            this.corsEnabled = true;
+            this.corsOrigin = origin;
+            this.server.use(ctx => {
+                ctx.response.cors(origin);
+                if ctx.request.method == "OPTIONS"
+                {
+                    ctx.response.status(204);
+                    return false;
+                }
+                return true;
+            });
+            return this;
+        }
+
+        /**
+         * Adds default JSON Content-Type to all responses
+         *
+         * @return this RestApi for chaining
+         */
+        fn defaultJson() -> RestApi
+        {
+            this.server.use(ctx => {
+                if ctx.response.headers.contains("Content-Type") == false
+                {
+                    ctx.response.header("Content-Type", "application/json; charset=utf-8");
+                }
+                return true;
+            });
+            return this;
+        }
+
+        /**
+         * Starts the REST API server.
+         *
+         * Registers all route entries with the underlying HttpServer
+         * and begins listening for connections. This is a blocking call.
+         */
+        fn start() -> Unit
+        {
+            this.registerRoutes();
+            this.server.listen();
+        }
+
+        /**
+         * Stops the REST API server.
+         */
+        fn stop() -> Unit
+        {
+            this.server.stop();
+        }
+
+        /**
+         * Registers all collected route entries with the underlying HttpServer,
+         * applying annotation metadata (status code, content types, auth).
+         */
+        fn registerRoutes() -> Unit
+        {
+            var i: Int64 = 0;
+            while i < this.routeEntries.len()
+            {
+                let entry: RouteEntry = this.routeEntries[i];
+                let handler: fnc(HttpContext) -> Unit = this.wrapHandler(entry);
+                if entry.method == "GET"
+                {
+                    this.server.get(entry.path, handler);
+                }
+                else if entry.method == "POST"
+                {
+                    this.server.post(entry.path, handler);
+                }
+                else if entry.method == "PUT"
+                {
+                    this.server.put(entry.path, handler);
+                }
+                else if entry.method == "PATCH"
+                {
+                    this.server.patch(entry.path, handler);
+                }
+                else if entry.method == "DELETE"
+                {
+                    this.server.delete(entry.path, handler);
+                }
+                i = i + 1;
+            }
+        }
+
+        /**
+         * Wraps a route handler to apply annotation metadata:
+         * - @StatusCode sets the default response status
+         * - @Produces sets Content-Type if not already set
+         * - @Consumes validates the request Content-Type
+         * - @Auth validates authentication
+         *
+         * @param entry the route entry with metadata
+         * @return a wrapped handler that applies metadata before calling the original
+         */
+        fn wrapHandler(entry: RouteEntry) -> fnc(HttpContext) -> Unit
+        {
+            let statusCode: Int64 = entry.statusCode;
+            let produces: String = entry.produces;
+            let consumes: String = entry.consumes;
+            let authType: String = entry.authType;
+            let originalHandler: fnc(HttpContext) -> Unit = entry.handler;
+
+            return ctx => {
+                if consumes.len() > 0
+                {
+                    let ct: String = ctx.request.getHeader("Content-Type");
+                    if ct.startsWith(consumes) == false
+                    {
+                        ctx.response.status(415).text("Unsupported Media Type. Expected: " + consumes);
+                        return;
+                    }
+                }
+
+                if authType.len() > 0
+                {
+                    let authHeader: String = ctx.request.getHeader("Authorization");
+                    if authHeader.len() == 0
+                    {
+                        ctx.response.status(401).header("WWW-Authenticate", authType).text("Unauthorized");
+                        return;
+                    }
+                    if authType == "bearer" && authHeader.startsWith("Bearer ") == false
+                    {
+                        ctx.response.status(401).text("Unauthorized: Bearer token required");
+                        return;
+                    }
+                    if authType == "basic" && authHeader.startsWith("Basic ") == false
+                    {
+                        ctx.response.status(401).text("Unauthorized: Basic auth required");
+                        return;
+                    }
+                }
+
+                if statusCode != 200
+                {
+                    ctx.response.status(statusCode);
+                }
+
+                if produces.len() > 0 && ctx.response.headers.contains("Content-Type") == false
+                {
+                    ctx.response.header("Content-Type", produces);
+                }
+
+                originalHandler(ctx);
+            };
+        }
+
+        /**
+         * Adds a RouteEntry to the internal list
+         */
+        fn addRouteEntry(entry: RouteEntry) -> Unit
+        {
+            this.routeEntries.push(entry);
+        }
+    }
+
+    // ========================================================================
+    // URL Builder (reuses patterns from rest.tnx)
+    // ========================================================================
+
+    /**
+     * URL path builder for joining base paths and route paths
+     */
+    class UrlBuilder
+    {
+        /**
+         * Joins a base path and a route path, avoiding duplicate slashes
+         *
+         * @param base the base path (e.g., "/api/users")
+         * @param path the route path (e.g., "/:id")
+         * @return the combined path
+         */
+        fnc join(base: String, path: String) -> String
+        {
+            if base.len() == 0
+            {
+                return path;
+            }
+            if path.len() == 0
+            {
+                return base;
+            }
+            if base == "/"
+            {
+                return path;
+            }
+            if base.endsWith("/") && path.startsWith("/")
+            {
+                return base.substring(0, base.len() - 1) + path;
+            }
+            if base.endsWith("/") || path.startsWith("/")
+            {
+                return base + path;
+            }
+            return base + "/" + path;
+        }
+    }
+}

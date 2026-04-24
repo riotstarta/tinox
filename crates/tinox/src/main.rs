@@ -199,6 +199,14 @@ fn check(args: &[String]) {
     let mut typechecker = tinox_typecheck::TypeChecker::new();
     match typechecker.check(&ast) {
         Ok(_) => {
+            // Also run annotation processing for check mode
+            let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+            for warning in &ann_result.deprecated_warnings {
+                eprintln!("warning: {}", warning);
+            }
+            for route in &ann_result.route_entries {
+                println!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+            }
             println!("{}: no errors", input_file);
             std::process::exit(0);
         }
@@ -321,8 +329,18 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
 
     let (iface_methods, class_implements) = typechecker.interface_info();
 
+    // Annotation processing pass
+    let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+    for warning in &ann_result.deprecated_warnings {
+        eprintln!("warning: {}", warning);
+    }
+    for route in &ann_result.route_entries {
+        println!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+    }
+
     let mut codegen = CodeGen::new();
     codegen.set_interface_info(iface_methods, class_implements);
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;
