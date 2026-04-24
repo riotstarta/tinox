@@ -12,8 +12,8 @@
 |--------------|-------------|--------------------------------------|
 | Lexer        | ✅ Fertig   | Unicode, String-Interpolation, Ranges |
 | Parser       | ✅ Fertig   | Vollständiger AST                    |
-| Type Checker | ✅ Fertig   | Basistypen, Klassen, Enums, Generics |
-| Code Gen     | ✅ Fertig   | LLVM IR Backend                      |
+| Type Checker | ✅ Fertig   | Basistypen, Klassen, Enums, Generics, Annotationen |
+| Code Gen     | ✅ Fertig   | LLVM IR Backend, @inline-Unterstützung           |
 | Runtime      | ✅ Fertig   | C Runtime (pthread-basiert)          |
 | CLI          | ✅ Fertig   | build, run, check                    |
 
@@ -317,6 +317,98 @@ defer { println("1"); }
 // Ausgabe beim Return: 1, 2, 3
 ```
 
+### Annotations
+
+Tinox unterstützt Annotations mit `@Name` oder `@Name(args)` Syntax auf Klassen, Methoden, Funktionen und Fields:
+
+```tinox
+@inline
+fnc fastCalc(x: Int64) -> Int64
+{
+    return x * x + 1;
+}
+
+@deprecated("Bitte newApi verwenden")
+fnc oldApi() -> Unit
+{
+    println("legacy");
+}
+```
+
+Der Compiler validiert Annotations (unbekannte Annotations oder falsche Platzierung sind Fehler). Folgende Annotations werden erkannt:
+
+| Annotation     | Targets              | Beschreibung                          |
+|----------------|-----------------------|---------------------------------------|
+| `@inline`      | Function, Method     | Erzeugt LLVM `alwaysinline`           |
+| `@deprecated`  | Function, Method, Class | Warnung bei Nutzung                |
+| `@GET`          | Method               | REST: GET-Endpunkt                    |
+| `@POST`         | Method               | REST: POST-Endpunkt                   |
+| `@PUT`          | Method               | REST: PUT-Endpunkt                    |
+| `@PATCH`        | Method               | REST: PATCH-Endpunkt                  |
+| `@DELETE`       | Method               | REST: DELETE-Endpunkt                 |
+| `@Path`         | Class, Method        | URL-Pfad-Präfix                       |
+| `@Produces`    | Method               | Response Content-Type                 |
+| `@Consumes`    | Method               | Erwarteter Request Content-Type        |
+| `@StatusCode`  | Method               | Default HTTP-Statuscode               |
+| `@Auth`         | Method, Class        | Authentifizierung ("bearer"/"basic")   |
+
+### HTTP Server & REST Framework
+
+Die Standardbibliothek enthält einen HTTP-Server und ein annotation-driven REST Framework:
+
+```tinox
+import tinox.core.http_server;
+import tinox.core.rest_framework;
+
+// Einfacher HTTP-Server
+let server: HttpServer = HttpServer::new(8080);
+server.get("/hello", ctx => {
+    ctx.response.text("Hello, World!");
+});
+server.listen();
+
+// REST Framework mit Annotations
+@Path("/api/users")
+class UserController : RestController
+{
+    @GET("/")
+    @Produces("application/json")
+    fnc listUsers(ctx: HttpContext) -> Unit
+    {
+        ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
+    }
+
+    @POST("/")
+    @Consumes("application/json")
+    @StatusCode(201)
+    fnc createUser(ctx: HttpContext) -> Unit
+    {
+        let data: JsonValue = ctx.request.json();
+        ctx.response.status(201).json("{\"created\": true}");
+    }
+
+    @GET("/:id")
+    fnc getUser(ctx: HttpContext) -> Unit
+    {
+        let id: String = ctx.request.getParam("id");
+        ctx.response.json("{\"id\": " + id + "}");
+    }
+
+    @DELETE("/:id")
+    @Auth("bearer")
+    @StatusCode(204)
+    fnc deleteUser(ctx: HttpContext) -> Unit
+    {
+        ctx.response.noContent();
+    }
+}
+
+let app: RestApi = RestApi::new(8080);
+app.register(new UserController());
+app.enableCors("*");
+app.start();
+```
+
 ### Try / Catch
 
 ```tinox
@@ -357,6 +449,9 @@ finally
 | Float32 / Float64            | ✅ Fertig  |
 | Map / Dict-Typ               | ✅ Fertig  |
 | `defer`-Statement            | ✅ Fertig  |
+| Annotations                 | ✅ Fertig  |
+| HTTP Server (stdlib)        | ✅ Fertig  |
+| REST Framework (stdlib)     | ✅ Fertig  |
 | LSP (tinox-lsp)              | ✅ Fertig  |
 | Eclipse Plugin               | ✅ Fertig  |
 | File I/O                     | ✅ Fertig  |
@@ -372,10 +467,11 @@ tinox/
 │   ├── tinox-common/       # Shared types (Span, Error)
 │   ├── tinox-lexer/        # Lexer / Tokenizer
 │   ├── tinox-parser/       # Parser + AST
-│   ├── tinox-typecheck/    # Type Checker
+│   ├── tinox-typecheck/    # Type Checker + Annotation Processing
 │   ├── tinox-codegen/      # LLVM IR Code Generation
 │   ├── tinox-lsp/          # Language Server Protocol
 │   └── tinox/              # CLI Binary
+├── crates/tinox-core/      # Standardbibliothek (.tnx Module)
 └── runtime/                # C Runtime (tinox_alloc, threading, channels)
 ```
 
