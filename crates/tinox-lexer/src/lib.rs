@@ -268,6 +268,7 @@ impl Keyword {
             "mut" => Some(Keyword::Mut),
             "fn" => Some(Keyword::Fn),
             "fnc" => Some(Keyword::Fnc),
+            "throw" => Some(Keyword::Throw),
             "throws" => Some(Keyword::Throws),
             "try" => Some(Keyword::Try),
             "catch" => Some(Keyword::Catch),
@@ -550,16 +551,18 @@ impl<'a> Lexer<'a> {
             self.bump(); // *
         }
         let start = self.pos;
-        let mut depth = 1;
-        while depth > 0 && self.pos < self.chars.len() {
-            if self.peek() == '/' && self.peek_next() == '*' {
-                self.bump();
-                self.bump();
-                depth += 1;
-            } else if self.peek() == '*' && self.peek_next() == '/' {
-                self.bump();
-                self.bump();
-                depth -= 1;
+        // Non-nested block comments: read until first */
+        while self.pos < self.chars.len() {
+            if self.peek() == '*' && self.peek_next() == '/' {
+                let end = self.pos;
+                self.bump(); // *
+                self.bump(); // /
+                let text: String = self.chars[start..end].iter().collect();
+                return if is_doc {
+                    Token::new(TokenKind::DocComment(text), self.mk_span())
+                } else {
+                    Token::new(TokenKind::Comment(text), self.mk_span())
+                };
             } else {
                 if self.peek() == '\n' {
                     self.line += 1;
@@ -568,6 +571,7 @@ impl<'a> Lexer<'a> {
                 self.bump();
             }
         }
+        // EOF reached without closing */
         let text: String = self.chars[start..self.pos].iter().collect();
         if is_doc {
             Token::new(TokenKind::DocComment(text), self.mk_span())

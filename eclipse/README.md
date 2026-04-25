@@ -36,7 +36,7 @@ Plugin importieren:
 ### 3. Plugin starten
 
 1. Rechtsklick auf `tinox-eclipse` Projekt → Run As → Eclipse Application
-2. Im neuen Eclipse-Fenster: Neues Projekt anlegen, Datei `*.tinox` erstellen
+2. Im neuen Eclipse-Fenster: Neues Projekt anlegen, Datei `*.tnx` erstellen
 3. Language Server startet automatisch
 
 ### 4. Binary-Pfad konfigurieren

@@ -1,0 +1,15 @@
+class HttpContext
+{
+    var x: Int64;
+}
+
+class UserController
+{
+    @GET
+    @Path("/users")
+    @StatusCode(200)
+    fnc listUsers(ctx: HttpContext) -> Unit
+    {
+        ctx.x = 42;
+    }
+}

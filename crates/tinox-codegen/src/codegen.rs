@@ -7,6 +7,19 @@ use tinox_parser::{
     SourceFile, Stmt, StmtKind, Type, UnaryOp,
 };
 
+/// Route entry produced by REST annotation processing.
+#[derive(Debug, Clone)]
+pub struct RouteEntry {
+    pub http_method: String,
+    pub path: String,
+    pub class_name: String,
+    pub method_name: String,
+    pub status_code: Option<i64>,
+    pub produces: Option<String>,
+    pub consumes: Option<String>,
+    pub auth_type: Option<String>,
+}
+
 pub struct CodeGen {
     ir: String,
     lambda_ir: String,
@@ -47,6 +60,10 @@ pub struct CodeGen {
     inline_functions: HashSet<String>,
     /// Annotation processing: (class_name, method_name) pairs for methods annotated @inline
     inline_methods: HashSet<(String, String)>,
+    /// REST route entries collected from annotation processing
+    route_entries: Vec<RouteEntry>,
+    /// Whether a user-defined main function was compiled (prevents auto-generated main)
+    has_main: bool,
 }
 
 impl CodeGen {
@@ -75,6 +92,8 @@ impl CodeGen {
             known_enum_types: HashSet::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
+            route_entries: Vec::new(),
+            has_main: false,
         }
     }
 
@@ -83,9 +102,11 @@ impl CodeGen {
         &mut self,
         inline_fns: HashSet<String>,
         inline_meths: HashSet<(String, String)>,
+        routes: Vec<RouteEntry>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
+        self.route_entries = routes;
     }
 
     /// Provide interface metadata from the type checker.
@@ -213,6 +234,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_map_keys(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_map_values(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_file_open(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_file_close(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_file_read(i8*)").unwrap();
@@ -221,6 +244,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_file_eof(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_file_exists(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_file_delete(i8*)").unwrap();
+        // HTTP server C runtime
+        writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @httpServerReadRequest(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpServerSendRaw(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpServerCloseConn(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpServerClose(i64)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -391,18 +421,243 @@ impl CodeGen {
         // Emit vtable globals for classes that implement interfaces
         self.emit_vtable_globals(source);
 
+        // Emit REST route shims and registration function
+        self.emit_route_code();
+
         for (name, s) in &self.strings {
+            let escaped = Self::escape_llvm_string(s);
             writeln!(
                 &mut self.ir,
                 "@{} = private constant [{} x i8] c\"{}\\00\"",
                 name,
                 s.len() + 1,
-                s
+                escaped
             )
             .unwrap();
         }
 
         Ok(())
+    }
+
+    /// Generates route handler shims, `__tinox_register_routes`, and (if needed) a `main`
+    /// for all routes collected via REST annotations (@GET, @POST, …).
+    fn emit_route_code(&mut self) {
+        if self.route_entries.is_empty() {
+            return;
+        }
+
+        let routes = self.route_entries.clone();
+
+        // ── String constant globals for annotations ─────────────────────────────
+        // Emitted into self.ir before lambda_ir is appended.
+        for (idx, route) in routes.iter().enumerate() {
+            let path = &route.path;
+            let escaped = Self::escape_llvm_string(path);
+            writeln!(&mut self.ir,
+                "@__route_path_{idx} = private constant [{} x i8] c\"{escaped}\\00\"",
+                path.len() + 1).unwrap();
+
+            if let Some(ref ct) = route.produces {
+                let esc = Self::escape_llvm_string(ct);
+                writeln!(&mut self.ir,
+                    "@__route_produces_{idx} = private constant [{} x i8] c\"{esc}\\00\"",
+                    ct.len() + 1).unwrap();
+            }
+            if let Some(ref ct) = route.consumes {
+                let esc = Self::escape_llvm_string(ct);
+                writeln!(&mut self.ir,
+                    "@__route_consumes_{idx} = private constant [{} x i8] c\"{esc}\\00\"",
+                    ct.len() + 1).unwrap();
+            }
+            if let Some(ref auth) = route.auth_type {
+                // "Bearer " or "Basic " prefix for Authorization header check
+                let prefix = format!("{} ", Self::capitalize_first(auth));
+                let esc = Self::escape_llvm_string(&prefix);
+                writeln!(&mut self.ir,
+                    "@__route_auth_prefix_{idx} = private constant [{} x i8] c\"{esc}\\00\"",
+                    prefix.len() + 1).unwrap();
+            }
+        }
+        // Static string constants shared across shims
+        writeln!(&mut self.ir,
+            "@__hdr_content_type = private constant [13 x i8] c\"Content-Type\\00\"").unwrap();
+        writeln!(&mut self.ir,
+            "@__hdr_authorization = private constant [14 x i8] c\"Authorization\\00\"").unwrap();
+        writeln!(&mut self.ir,
+            "@__str_401 = private constant [13 x i8] c\"Unauthorized\\00\"").unwrap();
+        writeln!(&mut self.ir,
+            "@__str_415 = private constant [23 x i8] c\"Unsupported Media Type\\00\"").unwrap();
+
+        // ── Shim functions ──────────────────────────────────────────────────────
+        // Signature: void (i64) — ctx_i64 is a ptrtoint of the HttpContext* pointer.
+        //
+        // HttpContext layout (no vtable): [request: i64*, response: i64*]  → offsets 0, 1
+        // HttpResponse layout:            [statusCode: i64, headers: i8*, body: i8*] → offsets 0, 1, 2
+        // HttpRequest layout:             [method, path, queryString, headers, body, params] → offset 3 = headers
+        for (idx, route) in routes.iter().enumerate() {
+            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
+            let method_fn = format!("{}_{}", route.class_name, route.method_name);
+            let ctrl_size = self
+                .struct_layouts
+                .get(&route.class_name)
+                .map(|f| f.len().max(1) * 8)
+                .unwrap_or(8);
+
+            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+
+            // ── @Auth guard ──────────────────────────────────────────────────────
+            if let Some(ref _auth) = route.auth_type {
+                // Load request.headers (HttpContext[0] = request, HttpRequest[3] = headers)
+                writeln!(&mut self.lambda_ir, "  %req_field_{idx} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_i64_{idx} = load i64, i64* %req_field_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ptr_{idx} = inttoptr i64 %req_i64_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hdrs_field_{idx} = getelementptr i64, i64* %req_ptr_{idx}, i64 3").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hdrs_i64_{idx} = load i64, i64* %req_hdrs_field_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hdrs_{idx} = inttoptr i64 %req_hdrs_i64_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %auth_key_{idx} = getelementptr [14 x i8], [14 x i8]* @__hdr_authorization, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %auth_val_{idx} = call i64 @tinox_map_get(i8* %req_hdrs_{idx}, i8* %auth_key_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %auth_str_{idx} = inttoptr i64 %auth_val_{idx} to i8*").unwrap();
+                // Get prefix string
+                let prefix_len = _auth.len() + 2; // "Bearer " or "Basic "
+                writeln!(&mut self.lambda_ir, "  %auth_prefix_{idx} = getelementptr [{prefix_len} x i8], [{prefix_len} x i8]* @__route_auth_prefix_{idx}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %auth_ok_{idx} = call i64 @tinox_string_starts_with(i8* %auth_str_{idx}, i8* %auth_prefix_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %auth_cmp_{idx} = icmp eq i64 %auth_ok_{idx}, 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %auth_cmp_{idx}, label %auth_pass_{idx}, label %auth_fail_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "auth_fail_{idx}:").unwrap();
+                // Set 401 status and body then return
+                writeln!(&mut self.lambda_ir, "  %resp_f401_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_i401_{idx} = load i64, i64* %resp_f401_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_p401_{idx} = inttoptr i64 %resp_i401_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %sc_f401_{idx} = getelementptr i64, i64* %resp_p401_{idx}, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 401, i64* %sc_f401_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                writeln!(&mut self.lambda_ir, "auth_pass_{idx}:").unwrap();
+            }
+
+            // ── @Consumes: validate request Content-Type ─────────────────────────
+            if let Some(ref expected_ct) = route.consumes {
+                let ct_len = expected_ct.len() + 1;
+                writeln!(&mut self.lambda_ir, "  %req_fct_{idx} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ict_{idx} = load i64, i64* %req_fct_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_pct_{idx} = inttoptr i64 %req_ict_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hf_ct_{idx} = getelementptr i64, i64* %req_pct_{idx}, i64 3").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hi_ct_{idx} = load i64, i64* %req_hf_ct_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_hm_ct_{idx} = inttoptr i64 %req_hi_ct_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_key_{idx} = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ct_val_{idx} = call i64 @tinox_map_get(i8* %req_hm_ct_{idx}, i8* %ct_key_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = inttoptr i64 %req_ct_val_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %expected_ct_{idx} = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__route_consumes_{idx}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_match_{idx} = call i64 @tinox_string_starts_with(i8* %req_ct_str_{idx}, i8* %expected_ct_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_ok_{idx} = icmp eq i64 %ct_match_{idx}, 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %ct_ok_{idx}, label %ct_pass_{idx}, label %ct_fail_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "ct_fail_{idx}:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_f415_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_i415_{idx} = load i64, i64* %resp_f415_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_p415_{idx} = inttoptr i64 %resp_i415_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %sc_f415_{idx} = getelementptr i64, i64* %resp_p415_{idx}, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 415, i64* %sc_f415_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                writeln!(&mut self.lambda_ir, "ct_pass_{idx}:").unwrap();
+            }
+
+            // ── @StatusCode: set default response status before handler runs ────
+            if let Some(sc) = route.status_code {
+                writeln!(&mut self.lambda_ir, "  %resp_fsc_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_isc_{idx} = load i64, i64* %resp_fsc_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_psc_{idx} = inttoptr i64 %resp_isc_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %sc_slot_{idx} = getelementptr i64, i64* %resp_psc_{idx}, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 {sc}, i64* %sc_slot_{idx}").unwrap();
+            }
+
+            // ── @Produces: pre-set Content-Type on response headers ─────────────
+            if let Some(ref ct) = route.produces {
+                let ct_len = ct.len() + 1;
+                // Get response.headers (HttpResponse[1])
+                writeln!(&mut self.lambda_ir, "  %resp_fprod_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_iprod_{idx} = load i64, i64* %resp_fprod_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_pprod_{idx} = inttoptr i64 %resp_iprod_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %hdrs_fprod_{idx} = getelementptr i64, i64* %resp_pprod_{idx}, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %hdrs_iprod_{idx} = load i64, i64* %hdrs_fprod_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %hdrs_prod_{idx} = inttoptr i64 %hdrs_iprod_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_key_prod_{idx} = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_val_prod_{idx} = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__route_produces_{idx}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ct_val_i64_{idx} = ptrtoint i8* %ct_val_prod_{idx} to i64").unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_prod_{idx}, i8* %ct_key_prod_{idx}, i64 %ct_val_i64_{idx})").unwrap();
+            }
+
+            // ── Allocate controller and call the handler ─────────────────────────
+            writeln!(&mut self.lambda_ir, "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
+        // ── __tinox_register_routes ─────────────────────────────────────────────
+        writeln!(&mut self.lambda_ir, "define void @__tinox_register_routes(i64* %server) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry:").unwrap();
+
+        for (idx, route) in routes.iter().enumerate() {
+            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
+            let server_method = format!("HttpServer_{}", route.http_method.to_lowercase());
+            let path_len = route.path.len() + 1;
+
+            writeln!(&mut self.lambda_ir,
+                "  %fn_{idx} = ptrtoint void (i64)* @{shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  call i64* @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+        }
+
+        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        // ── Auto-generated main (only when no user main exists) ─────────────────
+        if !self.has_main {
+            let port = std::env::var("TINOX_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8080);
+            writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %server = call i64* @HttpServer_new(i64 {port})").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @HttpServer_listen(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+    }
+
+    fn escape_llvm_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '"'  => out.push_str("\\22"),
+                '\\'  => out.push_str("\\5C"),
+                '\n' => out.push_str("\\0A"),
+                '\r' => out.push_str("\\0D"),
+                '\t' => out.push_str("\\09"),
+                c if (c as u32) < 0x20 => {
+                    out.push_str(&format!("\\{:02X}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    fn capitalize_first(s: &str) -> String {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        }
     }
 
     pub fn into_ir(self) -> String {
@@ -446,6 +701,7 @@ impl CodeGen {
         }
 
         let fn_name = if f.name == "main" {
+            self.has_main = true;
             "tinox_main".to_string()
         } else {
             f.name.clone()
@@ -1261,7 +1517,15 @@ impl CodeGen {
                         writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, val, ty, slot).unwrap();
                     }
                 } else if let ExprKind::FieldAccess { obj, field } = &target.node {
-                    let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
+                    let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
+                    // If the obj evaluated to i64 (a loaded pointer), restore it to a ptr
+                    let obj_ptr = if obj_ty == "i64" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
+                        cast
+                    } else {
+                        obj_raw
+                    };
                     let struct_name = match &obj.node {
                         ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
                         ExprKind::This => ctx.current_struct.clone(),
@@ -1277,6 +1541,14 @@ impl CodeGen {
                         0
                     };
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    // Pointer values must be stored as i64 (ptrtoint)
+                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" && !val_ty.is_empty() {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else {
+                        val
+                    };
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -1284,7 +1556,7 @@ impl CodeGen {
                         field_ptr, obj_ptr, offset
                     )
                     .unwrap();
-                    writeln!(&mut self.ir, "store {} {}, i64* {}", val_ty, val, field_ptr)
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr)
                         .unwrap();
                 } else if let ExprKind::Index { obj, index } = &target.node {
                     let (idx_val, _) = self.gen_expr(index, ctx)?;
@@ -2124,6 +2396,16 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_len(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
+                        "keys" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_keys(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "values" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_values(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
                         _ => {}
                     }
                 }
@@ -2436,7 +2718,16 @@ impl CodeGen {
                 Ok((map_ptr, "i8*".to_string()))
             }
             ExprKind::FieldAccess { obj, field } => {
-                let (obj_ptr, _) = self.gen_expr(obj, ctx)?;
+                let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
+
+                // Fields are stored as i64; if the loaded value is i64, restore it to a ptr
+                let obj_ptr = if obj_ty == "i64" {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
+                    cast
+                } else {
+                    obj_raw
+                };
 
                 // Find the struct type and field offset
                 let struct_name = match &obj.node {
@@ -2508,7 +2799,7 @@ impl CodeGen {
                 }
 
                 for (fname, value) in fields.iter() {
-                    let (val, _) = self.gen_expr(value, ctx)?;
+                    let (val, val_ty) = self.gen_expr(value, ctx)?;
                     // Look up field position in layout (which includes __vtable__ at 0 if vtable class)
                     let field_idx = layout.iter().position(|f| f == fname).unwrap_or(0);
                     let field_ptr = self.temp();
@@ -2518,7 +2809,15 @@ impl CodeGen {
                         field_ptr, typed_ptr, field_idx
                     )
                     .unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", val, field_ptr).unwrap();
+                    // Pointer values must be ptrtoint'd to i64 for uniform i64 field storage
+                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" && !val_ty.is_empty() {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else {
+                        val
+                    };
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
                 Ok((typed_ptr, "i64*".to_string()))
             }

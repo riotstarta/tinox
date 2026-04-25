@@ -1,0 +1,64 @@
+module mini_http;
+
+class HttpRequest
+{
+    var method: String;
+    var path: String;
+    var body: String;
+    var headers: Map<String, String>;
+    var queryString: String;
+    var params: Map<String, String>;
+
+    fnc new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
+    {
+        return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() };
+    }
+}
+
+class HttpResponse
+{
+    var statusCode: Int64;
+    var headers: Map<String, String>;
+    var body: String;
+
+    fnc new() -> HttpResponse
+    {
+        return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
+    }
+}
+
+class HttpContext
+{
+    var request: HttpRequest;
+    var response: HttpResponse;
+
+    fnc new(request: HttpRequest, response: HttpResponse) -> HttpContext
+    {
+        return HttpContext { request: request, response: response };
+    }
+}
+
+class HttpServer
+{
+    var port: Int64;
+
+    fnc new(port: Int64) -> HttpServer
+    {
+        return HttpServer { port: port };
+    }
+
+    fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+    {
+        return this;
+    }
+
+    fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+    {
+        return this;
+    }
+
+    fn listen() -> Unit
+    {
+        return;
+    }
+}

@@ -2,13 +2,13 @@
 <?eclipse version="3.4"?>
 <plugin>
 
-  <!-- Content-Type für .tinox Dateien -->
+  <!-- Content-Type für .tnx Dateien -->
   <extension point="org.eclipse.core.contenttype.contentTypes">
     <content-type
       id="tinox.contenttype"
       name="Tinox Source File"
       base-type="org.eclipse.core.runtime.text"
-      file-extensions="tinox"
+      file-extensions="tnx"
       priority="normal"/>
   </extension>
 
@@ -53,7 +53,7 @@
           <with variable="activeMenuSelection">
             <iterate>
               <adapt type="org.eclipse.core.resources.IFile">
-                <test property="org.eclipse.core.resources.extension" value="tinox"/>
+                <test property="org.eclipse.core.resources.extension" value="tnx"/>
               </adapt>
             </iterate>
           </with>

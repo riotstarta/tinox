@@ -70,7 +70,7 @@ LSP4E ist das Framework das Eclipse mit Language Servern verbindet.
 Im zweiten Eclipse-Fenster:
 
 1. **File → New → Project → General → Project** → Finish
-2. Neue Datei anlegen: Rechtsklick auf Projekt → **New → File**, Name: `test.tinox`
+2. Neue Datei anlegen: Rechtsklick auf Projekt → **New → File**, Name: `test.tnx`
 3. Folgendes eingeben:
 
 ```tinox
@@ -114,7 +114,7 @@ Falls `tinox-lsp` nicht unter `~/.cargo/bin/tinox-lsp` liegt:
 - Schau in **Window → Show View → Other → Language Servers** nach Fehlern
 
 **Keine Fehler-Unterstreichungen**
-- Dateiendung muss `.tinox` sein (nicht `.tnx`)
+- Dateiendung muss `.tnx` sein (nicht `.tnx`)
 - Kurz warten — der Server braucht beim ersten Start 1-2 Sekunden
 
 **`install-lsp.sh` schlägt fehl**

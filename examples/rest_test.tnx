@@ -1,0 +1,23 @@
+import tinox.core.http_server;
+
+class UserController
+{
+    @GET
+    @Path("/users")
+    @Produces("application/json")
+    @StatusCode(200)
+    fnc listUsers(ctx: HttpContext) -> Unit
+    {
+        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
+    }
+
+    @POST
+    @Path("/users")
+    @Consumes("application/json")
+    @Produces("application/json")
+    @StatusCode(201)
+    fnc createUser(ctx: HttpContext) -> Unit
+    {
+        ctx.response.body = "{\"id\":2,\"name\":\"Bob\"}";
+    }
+}

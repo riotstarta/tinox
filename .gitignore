@@ -19,6 +19,9 @@ Thumbs.db
 .tinox_notes
 *.tinox_state
 
+# Claude Code
+claude
+
 # Temporary
 *.tmp
 *.bak
@@ -39,3 +42,5 @@ build.rs
 hello_out
 test_out
 work.sh
+*.err
+simple_out

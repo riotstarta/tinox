@@ -15,7 +15,7 @@
 | Type Checker | ✅ Fertig   | Basistypen, Klassen, Enums, Generics, Annotationen |
 | Code Gen     | ✅ Fertig   | LLVM IR Backend, @inline-Unterstützung           |
 | Runtime      | ✅ Fertig   | C Runtime (pthread-basiert)          |
-| CLI          | ✅ Fertig   | build, run, check                    |
+| CLI          | ✅ Fertig   | build, run, check, fmt               |
 
 ## Installation
 
@@ -31,11 +31,11 @@ Voraussetzungen: `clang`, `llc` (LLVM-Tools)
 ## Usage
 
 ```bash
-tinox run program.tinox           # Kompilieren und ausführen
-tinox build program.tinox         # Kompilieren (erzeugt ./a.out)
-tinox check program.tinox         # Nur Type-Check
-tinox fmt program.tinox           # Formatieren (Ausgabe auf stdout)
-tinox fmt --write program.tinox   # Formatieren und Datei überschreiben
+tinox run program.tnx           # Kompilieren und ausführen
+tinox build program.tnx         # Kompilieren (erzeugt ./a.out)
+tinox check program.tnx         # Nur Type-Check
+tinox fmt program.tnx           # Formatieren (Ausgabe auf stdout)
+tinox fmt --write program.tnx   # Formatieren und Datei überschreiben
 ```
 
 ## Hello World
@@ -95,7 +95,7 @@ import math.Utils;    // nur Utils
 
 ### Klassen & Vererbung
 
-Instanzmethoden verwenden `fn` und haben Zugriff auf `this`:
+Instanzmethoden verwenden `fn` und haben Zugriff auf `this`. Konstruktoren werden mit `fnc new()` definiert:
 
 ```tinox
 class Animal
@@ -115,6 +115,30 @@ class Dog extends Animal
         return "Woof! I am ${this.name}";
     }
 }
+```
+
+Klassen mit Konstruktor:
+
+```tinox
+class Point
+{
+    x: Int64;
+    y: Int64;
+
+    fnc new(x: Int64, y: Int64) -> Point
+    {
+        return Point { x: x, y: y };
+    }
+
+    fn distanceTo(other: Point) -> Float64
+    {
+        let dx = this.x - other.x;
+        let dy = this.y - other.y;
+        return Math.sqrt((dx * dx + dy * dy).toFloat64());
+    }
+}
+
+let p = Point::new(3, 4);
 ```
 
 ### Interfaces
@@ -186,6 +210,24 @@ let b = new Box<Int64>(42);
 println(b.get());
 ```
 
+### Funktion-Typen
+
+Funktionen als Werte und Parameter verwenden `fnc(T1, T2) -> R` als Typ:
+
+```tinox
+fn apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
+{
+    return f(x);
+}
+
+fn main() -> Int64
+{
+    let doubled = apply(21, n => n * 2);
+    println(doubled);   // 42
+    return 0;
+}
+```
+
 ### Tuples
 
 ```tinox
@@ -223,6 +265,10 @@ println(m.get("one"));      // 1
 println(m.contains("two")); // true
 println(m.len());           // 3
 m.remove("one");
+
+// Typ-annotierte Map
+let headers: Map<String, String> = Map::new();
+headers["Content-Type"] = "application/json";
 ```
 
 ### Ranges & Schleifen
@@ -260,8 +306,8 @@ fn main() -> Int64
 
     let ch = channel;
     send ch -> 99;
-    let val = recv ch;
-    println(val);
+    let v = recv ch;
+    println(v);
     return 0;
 }
 ```
@@ -317,6 +363,36 @@ defer { println("1"); }
 // Ausgabe beim Return: 1, 2, 3
 ```
 
+### Try / Catch
+
+```tinox
+try
+{
+    riskyOperation();
+}
+catch e: RuntimeError
+{
+    println("Fehler aufgetreten");
+}
+finally
+{
+    cleanup();
+}
+```
+
+`throw` wirft eine Exception:
+
+```tinox
+fn divide(a: Int64, b: Int64) -> Int64
+{
+    if b == 0
+    {
+        throw "Division by zero";
+    }
+    return a / b;
+}
+```
+
 ### Annotations
 
 Tinox unterstützt Annotations mit `@Name` oder `@Name(args)` Syntax auf Klassen, Methoden, Funktionen und Fields:
@@ -346,83 +422,103 @@ Der Compiler validiert Annotations (unbekannte Annotations oder falsche Platzier
 | `@PUT`          | Method               | REST: PUT-Endpunkt                    |
 | `@PATCH`        | Method               | REST: PATCH-Endpunkt                  |
 | `@DELETE`       | Method               | REST: DELETE-Endpunkt                 |
-| `@Path`         | Class, Method        | URL-Pfad-Präfix                       |
+| `@Path`         | Class, Method        | URL-Pfad                              |
 | `@Produces`    | Method               | Response Content-Type                 |
 | `@Consumes`    | Method               | Erwarteter Request Content-Type        |
 | `@StatusCode`  | Method               | Default HTTP-Statuscode               |
 | `@Auth`         | Method, Class        | Authentifizierung ("bearer"/"basic")   |
 
-### HTTP Server & REST Framework
-
-Die Standardbibliothek enthält einen HTTP-Server und ein annotation-driven REST Framework:
+Beide Schreibweisen sind gleichwertig:
 
 ```tinox
-import tinox.core.http_server;
-import tinox.core.rest_framework;
+@GET("/users")              // Pfad direkt in der Annotation
+fnc listUsers(...) -> Unit { ... }
 
-// Einfacher HTTP-Server
-let server: HttpServer = HttpServer::new(8080);
-server.get("/hello", ctx => {
-    ctx.response.text("Hello, World!");
-});
-server.listen();
+@GET                        // oder getrennt mit @Path
+@Path("/users")
+fnc listUsers(...) -> Unit { ... }
+```
 
-// REST Framework mit Annotations
-@Path("/api/users")
-class UserController : RestController
+### HTTP Server & REST Framework
+
+Die Standardbibliothek enthält einen HTTP-Server (`http_server`) und ein annotation-driven REST Framework. Das `mini_http`-Modul ist ein schlankes In-Process-Pendant:
+
+```tinox
+module mini_http;
+
+class HttpRequest
 {
-    @GET("/")
+    var method: String;
+    var path: String;
+    var body: String;
+    var headers: Map<String, String>;
+    var params: Map<String, String>;
+
+    fnc new(method: String, path: String, ...) -> HttpRequest { ... }
+}
+
+class HttpResponse
+{
+    var statusCode: Int64;
+    var headers: Map<String, String>;
+    var body: String;
+
+    fnc new() -> HttpResponse { ... }
+}
+
+class HttpServer
+{
+    var port: Int64;
+
+    fnc new(port: Int64) -> HttpServer { ... }
+
+    fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer { ... }
+    fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer { ... }
+    fn listen() -> Unit { ... }
+}
+```
+
+REST-Controller mit Annotationen:
+
+```tinox
+import mini_http;
+
+class UserController
+{
+    @GET
+    @Path("/users")
     @Produces("application/json")
+    @StatusCode(200)
     fnc listUsers(ctx: HttpContext) -> Unit
     {
-        ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
+        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
     }
 
-    @POST("/")
+    @POST
+    @Path("/users")
     @Consumes("application/json")
     @StatusCode(201)
     fnc createUser(ctx: HttpContext) -> Unit
     {
-        let data: JsonValue = ctx.request.json();
-        ctx.response.status(201).json("{\"created\": true}");
+        ctx.response.body = "{\"id\":2}";
     }
 
-    @GET("/:id")
+    @GET
+    @Path("/users/:id")
     fnc getUser(ctx: HttpContext) -> Unit
     {
-        let id: String = ctx.request.getParam("id");
-        ctx.response.json("{\"id\": " + id + "}");
+        let id: String = ctx.request.params["id"];
+        ctx.response.body = "{\"id\":${id}}";
     }
 
-    @DELETE("/:id")
+    @DELETE
+    @Path("/users/:id")
     @Auth("bearer")
     @StatusCode(204)
     fnc deleteUser(ctx: HttpContext) -> Unit
     {
-        ctx.response.noContent();
+        ctx.response.statusCode = 204;
     }
-}
-
-let app: RestApi = RestApi::new(8080);
-app.register(new UserController());
-app.enableCors("*");
-app.start();
-```
-
-### Try / Catch
-
-```tinox
-try
-{
-    riskyOperation();
-}
-catch e: RuntimeError
-{
-    println("Fehler aufgetreten");
-}
-finally
-{
-    cleanup();
 }
 ```
 
@@ -433,6 +529,7 @@ finally
 | Variablen (let/var)          | ✅ Fertig  |
 | Namespaces                   | ✅ Fertig  |
 | Klassen + Vererbung          | ✅ Fertig  |
+| Konstruktoren (`fnc new()`)  | ✅ Fertig  |
 | Statische Methoden (`fnc`)   | ✅ Fertig  |
 | Interfaces + vtable          | ✅ Fertig  |
 | Enums + Pattern Matching     | ✅ Fertig  |
@@ -442,9 +539,11 @@ finally
 | String-Interpolation         | ✅ Fertig  |
 | Ranges (.. / ...)            | ✅ Fertig  |
 | Lambdas / Closures           | ✅ Fertig  |
+| Funktion-Typen (`fnc(T)->R`) | ✅ Fertig  |
 | Async / Spawn / Await        | ✅ Fertig  |
 | Channels + Select            | ✅ Fertig  |
 | Try / Catch / Finally        | ✅ Fertig  |
+| `throw`-Statement            | ✅ Fertig  |
 | Import-System                | ✅ Fertig  |
 | Float32 / Float64            | ✅ Fertig  |
 | Map / Dict-Typ               | ✅ Fertig  |
@@ -470,10 +569,25 @@ tinox/
 │   ├── tinox-typecheck/    # Type Checker + Annotation Processing
 │   ├── tinox-codegen/      # LLVM IR Code Generation
 │   ├── tinox-lsp/          # Language Server Protocol
-│   └── tinox/              # CLI Binary
-├── crates/tinox-core/      # Standardbibliothek (.tnx Module)
+│   ├── tinox/              # CLI Binary
+│   └── tinox-core/         # Standardbibliothek (.tnx Module)
+├── examples/               # Beispiel-Programme (.tnx)
 └── runtime/                # C Runtime (tinox_alloc, threading, channels)
 ```
+
+## Standardbibliothek (tinox-core)
+
+50+ Module als `.tnx`-Dateien:
+
+| Kategorie    | Module                                              |
+|--------------|-----------------------------------------------------|
+| HTTP         | `http_server`, `rest_framework`, `mini_http`        |
+| Daten        | `json`, `csv`, `xml`, `regex`                       |
+| Sicherheit   | `crypto`, `jwt`, `bcrypt`                           |
+| Collections  | `collections`, `queue`, `stack`, `linkedlist`       |
+| System       | `fs`, `io`, `env`, `process`, `os`                  |
+| Utilities    | `math`, `mathf`, `string_utils`, `date`, `uuid`     |
+| Async        | `cron`, `events`, `pool`, `cache`, `pubsub`         |
 
 ## Lizenz
 

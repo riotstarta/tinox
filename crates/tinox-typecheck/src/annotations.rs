@@ -64,9 +64,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "GET".to_string(),
                 valid_targets: vec![AnnotationTarget::Method],
-                min_args: 1,
+                min_args: 0,
                 max_args: 1,
-                description: "Marks a method as a GET endpoint with the given path".to_string(),
+                description: "Marks a method as a GET endpoint. Optional path arg, or use @Path.".to_string(),
             },
         );
         registry.insert(
@@ -74,9 +74,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "POST".to_string(),
                 valid_targets: vec![AnnotationTarget::Method],
-                min_args: 1,
+                min_args: 0,
                 max_args: 1,
-                description: "Marks a method as a POST endpoint with the given path".to_string(),
+                description: "Marks a method as a POST endpoint. Optional path arg, or use @Path.".to_string(),
             },
         );
         registry.insert(
@@ -84,9 +84,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "PUT".to_string(),
                 valid_targets: vec![AnnotationTarget::Method],
-                min_args: 1,
+                min_args: 0,
                 max_args: 1,
-                description: "Marks a method as a PUT endpoint with the given path".to_string(),
+                description: "Marks a method as a PUT endpoint. Optional path arg, or use @Path.".to_string(),
             },
         );
         registry.insert(
@@ -94,9 +94,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "PATCH".to_string(),
                 valid_targets: vec![AnnotationTarget::Method],
-                min_args: 1,
+                min_args: 0,
                 max_args: 1,
-                description: "Marks a method as a PATCH endpoint with the given path".to_string(),
+                description: "Marks a method as a PATCH endpoint. Optional path arg, or use @Path.".to_string(),
             },
         );
         registry.insert(
@@ -104,9 +104,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "DELETE".to_string(),
                 valid_targets: vec![AnnotationTarget::Method],
-                min_args: 1,
+                min_args: 0,
                 max_args: 1,
-                description: "Marks a method as a DELETE endpoint with the given path".to_string(),
+                description: "Marks a method as a DELETE endpoint. Optional path arg, or use @Path.".to_string(),
             },
         );
 
@@ -323,10 +323,21 @@ impl AnnotationProcessor {
             }
 
             for ann in &method.annotations {
-                if ann.name == "inline" {
-                    result
-                        .inline_methods
-                        .insert((class.name.clone(), method.name.clone()));
+                match ann.name.as_str() {
+                    "inline" => {
+                        result
+                            .inline_methods
+                            .insert((class.name.clone(), method.name.clone()));
+                    }
+                    "deprecated" => {
+                        let msg = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                            format!("method '{}.{}' is deprecated: {}", class.name, method.name, s)
+                        } else {
+                            format!("method '{}.{}' is deprecated", class.name, method.name)
+                        };
+                        result.deprecated_warnings.push(msg);
+                    }
+                    _ => {}
                 }
             }
         }

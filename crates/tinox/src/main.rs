@@ -102,16 +102,23 @@ fn build(args: &[String]) {
     }
 
     let input_file = &args[0];
-    let output_name = if args.len() > 1 {
-        args[1].clone()
-    } else {
-        "a.out".to_string()
-    };
+    let output_name = parse_output_flag(&args[1..]).unwrap_or_else(|| "a.out".to_string());
 
     match compile_file(input_file, &output_name) {
         Ok(_) => println!("Compiled successfully: {}", output_name),
         Err(e) => eprintln!("Compilation failed: {}", e),
     }
+}
+
+fn parse_output_flag(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-o" {
+            return args.get(i + 1).cloned();
+        }
+        i += 1;
+    }
+    None
 }
 
 fn run_file(args: &[String]) {
@@ -205,7 +212,7 @@ fn check(args: &[String]) {
                 eprintln!("warning: {}", warning);
             }
             for route in &ann_result.route_entries {
-                println!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+                eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
             }
             println!("{}: no errors", input_file);
             std::process::exit(0);
@@ -233,6 +240,25 @@ fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &s
     }
 }
 
+/// Returns the Tinox standard library directory.
+/// Checks TINOX_PATH env var first, then falls back to the path relative to this binary's
+/// source location (works for `cargo run` during development).
+fn stdlib_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("TINOX_PATH") {
+        let pb = PathBuf::from(p);
+        if pb.is_dir() {
+            return Some(pb);
+        }
+    }
+    // Compiled-in dev path: crates/tinox/../../crates/tinox-core = crates/tinox-core
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/tinox-core");
+    if dev.is_dir() {
+        return dev.canonicalize().ok();
+    }
+    None
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
@@ -251,7 +277,7 @@ fn resolve_imports(
         .collect();
 
     for import in imports {
-        // ["foo", "bar"] → "foo/bar.tnx"
+        // ["foo", "bar"] → "foo/bar.tnx" relative to base_dir
         let mut rel = PathBuf::new();
         for (i, seg) in import.path.iter().enumerate() {
             if i == import.path.len() - 1 {
@@ -260,10 +286,29 @@ fn resolve_imports(
                 rel.push(seg);
             }
         }
-        let full_path = base_dir
-            .join(&rel)
-            .canonicalize()
-            .map_err(|e| format!("Cannot resolve import '{}': {}", rel.display(), e))?;
+
+        // Resolution order:
+        // 1. Relative to source file directory
+        // 2. tinox.core.X  →  <stdlib_dir>/X.tnx
+        let full_path = if let Ok(p) = base_dir.join(&rel).canonicalize() {
+            p
+        } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
+            // stdlib import: take the last segment as filename
+            let last = import.path.last().unwrap();
+            let stdlib_file = format!("{}.tnx", last);
+            stdlib_dir()
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",
+                        rel.display()
+                    )
+                })?
+                .join(&stdlib_file)
+                .canonicalize()
+                .map_err(|e| format!("Cannot resolve stdlib import '{}': {}", stdlib_file, e))?
+        } else {
+            return Err(format!("Cannot resolve import '{}': file not found", rel.display()));
+        };
 
         if visited.contains(&full_path) {
             continue;
@@ -335,12 +380,27 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
         eprintln!("warning: {}", warning);
     }
     for route in &ann_result.route_entries {
-        println!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+        eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
     }
+
+    let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
+        .route_entries
+        .iter()
+        .map(|r| tinox_codegen::RouteEntry {
+            http_method: r.method.clone(),
+            path: r.path.clone(),
+            class_name: r.class_name.clone(),
+            method_name: r.method_name.clone(),
+            status_code: r.status_code,
+            produces: r.produces.clone(),
+            consumes: r.consumes.clone(),
+            auth_type: r.auth_type.clone(),
+        })
+        .collect();
 
     let mut codegen = CodeGen::new();
     codegen.set_interface_info(iface_methods, class_implements);
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods);
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

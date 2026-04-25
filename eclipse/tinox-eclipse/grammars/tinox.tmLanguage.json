@@ -1,7 +1,7 @@
 {
   "name": "Tinox",
   "scopeName": "source.tinox",
-  "fileTypes": ["tinox"],
+  "fileTypes": ["tnx"],
   "patterns": [
     { "include": "#line_comment" },
     { "include": "#block_comment" },

@@ -7,6 +7,10 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 // Memory allocation
 void* tinox_alloc(size_t size) {
@@ -434,6 +438,34 @@ int64_t tinox_map_len(void* map) {
     return (int64_t)((TinoxMap*)map)->len;
 }
 
+int64_t* tinox_map_keys(void* map) {
+    TinoxMap* m = (TinoxMap*)map;
+    int64_t* raw = (int64_t*)malloc((m->len + 1) * sizeof(int64_t));
+    raw[0] = (int64_t)m->len;
+    int64_t* nd = raw + 1;
+    size_t j = 0;
+    for (size_t i = 0; i < m->cap; i++) {
+        char* k = m->entries[i].key;
+        if (k && k != (char*)1)
+            nd[j++] = (int64_t)(uintptr_t)k;
+    }
+    return nd;
+}
+
+int64_t* tinox_map_values(void* map) {
+    TinoxMap* m = (TinoxMap*)map;
+    int64_t* raw = (int64_t*)malloc((m->len + 1) * sizeof(int64_t));
+    raw[0] = (int64_t)m->len;
+    int64_t* nd = raw + 1;
+    size_t j = 0;
+    for (size_t i = 0; i < m->cap; i++) {
+        char* k = m->entries[i].key;
+        if (k && k != (char*)1)
+            nd[j++] = m->entries[i].value;
+    }
+    return nd;
+}
+
 void tinox_map_free(void* map) {
     TinoxMap* m = (TinoxMap*)map;
     for (size_t i = 0; i < m->cap; i++) {
@@ -567,6 +599,83 @@ int64_t tinox_file_exists(const char* path) {
 
 void tinox_file_delete(const char* path) {
     remove(path);
+}
+
+// ---- HTTP Server ----
+
+int64_t httpServerCreate(int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {0};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port        = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
+    if (listen(fd, 128) < 0) { close(fd); return -1; }
+    return (int64_t)fd;
+}
+
+int64_t httpServerAcceptConn(int64_t server_fd) {
+    struct sockaddr_in client = {0};
+    socklen_t len = sizeof(client);
+    int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
+    return (int64_t)fd;
+}
+
+// Reads a full HTTP/1.1 request from the socket and returns it as a heap string.
+char* httpServerReadRequest(int64_t client_fd) {
+    size_t cap = 4096, used = 0;
+    char* buf = (char*)malloc(cap);
+    int fd = (int)client_fd;
+    while (1) {
+        if (used + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        ssize_t n = recv(fd, buf + used, cap - used - 1, 0);
+        if (n <= 0) break;
+        used += (size_t)n;
+        buf[used] = '\0';
+        // Stop once we have the full headers (and body if Content-Length matches)
+        char* hdr_end = strstr(buf, "\r\n\r\n");
+        if (!hdr_end) continue;
+        // Check for Content-Length to read body
+        char* cl = strcasestr(buf, "Content-Length:");
+        if (cl) {
+            long body_len = atol(cl + 15);
+            long header_len = (long)(hdr_end - buf) + 4;
+            long total = header_len + body_len;
+            while ((long)used < total) {
+                if (used + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+                ssize_t m = recv(fd, buf + used, (size_t)(total - (long)used), 0);
+                if (m <= 0) break;
+                used += (size_t)m;
+                buf[used] = '\0';
+            }
+        }
+        break;
+    }
+    buf[used] = '\0';
+    return buf;
+}
+
+// Sends a raw HTTP response string and returns.
+void httpServerSendRaw(int64_t client_fd, const char* data) {
+    if (!data) return;
+    size_t len = strlen(data);
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send((int)client_fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) break;
+        sent += (size_t)n;
+    }
+}
+
+void httpServerCloseConn(int64_t client_fd) {
+    close((int)client_fd);
+}
+
+void httpServerClose(int64_t server_fd) {
+    close((int)server_fd);
 }
 
 // ---- Entry point ----

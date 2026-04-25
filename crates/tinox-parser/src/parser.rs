@@ -259,7 +259,10 @@ impl Parser {
             let member_annotations = self.parse_annotations();
             let doc = self.take_doc();
             let vis = self.parse_visibility();
-            let mutable = self.consume_keyword(Keyword::Mut);
+            // `var` = mutable field, `let` = immutable field; consume both
+            let mutable = self.consume_keyword(Keyword::Var)
+                || self.consume_keyword(Keyword::Let)
+                || self.consume_keyword(Keyword::Mut);
             let is_async = self.consume_keyword(Keyword::Async);
 
             if self.check_keyword(Keyword::Fn) {
@@ -297,6 +300,14 @@ impl Parser {
         })
     }
 
+    fn parse_method_name(&mut self) -> Result<String, Error> {
+        match self.peek().kind.clone() {
+            TokenKind::Ident(s) => { self.bump(); Ok(s) }
+            TokenKind::Keyword(Keyword::New) => { self.bump(); Ok("new".to_string()) }
+            _ => Err(Error::new(self.mk_span(), "expected method name")),
+        }
+    }
+
     fn parse_method(&mut self, visibility: Visibility, static_: bool) -> Result<Method, Error> {
         let span = self.mk_span();
         if static_ {
@@ -304,7 +315,7 @@ impl Parser {
         } else {
             self.expect_keyword(Keyword::Fn)?;
         }
-        let name = self.parse_ident()?;
+        let name = self.parse_method_name()?;
         self.expect(TokenKind::LParen)?;
 
         let mut params = Vec::new();
@@ -574,6 +585,26 @@ impl Parser {
             return Ok(Type::Mutable(Box::new(inner)));
         }
 
+        // fnc(T1, T2) -> R  — function/closure type
+        if self.check_keyword(Keyword::Fnc) {
+            self.bump();
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                params.push(self.parse_type()?);
+                while self.consume(TokenKind::Comma) {
+                    params.push(self.parse_type()?);
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            let ret = if self.consume(TokenKind::ThinArrow) {
+                Box::new(self.parse_type()?)
+            } else {
+                Box::new(Type::Unit)
+            };
+            return Ok(Type::Fn { params, ret });
+        }
+
         let mut base = self.parse_type_base()?;
 
         while self.check(TokenKind::LBracket) {
@@ -609,6 +640,11 @@ impl Parser {
     }
 
     fn parse_type_base(&mut self) -> Result<Type, Error> {
+        // `Unit` is a keyword token, not an identifier — handle it before parse_ident
+        if self.check_keyword(Keyword::Unit) {
+            self.bump();
+            return Ok(Type::Unit);
+        }
         let ident = self.parse_ident()?;
 
         match ident.as_str() {
@@ -807,6 +843,20 @@ impl Parser {
                             } else {
                                 expr = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
                             }
+                        }
+                        // obj.field[key] = value;  — index assignment on a field chain
+                        if self.check(TokenKind::LBracket) {
+                            self.bump();
+                            let index = self.parse_expr()?;
+                            self.expect(TokenKind::RBracket)?;
+                            self.expect(TokenKind::Equals)?;
+                            let value = self.parse_expr()?;
+                            self.expect(TokenKind::Semicolon)?;
+                            let target = Spanned::new(
+                                ExprKind::Index { obj: Box::new(expr), index: Box::new(index) },
+                                ident_span,
+                            );
+                            return Ok(Spanned::new(StmtKind::Assignment { target, value }, span));
                         }
                         self.expect(TokenKind::Semicolon)?;
                         StmtKind::Expr(expr)
@@ -1397,7 +1447,7 @@ impl Parser {
                 // Handle enum value construction: Color::Red or Option::Some(value)
                 if let ExprKind::Ident(enum_name) = &expr.node {
                     self.bump(); // consume ::
-                    let variant = self.parse_ident()?;
+                    let variant = self.parse_method_name()?;
                     let span = expr.span;
 
                     let mut args = Vec::new();
@@ -2330,6 +2380,7 @@ impl Parser {
     }
 
     fn synchronize(&mut self) {
+        let start_pos = self.pos;
         while !self.is_at_end() {
             match self.peek().kind {
                 TokenKind::Semicolon => {
@@ -2349,7 +2400,12 @@ impl Parser {
                     | Keyword::For
                     | Keyword::Loop
                     | Keyword::Return,
-                ) => return,
+                ) => {
+                    if self.pos > start_pos {
+                        return;
+                    }
+                    self.bump();
+                }
                 _ => self.bump(),
             }
         }
