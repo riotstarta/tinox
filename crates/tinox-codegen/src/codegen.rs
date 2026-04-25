@@ -18,6 +18,8 @@ pub struct RouteEntry {
     pub produces: Option<String>,
     pub consumes: Option<String>,
     pub auth_type: Option<String>,
+    /// true = fnc (static), false = fn (instance, has self)
+    pub is_static: bool,
 }
 
 pub struct CodeGen {
@@ -64,6 +66,10 @@ pub struct CodeGen {
     route_entries: Vec<RouteEntry>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
+    /// Set of class names defined in user/imported code
+    defined_classes: HashSet<String>,
+    /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
+    struct_field_class_types: HashMap<String, HashMap<String, String>>,
 }
 
 impl CodeGen {
@@ -94,6 +100,8 @@ impl CodeGen {
             inline_methods: HashSet::new(),
             route_entries: Vec::new(),
             has_main: false,
+            defined_classes: HashSet::new(),
+            struct_field_class_types: HashMap::new(),
         }
     }
 
@@ -146,6 +154,54 @@ impl CodeGen {
             }
         }
         fields
+    }
+
+    /// Collect field_name -> class_type_name for all Named-typed fields (including inherited).
+    fn collect_field_class_types(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> HashMap<String, String> {
+        let Some(c) = class_map.get(name) else { return HashMap::new(); };
+        let mut result = if let Some(parent) = &c.extends {
+            Self::collect_field_class_types(parent, class_map)
+        } else {
+            HashMap::new()
+        };
+        for f in &c.fields {
+            if let Some(class_name) = Self::extract_class_type_name(&f.field_type) {
+                result.insert(f.name.clone(), class_name);
+            }
+        }
+        result
+    }
+
+    fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
+        use tinox_parser::Type;
+        match ty {
+            Type::Named(n) => Some(n.clone()),
+            Type::Generic { name, .. } => Some(name.clone()),
+            Type::Mutable(inner) | Type::Ref(inner) | Type::Array(inner) => {
+                Self::extract_class_type_name(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// Infer the struct/class type name for an expression (for nested field access).
+    fn infer_struct_type<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
+        use tinox_parser::ExprKind;
+        match &expr.node {
+            ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+            ExprKind::This => ctx.current_struct.clone(),
+            ExprKind::FieldAccess { obj, field } => {
+                let outer = self.infer_struct_type(obj, ctx)?;
+                self.struct_field_class_types
+                    .get(&outer)
+                    .and_then(|m| m.get(field.as_str()))
+                    .cloned()
+            }
+            _ => None,
+        }
     }
 
     /// Resolve method call to the class that actually implements it (walks parent chain).
@@ -244,7 +300,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_file_eof(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_file_exists(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_file_delete(i8*)").unwrap();
-        // HTTP server C runtime
+        // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpServerReadRequest(i64)").unwrap();
@@ -293,6 +349,7 @@ impl CodeGen {
         }).collect();
 
         for c in &all_classes {
+            self.defined_classes.insert(c.name.clone());
             {
                 if !c.type_params.is_empty() { continue; }
                 if let Some(parent) = &c.extends {
@@ -319,6 +376,8 @@ impl CodeGen {
                 }
                 fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
                 self.struct_layouts.insert(c.name.clone(), fields);
+                let fct = Self::collect_field_class_types(&c.name, &class_ast_map);
+                self.struct_field_class_types.insert(c.name.clone(), fct);
 
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
@@ -445,6 +504,17 @@ impl CodeGen {
         if self.route_entries.is_empty() {
             return;
         }
+
+        // External declares for the C runtime route-based HTTP server API.
+        // tinox_HttpServer_* are distinct from any user-defined HttpServer class methods.
+        writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_get(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_post(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_put(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_patch(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_delete(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
 
         let routes = self.route_entries.clone();
 
@@ -588,9 +658,15 @@ impl CodeGen {
             }
 
             // ── Allocate controller and call the handler ─────────────────────────
-            writeln!(&mut self.lambda_ir, "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
-            writeln!(&mut self.lambda_ir, "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
+            if route.is_static {
+                // fnc (static): no self pointer, called as method_fn(ctx)
+                writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctx_ptr)").unwrap();
+            } else {
+                // fn (instance): called as method_fn(self, ctx)
+                writeln!(&mut self.lambda_ir, "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -602,7 +678,7 @@ impl CodeGen {
 
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
-            let server_method = format!("HttpServer_{}", route.http_method.to_lowercase());
+            let server_method = format!("tinox_HttpServer_{}", route.http_method.to_lowercase());
             let path_len = route.path.len() + 1;
 
             writeln!(&mut self.lambda_ir,
@@ -610,7 +686,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir,
                 "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
             writeln!(&mut self.lambda_ir,
-                "  call i64* @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+                "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
         }
 
         writeln!(&mut self.lambda_ir, "  ret void").unwrap();
@@ -625,9 +701,9 @@ impl CodeGen {
                 .unwrap_or(8080);
             writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %server = call i64* @HttpServer_new(i64 {port})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {port})").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @HttpServer_listen(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -1526,11 +1602,7 @@ impl CodeGen {
                     } else {
                         obj_raw
                     };
-                    let struct_name = match &obj.node {
-                        ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
-                        ExprKind::This => ctx.current_struct.clone(),
-                        _ => None,
-                    };
+                    let struct_name = self.infer_struct_type(obj, ctx);
                     let offset = if let Some(sname) = struct_name {
                         if let Some(fields) = self.struct_layouts.get(&sname) {
                             fields.iter().position(|f| f == field).unwrap_or(0) as i64

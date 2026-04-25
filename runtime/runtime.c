@@ -189,6 +189,7 @@ char* tinox_string_to_lower(const char* s) {
 }
 
 int64_t tinox_string_starts_with(const char* s, const char* prefix) {
+    if (!s || !prefix) return 0;
     size_t plen = strlen(prefix);
     return strncmp(s, prefix, plen) == 0 ? 1 : 0;
 }
@@ -676,6 +677,196 @@ void httpServerCloseConn(int64_t client_fd) {
 
 void httpServerClose(int64_t server_fd) {
     close((int)server_fd);
+}
+
+// ---- HttpServer route-based API ----
+
+#define TINOX_MAX_ROUTES 64
+#define TINOX_MAX_BODY   65536
+
+typedef void (*TinoxRouteHandler)(int64_t ctx);
+
+typedef struct {
+    char method[8];
+    char path[256];
+    TinoxRouteHandler handler;
+} TinoxRoute;
+
+typedef struct {
+    int64_t port;
+    TinoxRoute routes[TINOX_MAX_ROUTES];
+    int route_count;
+} TinoxHttpServer;
+
+extern void* tinox_alloc(size_t size);
+extern void* tinox_map_create(void);
+
+int64_t* tinox_HttpServer_new(int64_t port) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)malloc(sizeof(TinoxHttpServer));
+    memset(srv, 0, sizeof(TinoxHttpServer));
+    srv->port = port;
+    return (int64_t*)srv;
+}
+
+static void http_server_add_route(int64_t* server, const char* method, char* path, int64_t handler) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    if (srv->route_count < TINOX_MAX_ROUTES) {
+        strncpy(srv->routes[srv->route_count].method, method, 7);
+        strncpy(srv->routes[srv->route_count].path, path, 255);
+        srv->routes[srv->route_count].handler = (TinoxRouteHandler)(intptr_t)handler;
+        srv->route_count++;
+    }
+}
+
+void tinox_HttpServer_get(int64_t* server, char* path, int64_t handler) {
+    http_server_add_route(server, "GET", path, handler);
+}
+
+void tinox_HttpServer_post(int64_t* server, char* path, int64_t handler) {
+    http_server_add_route(server, "POST", path, handler);
+}
+
+void tinox_HttpServer_put(int64_t* server, char* path, int64_t handler) {
+    http_server_add_route(server, "PUT", path, handler);
+}
+
+void tinox_HttpServer_patch(int64_t* server, char* path, int64_t handler) {
+    http_server_add_route(server, "PATCH", path, handler);
+}
+
+void tinox_HttpServer_delete(int64_t* server, char* path, int64_t handler) {
+    http_server_add_route(server, "DELETE", path, handler);
+}
+
+static const char* http_status_text(int64_t code) {
+    switch (code) {
+        case 200: return "OK";
+        case 201: return "Created";
+        case 204: return "No Content";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 415: return "Unsupported Media Type";
+        case 500: return "Internal Server Error";
+        default:  return "OK";
+    }
+}
+
+void tinox_HttpServer_listen(int64_t* server) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    int64_t server_fd = httpServerCreate(srv->port);
+    if (server_fd < 0) {
+        fprintf(stderr, "HttpServer: failed to bind port %lld\n", (long long)srv->port);
+        return;
+    }
+    fprintf(stderr, "HttpServer listening on port %lld\n", (long long)srv->port);
+
+    while (1) {
+        int64_t client_fd = httpServerAcceptConn(server_fd);
+        if (client_fd < 0) continue;
+
+        char* raw_req = httpServerReadRequest(client_fd);
+        if (!raw_req) { httpServerCloseConn(client_fd); continue; }
+
+        char method[8] = {0};
+        char path[256] = {0};
+        char query[512] = {0};
+        sscanf(raw_req, "%7s %255s", method, path);
+        // Split path and query string
+        char* qmark = strchr(path, '?');
+        if (qmark) { strncpy(query, qmark + 1, 511); *qmark = '\0'; }
+
+        // Find matching route
+        TinoxRouteHandler handler = NULL;
+        for (int i = 0; i < srv->route_count; i++) {
+            if (strcmp(srv->routes[i].method, method) == 0 &&
+                strcmp(srv->routes[i].path, path) == 0) {
+                handler = srv->routes[i].handler;
+                break;
+            }
+        }
+
+        // Parse HTTP headers from raw request into a map
+        void* req_headers = tinox_map_create();
+        char* hdr_line = strchr(raw_req, '\n');
+        while (hdr_line) {
+            hdr_line++;
+            if (*hdr_line == '\r' || *hdr_line == '\n' || *hdr_line == '\0') break;
+            char* colon = strchr(hdr_line, ':');
+            char* eol = strchr(hdr_line, '\n');
+            if (colon && eol && colon < eol) {
+                size_t klen = (size_t)(colon - hdr_line);
+                char* hkey = (char*)tinox_alloc(klen + 1);
+                memcpy(hkey, hdr_line, klen);
+                hkey[klen] = '\0';
+                char* vstart = colon + 1;
+                while (*vstart == ' ') vstart++;
+                size_t vlen = (size_t)(eol - vstart);
+                while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == ' ')) vlen--;
+                char* hval = (char*)tinox_alloc(vlen + 1);
+                memcpy(hval, vstart, vlen);
+                hval[vlen] = '\0';
+                tinox_map_set(req_headers, hkey, (int64_t)hval);
+            }
+            hdr_line = eol;
+        }
+
+        // Extract body (after blank line)
+        char* req_body = "";
+        char* body_start = strstr(raw_req, "\r\n\r\n");
+        if (!body_start) body_start = strstr(raw_req, "\n\n");
+        if (body_start) {
+            body_start += (body_start[0] == '\r') ? 4 : 2;
+            req_body = body_start;
+        }
+
+        // Build HttpResponse struct: [statusCode, headers_ptr, body_ptr]
+        int64_t* response = (int64_t*)tinox_alloc(3 * sizeof(int64_t));
+        char* empty_body = (char*)tinox_alloc(1);
+        empty_body[0] = '\0';
+        response[0] = handler ? 200 : 404;
+        response[1] = (int64_t)tinox_map_create();
+        response[2] = (int64_t)empty_body;
+
+        // Build HttpRequest struct: [method, path, body, headers, queryString, params]
+        int64_t* request = (int64_t*)tinox_alloc(6 * sizeof(int64_t));
+        request[0] = (int64_t)method;
+        request[1] = (int64_t)path;
+        request[2] = (int64_t)req_body;
+        request[3] = (int64_t)req_headers;
+        request[4] = (int64_t)query;
+        request[5] = (int64_t)tinox_map_create();
+
+        // Build HttpContext struct: [request_ptr, response_ptr]
+        int64_t* ctx = (int64_t*)tinox_alloc(2 * sizeof(int64_t));
+        ctx[0] = (int64_t)request;
+        ctx[1] = (int64_t)response;
+
+        if (handler) {
+            handler((int64_t)ctx);
+        }
+
+        // Send HTTP response
+        char* body = (char*)response[2];
+        if (!body) body = "";
+        int64_t status = response[0];
+        char http_resp[TINOX_MAX_BODY + 256];
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 %lld %s\r\n"
+            "Content-Length: %zu\r\n"
+            "Content-Type: application/json\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "%s",
+            (long long)status, http_status_text(status), strlen(body), body);
+
+        httpServerSendRaw(client_fd, http_resp);
+        httpServerCloseConn(client_fd);
+    }
+
+    httpServerClose(server_fd);
 }
 
 // ---- Entry point ----

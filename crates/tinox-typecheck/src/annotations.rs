@@ -40,6 +40,7 @@ pub struct RouteInfo {
     pub produces: Option<String>,
     pub consumes: Option<String>,
     pub auth_type: Option<String>,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -454,6 +455,7 @@ impl AnnotationProcessor {
             produces,
             consumes,
             auth_type: auth,
+            is_static: method.static_,
         })
     }
 }

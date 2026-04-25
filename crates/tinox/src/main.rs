@@ -395,6 +395,7 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
             produces: r.produces.clone(),
             consumes: r.consumes.clone(),
             auth_type: r.auth_type.clone(),
+            is_static: r.is_static,
         })
         .collect();
 
