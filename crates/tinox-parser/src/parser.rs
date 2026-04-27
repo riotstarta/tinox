@@ -117,11 +117,33 @@ impl Parser {
             DeclKind::Namespace(ns)
         } else if self.check_keyword(Keyword::Extern) {
             self.parse_extern_fn()?
+        } else if self.check_keyword(Keyword::Unmodifiable) {
+            let mut u = self.parse_unmodifiable()?;
+            u.doc = doc;
+            u.annotations = annotations;
+            DeclKind::Unmodifiable(u)
         } else {
             return Err(self.error("expected declaration"));
         };
 
         Ok(Spanned::new(decl, start))
+    }
+
+    fn parse_unmodifiable(&mut self) -> Result<UnmodifiableDecl, Error> {
+        let span = self.mk_span();
+        self.expect_keyword(Keyword::Unmodifiable)?;
+        let name = self.parse_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut fields = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            fields.push(self.parse_param()?);
+            while self.consume(TokenKind::Comma) {
+                fields.push(self.parse_param()?);
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.consume(TokenKind::Semicolon);
+        Ok(UnmodifiableDecl { name, fields, span, doc: None, annotations: vec![] })
     }
 
     fn parse_extern_fn(&mut self) -> Result<DeclKind, Error> {
@@ -1413,7 +1435,7 @@ impl Parser {
                     );
                     continue;
                 }
-                let name = self.parse_ident()?;
+                let name = self.parse_method_name()?;
                 if self.check(TokenKind::LParen) {
                     self.bump();
                     let mut args = Vec::new();

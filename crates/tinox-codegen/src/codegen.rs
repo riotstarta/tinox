@@ -4,7 +4,7 @@ use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
     BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Namespace, Param, Pattern,
-    SourceFile, Stmt, StmtKind, Type, UnaryOp,
+    SourceFile, Stmt, StmtKind, Type, UnaryOp, UnmodifiableDecl,
 };
 
 /// Route entry produced by REST annotation processing.
@@ -348,6 +348,23 @@ impl CodeGen {
             v
         }).collect();
 
+        // Register unmodifiable struct layouts and new() return types
+        for decl in &source.decls {
+            if let DeclKind::Unmodifiable(u) = &decl.node {
+                self.defined_classes.insert(u.name.clone());
+                let fields: Vec<String> = u.fields.iter().map(|f| f.name.clone()).collect();
+                self.struct_layouts.insert(u.name.clone(), fields);
+                let mut fct: HashMap<String, String> = HashMap::new();
+                for field in &u.fields {
+                    if let tinox_parser::Type::Named(class_name) = &field.param_type {
+                        fct.insert(field.name.clone(), class_name.clone());
+                    }
+                }
+                self.struct_field_class_types.insert(u.name.clone(), fct);
+                self.method_ret_types.insert(format!("{}_new", u.name), "i64*".to_string());
+            }
+        }
+
         for c in &all_classes {
             self.defined_classes.insert(c.name.clone());
             {
@@ -461,6 +478,9 @@ impl CodeGen {
                     for method in &c.methods {
                         self.gen_class_method(&c.name, method)?;
                     }
+                }
+                DeclKind::Unmodifiable(u) => {
+                    self.emit_unmodifiable_new(u);
                 }
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
@@ -909,6 +929,55 @@ impl CodeGen {
         Ok(())
     }
 
+    /// Emit the auto-generated `ClassName_new(field1, field2, ...) -> i64*` function
+    /// for an `unmodifiable` declaration.
+    fn emit_unmodifiable_new(&mut self, u: &tinox_parser::UnmodifiableDecl) {
+        let class_name = &u.name;
+        let n_fields = u.fields.len();
+        let size = n_fields * 8;
+
+        let params_str: Vec<String> = u.fields.iter()
+            .map(|f| format!("{} %{}", Self::type_to_llvm(&f.param_type), f.name))
+            .collect();
+
+        writeln!(&mut self.ir, "define i64* @{class_name}_new({}) {{", params_str.join(", ")).unwrap();
+        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
+        writeln!(&mut self.ir, "  %ptr = bitcast i8* %raw to i64*").unwrap();
+
+        for (i, field) in u.fields.iter().enumerate() {
+            let llvm_ty = Self::type_to_llvm(&field.param_type);
+            let store_val = if llvm_ty == "i8*" {
+                writeln!(&mut self.ir, "  %fconv_{i} = ptrtoint i8* %{} to i64", field.name).unwrap();
+                format!("%fconv_{i}")
+            } else if llvm_ty == "i64*" {
+                writeln!(&mut self.ir, "  %fconv_{i} = ptrtoint i64* %{} to i64", field.name).unwrap();
+                format!("%fconv_{i}")
+            } else if llvm_ty == "i1" {
+                writeln!(&mut self.ir, "  %fconv_{i} = zext i1 %{} to i64", field.name).unwrap();
+                format!("%fconv_{i}")
+            } else if llvm_ty == "double" {
+                writeln!(&mut self.ir, "  %fconv_{i} = bitcast double %{} to i64", field.name).unwrap();
+                format!("%fconv_{i}")
+            } else if llvm_ty == "float" {
+                writeln!(&mut self.ir, "  %fconv_ext_{i} = fpext float %{} to double", field.name).unwrap();
+                writeln!(&mut self.ir, "  %fconv_{i} = bitcast double %fconv_ext_{i} to i64").unwrap();
+                format!("%fconv_{i}")
+            } else if llvm_ty != "i64" {
+                writeln!(&mut self.ir, "  %fconv_{i} = sext {llvm_ty} %{} to i64", field.name).unwrap();
+                format!("%fconv_{i}")
+            } else {
+                format!("%{}", field.name)
+            };
+            writeln!(&mut self.ir, "  %gep_{i} = getelementptr i64, i64* %ptr, i64 {i}").unwrap();
+            writeln!(&mut self.ir, "  store i64 {store_val}, i64* %gep_{i}").unwrap();
+        }
+
+        writeln!(&mut self.ir, "  ret i64* %ptr").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
     /// Emit a vtable global for each class that implements at least one interface.
     fn emit_vtable_globals(&mut self, source: &SourceFile) {
         let class_names: Vec<(String, Vec<String>)> = source
@@ -1093,6 +1162,15 @@ impl CodeGen {
                     false
                 };
 
+                if struct_name.is_none() {
+                    if let Some(Type::Named(ann)) = ty {
+                        if self.defined_classes.contains(ann.as_str()) {
+                            struct_name = Some(ann.clone());
+                            llvm_ty = "i64*".to_string();
+                        }
+                    }
+                }
+
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
                     let actual_ty = if matches!(&val.node, ExprKind::Lambda { .. }) {
@@ -1206,6 +1284,15 @@ impl CodeGen {
                 } else {
                     false
                 };
+
+                if struct_name.is_none() {
+                    if let Some(Type::Named(ann)) = ty {
+                        if self.defined_classes.contains(ann.as_str()) {
+                            struct_name = Some(ann.clone());
+                            llvm_ty = "i64*".to_string();
+                        }
+                    }
+                }
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;

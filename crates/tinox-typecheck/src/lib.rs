@@ -748,6 +748,24 @@ impl TypeChecker {
                         .collect();
                     self.interfaces.insert(t.name.clone(), methods);
                 }
+                DeclKind::Unmodifiable(u) => {
+                    for field in &u.fields {
+                        let ty = Self::type_to_value(&field.param_type);
+                        let key = format!("{}.{}", u.name, field.name);
+                        self.symbols.variables.insert(key.clone(), (ty, true));
+                        self.field_visibility.insert(key, Visibility::Public);
+                    }
+                    let params: Vec<(String, ValueType)> = u.fields.iter()
+                        .map(|f| (f.name.clone(), Self::type_to_value(&f.param_type)))
+                        .collect();
+                    let sig = FunctionSignature {
+                        params,
+                        return_type: ValueType::Named(u.name.clone()),
+                    };
+                    let key = format!("{}_new", u.name);
+                    self.symbols.functions.insert(key.clone(), sig);
+                    self.method_visibility.insert(key, Visibility::Public);
+                }
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
                         // Reuse the same symbol-collection logic for namespace-scoped decls
