@@ -399,9 +399,25 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
         })
         .collect();
 
+    let di_components: Vec<tinox_codegen::DiComponentInfo> = ann_result.di_components
+        .iter()
+        .map(|c| tinox_codegen::DiComponentInfo {
+            class_name: c.class_name.clone(),
+            scope: match c.scope {
+                tinox_typecheck::annotations::DiScope::Application => tinox_codegen::DiScope::Application,
+                tinox_typecheck::annotations::DiScope::Startup => tinox_codegen::DiScope::Startup,
+                tinox_typecheck::annotations::DiScope::HttpRequest => tinox_codegen::DiScope::HttpRequest,
+            },
+            inject_fields: c.inject_fields.iter().map(|f| tinox_codegen::DiInjectField {
+                field_name: f.field_name.clone(),
+                field_type: f.field_type.clone(),
+            }).collect(),
+        })
+        .collect();
+
     let mut codegen = CodeGen::new();
     codegen.set_interface_info(iface_methods, class_implements);
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries);
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

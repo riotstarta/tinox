@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, Span};
-use tinox_parser::{Annotation, Class, DeclKind, Function, Method, Namespace};
+use tinox_parser::{Annotation, Class, DeclKind, FieldDef, Function, Method, Namespace, Type};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AnnotationTarget {
@@ -43,12 +43,34 @@ pub struct RouteInfo {
     pub is_static: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiScope {
+    Application,
+    Startup,
+    HttpRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiInjectField {
+    pub field_name: String,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiComponentInfo {
+    pub class_name: String,
+    pub scope: DiScope,
+    pub inject_fields: Vec<DiInjectField>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
     pub deprecated_warnings: Vec<String>,
+    pub custom_annotation_names: Vec<String>,
+    pub di_components: Vec<DiComponentInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -173,6 +195,48 @@ impl AnnotationProcessor {
             },
         );
 
+        // DI scope annotations
+        registry.insert(
+            "ApplicationComponent".to_string(),
+            AnnotationInfo {
+                name: "ApplicationComponent".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "Lazy singleton — one instance for the lifetime of the application".to_string(),
+            },
+        );
+        registry.insert(
+            "Startup".to_string(),
+            AnnotationInfo {
+                name: "Startup".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "Eager singleton — created immediately at application startup".to_string(),
+            },
+        );
+        registry.insert(
+            "HttpRequestScoped".to_string(),
+            AnnotationInfo {
+                name: "HttpRequestScoped".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "One instance per HTTP request, lives as long as the request".to_string(),
+            },
+        );
+        registry.insert(
+            "Inject".to_string(),
+            AnnotationInfo {
+                name: "Inject".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks a field for compile-time dependency injection".to_string(),
+            },
+        );
+
         // Compiler annotations
         registry.insert(
             "inline".to_string(),
@@ -200,6 +264,28 @@ impl AnnotationProcessor {
         );
 
         Self { registry }
+    }
+
+    pub fn register_custom_annotation(&mut self, name: &str) {
+        self.registry.insert(
+            name.to_string(),
+            AnnotationInfo {
+                name: name.to_string(),
+                valid_targets: vec![
+                    AnnotationTarget::Function,
+                    AnnotationTarget::Method,
+                    AnnotationTarget::Class,
+                    AnnotationTarget::Field,
+                    AnnotationTarget::Interface,
+                    AnnotationTarget::Enum,
+                    AnnotationTarget::Trait,
+                    AnnotationTarget::Namespace,
+                ],
+                min_args: 0,
+                max_args: usize::MAX,
+                description: format!("User-defined annotation @{}", name),
+            },
+        );
     }
 
     pub fn validate(&self, annotations: &[Annotation], target: AnnotationTarget) -> Vec<Error> {
@@ -287,6 +373,7 @@ impl AnnotationProcessor {
     ) {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
+        let mut di_scope: Option<DiScope> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
@@ -308,8 +395,23 @@ impl AnnotationProcessor {
                     };
                     result.deprecated_warnings.push(msg);
                 }
+                "annotation" => {
+                    result.custom_annotation_names.push(class.name.clone());
+                }
+                "ApplicationComponent" => di_scope = Some(DiScope::Application),
+                "Startup" => di_scope = Some(DiScope::Startup),
+                "HttpRequestScoped" => di_scope = Some(DiScope::HttpRequest),
                 _ => {}
             }
+        }
+
+        if let Some(scope) = di_scope {
+            let inject_fields = collect_inject_fields(&class.fields);
+            result.di_components.push(DiComponentInfo {
+                class_name: class.name.clone(),
+                scope,
+                inject_fields,
+            });
         }
 
         for method in &class.methods {
@@ -370,10 +472,11 @@ impl AnnotationProcessor {
         result: &mut AnnotationProcessingResult,
     ) {
         for inner in &ns.decls {
-            if let DeclKind::Class(c) = &inner.node {
-                self.process_class_annotations(c, result);
-            } else if let DeclKind::Function(f) = &inner.node {
-                self.process_function_annotations(f, result);
+            match &inner.node {
+                DeclKind::Class(c) => self.process_class_annotations(c, result),
+                DeclKind::Function(f) => self.process_function_annotations(f, result),
+                DeclKind::Namespace(nested) => self.process_namespace_annotations(nested, result),
+                _ => {}
             }
         }
     }
@@ -473,73 +576,91 @@ pub fn process_annotations(
     processor.process_source(source)
 }
 
+fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
+    fields
+        .iter()
+        .filter(|f| f.annotations.iter().any(|a| a.name == "Inject"))
+        .filter_map(|f| {
+            if let Type::Named(type_name) = &f.field_type {
+                Some(DiInjectField {
+                    field_name: f.name.clone(),
+                    field_type: type_name.clone(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_custom_annotation_classes(decl: &DeclKind, processor: &mut AnnotationProcessor) {
+    match decl {
+        DeclKind::Class(c) => {
+            if c.annotations.iter().any(|a| a.name == "annotation") {
+                processor.register_custom_annotation(&c.name);
+            }
+        }
+        DeclKind::Namespace(ns) => {
+            for inner in &ns.decls {
+                collect_custom_annotation_classes(&inner.node, processor);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, errors: &mut Vec<Error>) {
+    match decl {
+        DeclKind::Function(f) => {
+            errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
+        }
+        DeclKind::Class(c) => {
+            errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
+            for field in &c.fields {
+                errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
+            }
+            for method in &c.methods {
+                errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+            }
+        }
+        DeclKind::Interface(i) => {
+            errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
+            for method in &i.methods {
+                errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+            }
+        }
+        DeclKind::Enum(e) => {
+            errors.extend(processor.validate(&e.annotations, AnnotationTarget::Enum));
+        }
+        DeclKind::Trait(t) => {
+            errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
+            for method in &t.methods {
+                errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+            }
+        }
+        DeclKind::Namespace(ns) => {
+            errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
+            for inner in &ns.decls {
+                validate_decl(processor, &inner.node, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn validate_annotations(
     source: &tinox_parser::SourceFile,
 ) -> Vec<Error> {
-    let processor = AnnotationProcessor::new();
-    let mut errors = Vec::new();
+    let mut processor = AnnotationProcessor::new();
 
+    // First pass: register all @annotation-class definitions so they are valid in the second pass
     for decl in &source.decls {
-        match &decl.node {
-            DeclKind::Function(f) => {
-                errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
-            }
-            DeclKind::Class(c) => {
-                errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
-                for field in &c.fields {
-                    errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
-                }
-                for method in &c.methods {
-                    errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
-                }
-            }
-            DeclKind::Interface(i) => {
-                errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
-                for method in &i.methods {
-                    errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
-                }
-            }
-            DeclKind::Enum(e) => {
-                errors.extend(processor.validate(&e.annotations, AnnotationTarget::Enum));
-            }
-            DeclKind::Trait(t) => {
-                errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
-                for method in &t.methods {
-                    errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
-                }
-            }
-            DeclKind::Namespace(ns) => {
-                errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
-                for inner in &ns.decls {
-                    match &inner.node {
-                        DeclKind::Class(c) => {
-                            errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
-                            for field in &c.fields {
-                                errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
-                            }
-                            for method in &c.methods {
-                                errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
-                            }
-                        }
-                        DeclKind::Function(f) => {
-                            errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
-                        }
-                        DeclKind::Interface(i) => {
-                            errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
-                        }
-                        DeclKind::Enum(e) => {
-                            errors.extend(processor.validate(&e.annotations, AnnotationTarget::Enum));
-                        }
-                        DeclKind::Trait(t) => {
-                            errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
+        collect_custom_annotation_classes(&decl.node, &mut processor);
     }
 
+    let mut errors = Vec::new();
+    for decl in &source.decls {
+        validate_decl(&processor, &decl.node, &mut errors);
+    }
     errors
 }

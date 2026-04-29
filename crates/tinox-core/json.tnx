@@ -2,6 +2,20 @@ module tinox.core.json;
 
 namespace tinox.core.json
 {
+    extern fn jsonParse(text: String) -> JsonValue;
+    extern fn jsonStringify(value: JsonValue) -> String;
+    extern fn jsonGetString(value: JsonValue) -> String;
+    extern fn jsonGetInt(value: JsonValue) -> Int64;
+    extern fn jsonGetFloat(value: JsonValue) -> Float64;
+    extern fn jsonGetBool(value: JsonValue) -> Bool;
+    extern fn jsonIsNull(value: JsonValue) -> Bool;
+    extern fn jsonIsString(value: JsonValue) -> Bool;
+    extern fn jsonIsInt(value: JsonValue) -> Bool;
+    extern fn jsonIsFloat(value: JsonValue) -> Bool;
+    extern fn jsonIsBool(value: JsonValue) -> Bool;
+    extern fn jsonIsObject(value: JsonValue) -> Bool;
+    extern fn jsonIsArray(value: JsonValue) -> Bool;
+
     class Json
     {
         fnc parse(text: String) -> JsonValue
@@ -10,16 +24,6 @@ namespace tinox.core.json
         }
 
         fnc stringify(value: JsonValue) -> String
-        {
-            return jsonStringify(value);
-        }
-
-        fnc toJson(value: String) -> JsonValue
-        {
-            return jsonParse(value);
-        }
-
-        fnc fromJson(value: JsonValue) -> String
         {
             return jsonStringify(value);
         }
@@ -45,16 +49,6 @@ namespace tinox.core.json
         fnc getBool() -> Bool
         {
             return jsonGetBool(this);
-        }
-
-        fnc getObject() -> Map<String, JsonValue>
-        {
-            return jsonGetObject(this);
-        }
-
-        fnc getArray() -> List<JsonValue>
-        {
-            return jsonGetArray(this);
         }
 
         fnc isNull() -> Bool

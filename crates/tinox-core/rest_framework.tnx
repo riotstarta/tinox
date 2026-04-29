@@ -225,6 +225,48 @@ namespace tinox.core.rest_framework
     }
 
     // ========================================================================
+    // Dependency Injection Annotations
+    // ========================================================================
+
+    /**
+     * Lazy singleton — one instance for the entire lifetime of the application.
+     * Created on first access.
+     */
+    @annotation
+    class ApplicationComponent {}
+
+    /**
+     * Eager singleton — created immediately at application startup, before any
+     * request is handled. Useful for services that need initialization work
+     * (e.g. DB connection pools, background workers).
+     */
+    @annotation
+    class Startup {}
+
+    /**
+     * One instance per HTTP request. Created fresh for each incoming request
+     * and lives exactly as long as that request.
+     */
+    @annotation
+    class HttpRequestScoped {}
+
+    /**
+     * Marks a field for compile-time dependency injection.
+     * The compiler resolves the dependency from the DI container and
+     * wires it up without any runtime lookup.
+     *
+     * Example:
+     *   @ApplicationComponent
+     *   class UserController
+     *   {
+     *       @Inject
+     *       var service: UserService;
+     *   }
+     */
+    @annotation
+    class Inject {}
+
+    // ========================================================================
     // Route Registration
     // ========================================================================
 
