@@ -311,6 +311,7 @@ impl Keyword {
 }
 
 pub struct Lexer<'a> {
+    #[allow(dead_code)]
     input: &'a str,
     chars: Vec<char>,
     pos: usize,
@@ -912,7 +913,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_float_suffix(&mut self) -> FloatType {
-        let start = self.pos;
+        let _start = self.pos;
         
         // Skip underscore before suffix (e.g., 42.0_f64)
         if self.peek() == '_' {

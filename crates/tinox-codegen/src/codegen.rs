@@ -3,9 +3,29 @@ use std::fmt::Write;
 use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Namespace, Param, Pattern,
-    SourceFile, Stmt, StmtKind, Type, UnaryOp, UnmodifiableDecl,
+    CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern,
+    SourceFile, Stmt, StmtKind, Type,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiScope {
+    Application,
+    Startup,
+    HttpRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiInjectField {
+    pub field_name: String,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiComponentInfo {
+    pub class_name: String,
+    pub scope: DiScope,
+    pub inject_fields: Vec<DiInjectField>,
+}
 
 /// Route entry produced by REST annotation processing.
 #[derive(Debug, Clone)]
@@ -28,6 +48,7 @@ pub struct CodeGen {
     strings: HashMap<String, String>,
     temp_count: usize,
     struct_layouts: HashMap<String, Vec<String>>,
+    #[allow(dead_code)]
     closure_envs: HashMap<String, String>,
     method_ret_types: HashMap<String, String>,
     // vtable support
@@ -64,12 +85,16 @@ pub struct CodeGen {
     inline_methods: HashSet<(String, String)>,
     /// REST route entries collected from annotation processing
     route_entries: Vec<RouteEntry>,
+    /// DI component info from annotation processing
+    di_components: Vec<DiComponentInfo>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
     /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
     struct_field_class_types: HashMap<String, HashMap<String, String>>,
+    /// class_name -> field_name -> llvm_type (for FieldAccess type recovery)
+    struct_field_llvm_types: HashMap<String, HashMap<String, String>>,
 }
 
 impl CodeGen {
@@ -99,9 +124,11 @@ impl CodeGen {
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
             route_entries: Vec::new(),
+            di_components: Vec::new(),
             has_main: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
+            struct_field_llvm_types: HashMap::new(),
         }
     }
 
@@ -111,10 +138,12 @@ impl CodeGen {
         inline_fns: HashSet<String>,
         inline_meths: HashSet<(String, String)>,
         routes: Vec<RouteEntry>,
+        di_components: Vec<DiComponentInfo>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
         self.route_entries = routes;
+        self.di_components = di_components;
     }
 
     /// Provide interface metadata from the type checker.
@@ -171,6 +200,23 @@ impl CodeGen {
             if let Some(class_name) = Self::extract_class_type_name(&f.field_type) {
                 result.insert(f.name.clone(), class_name);
             }
+        }
+        result
+    }
+
+    /// Collect field_name -> llvm_type for all fields (including inherited).
+    fn collect_field_llvm_types(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> HashMap<String, String> {
+        let Some(c) = class_map.get(name) else { return HashMap::new(); };
+        let mut result = if let Some(parent) = &c.extends {
+            Self::collect_field_llvm_types(parent, class_map)
+        } else {
+            HashMap::new()
+        };
+        for f in &c.fields {
+            result.insert(f.name.clone(), Self::type_to_llvm(&f.field_type));
         }
         result
     }
@@ -277,6 +323,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_starts_with(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_ends_with(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_trim(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_substring(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
@@ -348,21 +396,37 @@ impl CodeGen {
             v
         }).collect();
 
-        // Register unmodifiable struct layouts and new() return types
-        for decl in &source.decls {
-            if let DeclKind::Unmodifiable(u) = &decl.node {
-                self.defined_classes.insert(u.name.clone());
-                let fields: Vec<String> = u.fields.iter().map(|f| f.name.clone()).collect();
-                self.struct_layouts.insert(u.name.clone(), fields);
-                let mut fct: HashMap<String, String> = HashMap::new();
-                for field in &u.fields {
-                    if let tinox_parser::Type::Named(class_name) = &field.param_type {
-                        fct.insert(field.name.clone(), class_name.clone());
+        // Register unmodifiable struct layouts and new() return types (top-level + namespace-scoped)
+        let all_unmodifiables: Vec<tinox_parser::UnmodifiableDecl> = source.decls.iter().flat_map(|d| {
+            let mut v = Vec::new();
+            match &d.node {
+                DeclKind::Unmodifiable(u) => v.push(u.clone()),
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Unmodifiable(u) = &inner.node { v.push(u.clone()); }
                     }
                 }
-                self.struct_field_class_types.insert(u.name.clone(), fct);
-                self.method_ret_types.insert(format!("{}_new", u.name), "i64*".to_string());
+                _ => {}
             }
+            v
+        }).collect();
+
+        for u in &all_unmodifiables {
+            self.defined_classes.insert(u.name.clone());
+            let fields: Vec<String> = u.fields.iter().map(|f| f.name.clone()).collect();
+            self.struct_layouts.insert(u.name.clone(), fields);
+            let mut fct: HashMap<String, String> = HashMap::new();
+            for field in &u.fields {
+                if let tinox_parser::Type::Named(class_name) = &field.param_type {
+                    fct.insert(field.name.clone(), class_name.clone());
+                }
+            }
+            self.struct_field_class_types.insert(u.name.clone(), fct);
+            let fllt: HashMap<String, String> = u.fields.iter()
+                .map(|f| (f.name.clone(), Self::type_to_llvm(&f.param_type)))
+                .collect();
+            self.struct_field_llvm_types.insert(u.name.clone(), fllt);
+            self.method_ret_types.insert(format!("{}_new", u.name), "i64*".to_string());
         }
 
         for c in &all_classes {
@@ -395,6 +459,8 @@ impl CodeGen {
                 self.struct_layouts.insert(c.name.clone(), fields);
                 let fct = Self::collect_field_class_types(&c.name, &class_ast_map);
                 self.struct_field_class_types.insert(c.name.clone(), fct);
+                let fllt = Self::collect_field_llvm_types(&c.name, &class_ast_map);
+                self.struct_field_llvm_types.insert(c.name.clone(), fllt);
 
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
@@ -484,12 +550,18 @@ impl CodeGen {
                 }
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
-                        if let DeclKind::Class(c) = &inner.node {
-                            if c.type_params.is_empty() {
-                                for method in &c.methods {
-                                    self.gen_class_method(&c.name, method)?;
+                        match &inner.node {
+                            DeclKind::Class(c) => {
+                                if c.type_params.is_empty() {
+                                    for method in &c.methods {
+                                        self.gen_class_method(&c.name, method)?;
+                                    }
                                 }
                             }
+                            DeclKind::Unmodifiable(u) => {
+                                self.emit_unmodifiable_new(u);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -502,6 +574,9 @@ impl CodeGen {
 
         // Emit REST route shims and registration function
         self.emit_route_code();
+
+        // Emit DI globals, getters, factories, and startup initializer
+        self.emit_di_code();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -682,9 +757,50 @@ impl CodeGen {
                 // fnc (static): no self pointer, called as method_fn(ctx)
                 writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctx_ptr)").unwrap();
             } else {
-                // fn (instance): called as method_fn(self, ctx)
-                writeln!(&mut self.lambda_ir, "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
-                writeln!(&mut self.lambda_ir, "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+                // fn (instance): use DI getter/factory if the controller is a DI component
+                let di_scope = self.di_components.iter()
+                    .find(|c| c.class_name == route.class_name)
+                    .map(|c| c.scope.clone());
+                match di_scope {
+                    Some(DiScope::Application) | Some(DiScope::Startup) => {
+                        writeln!(&mut self.lambda_ir,
+                            "  %ctrl_{idx} = call i64* @{}_di_get()", route.class_name).unwrap();
+                        // Re-inject any @HttpRequestScoped fields per-request
+                        let inject_fields: Vec<(String, String)> = self.di_components.iter()
+                            .find(|c| c.class_name == route.class_name)
+                            .map(|c| c.inject_fields.iter()
+                                .map(|f| (f.field_name.clone(), f.field_type.clone()))
+                                .collect())
+                            .unwrap_or_default();
+                        for (fi, (fname, ftype)) in inject_fields.iter().enumerate() {
+                            let is_request_scoped = self.di_components.iter()
+                                .any(|c| c.class_name == *ftype && matches!(c.scope, DiScope::HttpRequest));
+                            if is_request_scoped {
+                                let foffset = self.struct_layouts.get(route.class_name.as_str())
+                                    .and_then(|l| l.iter().position(|f| f == fname))
+                                    .unwrap_or(0);
+                                writeln!(&mut self.lambda_ir,
+                                    "  %req_dep_{idx}_{fi} = call i64* @{ftype}_di_create()").unwrap();
+                                writeln!(&mut self.lambda_ir,
+                                    "  %req_dep_i64_{idx}_{fi} = ptrtoint i64* %req_dep_{idx}_{fi} to i64").unwrap();
+                                writeln!(&mut self.lambda_ir,
+                                    "  %req_fptr_{idx}_{fi} = getelementptr i64, i64* %ctrl_{idx}, i64 {foffset}").unwrap();
+                                writeln!(&mut self.lambda_ir,
+                                    "  store i64 %req_dep_i64_{idx}_{fi}, i64* %req_fptr_{idx}_{fi}").unwrap();
+                            }
+                        }
+                    }
+                    Some(DiScope::HttpRequest) => {
+                        writeln!(&mut self.lambda_ir,
+                            "  %ctrl_{idx} = call i64* @{}_di_create()", route.class_name).unwrap();
+                    }
+                    None => {
+                        writeln!(&mut self.lambda_ir,
+                            "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
+                        writeln!(&mut self.lambda_ir,
+                            "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+                    }
+                }
                 writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
@@ -730,6 +846,116 @@ impl CodeGen {
         }
     }
 
+    fn emit_di_code(&mut self) {
+        let components = self.di_components.clone();
+        if components.is_empty() {
+            return;
+        }
+
+        // Global instance pointers for application/startup scoped components
+        for comp in &components {
+            if matches!(comp.scope, DiScope::Application | DiScope::Startup) {
+                writeln!(&mut self.lambda_ir,
+                    "@{}_di_instance = global i8* null", comp.class_name).unwrap();
+            }
+        }
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        // Getter / factory for each component
+        for comp in &components {
+            let name = &comp.class_name;
+            let size = self.struct_layouts.get(name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+
+            match comp.scope {
+                DiScope::Application | DiScope::Startup => {
+                    writeln!(&mut self.lambda_ir, "define i64* @{name}_di_get() {{").unwrap();
+                    writeln!(&mut self.lambda_ir, "entry:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %inst_raw = load i8*, i8** @{name}_di_instance").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %is_null = icmp eq i8* %inst_raw, null").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 %is_null, label %create, label %done").unwrap();
+                    writeln!(&mut self.lambda_ir, "create:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %new_inst = bitcast i8* %raw to i64*").unwrap();
+
+                    for (fi, field) in comp.inject_fields.iter().enumerate() {
+                        let field_offset = self.struct_layouts.get(name.as_str())
+                            .and_then(|layout| layout.iter().position(|f| f == &field.field_name))
+                            .unwrap_or(0);
+                        let dep = &field.field_type;
+                        let dep_is_app = components.iter().any(|c|
+                            c.class_name == *dep && matches!(c.scope, DiScope::Application | DiScope::Startup));
+                        if dep_is_app {
+                            writeln!(&mut self.lambda_ir, "  %dep_{fi} = call i64* @{dep}_di_get()").unwrap();
+                        } else {
+                            writeln!(&mut self.lambda_ir, "  %dep_{fi} = call i64* @{dep}_di_create()").unwrap();
+                        }
+                        writeln!(&mut self.lambda_ir, "  %dep_i64_{fi} = ptrtoint i64* %dep_{fi} to i64").unwrap();
+                        writeln!(&mut self.lambda_ir, "  %fptr_{fi} = getelementptr i64, i64* %new_inst, i64 {field_offset}").unwrap();
+                        writeln!(&mut self.lambda_ir, "  store i64 %dep_i64_{fi}, i64* %fptr_{fi}").unwrap();
+                    }
+
+                    writeln!(&mut self.lambda_ir, "  %new_raw = bitcast i64* %new_inst to i8*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i8* %new_raw, i8** @{name}_di_instance").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br label %done").unwrap();
+                    writeln!(&mut self.lambda_ir, "done:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %result_raw = load i8*, i8** @{name}_di_instance").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %result = bitcast i8* %result_raw to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret i64* %result").unwrap();
+                    writeln!(&mut self.lambda_ir, "}}").unwrap();
+                    writeln!(&mut self.lambda_ir).unwrap();
+                }
+                DiScope::HttpRequest => {
+                    writeln!(&mut self.lambda_ir, "define i64* @{name}_di_create() {{").unwrap();
+                    writeln!(&mut self.lambda_ir, "entry:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+
+                    for (fi, field) in comp.inject_fields.iter().enumerate() {
+                        let field_offset = self.struct_layouts.get(name.as_str())
+                            .and_then(|layout| layout.iter().position(|f| f == &field.field_name))
+                            .unwrap_or(0);
+                        let dep = &field.field_type;
+                        let dep_is_app = components.iter().any(|c|
+                            c.class_name == *dep && matches!(c.scope, DiScope::Application | DiScope::Startup));
+                        if dep_is_app {
+                            writeln!(&mut self.lambda_ir, "  %dep_{fi} = call i64* @{dep}_di_get()").unwrap();
+                        } else {
+                            writeln!(&mut self.lambda_ir, "  %dep_{fi} = call i64* @{dep}_di_create()").unwrap();
+                        }
+                        writeln!(&mut self.lambda_ir, "  %dep_i64_{fi} = ptrtoint i64* %dep_{fi} to i64").unwrap();
+                        writeln!(&mut self.lambda_ir, "  %fptr_{fi} = getelementptr i64, i64* %inst, i64 {field_offset}").unwrap();
+                        writeln!(&mut self.lambda_ir, "  store i64 %dep_i64_{fi}, i64* %fptr_{fi}").unwrap();
+                    }
+
+                    writeln!(&mut self.lambda_ir, "  ret i64* %inst").unwrap();
+                    writeln!(&mut self.lambda_ir, "}}").unwrap();
+                    writeln!(&mut self.lambda_ir).unwrap();
+                }
+            }
+        }
+
+        // tinox_di_startup(): eagerly initialize all @Startup components
+        let has_startup = components.iter().any(|c| matches!(c.scope, DiScope::Startup));
+        if has_startup {
+            writeln!(&mut self.lambda_ir, "define void @tinox_di_startup() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            for comp in components.iter().filter(|c| matches!(c.scope, DiScope::Startup)) {
+                writeln!(&mut self.lambda_ir, "  call i64* @{}_di_get()", comp.class_name).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            // Register tinox_di_startup as a global constructor so it runs before main
+            writeln!(&mut self.lambda_ir,
+                "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] \
+                [{{ i32, void ()*, i8* }} {{ i32 65535, void ()* @tinox_di_startup, i8* null }}]").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+    }
+
     fn escape_llvm_string(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         for c in s.chars() {
@@ -763,6 +989,16 @@ impl CodeGen {
     }
 
     fn gen_fn(&mut self, f: &tinox_parser::Function) -> Result<(), ErrorBag> {
+        // extern fn — no body, emit a declare instead of a define
+        if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
+            let ret_type = self.type_to_llvm_inst(&f.ret_type);
+            let params_str = f.params.iter()
+                .map(|p| self.type_to_llvm_inst(&p.param_type))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(&mut self.ir, "declare {} @{}({})", ret_type, f.name, params_str).unwrap();
+            return Ok(());
+        }
         let ret_type = self.type_to_llvm_inst(&f.ret_type);
         let mut params_str = String::new();
         let mut ctx = GenCtx {
@@ -1369,7 +1605,7 @@ impl CodeGen {
                 ctx.break_target = Some(end_bb.clone());
                 ctx.continue_target = Some(loop_bb.clone());
 
-                let num_locals = ctx.locals.len();
+                let _num_locals = ctx.locals.len();
                 let mut local_snapshots: Vec<(String, String)> = Vec::new();
                 for (name, (ty, _)) in ctx.locals.iter() {
                     if ty.contains('*') {
@@ -1610,7 +1846,7 @@ impl CodeGen {
                     self.new_bb("select_retry")
                 };
 
-                let arm_body_bbs: Vec<String> = arms.iter().map(|arm| {
+                let _arm_body_bbs: Vec<String> = arms.iter().map(|arm| {
                     format!("sel_arm_{}_{}", arm.var, self.temp_count)
                 }).collect();
                 // Patch arm_body_bbs to have unique names
@@ -1738,7 +1974,7 @@ impl CodeGen {
                     } else {
                         self.gen_expr(obj, ctx)?
                     };
-                    let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    let (val, _val_ty) = self.gen_expr(value, ctx)?;
                     let ptr_name = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -1785,7 +2021,7 @@ impl CodeGen {
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (l, lt) = self.gen_expr(lhs, ctx)?;
-                let (r, rt) = self.gen_expr(rhs, ctx)?;
+                let (r, _rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
                 let float = Self::is_float(&lt);
                 match op {
@@ -2163,13 +2399,13 @@ impl CodeGen {
                             }
                             return Ok((result, "i64".to_string()));
                         }
-                        "toUpper" => {
+                        "toUpper" | "toUpperCase" => {
                             let (val, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_upper(i8* {})", result, val).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
-                        "toLower" => {
+                        "toLower" | "toLowerCase" => {
                             let (val, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_lower(i8* {})", result, val).unwrap();
@@ -2610,12 +2846,12 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
-                        "toUpper" => {
+                        "toUpper" | "toUpperCase" => {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_upper(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
-                        "toLower" => {
+                        "toLower" | "toLowerCase" => {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_to_lower(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i8*".to_string()));
@@ -2659,6 +2895,20 @@ impl CodeGen {
                             let (arg, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_char_at(i8* {}, i64 {})", result, obj_ptr, arg).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "substring" => {
+                            let (from, _) = self.gen_expr(&args[0], ctx)?;
+                            let (to, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_substring(i8* {}, i64 {}, i64 {})", result, obj_ptr, from, to).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "replace" => {
+                            let (from, _) = self.gen_expr(&args[0], ctx)?;
+                            let (to, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_replace(i8* {}, i8* {}, i8* {})", result, obj_ptr, from, to).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
                         "toInt" => {
@@ -2892,17 +3142,20 @@ impl CodeGen {
                 let struct_name = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
                     ExprKind::This => ctx.current_struct.clone(),
-                    _ => None,
+                    _ => self.infer_struct_type(obj, ctx),
                 };
 
-                let offset = if let Some(sname) = struct_name {
-                    if let Some(fields) = self.struct_layouts.get(&sname) {
-                        fields.iter().position(|f| f == field).unwrap_or(0) as i64
-                    } else {
-                        0
-                    }
+                let (offset, field_llvm_ty) = if let Some(ref sname) = struct_name {
+                    let off = self.struct_layouts.get(sname.as_str())
+                        .and_then(|fields| fields.iter().position(|f| f == field))
+                        .unwrap_or(0) as i64;
+                    let fty = self.struct_field_llvm_types.get(sname.as_str())
+                        .and_then(|m| m.get(field.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    (off, fty)
                 } else {
-                    0
+                    (0i64, "i64".to_string())
                 };
 
                 let field_ptr = self.temp();
@@ -2913,10 +3166,19 @@ impl CodeGen {
                 )
                 .unwrap();
 
-                // Load the value from the field
-                let result = self.temp();
-                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, field_ptr).unwrap();
-                Ok((result, "i64".to_string()))
+                // Load the raw i64 value from the field
+                let loaded = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, field_ptr).unwrap();
+
+                // Cast back to the actual field type if it was stored via ptrtoint
+                // Pointer types (i8*, i64*, etc.) were stored with ptrtoint — restore them
+                if field_llvm_ty != "i64" && field_llvm_ty.ends_with('*') {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", cast, loaded, field_llvm_ty).unwrap();
+                    Ok((cast, field_llvm_ty))
+                } else {
+                    Ok((loaded, "i64".to_string()))
+                }
             }
             ExprKind::StructLiteral { name, fields } => {
                 let ptr = self.temp();
@@ -3019,7 +3281,7 @@ impl CodeGen {
                 Ok((typed_ptr, "i64*".to_string()))
             }
             ExprKind::EnumValue {
-                enum_name,
+                enum_name: _,
                 variant,
                 args,
             } => {
@@ -3855,7 +4117,7 @@ impl CodeGen {
             }
             ExprKind::Index { obj, index } => {
                 let (idx_val, _) = self.gen_expr(index, ctx)?;
-                let (base_ptr, var_ty) = if let ExprKind::Ident(name) = &obj.node {
+                let (base_ptr, _var_ty) = if let ExprKind::Ident(name) = &obj.node {
                     if ctx.locals.contains_key(name) {
                         let (vty, _) = ctx.locals.get(name).unwrap();
                         let loaded_ptr = self.temp();
@@ -4035,7 +4297,7 @@ impl CodeGen {
             )
             .unwrap();
             for (i, (name, ty)) in captured.iter().enumerate() {
-                if let Some((_, slot)) = ctx.locals.get(name) {
+                if let Some((_, _slot)) = ctx.locals.get(name) {
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -4135,7 +4397,7 @@ impl CodeGen {
             .unwrap();
             writeln!(&mut self.ir, "store i64 {}, i64* {}", ptr_name, fp_field).unwrap();
             let env_field = self.temp();
-            let env_ptr_clean = env_ptr.trim_start_matches('%');
+            let _env_ptr_clean = env_ptr.trim_start_matches('%');
             writeln!(
                 &mut self.ir,
                 "{} = getelementptr i64, ptr {}, i64 1",
@@ -4179,13 +4441,13 @@ impl CodeGen {
             Type::String => "i8*".to_string(),
             Type::Unit => "void".to_string(),
             Type::Named(_) => "i64*".to_string(),
+            Type::Generic { name, args } if name == "Array" => {
+                args.first().map(|t| format!("{}*", Self::type_to_llvm(t))).unwrap_or_else(|| "i64*".to_string())
+            }
             Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
-            Type::Generic { name, args } if name == "Array" => {
-                args.first().map(|t| format!("{}*", Self::type_to_llvm(t))).unwrap_or_else(|| "i64*".to_string())
-            }
             Type::Map(_, _) => "i8*".to_string(),
             Type::Tuple(_) => "i64*".to_string(),
             _ => "i64".to_string(),
@@ -4211,6 +4473,7 @@ impl CodeGen {
         format!("{}_{}", name, self.temp_count)
     }
 
+    #[allow(dead_code)]
     fn get_field_offset(
         &mut self,
         _obj: &str,
@@ -4227,12 +4490,12 @@ impl CodeGen {
         Ok(0)
     }
 
+    #[allow(dead_code)]
     fn get_struct_name_for_type(&self, _ty: &str) -> String {
-        // For now, just return the type as-is
-        // In a full implementation, we'd look up the actual struct name
         _ty.replace("*", "")
     }
 
+    #[allow(dead_code)]
     fn get_struct_name_for_obj(&self, obj: &Expr, ctx: &GenCtx) -> Option<String> {
         if let ExprKind::Ident(name) = &obj.node {
             ctx.local_types.get(name).cloned()
@@ -4886,6 +5149,7 @@ pub struct GenCtx {
     /// Variables that hold a range value (i64* with start/end, not an array)
     range_vars: HashSet<String>,
     params: HashSet<String>,
+    #[allow(dead_code)]
     struct_fields: Vec<String>,
     current_struct: Option<String>,
     local_types: HashMap<String, String>,

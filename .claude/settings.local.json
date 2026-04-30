@@ -33,7 +33,29 @@
       "Bash(git rm *)",
       "Bash(git *)",
       "Bash(cargo test *)",
-      "Bash(grep -v \"^warning\\\\|^ \\\\+-\\\\-> \\\\|^ *|\\\\|^ *=\\\\|^$\\\\|^ *\\\\^\\\\|^ *help\\\\|^  \\\\+note\")"
+      "Bash(grep -v \"^warning\\\\|^ \\\\+-\\\\-> \\\\|^ *|\\\\|^ *=\\\\|^$\\\\|^ *\\\\^\\\\|^ *help\\\\|^  \\\\+note\")",
+      "Bash(TINOX_PATH=/ki/tinox/crates/tinox-core ./target/debug/tinox build examples/rest_with_mini.tnx -o rest_with_mini_out)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(TINOX_PATH=/ki/tinox/crates/tinox-core ./target/debug/tinox build examples/rest_with_mini.tnx -o /tmp/rest_with_mini_out)",
+      "Bash(timeout 20 ./target/debug/tinox build examples/rest_with_mini.tnx -o /tmp/rwm_out)",
+      "Bash(timeout 10 ./target/debug/tinox build examples/mini_http.tnx -o /tmp/mini_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/map_test.tnx -o /tmp/map_test_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/map_test2.tnx -o /tmp/map_test2_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/map_test3.tnx -o /tmp/map_test3_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test.tnx -o /tmp/cls_test_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test2.tnx -o /tmp/cls_test2_out)",
+      "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_test2.tnx -o /tmp/cls_test2_out)",
+      "Bash(awk '{print $2}')",
+      "Bash(xargs -I{} cat /proc/{}/status)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test3.tnx -o /tmp/cls_test3_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test4.tnx -o /tmp/cls_test4_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test5.tnx -o /tmp/cls_test5_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_test6.tnx -o /tmp/cls_test6_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_new.tnx -o /tmp/cls_new_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/cls_new2_out)",
+      "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_new3.tnx -o /tmp/cls_new3_out)",
+      "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/cls_new2_out)",
+      "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/x)"
     ]
   }
 }

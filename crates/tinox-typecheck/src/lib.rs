@@ -239,6 +239,8 @@ impl ValueType {
             Type::Infer => ValueType::Any,
             Type::Named(name) => ValueType::Named(name.clone()),
             Type::Generic { name, .. } if name == "Array" => ValueType::Array,
+            Type::Generic { name, .. } if name == "List" => ValueType::Array,
+            Type::Generic { name, .. } if name == "Set" => ValueType::Array,
             Type::Generic { name, .. } if name == "Map" => ValueType::Map,
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
@@ -504,6 +506,11 @@ impl TypeChecker {
         symbols.functions.insert("Array_contains".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Bool });
         symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
         symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::Array });
+        // List<T> is the same as Array at runtime — mirror all Array_* builtins under List_*
+        for (arr_key, sig) in symbols.functions.iter().filter(|(k, _)| k.starts_with("Array_")).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() {
+            let list_key = arr_key.replacen("Array_", "List_", 1);
+            symbols.functions.insert(list_key, sig);
+        }
         // String method builtins (MethodCall dispatch: String_len, String_toUpper, etc.)
         symbols.functions.insert("String_len".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("String_charAt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("i".to_string(), ValueType::Int)], return_type: ValueType::String });
@@ -514,9 +521,17 @@ impl TypeChecker {
         symbols.functions.insert("String_indexOf".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("String_startsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         symbols.functions.insert("String_endsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
-        for name in &["String_toUpper", "String_toLower", "String_trim"] {
+        for name in &["String_toUpper", "String_toLower", "String_trim", "String_toLowerCase", "String_toUpperCase"] {
             symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         }
+        symbols.functions.insert("String_substring".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("String_replace".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("from".to_string(), ValueType::String), ("to".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
         symbols.functions.insert("split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
             return_type: ValueType::Array,
@@ -573,6 +588,32 @@ impl TypeChecker {
                 return_type: ValueType::Int,
             },
         );
+        symbols.functions.insert("Map_keys".to_string(), FunctionSignature {
+            params: vec![("m".to_string(), ValueType::Map)],
+            return_type: ValueType::Array,
+        });
+        symbols.functions.insert("Map_values".to_string(), FunctionSignature {
+            params: vec![("m".to_string(), ValueType::Map)],
+            return_type: ValueType::Array,
+        });
+        symbols.functions.insert("Map_set".to_string(), FunctionSignature {
+            params: vec![("m".to_string(), ValueType::Map), ("k".to_string(), ValueType::Any), ("v".to_string(), ValueType::Any)],
+            return_type: ValueType::Unit,
+        });
+        // Int / Float toString
+        for prefix in &["Int64", "Int32", "Int", "Float64", "Float32", "Float", "Bool"] {
+            symbols.functions.insert(format!("{}_toString", prefix), FunctionSignature {
+                params: vec![("v".to_string(), ValueType::Any)],
+                return_type: ValueType::String,
+            });
+        }
+        // HTTP low-level builtins (called from http_server.tnx)
+        symbols.functions.insert("httpServerCreate".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
+        symbols.functions.insert("httpServerSendRaw".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Unit });
+        symbols.functions.insert("httpServerCloseConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
+        symbols.functions.insert("httpServerClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
@@ -768,8 +809,8 @@ impl TypeChecker {
                 }
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
-                        // Reuse the same symbol-collection logic for namespace-scoped decls
-                        if let DeclKind::Class(c) = &inner.node {
+                        match &inner.node {
+                        DeclKind::Class(c) => {
                             if let Some(parent) = &c.extends {
                                 self.class_parents.insert(c.name.clone(), parent.clone());
                             }
@@ -797,6 +838,26 @@ impl TypeChecker {
                                 self.symbols.functions.insert(key.clone(), sig);
                                 self.method_visibility.insert(key, method.visibility.clone());
                             }
+                        }
+                        DeclKind::Unmodifiable(u) => {
+                            for field in &u.fields {
+                                let ty = Self::type_to_value(&field.param_type);
+                                let key = format!("{}.{}", u.name, field.name);
+                                self.symbols.variables.insert(key.clone(), (ty, true));
+                                self.field_visibility.insert(key, Visibility::Public);
+                            }
+                            let params: Vec<(String, ValueType)> = u.fields.iter()
+                                .map(|f| (f.name.clone(), Self::type_to_value(&f.param_type)))
+                                .collect();
+                            let sig = FunctionSignature {
+                                params,
+                                return_type: ValueType::Named(u.name.clone()),
+                            };
+                            let key = format!("{}_new", u.name);
+                            self.symbols.functions.insert(key.clone(), sig);
+                            self.method_visibility.insert(key, Visibility::Public);
+                        }
+                        _ => {}
                         }
                     }
                 }
@@ -1478,7 +1539,12 @@ impl TypeChecker {
             ExprKind::Index { obj, index } => {
                 let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
-                if !matches!(index_ty, ValueType::Int) && !matches!(obj_ty, ValueType::String) {
+                let valid_index = match &obj_ty {
+                    ValueType::Map => matches!(index_ty, ValueType::String | ValueType::Any),
+                    ValueType::String => true,
+                    _ => matches!(index_ty, ValueType::Int | ValueType::Any),
+                };
+                if !valid_index {
                     self.errors
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
@@ -2069,6 +2135,8 @@ impl TypeChecker {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
+            // All Maps are compatible (Tinox has no generic Map type checking)
+            (ValueType::Map, ValueType::Map) => true,
             // Allow passing a class where an interface it implements is expected
             (ValueType::Named(iface), ValueType::Named(class)) => {
                 self.interface_implementations

@@ -1,4 +1,4 @@
-use tinox_common::{Error, ErrorBag, Pos, Span, Spanned};
+use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_lexer::{InterpPart, Keyword, Lexer, Token, TokenKind};
 
 use crate::ast::*;
@@ -562,8 +562,11 @@ impl Parser {
                 let mut t = self.parse_trait()?;
                 t.doc = doc;
                 DeclKind::Trait(t)
+            } else if self.check_keyword(Keyword::Unmodifiable) {
+                let u = self.parse_unmodifiable()?;
+                DeclKind::Unmodifiable(u)
             } else {
-                let e = self.error("expected 'class', 'interface', 'enum', or 'trait' inside namespace");
+                let e = self.error("expected 'class', 'interface', 'enum', 'trait', or 'unmodifiable' inside namespace");
                 self.errors.push(e);
                 self.synchronize();
                 continue;
