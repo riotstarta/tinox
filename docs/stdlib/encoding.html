@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tinox Stdlib — encoding</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0f0f13; --surface: #1a1a24; --surface2: #242433; --text: #e2e2f0; --muted: #8888aa; --code-bg: #12121a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+    header { background: var(--surface); border-bottom: 1px solid #2a2a40; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+    nav { margin-left: auto; display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; color: var(--accent); margin-bottom: 0.5rem; }
+    .import-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.9rem; margin: 1rem 0; border-radius: 4px; }
+    .description { color: var(--muted); margin-bottom: 2rem; font-size: 1.05rem; }
+    h2 { font-size: 1.3rem; color: #a78bfa; margin: 2rem 0 1rem; border-bottom: 1px solid #2a2a40; padding-bottom: 0.5rem; }
+    .class-card { background: var(--surface); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2a2a40; }
+    .class-card h3 { color: #c4b5fd; font-size: 1.15rem; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; background: var(--surface2); color: var(--muted); font-weight: 600; }
+    td { padding: 0.5rem 0.75rem; border-top: 1px solid #2a2a40; }
+    td:first-child { font-family: monospace; color: #a78bfa; }
+    td:nth-child(2) { font-family: monospace; color: #67e8f9; }
+    pre { background: var(--code-bg); border-radius: 6px; padding: 1.25rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; border: 1px solid #2a2a40; }
+    code { font-family: 'Consolas', 'Fira Code', monospace; }
+    .kw { color: #c084fc; } .type { color: #67e8f9; } .str { color: #86efac; } .num { color: #fb923c; } .cmt { color: #4a5568; font-style: italic; } .fn-name { color: #fbbf24; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem; border-top: 1px solid #2a2a40; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">Tinox</span>
+    <span style="color:var(--muted)">Stdlib Dokumentation</span>
+    <nav>
+      <a href="index.html">← Übersicht</a>
+      <a href="decimal.html">← decimal</a>
+      <a href="env.html">Weiter: env →</a>
+    </nav>
+  </header>
+  <div class="container">
+    <h1>encoding</h1>
+    <div class="import-box">import tinox.core.encoding;</div>
+    <p class="description">Text-Encoding-Utilities: Zeichencode-Konvertierung, UTF-8-Byte-Konvertierung und HTML-Entity-Kodierung/-Dekodierung.</p>
+
+    <h2>Klassen</h2>
+
+    <div class="class-card">
+      <h3>Encoding</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>toCharCode</td><td>fnc toCharCode(s: String) -&gt; Int64</td><td>Erstes Zeichen als Unicode-Codepoint</td></tr>
+        <tr><td>fromCharCode</td><td>fnc fromCharCode(code: Int64) -&gt; String</td><td>Codepoint zu Zeichen</td></tr>
+        <tr><td>toUtf8</td><td>fnc toUtf8(s: String) -&gt; List&lt;Int64&gt;</td><td>String in UTF-8 Byte-Array</td></tr>
+        <tr><td>fromUtf8</td><td>fnc fromUtf8(codes: List&lt;Int64&gt;) -&gt; String</td><td>Byte-Array zurück zu String</td></tr>
+        <tr><td>htmlEncode</td><td>fnc htmlEncode(s: String) -&gt; String</td><td>HTML-Entities kodieren (&amp;, &lt;, &gt;, &quot;, &#39;)</td></tr>
+        <tr><td>htmlDecode</td><td>fnc htmlDecode(s: String) -&gt; String</td><td>HTML-Entities dekodieren</td></tr>
+      </table>
+    </div>
+
+    <h2>Beispiel</h2>
+    <pre><code><span class="kw">import</span> tinox.core.encoding;
+
+<span class="kw">fn</span> <span class="fn-name">main</span>() -&gt; <span class="type">Int64</span>
+{
+    <span class="cmt">// HTML-Encoding für sichere Ausgabe</span>
+    <span class="kw">let</span> userInput: <span class="type">String</span> = <span class="str">"&lt;script&gt;alert('XSS')&lt;/script&gt;"</span>;
+    <span class="kw">let</span> safe: <span class="type">String</span> = Encoding::<span class="fn-name">htmlEncode</span>(userInput);
+    println(safe); <span class="cmt">// "&amp;lt;script&amp;gt;alert(&amp;#39;XSS&amp;#39;)..."</span>
+
+    <span class="cmt">// Zeichencode-Konvertierung</span>
+    <span class="kw">let</span> code: <span class="type">Int64</span>  = Encoding::<span class="fn-name">toCharCode</span>(<span class="str">"A"</span>);  <span class="cmt">// 65</span>
+    <span class="kw">let</span> ch:   <span class="type">String</span> = Encoding::<span class="fn-name">fromCharCode</span>(<span class="num">65</span>); <span class="cmt">// "A"</span>
+
+    <span class="cmt">// UTF-8 Bytes</span>
+    <span class="kw">let</span> bytes: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = Encoding::<span class="fn-name">toUtf8</span>(<span class="str">"Hi"</span>); <span class="cmt">// [72, 105]</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+  <footer>Tinox Stdlib Dokumentation · <a href="index.html">Zurück zur Übersicht</a></footer>
+</body>
+</html>

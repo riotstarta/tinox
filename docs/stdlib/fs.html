@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tinox Stdlib — fs</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0f0f13; --surface: #1a1a24; --surface2: #242433; --text: #e2e2f0; --muted: #8888aa; --code-bg: #12121a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+    header { background: var(--surface); border-bottom: 1px solid #2a2a40; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+    nav { margin-left: auto; display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; color: var(--accent); margin-bottom: 0.5rem; }
+    .import-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.9rem; margin: 1rem 0; border-radius: 4px; }
+    .description { color: var(--muted); margin-bottom: 2rem; font-size: 1.05rem; }
+    h2 { font-size: 1.3rem; color: #a78bfa; margin: 2rem 0 1rem; border-bottom: 1px solid #2a2a40; padding-bottom: 0.5rem; }
+    .class-card { background: var(--surface); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2a2a40; }
+    .class-card h3 { color: #c4b5fd; font-size: 1.15rem; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; background: var(--surface2); color: var(--muted); font-weight: 600; }
+    td { padding: 0.5rem 0.75rem; border-top: 1px solid #2a2a40; }
+    td:first-child { font-family: monospace; color: #a78bfa; }
+    td:nth-child(2) { font-family: monospace; color: #67e8f9; }
+    pre { background: var(--code-bg); border-radius: 6px; padding: 1.25rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; border: 1px solid #2a2a40; }
+    code { font-family: 'Consolas', 'Fira Code', monospace; }
+    .kw { color: #c084fc; } .type { color: #67e8f9; } .str { color: #86efac; } .num { color: #fb923c; } .cmt { color: #4a5568; font-style: italic; } .fn-name { color: #fbbf24; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem; border-top: 1px solid #2a2a40; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">Tinox</span>
+    <span style="color:var(--muted)">Stdlib Dokumentation</span>
+    <nav>
+      <a href="index.html">← Übersicht</a>
+      <a href="format.html">← format</a>
+      <a href="graph.html">Weiter: graph →</a>
+    </nav>
+  </header>
+  <div class="container">
+    <h1>fs</h1>
+    <div class="import-box">import tinox.core.fs;</div>
+    <p class="description">Dateisystem-Operationen: Lesen, Schreiben, Kopieren, Verschieben, Löschen von Dateien und Verzeichnissen.</p>
+
+    <h2>Klassen</h2>
+
+    <div class="class-card">
+      <h3>Fs</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>readFile</td><td>fnc readFile(path: String) -&gt; String</td><td>Datei vollständig als String lesen</td></tr>
+        <tr><td>writeFile</td><td>fnc writeFile(path: String, content: String) -&gt; Unit</td><td>String in Datei schreiben (überschreibt)</td></tr>
+        <tr><td>appendFile</td><td>fnc appendFile(path: String, content: String) -&gt; Unit</td><td>Inhalt an bestehende Datei anhängen</td></tr>
+        <tr><td>deleteFile</td><td>fnc deleteFile(path: String) -&gt; Unit</td><td>Datei löschen</td></tr>
+        <tr><td>copyFile</td><td>fnc copyFile(src: String, dest: String) -&gt; Unit</td><td>Datei kopieren</td></tr>
+        <tr><td>moveFile</td><td>fnc moveFile(src: String, dest: String) -&gt; Unit</td><td>Datei verschieben (kopieren + löschen)</td></tr>
+        <tr><td>listDirectory</td><td>fnc listDirectory(path: String) -&gt; List&lt;String&gt;</td><td>Verzeichnisinhalt auflisten</td></tr>
+        <tr><td>createDirectory</td><td>fnc createDirectory(path: String) -&gt; Unit</td><td>Verzeichnis erstellen</td></tr>
+        <tr><td>deleteDirectory</td><td>fnc deleteDirectory(path: String) -&gt; Unit</td><td>Verzeichnis löschen</td></tr>
+      </table>
+    </div>
+
+    <h2>Beispiel</h2>
+    <pre><code><span class="kw">import</span> tinox.core.fs;
+
+<span class="kw">fn</span> <span class="fn-name">main</span>() -&gt; <span class="type">Int64</span>
+{
+    <span class="cmt">// Datei schreiben und lesen</span>
+    Fs::<span class="fn-name">writeFile</span>(<span class="str">"hello.txt"</span>, <span class="str">"Hallo Tinox!"</span>);
+    <span class="kw">let</span> content: <span class="type">String</span> = Fs::<span class="fn-name">readFile</span>(<span class="str">"hello.txt"</span>);
+    println(content); <span class="cmt">// "Hallo Tinox!"</span>
+
+    <span class="cmt">// Anhängen</span>
+    Fs::<span class="fn-name">appendFile</span>(<span class="str">"hello.txt"</span>, <span class="str">"\nZeile 2"</span>);
+
+    <span class="cmt">// Verzeichnis anlegen und auflisten</span>
+    Fs::<span class="fn-name">createDirectory</span>(<span class="str">"output"</span>);
+    <span class="kw">let</span> entries: <span class="type">List</span>&lt;<span class="type">String</span>&gt; = Fs::<span class="fn-name">listDirectory</span>(<span class="str">"."</span>);
+
+    <span class="cmt">// Datei kopieren und löschen</span>
+    Fs::<span class="fn-name">copyFile</span>(<span class="str">"hello.txt"</span>, <span class="str">"output/hello.txt"</span>);
+    Fs::<span class="fn-name">deleteFile</span>(<span class="str">"hello.txt"</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+  <footer>Tinox Stdlib Dokumentation · <a href="index.html">Zurück zur Übersicht</a></footer>
+</body>
+</html>

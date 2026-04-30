@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tinox Stdlib — string</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0f0f13; --surface: #1a1a24; --surface2: #242433; --text: #e2e2f0; --muted: #8888aa; --code-bg: #12121a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+    header { background: var(--surface); border-bottom: 1px solid #2a2a40; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+    nav { margin-left: auto; display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; color: var(--accent); margin-bottom: 0.5rem; }
+    .import-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.9rem; margin: 1rem 0; border-radius: 4px; }
+    .description { color: var(--muted); margin-bottom: 2rem; font-size: 1.05rem; }
+    h2 { font-size: 1.3rem; color: #a78bfa; margin: 2rem 0 1rem; border-bottom: 1px solid #2a2a40; padding-bottom: 0.5rem; }
+    .class-card { background: var(--surface); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2a2a40; }
+    .class-card h3 { color: #c4b5fd; font-size: 1.15rem; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; background: var(--surface2); color: var(--muted); font-weight: 600; }
+    td { padding: 0.5rem 0.75rem; border-top: 1px solid #2a2a40; }
+    td:first-child { font-family: monospace; color: #a78bfa; }
+    td:nth-child(2) { font-family: monospace; color: #67e8f9; }
+    pre { background: var(--code-bg); border-radius: 6px; padding: 1.25rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; border: 1px solid #2a2a40; }
+    code { font-family: 'Consolas', 'Fira Code', monospace; }
+    .kw { color: #c084fc; } .type { color: #67e8f9; } .str { color: #86efac; } .num { color: #fb923c; } .cmt { color: #4a5568; font-style: italic; } .fn-name { color: #fbbf24; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem; border-top: 1px solid #2a2a40; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">Tinox</span>
+    <span style="color:var(--muted)">Stdlib Dokumentation</span>
+    <nav>
+      <a href="index.html">← Übersicht</a>
+      <a href="sort.html">← sort</a>
+      <a href="time.html">Weiter: time →</a>
+    </nav>
+  </header>
+  <div class="container">
+    <h1>string</h1>
+    <div class="import-box">import tinox.core.string;</div>
+    <p class="description">String-Hilfsfunktionen: Inspektion, Transformation, Aufteilen, Zusammenführen und Typkonvertierung.</p>
+
+    <h2>Klassen</h2>
+
+    <div class="class-card">
+      <h3>Strings</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>length</td><td>fnc length(s: String) -&gt; Int64</td><td>Zeichenanzahl</td></tr>
+        <tr><td>isEmpty</td><td>fnc isEmpty(s: String) -&gt; Bool</td><td>Ist String leer?</td></tr>
+        <tr><td>toUpperCase</td><td>fnc toUpperCase(s: String) -&gt; String</td><td>Alle Buchstaben groß</td></tr>
+        <tr><td>toLowerCase</td><td>fnc toLowerCase(s: String) -&gt; String</td><td>Alle Buchstaben klein</td></tr>
+        <tr><td>trim</td><td>fnc trim(s: String) -&gt; String</td><td>Whitespace links und rechts entfernen</td></tr>
+        <tr><td>contains</td><td>fnc contains(haystack: String, needle: String) -&gt; Bool</td><td>Teilstring suchen</td></tr>
+        <tr><td>startsWith</td><td>fnc startsWith(s: String, prefix: String) -&gt; Bool</td><td>Beginnt s mit prefix?</td></tr>
+        <tr><td>endsWith</td><td>fnc endsWith(s: String, suffix: String) -&gt; Bool</td><td>Endet s mit suffix?</td></tr>
+        <tr><td>substring</td><td>fnc substring(s: String, start: Int64, end: Int64) -&gt; String</td><td>Teilstring [start, end)</td></tr>
+        <tr><td>repeat</td><td>fnc repeat(s: String, count: Int64) -&gt; String</td><td>String count-mal wiederholen</td></tr>
+        <tr><td>replace</td><td>fnc replace(s: String, old: String, new: String) -&gt; String</td><td>Alle Vorkommen ersetzen</td></tr>
+        <tr><td>reverse</td><td>fnc reverse(s: String) -&gt; String</td><td>Zeichen umkehren</td></tr>
+        <tr><td>split</td><td>fnc split(s: String, delimiter: String) -&gt; List&lt;String&gt;</td><td>An Trennzeichen aufteilen</td></tr>
+        <tr><td>join</td><td>fnc join(parts: List&lt;String&gt;, separator: String) -&gt; String</td><td>Liste mit Trennzeichen zusammenführen</td></tr>
+        <tr><td>intToString</td><td>fnc intToString(n: Int64) -&gt; String</td><td>Integer zu String konvertieren</td></tr>
+        <tr><td>floatToString</td><td>fnc floatToString(f: Float64) -&gt; String</td><td>Float zu String konvertieren</td></tr>
+      </table>
+    </div>
+
+    <h2>Beispiel</h2>
+    <pre><code><span class="kw">import</span> tinox.core.string;
+
+<span class="kw">fn</span> <span class="fn-name">main</span>() -&gt; <span class="type">Int64</span>
+{
+    <span class="kw">let</span> s: <span class="type">String</span> = <span class="str">"  Hallo Tinox!  "</span>;
+    println(Strings::<span class="fn-name">trim</span>(s));                     <span class="cmt">// "Hallo Tinox!"</span>
+    println(Strings::<span class="fn-name">toUpperCase</span>(<span class="str">"abc"</span>));           <span class="cmt">// "ABC"</span>
+    println(Strings::<span class="fn-name">repeat</span>(<span class="str">"ab"</span>, <span class="num">3</span>));              <span class="cmt">// "ababab"</span>
+    println(Strings::<span class="fn-name">reverse</span>(<span class="str">"Tinox"</span>));             <span class="cmt">// "xoniT"</span>
+
+    <span class="kw">let</span> parts: <span class="type">List</span>&lt;<span class="type">String</span>&gt; = Strings::<span class="fn-name">split</span>(<span class="str">"a,b,c"</span>, <span class="str">","</span>);
+    <span class="kw">let</span> joined: <span class="type">String</span> = Strings::<span class="fn-name">join</span>(parts, <span class="str">" | "</span>);
+    println(joined); <span class="cmt">// "a | b | c"</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+  <footer>Tinox Stdlib Dokumentation · <a href="index.html">Zurück zur Übersicht</a></footer>
+</body>
+</html>

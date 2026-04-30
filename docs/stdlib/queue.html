@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tinox Stdlib — queue</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0f0f13; --surface: #1a1a24; --surface2: #242433; --text: #e2e2f0; --muted: #8888aa; --code-bg: #12121a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+    header { background: var(--surface); border-bottom: 1px solid #2a2a40; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+    nav { margin-left: auto; display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; color: var(--accent); margin-bottom: 0.5rem; }
+    .import-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.9rem; margin: 1rem 0; border-radius: 4px; }
+    .description { color: var(--muted); margin-bottom: 2rem; font-size: 1.05rem; }
+    h2 { font-size: 1.3rem; color: #a78bfa; margin: 2rem 0 1rem; border-bottom: 1px solid #2a2a40; padding-bottom: 0.5rem; }
+    .class-card { background: var(--surface); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2a2a40; }
+    .class-card h3 { color: #c4b5fd; font-size: 1.15rem; margin-top: 0; margin-bottom: 0.75rem; }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; background: var(--surface2); color: var(--muted); font-weight: 600; }
+    td { padding: 0.5rem 0.75rem; border-top: 1px solid #2a2a40; }
+    td:first-child { font-family: monospace; color: #a78bfa; }
+    td:nth-child(2) { font-family: monospace; color: #67e8f9; }
+    pre { background: var(--code-bg); border-radius: 6px; padding: 1.25rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; border: 1px solid #2a2a40; }
+    code { font-family: 'Consolas', 'Fira Code', monospace; }
+    .kw { color: #c084fc; } .type { color: #67e8f9; } .str { color: #86efac; } .num { color: #fb923c; } .cmt { color: #4a5568; font-style: italic; } .fn-name { color: #fbbf24; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem; border-top: 1px solid #2a2a40; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">Tinox</span>
+    <span style="color:var(--muted)">Stdlib Dokumentation</span>
+    <nav>
+      <a href="index.html">← Übersicht</a>
+      <a href="process.html">← process</a>
+      <a href="random.html">Weiter: random →</a>
+    </nav>
+  </header>
+  <div class="container">
+    <h1>queue</h1>
+    <div class="import-box">import tinox.core.queue;</div>
+    <p class="description">Priority Queue mit Insertion-Sort und zirkulärer Buffer-Implementierung.</p>
+
+    <h2>Klassen</h2>
+
+    <div class="class-card">
+      <h3>PriorityQueue&lt;T&gt;</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>new</td><td>fnc new() -&gt; PriorityQueue&lt;T&gt;</td><td>Leere Priority Queue erstellen</td></tr>
+        <tr><td>enqueue</td><td>fnc enqueue(q, item: T, priority: Int64) -&gt; Unit</td><td>Element mit Priorität einreihen (kleiner = höher)</td></tr>
+        <tr><td>dequeue</td><td>fnc dequeue(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Element mit höchster Priorität entfernen</td></tr>
+        <tr><td>peek</td><td>fnc peek(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Nächstes Element ansehen (ohne Entfernen)</td></tr>
+        <tr><td>isEmpty</td><td>fnc isEmpty(q: PriorityQueue&lt;T&gt;) -&gt; Bool</td><td>Queue leer?</td></tr>
+        <tr><td>size</td><td>fnc size(q: PriorityQueue&lt;T&gt;) -&gt; Int64</td><td>Anzahl Elemente</td></tr>
+      </table>
+    </div>
+
+    <div class="class-card">
+      <h3>CircularBuffer&lt;T&gt;</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>new</td><td>fnc new(size: Int64) -&gt; CircularBuffer&lt;T&gt;</td><td>Buffer fixer Größe erstellen</td></tr>
+        <tr><td>push</td><td>fnc push(buf, item: T) -&gt; Bool</td><td>Element hinzufügen (false wenn voll)</td></tr>
+        <tr><td>pop</td><td>fnc pop(buf: CircularBuffer&lt;T&gt;) -&gt; T</td><td>Ältestes Element entfernen</td></tr>
+        <tr><td>isFull</td><td>fnc isFull(buf) -&gt; Bool</td><td>Ist Buffer voll?</td></tr>
+        <tr><td>isEmpty</td><td>fnc isEmpty(buf) -&gt; Bool</td><td>Ist Buffer leer?</td></tr>
+      </table>
+    </div>
+
+    <h2>Beispiel</h2>
+    <pre><code><span class="kw">import</span> tinox.core.queue;
+
+<span class="kw">fn</span> <span class="fn-name">main</span>() -&gt; <span class="type">Int64</span>
+{
+    <span class="kw">let</span> pq: <span class="type">PriorityQueue</span>&lt;<span class="type">String</span>&gt; = PriorityQueue::<span class="fn-name">new</span>();
+    PriorityQueue::<span class="fn-name">enqueue</span>(pq, <span class="str">"Niedrig"</span>, <span class="num">10</span>);
+    PriorityQueue::<span class="fn-name">enqueue</span>(pq, <span class="str">"Kritisch"</span>, <span class="num">1</span>);
+    PriorityQueue::<span class="fn-name">enqueue</span>(pq, <span class="str">"Normal"</span>, <span class="num">5</span>);
+
+    println(PriorityQueue::<span class="fn-name">dequeue</span>(pq)); <span class="cmt">// "Kritisch" (Prio 1)</span>
+    println(PriorityQueue::<span class="fn-name">dequeue</span>(pq)); <span class="cmt">// "Normal"   (Prio 5)</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+  <footer>Tinox Stdlib Dokumentation · <a href="index.html">Zurück zur Übersicht</a></footer>
+</body>
+</html>

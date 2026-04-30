@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tinox Stdlib — rest_framework</title>
+  <style>
+    :root { --accent: #7c3aed; --bg: #0f0f13; --surface: #1a1a24; --surface2: #242433; --text: #e2e2f0; --muted: #8888aa; --code-bg: #12121a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+    header { background: var(--surface); border-bottom: 1px solid #2a2a40; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    .logo { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+    nav { margin-left: auto; display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2rem; color: var(--accent); margin-bottom: 0.5rem; }
+    .import-box { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.9rem; margin: 1rem 0; border-radius: 4px; }
+    .description { color: var(--muted); margin-bottom: 2rem; font-size: 1.05rem; }
+    h2 { font-size: 1.3rem; color: #a78bfa; margin: 2rem 0 1rem; border-bottom: 1px solid #2a2a40; padding-bottom: 0.5rem; }
+    .class-card { background: var(--surface); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid #2a2a40; }
+    .class-card h3 { color: #c4b5fd; font-size: 1.15rem; margin-top: 0; margin-bottom: 0.75rem; }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; background: var(--surface2); color: var(--muted); font-weight: 600; }
+    td { padding: 0.5rem 0.75rem; border-top: 1px solid #2a2a40; }
+    td:first-child { font-family: monospace; color: #a78bfa; }
+    td:nth-child(2) { font-family: monospace; color: #67e8f9; }
+    pre { background: var(--code-bg); border-radius: 6px; padding: 1.25rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5; border: 1px solid #2a2a40; }
+    code { font-family: 'Consolas', 'Fira Code', monospace; }
+    .kw { color: #c084fc; } .type { color: #67e8f9; } .str { color: #86efac; } .num { color: #fb923c; } .cmt { color: #4a5568; font-style: italic; } .fn-name { color: #fbbf24; } .ann { color: #f472b6; }
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 2rem; border-top: 1px solid #2a2a40; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">Tinox</span>
+    <span style="color:var(--muted)">Stdlib Dokumentation</span>
+    <nav>
+      <a href="index.html">← Übersicht</a>
+      <a href="rest.html">← rest</a>
+      <a href="result.html">Weiter: result →</a>
+    </nav>
+  </header>
+  <div class="container">
+    <h1>rest_framework</h1>
+    <div class="import-box">import tinox.core.rest_framework;</div>
+    <p class="description">Annotations-basiertes REST-Framework für deklaratives API-Routing mit @GET, @POST, @PUT, @PATCH, @DELETE, @Path, @Produces, @Consumes, @StatusCode und @Auth. Inkl. Dependency-Injection-Annotationen und Middleware-Support.</p>
+
+    <h2>Annotationen</h2>
+
+    <div class="class-card">
+      <h3>Routing-Annotationen</h3>
+      <table>
+        <tr><th>Annotation</th><th>Parameter</th><th>Beschreibung</th></tr>
+        <tr><td>@GET(path)</td><td>path: String</td><td>Methode als GET-Endpunkt registrieren</td></tr>
+        <tr><td>@POST(path)</td><td>path: String</td><td>Methode als POST-Endpunkt registrieren</td></tr>
+        <tr><td>@PUT(path)</td><td>path: String</td><td>Methode als PUT-Endpunkt registrieren</td></tr>
+        <tr><td>@PATCH(path)</td><td>path: String</td><td>Methode als PATCH-Endpunkt registrieren</td></tr>
+        <tr><td>@DELETE(path)</td><td>path: String</td><td>Methode als DELETE-Endpunkt registrieren</td></tr>
+        <tr><td>@Path(value)</td><td>value: String</td><td>Basis-Pfad für Controller-Klasse setzen</td></tr>
+        <tr><td>@Produces(value)</td><td>value: String</td><td>Antwort-Content-Type setzen</td></tr>
+        <tr><td>@Consumes(value)</td><td>value: String</td><td>Erwarteten Request-Content-Type angeben</td></tr>
+        <tr><td>@StatusCode(value)</td><td>value: Int64</td><td>Standard-HTTP-Statuscode der Antwort</td></tr>
+        <tr><td>@Auth(value)</td><td>value: String</td><td>Auth-Typ verlangen ("bearer" / "basic")</td></tr>
+      </table>
+    </div>
+
+    <div class="class-card">
+      <h3>DI-Annotationen</h3>
+      <table>
+        <tr><th>Annotation</th><th>Beschreibung</th></tr>
+        <tr><td>@ApplicationComponent</td><td>Lazy Singleton — einmalig pro Anwendungslebensdauer</td></tr>
+        <tr><td>@Startup</td><td>Eager Singleton — direkt beim Start erstellt</td></tr>
+        <tr><td>@HttpRequestScoped</td><td>Eine Instanz pro HTTP-Request</td></tr>
+        <tr><td>@Inject</td><td>Feld für compile-time Dependency Injection markieren</td></tr>
+      </table>
+    </div>
+
+    <h2>Klassen</h2>
+
+    <div class="class-card">
+      <h3>RestController</h3>
+      <table>
+        <tr><th>Methode / Feld</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>routes</td><td>List&lt;RouteEntry&gt;</td><td>Registrierte Routen dieses Controllers</td></tr>
+        <tr><td>basePath</td><td>String</td><td>Basis-Pfad für alle Routen</td></tr>
+        <tr><td>new</td><td>fnc new() -&gt; RestController</td><td>Neuen Controller erstellen</td></tr>
+        <tr><td>route</td><td>fn route(method: String, path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RouteEntry</td><td>Route manuell registrieren</td></tr>
+      </table>
+    </div>
+
+    <div class="class-card">
+      <h3>RestApi</h3>
+      <table>
+        <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>new</td><td>fnc new(port: Int64) -&gt; RestApi</td><td>REST-API auf Port erstellen</td></tr>
+        <tr><td>register</td><td>fn register(controller: RestController) -&gt; RestApi</td><td>Controller registrieren</td></tr>
+        <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>GET-Route direkt registrieren</td></tr>
+        <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>POST-Route direkt registrieren</td></tr>
+        <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>PUT-Route direkt registrieren</td></tr>
+        <tr><td>patch</td><td>fn patch(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>PATCH-Route direkt registrieren</td></tr>
+        <tr><td>delete</td><td>fn delete(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>DELETE-Route direkt registrieren</td></tr>
+        <tr><td>use</td><td>fn use(mware: fnc(HttpContext) -&gt; Bool) -&gt; RestApi</td><td>Globale Middleware hinzufügen</td></tr>
+        <tr><td>enableCors</td><td>fn enableCors(origin: String) -&gt; RestApi</td><td>CORS für alle Antworten aktivieren</td></tr>
+        <tr><td>defaultJson</td><td>fn defaultJson() -&gt; RestApi</td><td>Standard Content-Type JSON setzen</td></tr>
+        <tr><td>start</td><td>fn start() -&gt; Unit</td><td>Server starten (blockierend)</td></tr>
+        <tr><td>stop</td><td>fn stop() -&gt; Unit</td><td>Server stoppen</td></tr>
+      </table>
+    </div>
+
+    <div class="class-card">
+      <h3>RouteEntry</h3>
+      <table>
+        <tr><th>Feld / Methode</th><th>Typ / Signatur</th><th>Beschreibung</th></tr>
+        <tr><td>method</td><td>String</td><td>HTTP-Methode (GET, POST, ...)</td></tr>
+        <tr><td>path</td><td>String</td><td>URL-Pfad-Muster</td></tr>
+        <tr><td>statusCode</td><td>Int64</td><td>Standard-Statuscode</td></tr>
+        <tr><td>produces</td><td>String</td><td>Antwort-Content-Type</td></tr>
+        <tr><td>consumes</td><td>String</td><td>Erwarteter Request-Content-Type</td></tr>
+        <tr><td>authType</td><td>String</td><td>Auth-Typ ("bearer", "basic", "")</td></tr>
+        <tr><td>withStatus</td><td>fnc withStatus(code: Int64) -&gt; RouteEntry</td><td>Statuscode setzen</td></tr>
+        <tr><td>withProduces</td><td>fnc withProduces(contentType: String) -&gt; RouteEntry</td><td>Produces setzen</td></tr>
+        <tr><td>withConsumes</td><td>fnc withConsumes(contentType: String) -&gt; RouteEntry</td><td>Consumes setzen</td></tr>
+        <tr><td>withAuth</td><td>fnc withAuth(authType: String) -&gt; RouteEntry</td><td>Auth-Typ setzen</td></tr>
+      </table>
+    </div>
+
+    <h2>Beispiel</h2>
+    <pre><code><span class="kw">import</span> tinox.core.rest_framework;
+
+<span class="ann">@Path</span>(<span class="str">"/api/users"</span>)
+<span class="kw">class</span> <span class="type">UserController</span> : <span class="type">RestController</span>
+{
+    <span class="ann">@GET</span>(<span class="str">"/"</span>)
+    <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
+    <span class="kw">fnc</span> <span class="fn-name">list</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    {
+        ctx.response.<span class="fn-name">json</span>(<span class="str">"[{\"id\":1,\"name\":\"Alice\"}]"</span>);
+    }
+
+    <span class="ann">@GET</span>(<span class="str">"/:id"</span>)
+    <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
+    <span class="kw">fnc</span> <span class="fn-name">getOne</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    {
+        <span class="kw">let</span> id: <span class="type">String</span> = ctx.request.<span class="fn-name">getParam</span>(<span class="str">"id"</span>);
+        ctx.response.<span class="fn-name">json</span>(<span class="str">"{\"id\":"</span> + id + <span class="str">"}"</span>);
+    }
+
+    <span class="ann">@POST</span>(<span class="str">"/"</span>)
+    <span class="ann">@Consumes</span>(<span class="str">"application/json"</span>)
+    <span class="ann">@StatusCode</span>(<span class="num">201</span>)
+    <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
+    <span class="kw">fnc</span> <span class="fn-name">create</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    {
+        <span class="kw">let</span> data: <span class="type">JsonValue</span> = ctx.request.<span class="fn-name">json</span>();
+        ctx.response.<span class="fn-name">status</span>(<span class="num">201</span>).<span class="fn-name">json</span>(<span class="str">"{\"created\":true}"</span>);
+    }
+
+    <span class="ann">@DELETE</span>(<span class="str">"/:id"</span>)
+    <span class="ann">@Auth</span>(<span class="str">"bearer"</span>)
+    <span class="kw">fnc</span> <span class="fn-name">remove</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    {
+        ctx.response.<span class="fn-name">status</span>(<span class="num">204</span>).<span class="fn-name">text</span>(<span class="str">""</span>);
+    }
+}
+
+<span class="kw">fn</span> <span class="fn-name">main</span>() -&gt; <span class="type">Int64</span>
+{
+    <span class="kw">let</span> app: <span class="type">RestApi</span> = RestApi::<span class="fn-name">new</span>(<span class="num">8080</span>);
+    app.<span class="fn-name">enableCors</span>(<span class="str">"*"</span>)
+       .<span class="fn-name">defaultJson</span>()
+       .<span class="fn-name">register</span>(<span class="kw">new</span> <span class="type">UserController</span>());
+
+    <span class="cmt">// Direkte Route ohne Controller</span>
+    app.<span class="fn-name">get</span>(<span class="str">"/ping"</span>, ctx =&gt; {
+        ctx.response.<span class="fn-name">text</span>(<span class="str">"pong"</span>);
+    });
+
+    app.<span class="fn-name">start</span>(); <span class="cmt">// Blockierend</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+  <footer>Tinox Stdlib Dokumentation · <a href="index.html">Zurück zur Übersicht</a></footer>
+</body>
+</html>
