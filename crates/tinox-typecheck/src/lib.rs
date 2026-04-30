@@ -1525,6 +1525,14 @@ impl TypeChecker {
 
                 let obj_ty = self.infer_type(obj);
                 let class_name = obj_ty.to_string();
+
+                // Check if method is a Fn-type field (callable field) on the class
+                let field_key = format!("{}.{}", class_name, method);
+                if let Some((ValueType::Fn, _)) = self.symbols.variables.get(&field_key) {
+                    for arg in args { self.infer_type(arg); }
+                    return ValueType::Any;
+                }
+
                 let method_name = format!("{}_{}", class_name, method);
 
                 if let Some(vis) = self.method_visibility.get(&method_name).cloned() {

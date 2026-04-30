@@ -95,6 +95,8 @@ pub struct CodeGen {
     struct_field_class_types: HashMap<String, HashMap<String, String>>,
     /// class_name -> field_name -> llvm_type (for FieldAccess type recovery)
     struct_field_llvm_types: HashMap<String, HashMap<String, String>>,
+    /// class_name -> field_name -> (ret_llvm_ty, param_llvm_tys) for Type::Fn fields
+    fn_field_sigs: HashMap<String, HashMap<String, (String, Vec<String>)>>,
 }
 
 impl CodeGen {
@@ -129,6 +131,7 @@ impl CodeGen {
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
             struct_field_llvm_types: HashMap::new(),
+            fn_field_sigs: HashMap::new(),
         }
     }
 
@@ -199,6 +202,27 @@ impl CodeGen {
         for f in &c.fields {
             if let Some(class_name) = Self::extract_class_type_name(&f.field_type) {
                 result.insert(f.name.clone(), class_name);
+            }
+        }
+        result
+    }
+
+    /// Collect field_name -> (ret_llvm_ty, param_llvm_tys) for all Type::Fn fields (including inherited).
+    fn collect_fn_field_sigs(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> HashMap<String, (String, Vec<String>)> {
+        let Some(c) = class_map.get(name) else { return HashMap::new(); };
+        let mut result = if let Some(parent) = &c.extends {
+            Self::collect_fn_field_sigs(parent, class_map)
+        } else {
+            HashMap::new()
+        };
+        for f in &c.fields {
+            if let tinox_parser::Type::Fn { params, ret } = &f.field_type {
+                let ret_ty = Self::type_to_llvm(ret);
+                let param_tys: Vec<String> = params.iter().map(|p| Self::type_to_llvm(p)).collect();
+                result.insert(f.name.clone(), (ret_ty, param_tys));
             }
         }
         result
@@ -426,6 +450,16 @@ impl CodeGen {
                 .map(|f| (f.name.clone(), Self::type_to_llvm(&f.param_type)))
                 .collect();
             self.struct_field_llvm_types.insert(u.name.clone(), fllt);
+            let fn_sigs: HashMap<String, (String, Vec<String>)> = u.fields.iter()
+                .filter_map(|f| {
+                    if let tinox_parser::Type::Fn { params, ret } = &f.param_type {
+                        let r = Self::type_to_llvm(ret);
+                        let ps: Vec<String> = params.iter().map(|p| Self::type_to_llvm(p)).collect();
+                        Some((f.name.clone(), (r, ps)))
+                    } else { None }
+                })
+                .collect();
+            self.fn_field_sigs.insert(u.name.clone(), fn_sigs);
             self.method_ret_types.insert(format!("{}_new", u.name), "i64*".to_string());
         }
 
@@ -461,6 +495,8 @@ impl CodeGen {
                 self.struct_field_class_types.insert(c.name.clone(), fct);
                 let fllt = Self::collect_field_llvm_types(&c.name, &class_ast_map);
                 self.struct_field_llvm_types.insert(c.name.clone(), fllt);
+                let fn_sigs = Self::collect_fn_field_sigs(&c.name, &class_ast_map);
+                self.fn_field_sigs.insert(c.name.clone(), fn_sigs);
 
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
@@ -3019,6 +3055,45 @@ impl CodeGen {
                     )
                     .unwrap();
                     Ok((result, ret_ty))
+                } else if let Some(fn_sig) = declared_type.as_deref()
+                    .and_then(|dt| self.fn_field_sigs.get(dt))
+                    .and_then(|m| m.get(method.as_str()))
+                    .cloned()
+                {
+                    // Fn-type field call: load i64, inttoptr to function pointer, call
+                    let struct_name = declared_type.as_deref().unwrap();
+                    let field_offset = self.struct_layouts.get(struct_name)
+                        .and_then(|fields| fields.iter().position(|f| f == method))
+                        .unwrap_or(0) as i64;
+                    let obj_struct_ptr = if obj_ty == "i64" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_ptr).unwrap();
+                        cast
+                    } else {
+                        obj_ptr.clone()
+                    };
+                    let field_gep = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_gep, obj_struct_ptr, field_offset).unwrap();
+                    let fp_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", fp_i64, field_gep).unwrap();
+                    let (ret_ty, param_tys) = fn_sig;
+                    let fn_ptr_ty = format!("{} ({})*", ret_ty, param_tys.join(", "));
+                    let fp = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", fp, fp_i64, fn_ptr_ty).unwrap();
+                    let mut call_args_str = String::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { call_args_str.push_str(", "); }
+                        let (v, t) = self.gen_expr(arg, ctx)?;
+                        call_args_str.push_str(&format!("{} {}", t, v));
+                    }
+                    let result = self.temp();
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void {}({})", fp, call_args_str).unwrap();
+                        Ok((result, "void".to_string()))
+                    } else {
+                        writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, fp, call_args_str).unwrap();
+                        Ok((result, ret_ty))
+                    }
                 } else {
                     // Direct (static) dispatch — resolve through inheritance chain.
                     let logical_name = if let Some(class) = declared_type {
