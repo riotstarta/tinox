@@ -521,8 +521,9 @@ impl TypeChecker {
         symbols.functions.insert("String_indexOf".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("String_startsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         symbols.functions.insert("String_endsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
-        for name in &["String_toUpper", "String_toLower", "String_trim", "String_toLowerCase", "String_toUpperCase"] {
-            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
+        for name in &["String_toUpper", "String_toLower", "String_trim", "String_toLowerCase", "String_toUpperCase",
+                       "Any_toUpper", "Any_toLower", "Any_trim", "Any_toLowerCase", "Any_toUpperCase"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::Any)], return_type: ValueType::String });
         }
         symbols.functions.insert("String_substring".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)],
@@ -548,6 +549,8 @@ impl TypeChecker {
             params: vec![("arr".to_string(), ValueType::Array), ("sep".to_string(), ValueType::String)],
             return_type: ValueType::String,
         });
+        // Map constructor
+        symbols.functions.insert("Map_new".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Map });
         // Map builtins (method-call style: Map_get, Map_insert, etc.)
         symbols.functions.insert(
             "Map_get".to_string(),
@@ -1860,9 +1863,20 @@ impl TypeChecker {
             }
             ExprKind::EnumValue {
                 enum_name,
-                variant: _,
+                variant,
                 args,
             } => {
+                // Check if this is actually a static method call: ClassName::method(args)
+                let static_key = format!("{}_{}", enum_name, variant);
+                if let Some(sig) = self.symbols.functions.get(&static_key).cloned() {
+                    let is_static = sig.params.first()
+                        .map(|(n, _)| n != "self")
+                        .unwrap_or(true);
+                    if is_static {
+                        for arg in args { self.infer_type(arg); }
+                        return sig.return_type.clone();
+                    }
+                }
                 // Type check all arguments
                 for arg in args {
                     self.infer_type(arg);
