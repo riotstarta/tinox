@@ -44,3 +44,14 @@ test_out
 work.sh
 *.err
 simple_out
+benchmarks/*.class
+benchmarks/*.bc
+benchmarks/bench_fib
+benchmarks/bench_fib_new
+benchmarks/bench_fib_opt
+benchmarks/bench_primes
+benchmarks/bench_primes_new
+benchmarks/bench_primes_opt
+benchmarks/bench_sum
+benchmarks/bench_sum_new
+benchmarks/bench_sum_opt
