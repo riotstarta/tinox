@@ -166,12 +166,12 @@ fn hover_decl(decl: &Decl, offset: u32) -> Option<String> {
             }
             None
         }
-        DeclKind::Unmodifiable(u) => {
+        DeclKind::Immutable(u) => {
             if offset < u.span.start.offset + u.name.len() as u32 + 20 {
                 let fields: Vec<String> = u.fields.iter()
                     .map(|f| format!("{}: {}", f.name, type_str(&f.param_type)))
                     .collect();
-                return Some(format!("unmodifiable {}({})", u.name, fields.join(", ")));
+                return Some(format!("immutable {}({})", u.name, fields.join(", ")));
             }
             for f in &u.fields {
                 if span_contains(f.span, offset) {
@@ -465,14 +465,14 @@ pub fn completions(source: &SourceFile) -> Vec<CompletionItem> {
                     ..Default::default()
                 });
             }
-            DeclKind::Unmodifiable(u) => {
+            DeclKind::Immutable(u) => {
                 let fields: Vec<String> = u.fields.iter()
                     .map(|f| format!("{}: {}", f.name, type_str(&f.param_type)))
                     .collect();
                 items.push(CompletionItem {
                     label: u.name.clone(),
                     kind: Some(CompletionItemKind::STRUCT),
-                    detail: Some(format!("unmodifiable {}({})", u.name, fields.join(", "))),
+                    detail: Some(format!("immutable {}({})", u.name, fields.join(", "))),
                     ..Default::default()
                 });
             }
@@ -536,7 +536,7 @@ pub fn definition_at(source: &SourceFile, uri: &Url, offset: u32) -> Option<Loca
             DeclKind::Class(c) => (c.name.as_str(), c.span),
             DeclKind::Enum(e) => (e.name.as_str(), e.span),
             DeclKind::Interface(i) => (i.name.as_str(), i.span),
-            DeclKind::Unmodifiable(u) => (u.name.as_str(), u.span),
+            DeclKind::Immutable(u) => (u.name.as_str(), u.span),
             _ => continue,
         };
         if name == target {
@@ -748,7 +748,7 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
                 deprecated: None,
             })
         }
-        DeclKind::Unmodifiable(u) => {
+        DeclKind::Immutable(u) => {
             let fields: Vec<String> = u.fields.iter()
                 .map(|f| format!("{}: {}", f.name, type_str(&f.param_type)))
                 .collect();
@@ -766,7 +766,7 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             }).collect();
             Some(DocumentSymbol {
                 name: u.name.clone(),
-                detail: Some(format!("unmodifiable {}({})", u.name, fields.join(", "))),
+                detail: Some(format!("immutable {}({})", u.name, fields.join(", "))),
                 kind: SymbolKind::STRUCT,
                 range: span_to_range(u.span),
                 selection_range: span_to_range(u.span),

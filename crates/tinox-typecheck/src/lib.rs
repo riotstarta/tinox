@@ -792,7 +792,7 @@ impl TypeChecker {
                         .collect();
                     self.interfaces.insert(t.name.clone(), methods);
                 }
-                DeclKind::Unmodifiable(u) => {
+                DeclKind::Immutable(u) => {
                     for field in &u.fields {
                         let ty = Self::type_to_value(&field.param_type);
                         let key = format!("{}.{}", u.name, field.name);
@@ -842,7 +842,7 @@ impl TypeChecker {
                                 self.method_visibility.insert(key, method.visibility.clone());
                             }
                         }
-                        DeclKind::Unmodifiable(u) => {
+                        DeclKind::Immutable(u) => {
                             for field in &u.fields {
                                 let ty = Self::type_to_value(&field.param_type);
                                 let key = format!("{}.{}", u.name, field.name);

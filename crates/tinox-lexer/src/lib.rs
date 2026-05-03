@@ -227,7 +227,7 @@ pub enum Keyword {
     Never,
     Any,
     DotSelf,
-    Unmodifiable,
+    Immutable,
 }
 
 impl Keyword {
@@ -304,7 +304,7 @@ impl Keyword {
             "Never" => Some(Keyword::Never),
             "Any" => Some(Keyword::Any),
             ".self" => Some(Keyword::DotSelf),
-            "unmodifiable" => Some(Keyword::Unmodifiable),
+            "immutable" => Some(Keyword::Immutable),
             _ => None,
         }
     }

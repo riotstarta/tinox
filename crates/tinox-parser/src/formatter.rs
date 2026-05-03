@@ -67,11 +67,11 @@ impl Formatter {
             DeclKind::Import(i) => self.fmt_import(i),
             DeclKind::Module(name) => format!("module {};", name),
             DeclKind::Namespace(ns) => self.fmt_namespace(ns),
-            DeclKind::Unmodifiable(u) => {
+            DeclKind::Immutable(u) => {
                 let fields: Vec<String> = u.fields.iter()
                     .map(|f| format!("{}: {}", f.name, self.fmt_type(&f.param_type)))
                     .collect();
-                format!("{}unmodifiable {}({})", self.fmt_doc(&u.doc), u.name, fields.join(", "))
+                format!("{}immutable {}({})", self.fmt_doc(&u.doc), u.name, fields.join(", "))
             }
         }
     }

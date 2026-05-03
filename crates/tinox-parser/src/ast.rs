@@ -463,7 +463,7 @@ pub struct Annotation {
 }
 
 #[derive(Debug, Clone)]
-pub struct UnmodifiableDecl {
+pub struct ImmutableDecl {
     pub name: Ident,
     pub fields: Vec<Param>,
     pub span: Span,
@@ -481,7 +481,7 @@ pub enum DeclKind {
     Import(Import),
     Module(Ident),
     Namespace(Namespace),
-    Unmodifiable(UnmodifiableDecl),
+    Immutable(ImmutableDecl),
 }
 
 pub type Decl = Spanned<DeclKind>;

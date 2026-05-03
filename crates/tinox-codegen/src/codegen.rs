@@ -420,14 +420,14 @@ impl CodeGen {
             v
         }).collect();
 
-        // Register unmodifiable struct layouts and new() return types (top-level + namespace-scoped)
-        let all_unmodifiables: Vec<tinox_parser::UnmodifiableDecl> = source.decls.iter().flat_map(|d| {
+        // Register immutable struct layouts and new() return types (top-level + namespace-scoped)
+        let all_immutables: Vec<tinox_parser::ImmutableDecl> = source.decls.iter().flat_map(|d| {
             let mut v = Vec::new();
             match &d.node {
-                DeclKind::Unmodifiable(u) => v.push(u.clone()),
+                DeclKind::Immutable(u) => v.push(u.clone()),
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
-                        if let DeclKind::Unmodifiable(u) = &inner.node { v.push(u.clone()); }
+                        if let DeclKind::Immutable(u) = &inner.node { v.push(u.clone()); }
                     }
                 }
                 _ => {}
@@ -435,7 +435,7 @@ impl CodeGen {
             v
         }).collect();
 
-        for u in &all_unmodifiables {
+        for u in &all_immutables {
             self.defined_classes.insert(u.name.clone());
             let fields: Vec<String> = u.fields.iter().map(|f| f.name.clone()).collect();
             self.struct_layouts.insert(u.name.clone(), fields);
@@ -581,8 +581,8 @@ impl CodeGen {
                         self.gen_class_method(&c.name, method)?;
                     }
                 }
-                DeclKind::Unmodifiable(u) => {
-                    self.emit_unmodifiable_new(u);
+                DeclKind::Immutable(u) => {
+                    self.emit_immutable_new(u);
                 }
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
@@ -594,8 +594,8 @@ impl CodeGen {
                                     }
                                 }
                             }
-                            DeclKind::Unmodifiable(u) => {
-                                self.emit_unmodifiable_new(u);
+                            DeclKind::Immutable(u) => {
+                                self.emit_immutable_new(u);
                             }
                             _ => {}
                         }
@@ -1202,8 +1202,8 @@ impl CodeGen {
     }
 
     /// Emit the auto-generated `ClassName_new(field1, field2, ...) -> i64*` function
-    /// for an `unmodifiable` declaration.
-    fn emit_unmodifiable_new(&mut self, u: &tinox_parser::UnmodifiableDecl) {
+    /// for an `immutable` declaration.
+    fn emit_immutable_new(&mut self, u: &tinox_parser::ImmutableDecl) {
         let class_name = &u.name;
         let n_fields = u.fields.len();
         let size = n_fields * 8;

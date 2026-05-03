@@ -117,11 +117,11 @@ impl Parser {
             DeclKind::Namespace(ns)
         } else if self.check_keyword(Keyword::Extern) {
             self.parse_extern_fn()?
-        } else if self.check_keyword(Keyword::Unmodifiable) {
-            let mut u = self.parse_unmodifiable()?;
+        } else if self.check_keyword(Keyword::Immutable) {
+            let mut u = self.parse_immutable()?;
             u.doc = doc;
             u.annotations = annotations;
-            DeclKind::Unmodifiable(u)
+            DeclKind::Immutable(u)
         } else {
             return Err(self.error("expected declaration"));
         };
@@ -129,9 +129,9 @@ impl Parser {
         Ok(Spanned::new(decl, start))
     }
 
-    fn parse_unmodifiable(&mut self) -> Result<UnmodifiableDecl, Error> {
+    fn parse_immutable(&mut self) -> Result<ImmutableDecl, Error> {
         let span = self.mk_span();
-        self.expect_keyword(Keyword::Unmodifiable)?;
+        self.expect_keyword(Keyword::Immutable)?;
         let name = self.parse_ident()?;
         self.expect(TokenKind::LParen)?;
         let mut fields = Vec::new();
@@ -143,7 +143,7 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
         self.consume(TokenKind::Semicolon);
-        Ok(UnmodifiableDecl { name, fields, span, doc: None, annotations: vec![] })
+        Ok(ImmutableDecl { name, fields, span, doc: None, annotations: vec![] })
     }
 
     fn parse_extern_fn(&mut self) -> Result<DeclKind, Error> {
@@ -562,11 +562,11 @@ impl Parser {
                 let mut t = self.parse_trait()?;
                 t.doc = doc;
                 DeclKind::Trait(t)
-            } else if self.check_keyword(Keyword::Unmodifiable) {
-                let u = self.parse_unmodifiable()?;
-                DeclKind::Unmodifiable(u)
+            } else if self.check_keyword(Keyword::Immutable) {
+                let u = self.parse_immutable()?;
+                DeclKind::Immutable(u)
             } else {
-                let e = self.error("expected 'class', 'interface', 'enum', 'trait', or 'unmodifiable' inside namespace");
+                let e = self.error("expected 'class', 'interface', 'enum', 'trait', or 'immutable' inside namespace");
                 self.errors.push(e);
                 self.synchronize();
                 continue;
