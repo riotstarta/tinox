@@ -432,6 +432,35 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
 fn compile_ll_to_exe(ir_path: &str, output_name: &str) -> Result<(), String> {
     let obj_path = format!("{}.o", output_name);
 
+    // Try opt -O3 first (full mid-level + backend optimizations via mem2reg, vectorize, etc.)
+    // Fall back to direct llc if opt is not available.
+    let opt_available = Command::new("opt")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let llc_input: String;
+    let bc_path_opt: Option<String>;
+
+    if opt_available {
+        let bc_path = format!("{}.opt.bc", output_name);
+        let opt_status = Command::new("opt")
+            .args(&["-O3", "-o", &bc_path, ir_path])
+            .status()
+            .map_err(|e| format!("opt failed: {}", e))?;
+        if !opt_status.success() {
+            return Err("opt failed".to_string());
+        }
+        llc_input = bc_path.clone();
+        bc_path_opt = Some(bc_path);
+    } else {
+        llc_input = ir_path.to_string();
+        bc_path_opt = None;
+    }
+
     let llc_status = Command::new("llc")
         .args(&[
             "-O3",
@@ -439,13 +468,17 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str) -> Result<(), String> {
             "-filetype=obj",
             "-o",
             &obj_path,
-            ir_path,
+            &llc_input,
         ])
         .status()
         .map_err(|e| format!("llc failed: {}", e))?;
 
     if !llc_status.success() {
         return Err("llc failed".to_string());
+    }
+
+    if let Some(bc_path) = bc_path_opt {
+        let _ = fs::remove_file(&bc_path);
     }
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

@@ -634,6 +634,7 @@ pub fn document_symbols(source: &SourceFile) -> Vec<tower_lsp::lsp_types::Docume
     source.decls.iter().filter_map(decl_to_symbol).collect()
 }
 
+#[allow(deprecated)]
 fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
     use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
     match &decl.node {
@@ -677,8 +678,8 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
                         selection_range: span_to_range(m.span),
                         children: None,
                         tags: None,
-                        deprecated: None,
-                    }
+                deprecated: None,
+                            }
                 })
                 .collect();
             Some(DocumentSymbol {
@@ -715,8 +716,8 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
                         selection_range: span_to_range(v.span),
                         children: None,
                         tags: None,
-                        deprecated: None,
-                    }
+                deprecated: None,
+                            }
                 })
                 .collect();
             Some(DocumentSymbol {
@@ -760,8 +761,8 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
                     selection_range: span_to_range(f.span),
                     children: None,
                     tags: None,
-                    deprecated: None,
-                }
+                deprecated: None,
+                    }
             }).collect();
             Some(DocumentSymbol {
                 name: u.name.clone(),

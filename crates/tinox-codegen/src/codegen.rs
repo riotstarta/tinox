@@ -4723,11 +4723,30 @@ impl CodeGen {
             .map_err(|e| Error::new(Span::dummy(), format!("Failed to write IR: {}", e)))
     }
 
+    fn run_opt(&self, ir_path: &Path) -> Result<std::path::PathBuf, Error> {
+        let bc_path = ir_path.with_extension("opt.bc");
+        let output = std::process::Command::new("opt")
+            .args(["-O3", "-o"])
+            .arg(&bc_path)
+            .arg(ir_path)
+            .output()
+            .map_err(|e| Error::new(Span::dummy(), format!("opt failed: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(Error::new(
+                Span::dummy(),
+                format!("opt failed: {}", String::from_utf8_lossy(&output.stderr)),
+            ));
+        }
+        Ok(bc_path)
+    }
+
     pub fn write_asm(&self, ir_path: &Path, asm_path: &Path) -> Result<(), Error> {
+        let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
             .args(["-O3", "-march=x86-64", "-filetype=asm", "-o"])
             .arg(asm_path)
-            .arg(ir_path)
+            .arg(&bc_path)
             .output()
             .map_err(|e| Error::new(Span::dummy(), format!("llc failed: {}", e)))?;
 
@@ -4741,10 +4760,11 @@ impl CodeGen {
     }
 
     pub fn write_obj(&self, ir_path: &Path, obj_path: &Path) -> Result<(), Error> {
+        let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
             .args(["-O3", "-march=x86-64", "-filetype=obj", "-o"])
             .arg(obj_path)
-            .arg(ir_path)
+            .arg(&bc_path)
             .output()
             .map_err(|e| Error::new(Span::dummy(), format!("llc failed: {}", e)))?;
 
