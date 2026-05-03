@@ -1978,8 +1978,12 @@ impl CodeGen {
                         0
                     };
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
-                    // Pointer values must be stored as i64 (ptrtoint)
-                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" && !val_ty.is_empty() {
+                    // Uniform i64 field storage: floats → bitcast, pointers → ptrtoint
+                    let store_val = if val_ty == "double" || val_ty == "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
                         let cast = self.temp();
                         writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
                         cast
@@ -3120,12 +3124,11 @@ impl CodeGen {
                         .unwrap_or_else(|| "i64".to_string());
 
                     let result = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = call {} @{}({})",
-                        result, ret_ty, full_method_name, full_args_str
-                    )
-                    .unwrap();
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void @{}({})", full_method_name, full_args_str).unwrap();
+                    } else {
+                        writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, full_method_name, full_args_str).unwrap();
+                    }
                     Ok((result, ret_ty))
                 }
             }
@@ -3251,9 +3254,12 @@ impl CodeGen {
                 let loaded = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, field_ptr).unwrap();
 
-                // Cast back to the actual field type if it was stored via ptrtoint
-                // Pointer types (i8*, i64*, etc.) were stored with ptrtoint — restore them
-                if field_llvm_ty != "i64" && field_llvm_ty.ends_with('*') {
+                // Restore the value from its uniform i64 storage representation
+                if field_llvm_ty == "double" || field_llvm_ty == "float" {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", cast, loaded, field_llvm_ty).unwrap();
+                    Ok((cast, field_llvm_ty))
+                } else if field_llvm_ty != "i64" && field_llvm_ty.ends_with('*') {
                     let cast = self.temp();
                     writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", cast, loaded, field_llvm_ty).unwrap();
                     Ok((cast, field_llvm_ty))
@@ -3311,8 +3317,12 @@ impl CodeGen {
                         field_ptr, typed_ptr, field_idx
                     )
                     .unwrap();
-                    // Pointer values must be ptrtoint'd to i64 for uniform i64 field storage
-                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" && !val_ty.is_empty() {
+                    // Uniform i64 field storage: pointers → ptrtoint, floats → bitcast, i64/i1 → direct
+                    let store_val = if val_ty == "double" || val_ty == "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
                         let cast = self.temp();
                         writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
                         cast
@@ -4108,6 +4118,43 @@ impl CodeGen {
             }
             ExprKind::CompoundAssign { op, target, value } => {
                 self.gen_compound_assign(op, target, value, ctx)
+            }
+            ExprKind::Assign { target, value } => {
+                let (val, val_ty) = self.gen_expr(value, ctx)?;
+                if let ExprKind::FieldAccess { obj, field } = &target.node {
+                    let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
+                    let obj_ptr = if obj_ty == "i64" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
+                        cast
+                    } else {
+                        obj_raw
+                    };
+                    let struct_name = self.infer_struct_type(obj, ctx)
+                        .or_else(|| if matches!(&obj.node, ExprKind::This) { ctx.current_struct.clone() } else { None });
+                    let offset = struct_name.as_deref()
+                        .and_then(|sn| self.struct_layouts.get(sn))
+                        .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
+                        .unwrap_or(0) as i64;
+                    let store_val = if val_ty == "double" || val_ty == "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else {
+                        val.clone()
+                    };
+                    let field_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+                } else if let ExprKind::Ident(name) = &target.node {
+                    let store_ty = ctx.locals.get(name).map(|(t, _)| t.clone()).unwrap_or_else(|| val_ty.clone());
+                    writeln!(&mut self.ir, "store {} {}, {}* %{}", val_ty, val, store_ty, name).unwrap();
+                }
+                Ok((val, val_ty))
             }
             _ => {
                 let mut bag = ErrorBag::new();
