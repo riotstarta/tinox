@@ -1440,6 +1440,9 @@ impl CodeGen {
                             struct_name = Some(ann.clone());
                             llvm_ty = "i64*".to_string();
                         }
+                    } else if let Some(Type::Map(_, _)) = ty {
+                        struct_name = Some("Map".to_string());
+                        llvm_ty = "i8*".to_string();
                     }
                 }
 
@@ -1563,6 +1566,9 @@ impl CodeGen {
                             struct_name = Some(ann.clone());
                             llvm_ty = "i64*".to_string();
                         }
+                    } else if let Some(Type::Map(_, _)) = ty {
+                        struct_name = Some("Map".to_string());
+                        llvm_ty = "i8*".to_string();
                     }
                 }
 

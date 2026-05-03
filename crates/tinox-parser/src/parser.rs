@@ -219,7 +219,13 @@ impl Parser {
             Type::Unit
         };
 
-        let body = self.parse_block()?;
+        let body = if self.consume(TokenKind::Semicolon) {
+            // Abstract method declaration (e.g. in interfaces): `fn foo() -> T;`
+            let s = self.mk_span();
+            Spanned::new(StmtKind::Block(vec![]), s)
+        } else {
+            self.parse_block()?
+        };
 
         Ok(Function {
             name,
