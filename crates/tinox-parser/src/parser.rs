@@ -56,12 +56,6 @@ impl Parser {
         let decl = if self.consume_keyword(Keyword::Async) {
             if self.check_keyword(Keyword::Fn) {
                 let mut f = self.parse_fn()?;
-                if f.name != "main" && f.type_params.is_empty() {
-                    return Err(Error::new(f.span, format!(
-                        "standalone function '{}' is not allowed; use 'fnc' inside a class within a namespace",
-                        f.name
-                    )));
-                }
                 f.is_async = true;
                 f.doc = doc;
                 f.annotations = annotations;
@@ -71,12 +65,6 @@ impl Parser {
             }
         } else if self.check_keyword(Keyword::Fn) {
             let mut f = self.parse_fn()?;
-            if f.name != "main" && f.type_params.is_empty() {
-                return Err(Error::new(f.span, format!(
-                    "standalone function '{}' is not allowed; use 'fnc' inside a class within a namespace",
-                    f.name
-                )));
-            }
             f.doc = doc;
             f.annotations = annotations;
             DeclKind::Function(f)
@@ -402,6 +390,8 @@ impl Parser {
             Visibility::Private
         } else if self.consume_keyword(Keyword::Protected) {
             Visibility::Protected
+        } else if self.consume_keyword(Keyword::Package) {
+            Visibility::Package
         } else {
             Visibility::Package
         }
@@ -484,8 +474,20 @@ impl Parser {
         let mut args = Vec::new();
         if self.consume(TokenKind::LParen) {
             if !self.check(TokenKind::RParen) {
+                // Support optional `name: Type` named fields (names are ignored)
+                if matches!(self.peek().kind, TokenKind::Ident(_))
+                    && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Colon))
+                {
+                    self.bump(); self.bump(); // consume name + colon
+                }
                 args.push(self.parse_type()?);
                 while self.consume(TokenKind::Comma) {
+                    if self.check(TokenKind::RParen) { break; }
+                    if matches!(self.peek().kind, TokenKind::Ident(_))
+                        && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Colon))
+                    {
+                        self.bump(); self.bump();
+                    }
                     args.push(self.parse_type()?);
                 }
             }
@@ -1463,7 +1465,43 @@ impl Parser {
                     continue;
                 }
                 let name = self.parse_method_name()?;
-                if self.check(TokenKind::LParen) {
+                let span = expr.span;
+                // `TypeName.Variant` → treat as enum variant (heuristic: obj is uppercase ident)
+                let is_type_access = matches!(&expr.node, ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase()));
+                if is_type_access {
+                    let enum_name = match &expr.node { ExprKind::Ident(n) => n.clone(), _ => unreachable!() };
+                    let mut args = vec![];
+                    if self.check(TokenKind::LParen) {
+                        self.bump();
+                        if !self.check(TokenKind::RParen) {
+                            // Skip optional `name:` named arg syntax
+                            if matches!(self.peek().kind, TokenKind::Ident(_))
+                                && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Colon))
+                            {
+                                self.bump(); self.bump();
+                            }
+                            args.push(self.parse_expr()?);
+                            while self.consume(TokenKind::Comma) {
+                                if self.check(TokenKind::RParen) { break; }
+                                if matches!(self.peek().kind, TokenKind::Ident(_))
+                                    && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Colon))
+                                {
+                                    self.bump(); self.bump();
+                                }
+                                args.push(self.parse_expr()?);
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                    }
+                    expr = Spanned::new(
+                        ExprKind::EnumValue {
+                            enum_name,
+                            variant: name,
+                            args,
+                        },
+                        span,
+                    );
+                } else if self.check(TokenKind::LParen) {
                     self.bump();
                     let mut args = Vec::new();
                     if !self.check(TokenKind::RParen) {
@@ -1473,7 +1511,6 @@ impl Parser {
                         }
                     }
                     self.expect(TokenKind::RParen)?;
-                    let span = expr.span;
                     expr = Spanned::new(
                         ExprKind::MethodCall {
                             obj: Box::new(expr),
@@ -1483,39 +1520,13 @@ impl Parser {
                         span,
                     );
                 } else {
-                    let span = expr.span;
-                    // `TypeName.Variant` → treat as enum variant (heuristic: obj is uppercase ident)
-                    let is_type_access = matches!(&expr.node, ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase()));
-                    if is_type_access {
-                        let enum_name = match &expr.node { ExprKind::Ident(n) => n.clone(), _ => unreachable!() };
-                        let mut args = vec![];
-                        if self.check(TokenKind::LParen) {
-                            self.bump();
-                            if !self.check(TokenKind::RParen) {
-                                args.push(self.parse_expr()?);
-                                while self.consume(TokenKind::Comma) {
-                                    args.push(self.parse_expr()?);
-                                }
-                            }
-                            self.expect(TokenKind::RParen)?;
-                        }
-                        expr = Spanned::new(
-                            ExprKind::EnumValue {
-                                enum_name,
-                                variant: name,
-                                args,
-                            },
-                            span,
-                        );
-                    } else {
-                        expr = Spanned::new(
-                            ExprKind::FieldAccess {
-                                obj: Box::new(expr),
-                                field: name,
-                            },
-                            span,
-                        );
-                    }
+                    expr = Spanned::new(
+                        ExprKind::FieldAccess {
+                            obj: Box::new(expr),
+                            field: name,
+                        },
+                        span,
+                    );
                 }
             } else if self.check(TokenKind::ColonColon) {
                 // Handle enum value construction: Color::Red or Option::Some(value)
@@ -1590,6 +1601,11 @@ impl Parser {
                     },
                     span,
                 );
+            } else if self.check_keyword(Keyword::As) {
+                self.bump();
+                let span = expr.span;
+                let ty = self.parse_type()?;
+                expr = Spanned::new(ExprKind::Cast { expr: Box::new(expr), ty }, span);
             } else {
                 break;
             }

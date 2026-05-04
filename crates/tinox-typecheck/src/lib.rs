@@ -3,8 +3,8 @@ pub mod annotations;
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, SourceFile, Stmt, StmtKind,
-    Type, UnaryOp, Visibility,
+    BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, Pattern, SourceFile, Stmt,
+    StmtKind, Type, UnaryOp, Visibility,
 };
 
 #[derive(Debug, Clone)]
@@ -533,6 +533,17 @@ impl TypeChecker {
             params: vec![("s".to_string(), ValueType::String), ("from".to_string(), ValueType::String), ("to".to_string(), ValueType::String)],
             return_type: ValueType::String,
         });
+        // Float64 math methods
+        for name in &["Float64_sqrt", "Float64_abs", "Float64_floor", "Float64_ceil", "Float64_round",
+                       "Int64_toFloat", "Float64_toInt", "Float64_toString"] {
+            let ret = if name.ends_with("toString") { ValueType::String }
+                      else if name.ends_with("toInt") { ValueType::Int }
+                      else { ValueType::Float };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("self".to_string(), ValueType::Float)],
+                return_type: ret,
+            });
+        }
         symbols.functions.insert("split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
             return_type: ValueType::Array,
@@ -1360,7 +1371,7 @@ impl TypeChecker {
                 // The loop variable is always the element, not the container
                 let elem_ty = match iter_ty {
                     ValueType::Range => ValueType::Int,
-                    ValueType::Array => ValueType::Int,
+                    ValueType::Array => ValueType::Any,
                     ValueType::String => ValueType::String,
                     other => other,
                 };
@@ -1527,6 +1538,11 @@ impl TypeChecker {
                 }
 
                 let obj_ty = self.infer_type(obj);
+                // Any-typed receiver: dynamic dispatch, no type errors
+                if obj_ty == ValueType::Any {
+                    for arg in args { self.infer_type(arg); }
+                    return ValueType::Any;
+                }
                 let class_name = obj_ty.to_string();
 
                 // Check if method is a Fn-type field (callable field) on the class
@@ -1740,7 +1756,10 @@ impl TypeChecker {
                 self.infer_type(expr);
                 let mut result_types = Vec::new();
                 for case in cases {
+                    let saved = self.symbols.enter_scope();
+                    self.bind_pattern_vars(&case.pattern);
                     let case_ty = self.infer_type(&case.body);
+                    self.symbols.exit_scope(saved);
                     result_types.push(case_ty);
                 }
                 if result_types.is_empty() {
@@ -1961,6 +1980,22 @@ impl TypeChecker {
             self.infer_type(arg);
         }
         ValueType::Any
+    }
+
+    fn bind_pattern_vars(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Ident(name, inner, _) => {
+                self.symbols.variables.insert(name.clone(), (ValueType::Any, false));
+                if let Some(inner) = inner { self.bind_pattern_vars(inner); }
+            }
+            Pattern::EnumVariant { args, .. } => {
+                for arg in args { self.bind_pattern_vars(arg); }
+            }
+            Pattern::Tuple(pats, _) => {
+                for p in pats { self.bind_pattern_vars(p); }
+            }
+            Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
+        }
     }
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
