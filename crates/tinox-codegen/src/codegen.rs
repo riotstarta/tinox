@@ -2012,8 +2012,14 @@ impl CodeGen {
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr)
                         .unwrap();
                 } else if let ExprKind::Index { obj, index } = &target.node {
-                    let (idx_val, _) = self.gen_expr(index, ctx)?;
-                    let (base_ptr, _) = if let ExprKind::Ident(name) = &obj.node {
+                    // Detect Map type for map[key] = val → tinox_map_set
+                    let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
+                        ctx.local_types.get(n.as_str()).cloned()
+                    } else { None };
+                    let is_map = obj_declared_type.as_deref() == Some("Map");
+
+                    let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
+                    let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
                         if ctx.params.contains(name) {
                             self.gen_expr(obj, ctx)?
                         } else if ctx.locals.contains_key(name) {
@@ -2032,15 +2038,36 @@ impl CodeGen {
                     } else {
                         self.gen_expr(obj, ctx)?
                     };
-                    let (val, _val_ty) = self.gen_expr(value, ctx)?;
-                    let ptr_name = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = getelementptr i64, ptr {}, i64 {}",
-                        ptr_name, base_ptr, idx_val
-                    )
-                    .unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", val, ptr_name).unwrap();
+                    let (val, val_ty) = self.gen_expr(value, ctx)?;
+
+                    if is_map {
+                        // Map: tinox_map_set(i8* map, i8* key, i64 val)
+                        let map_i8 = if base_ty == "i8*" { base_ptr.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
+                            c
+                        };
+                        let key_i8 = if idx_ty == "i8*" { idx_val.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
+                            c
+                        };
+                        let store_val = if val_ty == "i8*" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", c, val).unwrap();
+                            c
+                        } else { val };
+                        writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_i8, key_i8, store_val).unwrap();
+                    } else {
+                        let ptr_name = self.temp();
+                        writeln!(
+                            &mut self.ir,
+                            "{} = getelementptr i64, ptr {}, i64 {}",
+                            ptr_name, base_ptr, idx_val
+                        )
+                        .unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", val, ptr_name).unwrap();
+                    }
                 }
             }
             _ => {}
@@ -2728,6 +2755,11 @@ impl CodeGen {
                             } else { val };
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, obj_ptr, store_val).unwrap();
+                            // Write the new pointer back to the variable (push may realloc)
+                            if let ExprKind::Ident(var_name) = &obj.node {
+                                let slot = ctx.local_slots.get(var_name.as_str()).cloned().unwrap_or_else(|| var_name.clone());
+                                writeln!(&mut self.ir, "store i64* {}, i64** %{}", result, slot).unwrap();
+                            }
                             return Ok((result, "i64*".to_string()));
                         }
                         "pop" => {
@@ -3148,12 +3180,12 @@ impl CodeGen {
                 }
             }
             ExprKind::Index { obj, index } => {
-                let (idx_val, _) = self.gen_expr(index, ctx)?;
                 let arr_name = if let ExprKind::Ident(n) = &obj.node { Some(n.clone()) } else { None };
-                let is_str_arr = arr_name.as_ref()
-                    .and_then(|n| ctx.local_types.get(n))
-                    .map(|t| t == "Array:String")
-                    .unwrap_or(false);
+                let declared_elem_type = arr_name.as_ref().and_then(|n| ctx.local_types.get(n)).cloned();
+                let is_str_arr = declared_elem_type.as_deref() == Some("Array:String");
+                let is_map = declared_elem_type.as_deref() == Some("Map");
+
+                let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
                 let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
                     if ctx.params.contains(name) {
                         self.gen_expr(obj, ctx)?
@@ -3168,7 +3200,23 @@ impl CodeGen {
                 } else {
                     self.gen_expr(obj, ctx)?
                 };
-                if base_ty == "i8*" {
+
+                if is_map {
+                    // Map[key] → tinox_map_get(i8* map, i8* key) -> i64
+                    let map_i8 = if base_ty == "i8*" { base_ptr.clone() } else {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
+                        c
+                    };
+                    let key_i8 = if idx_ty == "i8*" { idx_val.clone() } else {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
+                        c
+                    };
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_i8, key_i8).unwrap();
+                    Ok((result, "i64".to_string()))
+                } else if base_ty == "i8*" {
                     // String indexing → return byte as i64
                     let ptr_name = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i8, ptr {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
@@ -3387,10 +3435,31 @@ impl CodeGen {
                 Ok((typed_ptr, "i64*".to_string()))
             }
             ExprKind::EnumValue {
-                enum_name: _,
+                enum_name,
                 variant,
                 args,
             } => {
+                // Special built-in constructors
+                if enum_name == "Map" && variant == "new" {
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call i8* @tinox_map_create()", result).unwrap();
+                    return Ok((result, "i8*".to_string()));
+                }
+
+                // If this is actually a static method call (ClassName::method(args)), dispatch to it
+                let static_key = format!("{}_{}", enum_name, variant);
+                if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
+                    let mut args_str = String::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { args_str.push_str(", "); }
+                        let (v, t) = self.gen_expr(arg, ctx)?;
+                        args_str.push_str(&format!("{} {}", t, v));
+                    }
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, static_key, args_str).unwrap();
+                    return Ok((result, ret_ty));
+                }
+
                 // For simplicity, we represent enum values as:
                 // - For variants without args: just a discriminator integer
                 // - For variants with args: allocate memory with discriminator + args
