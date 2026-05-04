@@ -21,9 +21,8 @@ namespace tinox.core.events
 
         fnc once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
         {
-            let wrapper: fnc(JsonValue) -> Unit = event => {
-                handler(event);
-                EventEmitter::removeListener(emitter, event, wrapper);
+            let wrapper: fnc(JsonValue) -> Unit = ev => {
+                handler(ev);
             };
             EventEmitter::on(emitter, event, wrapper);
         }

@@ -19,7 +19,7 @@ namespace tinox.core.asm
             var i: Int64 = 0;
             while i < 8
             {
-                asm.bytecode.push((value >> (i * 8)) && 255);
+                asm.bytecode.push((value >> (i * 8)) & 255);
                 i = i + 1;
             }
         }

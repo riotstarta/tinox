@@ -85,7 +85,7 @@ namespace tinox.core.rest
         fn get(path: String) -> RestResponse
         {
             let url: String = Url::build(this.baseUrl, path);
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -110,7 +110,7 @@ namespace tinox.core.rest
         fn getWithParams(path: String, params: Map<String, String>) -> RestResponse
         {
             let url: String = Url::buildWithParams(this.baseUrl, path, params);
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -136,7 +136,7 @@ namespace tinox.core.rest
         {
             let url: String = Url::build(this.baseUrl, path);
             Http::setHeader("Content-Type", "application/json");
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -162,7 +162,7 @@ namespace tinox.core.rest
         {
             let url: String = Url::build(this.baseUrl, path);
             Http::setHeader("Content-Type", "application/json");
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -188,7 +188,7 @@ namespace tinox.core.rest
         {
             let url: String = Url::build(this.baseUrl, path);
             Http::setHeader("Content-Type", "application/json");
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -212,7 +212,7 @@ namespace tinox.core.rest
         fn delete(path: String) -> RestResponse
         {
             let url: String = Url::build(this.baseUrl, path);
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < this.headers.len()
             {
                 let header: String = this.headers[i];
@@ -411,10 +411,10 @@ namespace tinox.core.rest
             {
                 return url;
             }
-            let result: String = url + "?";
-            let first: Bool = true;
+            var result: String = url + "?";
+            var first: Bool = true;
             let keys: List<String> = params.keys();
-            let i: Int64 = 0;
+            var i: Int64 = 0;
             while i < keys.len()
             {
                 if first == false
@@ -444,7 +444,7 @@ namespace tinox.core.rest
             while i < s.len()
             {
                 let ch: String = s.substring(i, i + 1);
-                let code: Int64 = ch.charAt(0);
+                let code: Int64 = ch.charCodeAt(0);
                 if Url::isUnreserved(ch)
                 {
                     result = result + ch;
@@ -468,7 +468,7 @@ namespace tinox.core.rest
          */
         fnc isUnreserved(ch: String) -> Bool
         {
-            let code: Int64 = ch.charAt(0);
+            let code: Int64 = ch.charCodeAt(0);
             if code >= 65 && code <= 90
             {
                 return true;
@@ -711,7 +711,7 @@ namespace tinox.core.rest
          */
         fn buildUrl(path: String) -> String
         {
-            let url: String = Url::build(this.baseUrl, path);
+            var url: String = Url::build(this.baseUrl, path);
             if this.queryParams.len() > 0
             {
                 url = url + "?";
@@ -797,29 +797,29 @@ namespace tinox.core.rest
         {
             match code
             {
-                100 => return Continue;
-                101 => return SwitchingProtocols;
-                200 => return Ok;
-                201 => return Created;
-                202 => return Accepted;
-                204 => return NoContent;
-                301 => return MovedPermanently;
-                302 => return Found;
-                304 => return NotModified;
-                400 => return BadRequest;
-                401 => return Unauthorized;
-                403 => return Forbidden;
-                404 => return NotFound;
-                405 => return MethodNotAllowed;
-                409 => return Conflict;
-                422 => return UnprocessableEntity;
-                429 => return TooManyRequests;
-                500 => return InternalServerError;
-                502 => return BadGateway;
-                503 => return ServiceUnavailable;
-                504 => return GatewayTimeout;
+                100 => return HttpStatus::Continue;
+                101 => return HttpStatus::SwitchingProtocols;
+                200 => return HttpStatus::Ok;
+                201 => return HttpStatus::Created;
+                202 => return HttpStatus::Accepted;
+                204 => return HttpStatus::NoContent;
+                301 => return HttpStatus::MovedPermanently;
+                302 => return HttpStatus::Found;
+                304 => return HttpStatus::NotModified;
+                400 => return HttpStatus::BadRequest;
+                401 => return HttpStatus::Unauthorized;
+                403 => return HttpStatus::Forbidden;
+                404 => return HttpStatus::NotFound;
+                405 => return HttpStatus::MethodNotAllowed;
+                409 => return HttpStatus::Conflict;
+                422 => return HttpStatus::UnprocessableEntity;
+                429 => return HttpStatus::TooManyRequests;
+                500 => return HttpStatus::InternalServerError;
+                502 => return HttpStatus::BadGateway;
+                503 => return HttpStatus::ServiceUnavailable;
+                504 => return HttpStatus::GatewayTimeout;
             }
-            return NotFound;
+            return HttpStatus::NotFound;
         }
 
         /**

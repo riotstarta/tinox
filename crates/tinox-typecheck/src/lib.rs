@@ -240,7 +240,6 @@ impl ValueType {
             Type::Named(name) => ValueType::Named(name.clone()),
             Type::Generic { name, .. } if name == "Array" => ValueType::Array,
             Type::Generic { name, .. } if name == "List" => ValueType::Array,
-            Type::Generic { name, .. } if name == "Set" => ValueType::Array,
             Type::Generic { name, .. } if name == "Map" => ValueType::Map,
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
             Type::Array(_) => ValueType::Array,
@@ -522,7 +521,7 @@ impl TypeChecker {
         symbols.functions.insert("String_startsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         symbols.functions.insert("String_endsWith".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         for name in &["String_toUpper", "String_toLower", "String_trim", "String_toLowerCase", "String_toUpperCase",
-                       "Any_toUpper", "Any_toLower", "Any_trim", "Any_toLowerCase", "Any_toUpperCase"] {
+                       "String_reverse", "Any_toUpper", "Any_toLower", "Any_trim", "Any_toLowerCase", "Any_toUpperCase"] {
             symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::Any)], return_type: ValueType::String });
         }
         symbols.functions.insert("String_substring".to_string(), FunctionSignature {
@@ -662,6 +661,203 @@ impl TypeChecker {
             params: vec![("f".to_string(), file_ty)],
             return_type: ValueType::Bool,
         });
+        // String additional methods
+        symbols.functions.insert("String_charCodeAt".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("i".to_string(), ValueType::Int)],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("String_lastIndexOf".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("String_repeat".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("n".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("String_padLeft".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("n".to_string(), ValueType::Int), ("c".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("String_padRight".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("n".to_string(), ValueType::Int), ("c".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        // Standalone char/string helpers
+        for name in &["fromCharCode", "charCodeAt"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("n".to_string(), ValueType::Any)],
+                return_type: ValueType::String,
+            });
+        }
+        // Array removeAt
+        symbols.functions.insert("Array_removeAt".to_string(), FunctionSignature {
+            params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
+            return_type: ValueType::Unit,
+        });
+        symbols.functions.insert("List_removeAt".to_string(), FunctionSignature {
+            params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
+            return_type: ValueType::Unit,
+        });
+        // Time
+        symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("Time_now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("Time_format".to_string(), FunctionSignature { params: vec![("t".to_string(), ValueType::Int), ("fmt".to_string(), ValueType::String)], return_type: ValueType::String });
+        symbols.functions.insert("Time_parse".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("Time_diff".to_string(), FunctionSignature { params: vec![("a".to_string(), ValueType::Int), ("b".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("sleep".to_string(), FunctionSignature {
+            params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Unit,
+        });
+        symbols.functions.insert("Time_toString".to_string(), FunctionSignature {
+            params: vec![("t".to_string(), ValueType::Any)], return_type: ValueType::String,
+        });
+        // Regex
+        for name in &["regexIsMatch", "regexFindFirst", "regexFindAll", "regexReplaceAll", "regexSplit"] {
+            let ret = if *name == "regexIsMatch" { ValueType::Bool }
+                      else if *name == "regexFindAll" || *name == "regexSplit" { ValueType::Array }
+                      else { ValueType::String };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)],
+                return_type: ret,
+            });
+        }
+        // Env
+        for name in &["envGet", "envSet", "envRemove", "envCurrentDir", "envSetCurrentDir"] {
+            let ret = if *name == "envGet" || *name == "envCurrentDir" { ValueType::String } else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("k".to_string(), ValueType::String)],
+                return_type: ret,
+            });
+        }
+        // Process
+        for name in &["processExit", "processId", "processArgs", "printStackTrace", "gcCollect", "memoryUsage"] {
+            let ret = if *name == "processArgs" { ValueType::Array }
+                      else if *name == "processId" || *name == "memoryUsage" { ValueType::Int }
+                      else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![], return_type: ret,
+            });
+        }
+        // Random
+        symbols.functions.insert("randomInt".to_string(), FunctionSignature {
+            params: vec![("min".to_string(), ValueType::Int), ("max".to_string(), ValueType::Int)],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("randomFloat".to_string(), FunctionSignature {
+            params: vec![], return_type: ValueType::Float,
+        });
+        // Crypto / hashing
+        for name in &["sha256Hash", "md5Hash", "hmacSha256Hash", "aesEncrypt", "aesDecrypt", "base64Encode", "base64Decode", "base64EncodeChar"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("data".to_string(), ValueType::String)],
+                return_type: ValueType::String,
+            });
+        }
+        // UUID
+        symbols.functions.insert("uuidGenerate".to_string(), FunctionSignature { params: vec![], return_type: ValueType::String });
+        // URI
+        for name in &["uriEncode", "uriDecode", "uriEncodeComponent", "uriDecodeComponent"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String,
+            });
+        }
+        // Math C functions
+        for name in &["sinf", "cosf", "tanf", "logf", "log10f", "sqrtf", "expf", "powf", "fabsf", "floorf", "ceilf"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Float,
+            });
+        }
+        // File I/O extended
+        for name in &["fileReadAllText", "fileWriteAllText", "fileDelete", "fileClose"] {
+            let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ret,
+            });
+        }
+        for name in &["dirList", "dirCreate", "dirDelete"] {
+            let ret = if *name == "dirList" { ValueType::Array } else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ret,
+            });
+        }
+        // Socket builtins
+        for name in &["socketCreateTcp", "socketCreateUdp"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        }
+        for name in &["socketConnect", "socketBind", "socketListen"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("fd".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)],
+                return_type: ValueType::Bool,
+            });
+        }
+        symbols.functions.insert("socketAccept".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("socketSend".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("socketReceive".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("size".to_string(), ValueType::Int)], return_type: ValueType::String });
+        symbols.functions.insert("socketClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
+        // HTTP client builtins
+        for name in &["httpGet", "httpPost", "httpPut", "httpDelete", "httpPatch"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("url".to_string(), ValueType::String)],
+                return_type: ValueType::Named("HttpResponse".to_string()),
+            });
+        }
+        for name in &["httpSetHeader", "httpClearHeaders", "httpHeader", "httpBody", "httpStatusCode"] {
+            let ret = if name.ends_with("Header") || name.ends_with("Body") { ValueType::String }
+                      else if name.ends_with("Code") { ValueType::Int }
+                      else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("v".to_string(), ValueType::Any)], return_type: ret,
+            });
+        }
+        for name in &["HttpResponse_statusCode"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string()))],
+                return_type: ValueType::Int,
+            });
+        }
+        symbols.functions.insert("HttpResponse_body".to_string(), FunctionSignature {
+            params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string()))],
+            return_type: ValueType::String,
+        });
+        // HttpServer method builtins
+        let hs = ValueType::Named("HttpServer".to_string());
+        for name in &["HttpServer_get", "HttpServer_post", "HttpServer_put", "HttpServer_delete", "HttpServer_patch", "HttpServer_use"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("srv".to_string(), hs.clone()), ("path".to_string(), ValueType::String), ("handler".to_string(), ValueType::Fn)],
+                return_type: ValueType::Unit,
+            });
+        }
+        symbols.functions.insert("HttpServer_listen".to_string(), FunctionSignature {
+            params: vec![("srv".to_string(), hs.clone())], return_type: ValueType::Unit,
+        });
+        symbols.functions.insert("HttpServer_stop".to_string(), FunctionSignature {
+            params: vec![("srv".to_string(), hs)], return_type: ValueType::Unit,
+        });
+        // Heap_comparator (function-typed field)
+        symbols.functions.insert("Heap_comparator".to_string(), FunctionSignature {
+            params: vec![("h".to_string(), ValueType::Any), ("a".to_string(), ValueType::Any), ("b".to_string(), ValueType::Any)],
+            return_type: ValueType::Bool,
+        });
+        // Pool_factory
+        symbols.functions.insert("Pool_factory".to_string(), FunctionSignature {
+            params: vec![("p".to_string(), ValueType::Any)],
+            return_type: ValueType::Any,
+        });
+        // XML
+        for name in &["xmlAttr", "xmlTagName", "xmlTextContent"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("node".to_string(), ValueType::Any)], return_type: ValueType::String,
+            });
+        }
+        symbols.functions.insert("xmlChildren".to_string(), FunctionSignature {
+            params: vec![("node".to_string(), ValueType::Any)], return_type: ValueType::Array,
+        });
+        // Zip
+        for name in &["zipAddFile", "zipExtractFile", "zipListEntries", "zipRemoveFile"] {
+            let ret = if *name == "zipListEntries" { ValueType::Array } else { ValueType::Unit };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ret,
+            });
+        }
         Self {
             errors: Vec::new(),
             symbols,
@@ -870,6 +1066,15 @@ impl TypeChecker {
                             let key = format!("{}_new", u.name);
                             self.symbols.functions.insert(key.clone(), sig);
                             self.method_visibility.insert(key, Visibility::Public);
+                        }
+                        DeclKind::Function(f) => {
+                            let sig = FunctionSignature {
+                                params: f.params.iter()
+                                    .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &f.type_params)))
+                                    .collect(),
+                                return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
+                            };
+                            self.symbols.functions.insert(f.name.clone(), sig);
                         }
                         _ => {}
                         }
@@ -1141,9 +1346,10 @@ impl TypeChecker {
                 (self.resolve_type(&param.param_type), false),
             );
         }
+        let is_extern = matches!(f.body.node, StmtKind::Empty);
         let has_return = self.check_stmt(&f.body);
         let expected = self.resolve_type(&f.ret_type);
-        if expected != ValueType::Unit && expected != ValueType::Never && !has_return {
+        if !is_extern && expected != ValueType::Unit && expected != ValueType::Never && !has_return {
             self.errors
                 .push(Error::new(f.span, "missing return statement"));
         }
@@ -1331,7 +1537,7 @@ impl TypeChecker {
                 else_branch,
             } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -1351,7 +1557,7 @@ impl TypeChecker {
             }
             StmtKind::While { cond, body } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -1414,7 +1620,7 @@ impl TypeChecker {
                     self.errors
                         .push(TypeError::ThrowTypeMismatch(ty_str, expr.span).to_error());
                 }
-                false
+                true // throw always terminates
             }
             StmtKind::Try {
                 body,
@@ -1476,7 +1682,7 @@ impl TypeChecker {
                 }
                 if let Some(cond_expr) = cond {
                     let ty = self.infer_type(cond_expr);
-                    if ty != ValueType::Bool {
+                    if ty != ValueType::Bool && !matches!(ty, ValueType::Any | ValueType::Named(_)) {
                         self.errors.push(
                             TypeError::TypeMismatch {
                                 expected: "Bool".to_string(),
@@ -1525,9 +1731,16 @@ impl TypeChecker {
             }
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
             ExprKind::MethodCall { obj, method, args } => {
-                // Static method call: ClassName.fnc(args) — obj is a class name, not an instance
+                // Static method call: ClassName.method(args) — obj is a class/type name, not an instance
                 if let ExprKind::Ident(class_name) = &obj.node {
                     let method_key = format!("{}_{}", class_name, method);
+                    // Check if it's a known function (static or instance) AND obj is not a variable
+                    let obj_is_variable = self.symbols.variables.contains_key(class_name.as_str());
+                    if !obj_is_variable && self.symbols.functions.contains_key(&method_key) {
+                        let func_expr = Spanned::new(ExprKind::Ident(method_key), expr.span);
+                        return self.check_call(&func_expr, args, expr.span);
+                    }
+                    // Also handle Time_now, etc. even if obj is not registered as variable
                     let is_static = self.symbols.functions.get(&method_key)
                         .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
                         .unwrap_or(false);
@@ -1569,6 +1782,7 @@ impl TypeChecker {
                 let valid_index = match &obj_ty {
                     ValueType::Map => matches!(index_ty, ValueType::String | ValueType::Any),
                     ValueType::String => true,
+                    ValueType::Any => true,
                     _ => matches!(index_ty, ValueType::Int | ValueType::Any),
                 };
                 if !valid_index {
@@ -1587,9 +1801,15 @@ impl TypeChecker {
                     if let Some((ty, _)) = self.symbols.variables.get(&full_name) {
                         return ty.clone();
                     }
-                    self.errors
-                        .push(TypeError::FieldNotFound(name, field.clone(), expr.span).to_error());
-                } else {
+                    // Only report error if the class has at least one registered field
+                    // (generic classes using struct-literal fields won't have registered fields)
+                    let has_any_field = self.symbols.variables.keys()
+                        .any(|k| k.starts_with(&format!("{}.", name)));
+                    if has_any_field {
+                        self.errors
+                            .push(TypeError::FieldNotFound(name, field.clone(), expr.span).to_error());
+                    }
+                } else if obj_ty != ValueType::Any {
                     self.errors.push(
                         TypeError::InvalidFieldAccess(obj_ty.to_string(), expr.span).to_error(),
                     );
@@ -1709,7 +1929,7 @@ impl TypeChecker {
                 else_branch,
             } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -1729,7 +1949,7 @@ impl TypeChecker {
             }
             ExprKind::While { cond, body } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -1900,6 +2120,10 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_type(arg);
                 }
+                // If it has args and is not a known enum, treat as static method returning Any
+                if !args.is_empty() && !self.enums.contains_key(enum_name.as_str()) {
+                    return ValueType::Any;
+                }
                 // Return the enum type
                 ValueType::Named(enum_name.clone())
             }
@@ -1924,8 +2148,28 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function
             if let Some(sig) = self.symbols.functions.get(name).cloned() {
-                let is_variadic_print = matches!(name.as_str(), "print" | "println" | "open");
-                if !is_variadic_print && sig.params.len() != args.len() {
+                // Skip arg-count check for variadic builtins and all native runtime functions
+                let is_variadic = matches!(name.as_str(), "print" | "println" | "open")
+                    || name.starts_with("http") || name.starts_with("Http")
+                    || name.starts_with("socket") || name.starts_with("Socket")
+                    || name.starts_with("env") || name.starts_with("Env")
+                    || name.starts_with("regex") || name.starts_with("Regex")
+                    || name.starts_with("zip") || name.starts_with("xml")
+                    || name.starts_with("uri") || name.starts_with("uuid")
+                    || name.starts_with("random") || name.starts_with("process")
+                    || name.starts_with("dir") || name.starts_with("file")
+                    || name.starts_with("Pool_") || name.starts_with("Heap_")
+                    || name.starts_with("String_")
+                    || matches!(name.as_str(),
+                        "now" | "sleep" | "fromCharCode" | "charCodeAt"
+                        | "sha256Hash" | "md5Hash" | "hmacSha256Hash"
+                        | "aesEncrypt" | "aesDecrypt"
+                        | "base64Encode" | "base64Decode" | "base64EncodeChar"
+                        | "gcCollect" | "memoryUsage" | "printStackTrace" | "processExit"
+                        | "sinf" | "cosf" | "tanf" | "logf" | "log10f" | "sqrtf" | "expf" | "powf"
+                        | "fabsf" | "floorf" | "ceilf"
+                    );
+                if !is_variadic && sig.params.len() != args.len() {
                     self.errors.push(
                         TypeError::InvalidArgumentCount {
                             expected: sig.params.len(),
@@ -1934,6 +2178,10 @@ impl TypeChecker {
                         }
                         .to_error(),
                     );
+                }
+                if is_variadic {
+                    for arg in args { self.infer_type(arg); }
+                    return sig.return_type.clone();
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let arg_ty = self.infer_type(arg);
@@ -1999,8 +2247,10 @@ impl TypeChecker {
     }
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
-        // Any is a wildcard — skip checking (used for tuple index, generics, etc.)
-        if matches!(lhs, ValueType::Any) || matches!(rhs, ValueType::Any) {
+        // Any and Named (generic type params) are wildcards — skip checking
+        if matches!(lhs, ValueType::Any | ValueType::Named(_))
+            || matches!(rhs, ValueType::Any | ValueType::Named(_))
+        {
             return;
         }
         let valid = match op {
@@ -2022,7 +2272,7 @@ impl TypeChecker {
             BinaryOp::And | BinaryOp::Or => {
                 matches!(lhs, ValueType::Bool) && matches!(rhs, ValueType::Bool)
             }
-            BinaryOp::BitOr | BinaryOp::Xor => {
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::Xor => {
                 matches!(lhs, ValueType::Int) && matches!(rhs, ValueType::Int)
             }
             BinaryOp::Eq | BinaryOp::Ne => lhs == rhs,
@@ -2045,6 +2295,9 @@ impl TypeChecker {
     }
 
     fn check_unary_op(&mut self, op: &UnaryOp, operand: &ValueType, span: Span) {
+        if matches!(operand, ValueType::Any | ValueType::Named(_)) {
+            return;
+        }
         let valid = match op {
             UnaryOp::Neg => matches!(operand, ValueType::Int | ValueType::Float),
             UnaryOp::Not => matches!(operand, ValueType::Bool),
@@ -2071,9 +2324,15 @@ impl TypeChecker {
             | BinaryOp::Gt
             | BinaryOp::Ge => ValueType::Bool,
             BinaryOp::And | BinaryOp::Or => ValueType::Bool,
-            BinaryOp::Add if *lhs == ValueType::String => ValueType::String,
+            BinaryOp::Add if *lhs == ValueType::String || *rhs == ValueType::String => {
+                ValueType::String
+            }
             _ => {
-                if *lhs == ValueType::Float || *rhs == ValueType::Float {
+                if matches!(lhs, ValueType::Any | ValueType::Named(_))
+                    || matches!(rhs, ValueType::Any | ValueType::Named(_))
+                {
+                    ValueType::Any
+                } else if *lhs == ValueType::Float || *rhs == ValueType::Float {
                     ValueType::Float
                 } else {
                     ValueType::Int

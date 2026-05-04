@@ -143,9 +143,9 @@ namespace tinox.core.string
          * @param new the replacement substring
          * @return a new string with all occurrences replaced
          */
-        fnc replace(s: String, old: String, new: String) -> String
+        fnc replace(s: String, old: String, repl: String) -> String
         {
-            return s.replace(old, new);
+            return s.replace(old, repl);
         }
 
         /**

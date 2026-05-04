@@ -219,6 +219,7 @@ pub enum BinaryOp {
     Mod,
     And,
     Or,
+    BitAnd,
     BitOr,
     Xor,
     Shl,

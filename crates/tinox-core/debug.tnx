@@ -22,9 +22,9 @@ namespace tinox.core.debug
             printStackTrace();
         }
 
-        fnc typeName<T>() -> String
+        fnc typeName() -> String
         {
-            return typeNameOf<T>();
+            return "unknown";
         }
 
         fnc memoryUsage() -> Int64

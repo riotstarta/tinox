@@ -595,7 +595,7 @@ fn fmt_binop(op: &BinaryOp) -> &'static str {
     match op {
         BinaryOp::Add => "+", BinaryOp::Sub => "-", BinaryOp::Mul => "*",
         BinaryOp::Div => "/", BinaryOp::Mod => "%", BinaryOp::And => "&&",
-        BinaryOp::Or => "||", BinaryOp::BitOr => "|", BinaryOp::Xor => "^",
+        BinaryOp::Or => "||", BinaryOp::BitAnd => "&", BinaryOp::BitOr => "|", BinaryOp::Xor => "^",
         BinaryOp::Shl => "<<", BinaryOp::Shr => ">>", BinaryOp::ShrArith => ">>>",
         BinaryOp::Eq => "==", BinaryOp::Ne => "!=", BinaryOp::Lt => "<",
         BinaryOp::Le => "<=", BinaryOp::Gt => ">", BinaryOp::Ge => ">=",

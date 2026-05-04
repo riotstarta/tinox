@@ -2176,6 +2176,9 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = or i1 {}, {}", result, l, r).unwrap();
                         return Ok((result, "i1".to_string()));
                     }
+                    tinox_parser::BinaryOp::BitAnd => {
+                        writeln!(&mut self.ir, "{} = and {} {}, {}", result, lt, l, r).unwrap()
+                    }
                     tinox_parser::BinaryOp::BitOr => {
                         writeln!(&mut self.ir, "{} = or {} {}, {}", result, lt, l, r).unwrap()
                     }

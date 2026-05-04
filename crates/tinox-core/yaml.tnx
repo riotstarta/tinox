@@ -25,12 +25,12 @@ namespace tinox.core.yaml
         listValue: List<YamlValue>;
         mapValue: Map<String, YamlValue>;
 
-        fnc isString() -> Bool { return this.kind == "string"; }
-        fnc isInt() -> Bool { return this.kind == "int"; }
-        fnc isFloat() -> Bool { return this.kind == "float"; }
-        fnc isBool() -> Bool { return this.kind == "bool"; }
-        fnc isList() -> Bool { return this.kind == "list"; }
-        fnc isMap() -> Bool { return this.kind == "map"; }
+        fn isString() -> Bool { return this.kind == "string"; }
+        fn isInt() -> Bool { return this.kind == "int"; }
+        fn isFloat() -> Bool { return this.kind == "float"; }
+        fn isBool() -> Bool { return this.kind == "bool"; }
+        fn isList() -> Bool { return this.kind == "list"; }
+        fn isMap() -> Bool { return this.kind == "map"; }
     }
 
     class YamlParser

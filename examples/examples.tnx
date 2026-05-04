@@ -117,7 +117,7 @@ class Point
     x: Float64;
     y: Float64;
 
-    fn new(x: Float64, y: Float64) -> Point
+    fnc new(x: Float64, y: Float64) -> Point
     {
         return Point { x: x, y: y };
     }
@@ -224,7 +224,7 @@ class Circle implements Drawable
 {
     radius: Float64;
 
-    fn new(radius: Float64) -> Circle
+    fnc new(radius: Float64) -> Circle
     {
         return Circle { radius: radius };
     }
@@ -247,7 +247,7 @@ class Rectangle implements Drawable
     width: Float64;
     height: Float64;
 
-    fn new(w: Float64, h: Float64) -> Rectangle
+    fnc new(w: Float64, h: Float64) -> Rectangle
     {
         return Rectangle { width: w, height: h };
     }

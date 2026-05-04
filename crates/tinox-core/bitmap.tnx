@@ -96,7 +96,7 @@ namespace tinox.core.bitmap
                 Bitmap::setPixel(bitmap, cx + x, cy - y, color);
                 y = y + 1;
                 err = err + 1 + 2 * y;
-                if 2 * (err - x) + dx > dy
+                if 2 * (err - x) + 1 > 0
                 {
                     x = x - 1;
                     err = err - 2 * x;

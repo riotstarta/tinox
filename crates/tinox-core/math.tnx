@@ -121,7 +121,7 @@ namespace tinox.core.math
                 return 1;
             }
             var result: Int64 = 1;
-            for i in 2..n+1
+            for i in 2..(n+1)
             {
                 result = result * i;
             }

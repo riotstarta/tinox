@@ -45,8 +45,9 @@ namespace tinox.core.heap
             return heap.items[0];
         }
 
-        fnc siftUp(heap: Heap<T>, index: Int64) -> Unit
+        fnc siftUp(heap: Heap<T>, startIndex: Int64) -> Unit
         {
+            var index: Int64 = startIndex;
             while index > 0
             {
                 let parent: Int64 = (index - 1) / 2;
@@ -64,8 +65,9 @@ namespace tinox.core.heap
             }
         }
 
-        fnc siftDown(heap: Heap<T>, index: Int64) -> Unit
+        fnc siftDown(heap: Heap<T>, startIndex: Int64) -> Unit
         {
+            var index: Int64 = startIndex;
             let len: Int64 = heap.items.len();
             while true
             {
