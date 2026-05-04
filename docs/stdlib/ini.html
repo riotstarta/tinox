@@ -51,8 +51,8 @@
       <h3>Ini</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>parse</td><td>fnc parse(content: String) -&gt; IniConfig</td><td>INI-String parsen</td></tr>
-        <tr><td>stringify</td><td>fnc stringify(config: IniConfig) -&gt; String</td><td>IniConfig zurück in String serialisieren</td></tr>
+        <tr><td>parse</td><td>fn parse(content: String) -&gt; IniConfig</td><td>INI-String parsen</td></tr>
+        <tr><td>stringify</td><td>fn stringify(config: IniConfig) -&gt; String</td><td>IniConfig zurück in String serialisieren</td></tr>
       </table>
     </div>
 
@@ -60,10 +60,10 @@
       <h3>IniConfig</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; IniConfig</td><td>Leere Konfiguration erstellen</td></tr>
-        <tr><td>getString</td><td>fnc getString(config, section, key, default: String) -&gt; String</td><td>String-Wert lesen (mit Fallback)</td></tr>
-        <tr><td>getInt</td><td>fnc getInt(config, section, key, default: Int64) -&gt; Int64</td><td>Integer-Wert lesen (mit Fallback)</td></tr>
-        <tr><td>setString</td><td>fnc setString(config, section, key, value: String) -&gt; Unit</td><td>Wert setzen</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; IniConfig</td><td>Leere Konfiguration erstellen</td></tr>
+        <tr><td>getString</td><td>fn getString(config, section, key, default: String) -&gt; String</td><td>String-Wert lesen (mit Fallback)</td></tr>
+        <tr><td>getInt</td><td>fn getInt(config, section, key, default: Int64) -&gt; Int64</td><td>Integer-Wert lesen (mit Fallback)</td></tr>
+        <tr><td>setString</td><td>fn setString(config, section, key, value: String) -&gt; Unit</td><td>Wert setzen</td></tr>
       </table>
     </div>
 

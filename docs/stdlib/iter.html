@@ -51,15 +51,15 @@
       <h3>Iter</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>range</td><td>fnc range(start: Int64, end: Int64) -&gt; Iterator</td><td>Integer-Sequenz von start bis end (exkl.)</td></tr>
-        <tr><td>rangeStep</td><td>fnc rangeStep(start, end, step: Int64) -&gt; Iterator</td><td>Sequenz mit benutzerdefiniertem Schritt</td></tr>
-        <tr><td>repeat</td><td>fnc repeat&lt;T&gt;(value: T, count: Int64) -&gt; List&lt;T&gt;</td><td>Wert count-mal wiederholen</td></tr>
-        <tr><td>cycle</td><td>fnc cycle&lt;T&gt;(list: List&lt;T&gt;) -&gt; Iterator</td><td>Endlos-Iterator über Liste</td></tr>
-        <tr><td>enumerate</td><td>fnc enumerate&lt;T&gt;(list: List&lt;T&gt;) -&gt; List&lt;Pair&lt;Int64,T&gt;&gt;</td><td>(Index, Wert)-Paare erzeugen</td></tr>
-        <tr><td>zip</td><td>fnc zip&lt;T,U&gt;(a: List&lt;T&gt;, b: List&lt;U&gt;) -&gt; List&lt;Pair&lt;T,U&gt;&gt;</td><td>Zwei Listen paarweise zusammenführen</td></tr>
-        <tr><td>map</td><td>fnc map&lt;T,U&gt;(list: List&lt;T&gt;, transform: fnc(T) -&gt; U) -&gt; List&lt;U&gt;</td><td>Jedes Element transformieren</td></tr>
-        <tr><td>filter</td><td>fnc filter&lt;T&gt;(list: List&lt;T&gt;, predicate: fnc(T) -&gt; Bool) -&gt; List&lt;T&gt;</td><td>Elemente nach Bedingung filtern</td></tr>
-        <tr><td>reduce</td><td>fnc reduce&lt;T,U&gt;(list, initial: U, combiner: fnc(U,T) -&gt; U) -&gt; U</td><td>Liste auf einen Wert reduzieren</td></tr>
+        <tr><td>range</td><td>fn range(start: Int64, end: Int64) -&gt; Iterator</td><td>Integer-Sequenz von start bis end (exkl.)</td></tr>
+        <tr><td>rangeStep</td><td>fn rangeStep(start, end, step: Int64) -&gt; Iterator</td><td>Sequenz mit benutzerdefiniertem Schritt</td></tr>
+        <tr><td>repeat</td><td>fn repeat&lt;T&gt;(value: T, count: Int64) -&gt; List&lt;T&gt;</td><td>Wert count-mal wiederholen</td></tr>
+        <tr><td>cycle</td><td>fn cycle&lt;T&gt;(list: List&lt;T&gt;) -&gt; Iterator</td><td>Endlos-Iterator über Liste</td></tr>
+        <tr><td>enumerate</td><td>fn enumerate&lt;T&gt;(list: List&lt;T&gt;) -&gt; List&lt;Pair&lt;Int64,T&gt;&gt;</td><td>(Index, Wert)-Paare erzeugen</td></tr>
+        <tr><td>zip</td><td>fn zip&lt;T,U&gt;(a: List&lt;T&gt;, b: List&lt;U&gt;) -&gt; List&lt;Pair&lt;T,U&gt;&gt;</td><td>Zwei Listen paarweise zusammenführen</td></tr>
+        <tr><td>map</td><td>fn map&lt;T,U&gt;(list: List&lt;T&gt;, transform: fnc(T) -&gt; U) -&gt; List&lt;U&gt;</td><td>Jedes Element transformieren</td></tr>
+        <tr><td>filter</td><td>fn filter&lt;T&gt;(list: List&lt;T&gt;, predicate: fnc(T) -&gt; Bool) -&gt; List&lt;T&gt;</td><td>Elemente nach Bedingung filtern</td></tr>
+        <tr><td>reduce</td><td>fn reduce&lt;T,U&gt;(list, initial: U, combiner: fnc(U,T) -&gt; U) -&gt; U</td><td>Liste auf einen Wert reduzieren</td></tr>
       </table>
     </div>
 

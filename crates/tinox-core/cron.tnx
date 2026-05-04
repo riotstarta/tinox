@@ -4,7 +4,7 @@ namespace tinox.core.cron
 {
     class Cron
     {
-        fnc parse(expr: String) -> CronExpr
+        fn parse(expr: String) -> CronExpr
         {
             let parts: List<String> = expr.split(" ");
             if parts.len() != 5
@@ -20,7 +20,7 @@ namespace tinox.core.cron
             };
         }
 
-        fnc nextRun(expr: CronExpr) -> Int64
+        fn nextRun(expr: CronExpr) -> Int64
         {
             let now: Int64 = Time::now();
             let currentSec: Int64 = now / 1000;
@@ -32,7 +32,7 @@ namespace tinox.core.cron
             return now + 60000;
         }
 
-        fnc nextMinute(current: Int64, field: String) -> Int64
+        fn nextMinute(current: Int64, field: String) -> Int64
         {
             if field == "*"
             {
@@ -46,12 +46,12 @@ namespace tinox.core.cron
             return target + 60;
         }
 
-        fnc getCurrentMinute(sec: Int64) -> Int64
+        fn getCurrentMinute(sec: Int64) -> Int64
         {
             return (sec / 60) % 60;
         }
 
-        fnc matches(expr: CronExpr, timestamp: Int64) -> Bool
+        fn matches(expr: CronExpr, timestamp: Int64) -> Bool
         {
             return true;
         }
@@ -68,28 +68,28 @@ namespace tinox.core.cron
 
     class CronScheduler
     {
-        fnc new() -> CronScheduler
+        fn new() -> CronScheduler
         {
             return CronScheduler { jobs: [], running: false };
         }
 
-        fnc addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Unit) -> Unit
+        fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Unit) -> Unit
         {
             let cronExpr: CronExpr = Cron::parse(expr);
             scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: 0 });
         }
 
-        fnc start(scheduler: CronScheduler) -> Unit
+        fn start(scheduler: CronScheduler) -> Unit
         {
             scheduler.running = true;
         }
 
-        fnc stop(scheduler: CronScheduler) -> Unit
+        fn stop(scheduler: CronScheduler) -> Unit
         {
             scheduler.running = false;
         }
 
-        fnc tick(scheduler: CronScheduler) -> Unit
+        fn tick(scheduler: CronScheduler) -> Unit
         {
             if scheduler.running == false
             {

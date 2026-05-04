@@ -4,37 +4,37 @@ namespace tinox.core.http
 {
     class Http
     {
-        fnc get(url: String) -> HttpResponse
+        fn get(url: String) -> HttpResponse
         {
             return httpGet(url);
         }
 
-        fnc post(url: String, body: String) -> HttpResponse
+        fn post(url: String, body: String) -> HttpResponse
         {
             return httpPost(url, body);
         }
 
-        fnc put(url: String, body: String) -> HttpResponse
+        fn put(url: String, body: String) -> HttpResponse
         {
             return httpPut(url, body);
         }
 
-        fnc delete(url: String) -> HttpResponse
+        fn delete(url: String) -> HttpResponse
         {
             return httpDelete(url);
         }
 
-        fnc patch(url: String, body: String) -> HttpResponse
+        fn patch(url: String, body: String) -> HttpResponse
         {
             return httpPatch(url, body);
         }
 
-        fnc setHeader(name: String, value: String) -> Unit
+        fn setHeader(name: String, value: String) -> Unit
         {
             httpSetHeader(name, value);
         }
 
-        fnc clearHeaders() -> Unit
+        fn clearHeaders() -> Unit
         {
             httpClearHeaders();
         }
@@ -42,17 +42,17 @@ namespace tinox.core.http
 
     class HttpResponse
     {
-        fnc statusCode() -> Int64
+        fn statusCode() -> Int64
         {
             return httpStatusCode(this);
         }
 
-        fnc body() -> String
+        fn body() -> String
         {
             return httpBody(this);
         }
 
-        fnc header(name: String) -> String
+        fn header(name: String) -> String
         {
             return httpHeader(this, name);
         }

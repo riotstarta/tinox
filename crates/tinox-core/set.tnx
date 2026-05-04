@@ -4,12 +4,12 @@ namespace tinox.core.set
 {
     class Set<T>
     {
-        fnc new() -> Set<T>
+        fn new() -> Set<T>
         {
             return Set<T> { items: [] };
         }
 
-        fnc add(set: Set<T>, item: T) -> Unit
+        fn add(set: Set<T>, item: T) -> Unit
         {
             if Set::contains(set, item) == false
             {
@@ -17,7 +17,7 @@ namespace tinox.core.set
             }
         }
 
-        fnc remove(set: Set<T>, item: T) -> Bool
+        fn remove(set: Set<T>, item: T) -> Bool
         {
             var i: Int64 = 0;
             while i < set.items.len()
@@ -32,7 +32,7 @@ namespace tinox.core.set
             return false;
         }
 
-        fnc contains(set: Set<T>, item: T) -> Bool
+        fn contains(set: Set<T>, item: T) -> Bool
         {
             var i: Int64 = 0;
             while i < set.items.len()
@@ -46,17 +46,17 @@ namespace tinox.core.set
             return false;
         }
 
-        fnc size(set: Set<T>) -> Int64
+        fn size(set: Set<T>) -> Int64
         {
             return set.items.len();
         }
 
-        fnc isEmpty(set: Set<T>) -> Bool
+        fn isEmpty(set: Set<T>) -> Bool
         {
             return set.items.len() == 0;
         }
 
-        fnc union(a: Set<T>, b: Set<T>) -> Set<T>
+        fn union(a: Set<T>, b: Set<T>) -> Set<T>
         {
             let result: Set<T> = Set::new();
             var i: Int64 = 0;
@@ -74,7 +74,7 @@ namespace tinox.core.set
             return result;
         }
 
-        fnc intersection(a: Set<T>, b: Set<T>) -> Set<T>
+        fn intersection(a: Set<T>, b: Set<T>) -> Set<T>
         {
             let result: Set<T> = Set::new();
             var i: Int64 = 0;
@@ -89,7 +89,7 @@ namespace tinox.core.set
             return result;
         }
 
-        fnc difference(a: Set<T>, b: Set<T>) -> Set<T>
+        fn difference(a: Set<T>, b: Set<T>) -> Set<T>
         {
             let result: Set<T> = Set::new();
             var i: Int64 = 0;
@@ -104,7 +104,7 @@ namespace tinox.core.set
             return result;
         }
 
-        fnc isSubsetOf(a: Set<T>, b: Set<T>) -> Bool
+        fn isSubsetOf(a: Set<T>, b: Set<T>) -> Bool
         {
             var i: Int64 = 0;
             while i < a.items.len()

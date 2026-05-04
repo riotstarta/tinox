@@ -4,22 +4,22 @@ namespace tinox.core.uuid
 {
     class Uuid
     {
-        fnc generate() -> String
+        fn generate() -> String
         {
             return uuidGenerate();
         }
 
-        fnc fromString(s: String) -> Uuid
+        fn fromString(s: String) -> Uuid
         {
             return Uuid { value: s };
         }
 
-        fnc toString() -> String
+        fn toString() -> String
         {
             return this.value;
         }
 
-        fnc isValid(s: String) -> Bool
+        fn isValid(s: String) -> Bool
         {
             if s.len() != 36
             {

@@ -4,7 +4,7 @@ namespace tinox.core.hash
 {
     class Hash
     {
-        fnc hashString(s: String) -> Int64
+        fn hashString(s: String) -> Int64
         {
             var hash: Int64 = 5381;
             var i: Int64 = 0;
@@ -16,7 +16,7 @@ namespace tinox.core.hash
             return hash;
         }
 
-        fnc hashInt(n: Int64) -> Int64
+        fn hashInt(n: Int64) -> Int64
         {
             var h: Int64 = n;
             h = h + (h << 10);
@@ -27,7 +27,7 @@ namespace tinox.core.hash
             return h;
         }
 
-        fnc combine(h1: Int64, h2: Int64) -> Int64
+        fn combine(h1: Int64, h2: Int64) -> Int64
         {
             var h: Int64 = h1;
             h = h + (h << 5) + h2;

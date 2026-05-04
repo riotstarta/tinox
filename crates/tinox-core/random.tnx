@@ -4,28 +4,28 @@ namespace tinox.core.random
 {
     class Random
     {
-        fnc nextInt(max: Int64) -> Int64
+        fn nextInt(max: Int64) -> Int64
         {
             return randomInt(max);
         }
 
-        fnc nextFloat() -> Float64
+        fn nextFloat() -> Float64
         {
             return randomFloat();
         }
 
-        fnc nextBool() -> Bool
+        fn nextBool() -> Bool
         {
             return randomInt(2) == 1;
         }
 
-        fnc pickOne<T>(list: List<T>) -> T
+        fn pickOne<T>(list: List<T>) -> T
         {
             let index: Int64 = Random::nextInt(list.len());
             return list[index];
         }
 
-        fnc shuffle<T>(list: List<T>) -> List<T>
+        fn shuffle<T>(list: List<T>) -> List<T>
         {
             var result: List<T> = list;
             var i: Int64 = result.len() - 1;
@@ -40,7 +40,7 @@ namespace tinox.core.random
             return result;
         }
 
-        fnc sample<T>(list: List<T>, count: Int64) -> List<T>
+        fn sample<T>(list: List<T>, count: Int64) -> List<T>
         {
             var result: List<T> = [];
             let shuffled: List<T> = Random::shuffle(list);
@@ -53,7 +53,7 @@ namespace tinox.core.random
             return result;
         }
 
-        fnc generateString(length: Int64) -> String
+        fn generateString(length: Int64) -> String
         {
             let chars: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
             var result: String = "";

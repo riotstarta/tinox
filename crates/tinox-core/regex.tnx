@@ -4,27 +4,27 @@ namespace tinox.core.regex
 {
     class Regex
     {
-        fnc isMatch(pattern: String, text: String) -> Bool
+        fn isMatch(pattern: String, text: String) -> Bool
         {
             return regexIsMatch(pattern, text);
         }
 
-        fnc findFirst(pattern: String, text: String) -> String
+        fn findFirst(pattern: String, text: String) -> String
         {
             return regexFindFirst(pattern, text);
         }
 
-        fnc findAll(pattern: String, text: String) -> List<String>
+        fn findAll(pattern: String, text: String) -> List<String>
         {
             return regexFindAll(pattern, text);
         }
 
-        fnc replaceAll(pattern: String, text: String, replacement: String) -> String
+        fn replaceAll(pattern: String, text: String, replacement: String) -> String
         {
             return regexReplaceAll(pattern, text, replacement);
         }
 
-        fnc split(pattern: String, text: String) -> List<String>
+        fn split(pattern: String, text: String) -> List<String>
         {
             return regexSplit(pattern, text);
         }

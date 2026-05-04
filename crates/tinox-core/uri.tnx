@@ -4,27 +4,27 @@ namespace tinox.core.uri
 {
     class Uri
     {
-        fnc encode(s: String) -> String
+        fn encode(s: String) -> String
         {
             return uriEncode(s);
         }
 
-        fnc decode(s: String) -> String
+        fn decode(s: String) -> String
         {
             return uriDecode(s);
         }
 
-        fnc encodeComponent(s: String) -> String
+        fn encodeComponent(s: String) -> String
         {
             return uriEncodeComponent(s);
         }
 
-        fnc decodeComponent(s: String) -> String
+        fn decodeComponent(s: String) -> String
         {
             return uriDecodeComponent(s);
         }
 
-        fnc parse(url: String) -> UriParts
+        fn parse(url: String) -> UriParts
         {
             let schemeEnd: Int64 = url.indexOf("://");
             if schemeEnd == -1

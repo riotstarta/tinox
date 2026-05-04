@@ -4,33 +4,33 @@ namespace tinox.core.zip
 {
     class Zip
     {
-        fnc open(path: String) -> ZipArchive
+        fn open(path: String) -> ZipArchive
         {
             return ZipArchive { path: path, entries: Zip::listEntries(path) };
         }
 
-        fnc create(path: String) -> ZipArchive
+        fn create(path: String) -> ZipArchive
         {
             return ZipArchive { path: path, entries: [] };
         }
 
-        fnc listEntries(path: String) -> List<ZipEntry>
+        fn listEntries(path: String) -> List<ZipEntry>
         {
             return zipListEntries(path);
         }
 
-        fnc extractFile(archive: ZipArchive, entryName: String) -> String
+        fn extractFile(archive: ZipArchive, entryName: String) -> String
         {
             return zipExtractFile(archive.path, entryName);
         }
 
-        fnc addFile(archive: ZipArchive, name: String, content: String) -> Unit
+        fn addFile(archive: ZipArchive, name: String, content: String) -> Unit
         {
             archive.entries.push(ZipEntry { name: name, size: content.len() });
             zipAddFile(archive.path, name, content);
         }
 
-        fnc removeFile(archive: ZipArchive, entryName: String) -> Unit
+        fn removeFile(archive: ZipArchive, entryName: String) -> Unit
         {
             var newEntries: List<ZipEntry> = [];
             var i: Int64 = 0;
@@ -46,7 +46,7 @@ namespace tinox.core.zip
             zipRemoveFile(archive.path, entryName);
         }
 
-        fnc close(archive: ZipArchive) -> Unit
+        fn close(archive: ZipArchive) -> Unit
         {
         }
     }

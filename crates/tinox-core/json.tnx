@@ -18,12 +18,12 @@ namespace tinox.core.json
 
     class Json
     {
-        fnc parse(text: String) -> JsonValue
+        fn parse(text: String) -> JsonValue
         {
             return jsonParse(text);
         }
 
-        fnc stringify(value: JsonValue) -> String
+        fn stringify(value: JsonValue) -> String
         {
             return jsonStringify(value);
         }
@@ -31,57 +31,57 @@ namespace tinox.core.json
 
     class JsonValue
     {
-        fnc getString() -> String
+        fn getString() -> String
         {
             return jsonGetString(this);
         }
 
-        fnc getInt() -> Int64
+        fn getInt() -> Int64
         {
             return jsonGetInt(this);
         }
 
-        fnc getFloat() -> Float64
+        fn getFloat() -> Float64
         {
             return jsonGetFloat(this);
         }
 
-        fnc getBool() -> Bool
+        fn getBool() -> Bool
         {
             return jsonGetBool(this);
         }
 
-        fnc isNull() -> Bool
+        fn isNull() -> Bool
         {
             return jsonIsNull(this);
         }
 
-        fnc isString() -> Bool
+        fn isString() -> Bool
         {
             return jsonIsString(this);
         }
 
-        fnc isInt() -> Bool
+        fn isInt() -> Bool
         {
             return jsonIsInt(this);
         }
 
-        fnc isFloat() -> Bool
+        fn isFloat() -> Bool
         {
             return jsonIsFloat(this);
         }
 
-        fnc isBool() -> Bool
+        fn isBool() -> Bool
         {
             return jsonIsBool(this);
         }
 
-        fnc isObject() -> Bool
+        fn isObject() -> Bool
         {
             return jsonIsObject(this);
         }
 
-        fnc isArray() -> Bool
+        fn isArray() -> Bool
         {
             return jsonIsArray(this);
         }

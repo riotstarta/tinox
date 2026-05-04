@@ -51,12 +51,12 @@
       <h3>PriorityQueue&lt;T&gt;</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; PriorityQueue&lt;T&gt;</td><td>Leere Priority Queue erstellen</td></tr>
-        <tr><td>enqueue</td><td>fnc enqueue(q, item: T, priority: Int64) -&gt; Unit</td><td>Element mit Priorität einreihen (kleiner = höher)</td></tr>
-        <tr><td>dequeue</td><td>fnc dequeue(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Element mit höchster Priorität entfernen</td></tr>
-        <tr><td>peek</td><td>fnc peek(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Nächstes Element ansehen (ohne Entfernen)</td></tr>
-        <tr><td>isEmpty</td><td>fnc isEmpty(q: PriorityQueue&lt;T&gt;) -&gt; Bool</td><td>Queue leer?</td></tr>
-        <tr><td>size</td><td>fnc size(q: PriorityQueue&lt;T&gt;) -&gt; Int64</td><td>Anzahl Elemente</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; PriorityQueue&lt;T&gt;</td><td>Leere Priority Queue erstellen</td></tr>
+        <tr><td>enqueue</td><td>fn enqueue(q, item: T, priority: Int64) -&gt; Unit</td><td>Element mit Priorität einreihen (kleiner = höher)</td></tr>
+        <tr><td>dequeue</td><td>fn dequeue(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Element mit höchster Priorität entfernen</td></tr>
+        <tr><td>peek</td><td>fn peek(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Nächstes Element ansehen (ohne Entfernen)</td></tr>
+        <tr><td>isEmpty</td><td>fn isEmpty(q: PriorityQueue&lt;T&gt;) -&gt; Bool</td><td>Queue leer?</td></tr>
+        <tr><td>size</td><td>fn size(q: PriorityQueue&lt;T&gt;) -&gt; Int64</td><td>Anzahl Elemente</td></tr>
       </table>
     </div>
 
@@ -64,11 +64,11 @@
       <h3>CircularBuffer&lt;T&gt;</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(size: Int64) -&gt; CircularBuffer&lt;T&gt;</td><td>Buffer fixer Größe erstellen</td></tr>
-        <tr><td>push</td><td>fnc push(buf, item: T) -&gt; Bool</td><td>Element hinzufügen (false wenn voll)</td></tr>
-        <tr><td>pop</td><td>fnc pop(buf: CircularBuffer&lt;T&gt;) -&gt; T</td><td>Ältestes Element entfernen</td></tr>
-        <tr><td>isFull</td><td>fnc isFull(buf) -&gt; Bool</td><td>Ist Buffer voll?</td></tr>
-        <tr><td>isEmpty</td><td>fnc isEmpty(buf) -&gt; Bool</td><td>Ist Buffer leer?</td></tr>
+        <tr><td>new</td><td>fn new(size: Int64) -&gt; CircularBuffer&lt;T&gt;</td><td>Buffer fixer Größe erstellen</td></tr>
+        <tr><td>push</td><td>fn push(buf, item: T) -&gt; Bool</td><td>Element hinzufügen (false wenn voll)</td></tr>
+        <tr><td>pop</td><td>fn pop(buf: CircularBuffer&lt;T&gt;) -&gt; T</td><td>Ältestes Element entfernen</td></tr>
+        <tr><td>isFull</td><td>fn isFull(buf) -&gt; Bool</td><td>Ist Buffer voll?</td></tr>
+        <tr><td>isEmpty</td><td>fn isEmpty(buf) -&gt; Bool</td><td>Ist Buffer leer?</td></tr>
       </table>
     </div>
 

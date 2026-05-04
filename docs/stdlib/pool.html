@@ -51,10 +51,10 @@
       <h3>Pool&lt;T&gt;</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(maxSize: Int64) -&gt; Pool&lt;T&gt;</td><td>Pool mit maximaler Größe erstellen</td></tr>
-        <tr><td>acquire</td><td>fnc acquire(pool: Pool&lt;T&gt;) -&gt; T</td><td>Objekt aus Pool holen (throws wenn erschöpft)</td></tr>
-        <tr><td>release</td><td>fnc release(pool: Pool&lt;T&gt;, obj: T) -&gt; Unit</td><td>Objekt zurück in Pool legen</td></tr>
-        <tr><td>clear</td><td>fnc clear(pool: Pool&lt;T&gt;) -&gt; Unit</td><td>Pool leeren</td></tr>
+        <tr><td>new</td><td>fn new(maxSize: Int64) -&gt; Pool&lt;T&gt;</td><td>Pool mit maximaler Größe erstellen</td></tr>
+        <tr><td>acquire</td><td>fn acquire(pool: Pool&lt;T&gt;) -&gt; T</td><td>Objekt aus Pool holen (throws wenn erschöpft)</td></tr>
+        <tr><td>release</td><td>fn release(pool: Pool&lt;T&gt;, obj: T) -&gt; Unit</td><td>Objekt zurück in Pool legen</td></tr>
+        <tr><td>clear</td><td>fn clear(pool: Pool&lt;T&gt;) -&gt; Unit</td><td>Pool leeren</td></tr>
       </table>
     </div>
 

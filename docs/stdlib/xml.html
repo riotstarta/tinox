@@ -51,9 +51,9 @@
       <h3>Xml</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>parse</td><td>fnc parse(text: String) -&gt; XmlNode</td><td>XML-String parsen</td></tr>
-        <tr><td>stringify</td><td>fnc stringify(node: XmlNode) -&gt; String</td><td>XmlNode zurück zu XML serialisieren</td></tr>
-        <tr><td>query</td><td>fnc query(node: XmlNode, xpath: String) -&gt; List&lt;XmlNode&gt;</td><td>XPath-Query ausführen</td></tr>
+        <tr><td>parse</td><td>fn parse(text: String) -&gt; XmlNode</td><td>XML-String parsen</td></tr>
+        <tr><td>stringify</td><td>fn stringify(node: XmlNode) -&gt; String</td><td>XmlNode zurück zu XML serialisieren</td></tr>
+        <tr><td>query</td><td>fn query(node: XmlNode, xpath: String) -&gt; List&lt;XmlNode&gt;</td><td>XPath-Query ausführen</td></tr>
       </table>
     </div>
 
@@ -61,11 +61,11 @@
       <h3>XmlNode</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>tagName</td><td>fnc tagName() -&gt; String</td><td>Element-Name</td></tr>
-        <tr><td>textContent</td><td>fnc textContent() -&gt; String</td><td>Textinhalt des Elements</td></tr>
-        <tr><td>attr</td><td>fnc attr(name: String) -&gt; String</td><td>Attributwert lesen</td></tr>
-        <tr><td>children</td><td>fnc children() -&gt; List&lt;XmlNode&gt;</td><td>Kindknoten</td></tr>
-        <tr><td>firstChild</td><td>fnc firstChild(tag: String) -&gt; XmlNode</td><td>Erstes Kind mit diesem Tag-Namen</td></tr>
+        <tr><td>tagName</td><td>fn tagName() -&gt; String</td><td>Element-Name</td></tr>
+        <tr><td>textContent</td><td>fn textContent() -&gt; String</td><td>Textinhalt des Elements</td></tr>
+        <tr><td>attr</td><td>fn attr(name: String) -&gt; String</td><td>Attributwert lesen</td></tr>
+        <tr><td>children</td><td>fn children() -&gt; List&lt;XmlNode&gt;</td><td>Kindknoten</td></tr>
+        <tr><td>firstChild</td><td>fn firstChild(tag: String) -&gt; XmlNode</td><td>Erstes Kind mit diesem Tag-Namen</td></tr>
       </table>
     </div>
 

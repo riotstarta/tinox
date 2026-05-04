@@ -4,27 +4,27 @@ namespace tinox.core.option
 {
     class Option
     {
-        fnc none() -> Option
+        fn none() -> Option
         {
             return Option { hasValue: false, value: 0 };
         }
 
-        fnc some(value: Int64) -> Option
+        fn some(value: Int64) -> Option
         {
             return Option { hasValue: true, value: value };
         }
 
-        fnc isSome() -> Bool
+        fn isSome() -> Bool
         {
             return this.hasValue;
         }
 
-        fnc isNone() -> Bool
+        fn isNone() -> Bool
         {
             return this.hasValue == false;
         }
 
-        fnc unwrap() -> Int64
+        fn unwrap() -> Int64
         {
             if this.hasValue == false
             {
@@ -33,7 +33,7 @@ namespace tinox.core.option
             return this.value;
         }
 
-        fnc unwrapOr(defaultValue: Int64) -> Int64
+        fn unwrapOr(defaultValue: Int64) -> Int64
         {
             if this.hasValue == false
             {
@@ -42,7 +42,7 @@ namespace tinox.core.option
             return this.value;
         }
 
-        fnc map(transform: fnc(Int64) -> Int64) -> Option
+        fn map(transform: fnc(Int64) -> Int64) -> Option
         {
             if this.hasValue == false
             {

@@ -4,12 +4,12 @@ namespace tinox.core.trie
 {
     class Trie
     {
-        fnc new() -> Trie
+        fn new() -> Trie
         {
             return Trie { root: TrieNode::new() };
         }
 
-        fnc insert(trie: Trie, word: String) -> Unit
+        fn insert(trie: Trie, word: String) -> Unit
         {
             var current: TrieNode = trie.root;
             var i: Int64 = 0;
@@ -26,7 +26,7 @@ namespace tinox.core.trie
             current.isEnd = true;
         }
 
-        fnc search(trie: Trie, word: String) -> Bool
+        fn search(trie: Trie, word: String) -> Bool
         {
             var current: TrieNode = trie.root;
             var i: Int64 = 0;
@@ -43,7 +43,7 @@ namespace tinox.core.trie
             return current.isEnd;
         }
 
-        fnc startsWith(trie: Trie, prefix: String) -> Bool
+        fn startsWith(trie: Trie, prefix: String) -> Bool
         {
             var current: TrieNode = trie.root;
             var i: Int64 = 0;
@@ -60,7 +60,7 @@ namespace tinox.core.trie
             return true;
         }
 
-        fnc autocomplete(trie: Trie, prefix: String) -> List<String>
+        fn autocomplete(trie: Trie, prefix: String) -> List<String>
         {
             var current: TrieNode = trie.root;
             var i: Int64 = 0;
@@ -77,7 +77,7 @@ namespace tinox.core.trie
             return Trie::collectWords(current, prefix);
         }
 
-        fnc collectWords(node: TrieNode, prefix: String) -> List<String>
+        fn collectWords(node: TrieNode, prefix: String) -> List<String>
         {
             var results: List<String> = [];
             if node.isEnd
@@ -103,7 +103,7 @@ namespace tinox.core.trie
 
     class TrieNode
     {
-        fnc new() -> TrieNode
+        fn new() -> TrieNode
         {
             return TrieNode { children: Map::new(), isEnd: false };
         }

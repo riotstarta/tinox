@@ -51,11 +51,11 @@
       <h3>Jwt</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>encode</td><td>fnc encode(payload: Map&lt;String, JsonValue&gt;, secret: String) -&gt; String</td><td>Payload signieren und JWT erzeugen</td></tr>
-        <tr><td>decode</td><td>fnc decode(token: String, secret: String) -&gt; Map&lt;String, JsonValue&gt;</td><td>Token verifizieren und Payload zurückgeben</td></tr>
-        <tr><td>verify</td><td>fnc verify(token: String, secret: String) -&gt; Bool</td><td>Nur Signatur prüfen (kein Payload)</td></tr>
-        <tr><td>extractPayload</td><td>fnc extractPayload(token: String) -&gt; Map&lt;String, JsonValue&gt;</td><td>Payload ohne Verifikation lesen</td></tr>
-        <tr><td>isExpired</td><td>fnc isExpired(token: String) -&gt; Bool</td><td>exp-Claim gegen aktuelle Zeit prüfen</td></tr>
+        <tr><td>encode</td><td>fn encode(payload: Map&lt;String, JsonValue&gt;, secret: String) -&gt; String</td><td>Payload signieren und JWT erzeugen</td></tr>
+        <tr><td>decode</td><td>fn decode(token: String, secret: String) -&gt; Map&lt;String, JsonValue&gt;</td><td>Token verifizieren und Payload zurückgeben</td></tr>
+        <tr><td>verify</td><td>fn verify(token: String, secret: String) -&gt; Bool</td><td>Nur Signatur prüfen (kein Payload)</td></tr>
+        <tr><td>extractPayload</td><td>fn extractPayload(token: String) -&gt; Map&lt;String, JsonValue&gt;</td><td>Payload ohne Verifikation lesen</td></tr>
+        <tr><td>isExpired</td><td>fn isExpired(token: String) -&gt; Bool</td><td>exp-Claim gegen aktuelle Zeit prüfen</td></tr>
       </table>
     </div>
 

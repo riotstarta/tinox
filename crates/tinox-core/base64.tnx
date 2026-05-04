@@ -4,17 +4,17 @@ namespace tinox.core.base64
 {
     class Base64
     {
-        fnc encode(data: String) -> String
+        fn encode(data: String) -> String
         {
             return base64Encode(data);
         }
 
-        fnc decode(encoded: String) -> String
+        fn decode(encoded: String) -> String
         {
             return base64Decode(encoded);
         }
 
-        fnc encodeBytes(data: List<Int64>) -> String
+        fn encodeBytes(data: List<Int64>) -> String
         {
             var result: String = "";
             var i: Int64 = 0;

@@ -4,12 +4,12 @@ namespace tinox.core.cache
 {
     class Cache<K, V>
     {
-        fnc new(maxSize: Int64) -> Cache<K, V>
+        fn new(maxSize: Int64) -> Cache<K, V>
         {
             return Cache<K, V> { data: Map::new(), maxSize: maxSize, accessOrder: [] };
         }
 
-        fnc get(cache: Cache<K, V>, key: K) -> Option<V>
+        fn get(cache: Cache<K, V>, key: K) -> Option<V>
         {
             if cache.data.contains(key)
             {
@@ -20,7 +20,7 @@ namespace tinox.core.cache
             return Option::none();
         }
 
-        fnc set(cache: Cache<K, V>, key: K, value: V) -> Unit
+        fn set(cache: Cache<K, V>, key: K, value: V) -> Unit
         {
             if cache.data.contains(key)
             {
@@ -38,7 +38,7 @@ namespace tinox.core.cache
             cache.accessOrder.push(key);
         }
 
-        fnc remove(cache: Cache<K, V>, key: K) -> Bool
+        fn remove(cache: Cache<K, V>, key: K) -> Bool
         {
             if cache.data.contains(key) == false
             {
@@ -58,13 +58,13 @@ namespace tinox.core.cache
             return true;
         }
 
-        fnc clear(cache: Cache<K, V>) -> Unit
+        fn clear(cache: Cache<K, V>) -> Unit
         {
             cache.data = Map::new();
             cache.accessOrder = [];
         }
 
-        fnc touch(cache: Cache<K, V>, key: K) -> Unit
+        fn touch(cache: Cache<K, V>, key: K) -> Unit
         {
             var i: Int64 = 0;
             while i < cache.accessOrder.len()
@@ -82,17 +82,17 @@ namespace tinox.core.cache
 
     class LruCache<K, V>
     {
-        fnc new(maxSize: Int64) -> LruCache<K, V>
+        fn new(maxSize: Int64) -> LruCache<K, V>
         {
             return LruCache<K, V> { cache: Cache::new(maxSize) };
         }
 
-        fnc get(cache: LruCache<K, V>, key: K) -> Option<V>
+        fn get(cache: LruCache<K, V>, key: K) -> Option<V>
         {
             return Cache::get(cache.cache, key);
         }
 
-        fnc set(cache: LruCache<K, V>, key: K, value: V) -> Unit
+        fn set(cache: LruCache<K, V>, key: K, value: V) -> Unit
         {
             Cache::set(cache.cache, key, value);
         }

@@ -12,7 +12,7 @@ namespace tinox.core.math
          * Returns the value of pi (3.14159...)
          * @return the mathematical constant pi
          */
-        fnc pi() -> Float64
+        fn pi() -> Float64
         {
             return 3.14159265358979;
         }
@@ -21,7 +21,7 @@ namespace tinox.core.math
          * Returns Euler's number (2.71828...)
          * @return the mathematical constant e
          */
-        fnc e() -> Float64
+        fn e() -> Float64
         {
             return 2.71828182845904;
         }
@@ -30,7 +30,7 @@ namespace tinox.core.math
          * Returns tau (2 * pi = 6.28318...)
          * @return the mathematical constant tau
          */
-        fnc tau() -> Float64
+        fn tau() -> Float64
         {
             return 6.28318530717958;
         }
@@ -40,7 +40,7 @@ namespace tinox.core.math
          * @param x the input value
          * @return the absolute value (always non-negative)
          */
-        fnc abs(x: Int64) -> Int64
+        fn abs(x: Int64) -> Int64
         {
             if x < 0
             {
@@ -55,7 +55,7 @@ namespace tinox.core.math
          * @param b the second value
          * @return a if a < b, otherwise b
          */
-        fnc min(a: Int64, b: Int64) -> Int64
+        fn min(a: Int64, b: Int64) -> Int64
         {
             if a < b
             {
@@ -70,7 +70,7 @@ namespace tinox.core.math
          * @param b the second value
          * @return a if a > b, otherwise b
          */
-        fnc max(a: Int64, b: Int64) -> Int64
+        fn max(a: Int64, b: Int64) -> Int64
         {
             if a > b
             {
@@ -84,7 +84,7 @@ namespace tinox.core.math
          * @param x the input value
          * @return x multiplied by itself
          */
-        fnc square(x: Int64) -> Int64
+        fn square(x: Int64) -> Int64
         {
             return x * x;
         }
@@ -95,7 +95,7 @@ namespace tinox.core.math
          * @param exp the exponent (must be non-negative)
          * @return base raised to the power of exp
          */
-        fnc pow(base: Int64, exp: Int64) -> Int64
+        fn pow(base: Int64, exp: Int64) -> Int64
         {
             var result: Int64 = 1;
             var i: Int64 = 0;
@@ -114,7 +114,7 @@ namespace tinox.core.math
          * @param n the input value (must be non-negative)
          * @return n factorial
          */
-        fnc factorial(n: Int64) -> Int64
+        fn factorial(n: Int64) -> Int64
         {
             if n <= 1
             {
@@ -135,7 +135,7 @@ namespace tinox.core.math
          * @param seed the seed value
          * @return a pseudo-random integer
          */
-        fnc randomSeed(seed: Int64) -> Int64
+        fn randomSeed(seed: Int64) -> Int64
         {
             return (seed * 1103515245 + 12345) & 2147483647;
         }

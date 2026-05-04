@@ -4,17 +4,17 @@ namespace tinox.core.mathf
 {
     class Mathf
     {
-        fnc pi() -> Float64
+        fn pi() -> Float64
         {
             return 3.14159265358979;
         }
 
-        fnc e() -> Float64
+        fn e() -> Float64
         {
             return 2.71828182845904;
         }
 
-        fnc sqrt(x: Float64) -> Float64
+        fn sqrt(x: Float64) -> Float64
         {
             if x < 0.0
             {
@@ -35,7 +35,7 @@ namespace tinox.core.mathf
             return guess;
         }
 
-        fnc pow(base: Float64, exp: Float64) -> Float64
+        fn pow(base: Float64, exp: Float64) -> Float64
         {
             var result: Float64 = 1.0;
             var i: Int64 = 0;
@@ -47,7 +47,7 @@ namespace tinox.core.mathf
             return result;
         }
 
-        fnc abs(x: Float64) -> Float64
+        fn abs(x: Float64) -> Float64
         {
             if x < 0.0
             {
@@ -56,12 +56,12 @@ namespace tinox.core.mathf
             return x;
         }
 
-        fnc floor(x: Float64) -> Int64
+        fn floor(x: Float64) -> Int64
         {
             return (Int64)x;
         }
 
-        fnc ceil(x: Float64) -> Int64
+        fn ceil(x: Float64) -> Int64
         {
             if (Float64)(Int64)x == x
             {
@@ -74,7 +74,7 @@ namespace tinox.core.mathf
             return (Int64)x;
         }
 
-        fnc round(x: Float64) -> Int64
+        fn round(x: Float64) -> Int64
         {
             let floorVal: Int64 = Mathf::floor(x);
             let frac: Float64 = x - (Float64)floorVal;
@@ -85,7 +85,7 @@ namespace tinox.core.mathf
             return floorVal;
         }
 
-        fnc min(a: Float64, b: Float64) -> Float64
+        fn min(a: Float64, b: Float64) -> Float64
         {
             if a < b
             {
@@ -94,7 +94,7 @@ namespace tinox.core.mathf
             return b;
         }
 
-        fnc max(a: Float64, b: Float64) -> Float64
+        fn max(a: Float64, b: Float64) -> Float64
         {
             if a > b
             {
@@ -103,7 +103,7 @@ namespace tinox.core.mathf
             return b;
         }
 
-        fnc clamp(value: Float64, min: Float64, max: Float64) -> Float64
+        fn clamp(value: Float64, min: Float64, max: Float64) -> Float64
         {
             if value < min
             {
@@ -116,32 +116,32 @@ namespace tinox.core.mathf
             return value;
         }
 
-        fnc lerp(a: Float64, b: Float64, t: Float64) -> Float64
+        fn lerp(a: Float64, b: Float64, t: Float64) -> Float64
         {
             return a + (b - a) * t;
         }
 
-        fnc sin(x: Float64) -> Float64
+        fn sin(x: Float64) -> Float64
         {
             return sinf(x);
         }
 
-        fnc cos(x: Float64) -> Float64
+        fn cos(x: Float64) -> Float64
         {
             return cosf(x);
         }
 
-        fnc tan(x: Float64) -> Float64
+        fn tan(x: Float64) -> Float64
         {
             return tanf(x);
         }
 
-        fnc log(x: Float64) -> Float64
+        fn log(x: Float64) -> Float64
         {
             return logf(x);
         }
 
-        fnc log10(x: Float64) -> Float64
+        fn log10(x: Float64) -> Float64
         {
             return log10f(x);
         }

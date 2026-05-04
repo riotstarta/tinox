@@ -52,12 +52,12 @@
       <p style="color:var(--muted); margin-bottom:1rem;">Bytecode-Builder zum Emittieren von Opcodes und Labels.</p>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; Assembler</td><td>Neuen Assembler erstellen</td></tr>
-        <tr><td>emit</td><td>fnc emit(asm: Assembler, op: Int64) -&gt; Unit</td><td>Einzelnen Opcode hinzufügen</td></tr>
-        <tr><td>emitInt</td><td>fnc emitInt(asm: Assembler, value: Int64) -&gt; Unit</td><td>64-Bit Integer als 8 Bytes emittieren</td></tr>
-        <tr><td>emitLabel</td><td>fnc emitLabel(asm: Assembler, name: String) -&gt; Unit</td><td>Label an aktueller Position setzen</td></tr>
-        <tr><td>resolveLabels</td><td>fnc resolveLabels(asm: Assembler) -&gt; List&lt;Int64&gt;</td><td>Bytecode mit aufgelösten Labels zurückgeben</td></tr>
-        <tr><td>toBytes</td><td>fnc toBytes(asm: Assembler) -&gt; String</td><td>Bytecode als String serialisieren</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; Assembler</td><td>Neuen Assembler erstellen</td></tr>
+        <tr><td>emit</td><td>fn emit(asm: Assembler, op: Int64) -&gt; Unit</td><td>Einzelnen Opcode hinzufügen</td></tr>
+        <tr><td>emitInt</td><td>fn emitInt(asm: Assembler, value: Int64) -&gt; Unit</td><td>64-Bit Integer als 8 Bytes emittieren</td></tr>
+        <tr><td>emitLabel</td><td>fn emitLabel(asm: Assembler, name: String) -&gt; Unit</td><td>Label an aktueller Position setzen</td></tr>
+        <tr><td>resolveLabels</td><td>fn resolveLabels(asm: Assembler) -&gt; List&lt;Int64&gt;</td><td>Bytecode mit aufgelösten Labels zurückgeben</td></tr>
+        <tr><td>toBytes</td><td>fn toBytes(asm: Assembler) -&gt; String</td><td>Bytecode als String serialisieren</td></tr>
       </table>
     </div>
 

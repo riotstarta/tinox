@@ -16,7 +16,7 @@ namespace tinox.core.collections
          *
          * @return a new Stack instance
          */
-        fnc newStack() -> Stack
+        fn newStack() -> Stack
         {
             return Stack::new();
         }
@@ -26,7 +26,7 @@ namespace tinox.core.collections
          *
          * @return a new Queue instance
          */
-        fnc newQueue() -> Queue
+        fn newQueue() -> Queue
         {
             return Queue::new();
         }
@@ -38,7 +38,7 @@ namespace tinox.core.collections
          * @param second the second value
          * @return a new Pair instance
          */
-        fnc newPair(first: Int64, second: Int64) -> Pair
+        fn newPair(first: Int64, second: Int64) -> Pair
         {
             return Pair::new(first, second);
         }
@@ -60,7 +60,7 @@ namespace tinox.core.collections
          *
          * @return a new Stack instance
          */
-        fnc new() -> Stack
+        fn new() -> Stack
         {
             return Stack { data: [] };
         }
@@ -146,7 +146,7 @@ namespace tinox.core.collections
          *
          * @return a new Queue instance
          */
-        fnc new() -> Queue
+        fn new() -> Queue
         {
             return Queue { data: [] };
         }
@@ -236,7 +236,7 @@ namespace tinox.core.collections
          * @param second the second value
          * @return a new Pair instance
          */
-        fnc new(first: Int64, second: Int64) -> Pair
+        fn new(first: Int64, second: Int64) -> Pair
         {
             return Pair { first: first, second: second };
         }

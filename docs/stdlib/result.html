@@ -51,13 +51,13 @@
       <h3>Result</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>ok</td><td>fnc ok(value: Int64) -&gt; Result</td><td>Erfolgreichen Wert einwickeln</td></tr>
-        <tr><td>err</td><td>fnc err(error: String) -&gt; Result</td><td>Fehlerwert mit Nachricht erstellen</td></tr>
-        <tr><td>isOk</td><td>fnc isOk() -&gt; Bool</td><td>Ist das Ergebnis erfolgreich?</td></tr>
-        <tr><td>isErr</td><td>fnc isErr() -&gt; Bool</td><td>Ist ein Fehler aufgetreten?</td></tr>
-        <tr><td>unwrap</td><td>fnc unwrap() -&gt; Int64</td><td>Wert extrahieren (throws bei Err)</td></tr>
-        <tr><td>unwrapOr</td><td>fnc unwrapOr(defaultValue: Int64) -&gt; Int64</td><td>Wert oder Fallback zurückgeben</td></tr>
-        <tr><td>map</td><td>fnc map(transform: fnc(Int64) -&gt; Int64) -&gt; Result</td><td>Wert transformieren (Err bleibt Err)</td></tr>
+        <tr><td>ok</td><td>fn ok(value: Int64) -&gt; Result</td><td>Erfolgreichen Wert einwickeln</td></tr>
+        <tr><td>err</td><td>fn err(error: String) -&gt; Result</td><td>Fehlerwert mit Nachricht erstellen</td></tr>
+        <tr><td>isOk</td><td>fn isOk() -&gt; Bool</td><td>Ist das Ergebnis erfolgreich?</td></tr>
+        <tr><td>isErr</td><td>fn isErr() -&gt; Bool</td><td>Ist ein Fehler aufgetreten?</td></tr>
+        <tr><td>unwrap</td><td>fn unwrap() -&gt; Int64</td><td>Wert extrahieren (throws bei Err)</td></tr>
+        <tr><td>unwrapOr</td><td>fn unwrapOr(defaultValue: Int64) -&gt; Int64</td><td>Wert oder Fallback zurückgeben</td></tr>
+        <tr><td>map</td><td>fn map(transform: fnc(Int64) -&gt; Int64) -&gt; Result</td><td>Wert transformieren (Err bleibt Err)</td></tr>
       </table>
     </div>
 

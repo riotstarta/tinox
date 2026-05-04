@@ -4,7 +4,7 @@ namespace tinox.core.jwt
 {
     class Jwt
     {
-        fnc encode(payload: Map<String, JsonValue>, secret: String) -> String
+        fn encode(payload: Map<String, JsonValue>, secret: String) -> String
         {
             let header: String = Base64::encode("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
             let payloadJson: String = Json::stringify(payload);
@@ -14,7 +14,7 @@ namespace tinox.core.jwt
             return message + "." + signature;
         }
 
-        fnc decode(token: String, secret: String) -> Map<String, JsonValue>
+        fn decode(token: String, secret: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
             if parts.len() != 3
@@ -31,7 +31,7 @@ namespace tinox.core.jwt
             return Json::parse(payloadJson).asTable();
         }
 
-        fnc verify(token: String, secret: String) -> Bool
+        fn verify(token: String, secret: String) -> Bool
         {
             let parts: List<String> = token.split(".");
             if parts.len() != 3
@@ -43,7 +43,7 @@ namespace tinox.core.jwt
             return expectedSig == parts[2];
         }
 
-        fnc extractPayload(token: String) -> Map<String, JsonValue>
+        fn extractPayload(token: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
             if parts.len() != 3
@@ -54,7 +54,7 @@ namespace tinox.core.jwt
             return Json::parse(payloadJson).asTable();
         }
 
-        fnc isExpired(token: String) -> Bool
+        fn isExpired(token: String) -> Bool
         {
             let payload: Map<String, JsonValue> = Jwt::extractPayload(token);
             if payload.contains("exp")

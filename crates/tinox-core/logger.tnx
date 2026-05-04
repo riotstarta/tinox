@@ -4,12 +4,12 @@ namespace tinox.core.logger
 {
     class Logger
     {
-        fnc new(name: String) -> Logger
+        fn new(name: String) -> Logger
         {
             return Logger { name: name, level: LogLevel::Info };
         }
 
-        fnc debug(logger: Logger, message: String) -> Unit
+        fn debug(logger: Logger, message: String) -> Unit
         {
             if logger.level <= LogLevel::Debug
             {
@@ -17,7 +17,7 @@ namespace tinox.core.logger
             }
         }
 
-        fnc info(logger: Logger, message: String) -> Unit
+        fn info(logger: Logger, message: String) -> Unit
         {
             if logger.level <= LogLevel::Info
             {
@@ -25,7 +25,7 @@ namespace tinox.core.logger
             }
         }
 
-        fnc warn(logger: Logger, message: String) -> Unit
+        fn warn(logger: Logger, message: String) -> Unit
         {
             if logger.level <= LogLevel::Warn
             {
@@ -33,7 +33,7 @@ namespace tinox.core.logger
             }
         }
 
-        fnc error(logger: Logger, message: String) -> Unit
+        fn error(logger: Logger, message: String) -> Unit
         {
             if logger.level <= LogLevel::Error
             {
@@ -41,12 +41,12 @@ namespace tinox.core.logger
             }
         }
 
-        fnc setLevel(logger: Logger, level: LogLevel) -> Unit
+        fn setLevel(logger: Logger, level: LogLevel) -> Unit
         {
             logger.level = level;
         }
 
-        fnc log(logger: Logger, level: String, message: String) -> Unit
+        fn log(logger: Logger, level: String, message: String) -> Unit
         {
             let timestamp: String = Time::now().toString();
             print("[");
@@ -62,9 +62,9 @@ namespace tinox.core.logger
 
     class LogLevel
     {
-        fnc Debug() -> LogLevel { return LogLevel { value: 0 }; }
-        fnc Info() -> LogLevel { return LogLevel { value: 1 }; }
-        fnc Warn() -> LogLevel { return LogLevel { value: 2 }; }
-        fnc Error() -> LogLevel { return LogLevel { value: 3 }; }
+        fn Debug() -> LogLevel { return LogLevel { value: 0 }; }
+        fn Info() -> LogLevel { return LogLevel { value: 1 }; }
+        fn Warn() -> LogLevel { return LogLevel { value: 2 }; }
+        fn Error() -> LogLevel { return LogLevel { value: 3 }; }
     }
 }

@@ -51,10 +51,10 @@
       <h3>Template</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>render</td><td>fnc render(template: String, data: Map&lt;String, JsonValue&gt;) -&gt; String</td><td>{{key}} durch Werte aus data ersetzen</td></tr>
-        <tr><td>renderLoop</td><td>fnc renderLoop(template, items, itemVar: String) -&gt; String</td><td>Template für jedes Element der Liste rendern</td></tr>
-        <tr><td>compile</td><td>fnc compile(template: String) -&gt; CompiledTemplate</td><td>Template vorkompilieren (für Wiederverwendung)</td></tr>
-        <tr><td>execute</td><td>fnc execute(tpl: CompiledTemplate, data: Map&lt;String, JsonValue&gt;) -&gt; String</td><td>Vorkompiliertes Template ausführen</td></tr>
+        <tr><td>render</td><td>fn render(template: String, data: Map&lt;String, JsonValue&gt;) -&gt; String</td><td>{{key}} durch Werte aus data ersetzen</td></tr>
+        <tr><td>renderLoop</td><td>fn renderLoop(template, items, itemVar: String) -&gt; String</td><td>Template für jedes Element der Liste rendern</td></tr>
+        <tr><td>compile</td><td>fn compile(template: String) -&gt; CompiledTemplate</td><td>Template vorkompilieren (für Wiederverwendung)</td></tr>
+        <tr><td>execute</td><td>fn execute(tpl: CompiledTemplate, data: Map&lt;String, JsonValue&gt;) -&gt; String</td><td>Vorkompiliertes Template ausführen</td></tr>
       </table>
     </div>
 

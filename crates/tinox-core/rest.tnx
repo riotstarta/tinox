@@ -30,7 +30,7 @@ namespace tinox.core.rest
          * @param baseUrl the base URL for all requests (e.g., "https://api.example.com")
          * @return a new RestClient instance
          */
-        fnc new(baseUrl: String) -> RestClient
+        fn new(baseUrl: String) -> RestClient
         {
             return RestClient { baseUrl: baseUrl, headers: [], timeout: 30000 };
         }
@@ -42,7 +42,7 @@ namespace tinox.core.rest
          * @param defaultHeaders list of "Key: Value" header strings
          * @return a new RestClient instance
          */
-        fnc newWithHeaders(baseUrl: String, defaultHeaders: List<String>) -> RestClient
+        fn newWithHeaders(baseUrl: String, defaultHeaders: List<String>) -> RestClient
         {
             return RestClient { baseUrl: baseUrl, headers: defaultHeaders, timeout: 30000 };
         }
@@ -272,7 +272,7 @@ namespace tinox.core.rest
          * @param body the response body
          * @return a new RestResponse instance
          */
-        fnc new(statusCode: Int64, body: String) -> RestResponse
+        fn new(statusCode: Int64, body: String) -> RestResponse
         {
             let isOk: Bool = statusCode >= 200 && statusCode < 300;
             return RestResponse { statusCode: statusCode, body: body, ok: isOk };
@@ -284,7 +284,7 @@ namespace tinox.core.rest
          * @param response the raw HTTP response
          * @return a RestResponse instance
          */
-        fnc fromHttp(response: HttpResponse) -> RestResponse
+        fn fromHttp(response: HttpResponse) -> RestResponse
         {
             let code: Int64 = response.statusCode();
             let bodyText: String = response.body();
@@ -382,7 +382,7 @@ namespace tinox.core.rest
          * @param path the path to append (e.g., "/users")
          * @return the combined URL
          */
-        fnc build(baseUrl: String, path: String) -> String
+        fn build(baseUrl: String, path: String) -> String
         {
             let base: String = baseUrl.trim();
             if base.endsWith("/") && path.startsWith("/")
@@ -404,7 +404,7 @@ namespace tinox.core.rest
          * @param params map of query parameter key-value pairs
          * @return the full URL with encoded query string
          */
-        fnc buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
+        fn buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
         {
             let url: String = Url::build(baseUrl, path);
             if params.len() == 0
@@ -437,7 +437,7 @@ namespace tinox.core.rest
          * @param s the string to encode
          * @return the percent-encoded string
          */
-        fnc encode(s: String) -> String
+        fn encode(s: String) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -466,7 +466,7 @@ namespace tinox.core.rest
          * @param ch a single character string
          * @return true if the character is unreserved
          */
-        fnc isUnreserved(ch: String) -> Bool
+        fn isUnreserved(ch: String) -> Bool
         {
             let code: Int64 = ch.charCodeAt(0);
             if code >= 65 && code <= 90
@@ -494,7 +494,7 @@ namespace tinox.core.rest
          * @param n the value to convert (0-255)
          * @return the hex string (e.g., "0F" for 15)
          */
-        fnc toHex(n: Int64) -> String
+        fn toHex(n: Int64) -> String
         {
             let hex: String = "0123456789ABCDEF";
             let high: Int64 = (n / 16) % 16;
@@ -510,7 +510,7 @@ namespace tinox.core.rest
          * @param segments list of path segments
          * @return a clean joined path
          */
-        fnc joinPath(segments: List<String>) -> String
+        fn joinPath(segments: List<String>) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -560,7 +560,7 @@ namespace tinox.core.rest
          * @param baseUrl the base URL for requests
          * @return a new RequestBuilder instance
          */
-        fnc new(baseUrl: String) -> RequestBuilder
+        fn new(baseUrl: String) -> RequestBuilder
         {
             return RequestBuilder { baseUrl: baseUrl, reqHeaders: [], queryParams: [], reqBody: "" };
         }
@@ -793,7 +793,7 @@ namespace tinox.core.rest
          * @param code the numeric status code
          * @return the matching HttpStatus enum value, or NotFound as fallback
          */
-        fnc fromCode(code: Int64) -> HttpStatus
+        fn fromCode(code: Int64) -> HttpStatus
         {
             match code
             {
@@ -828,7 +828,7 @@ namespace tinox.core.rest
          * @param status the HttpStatus enum value
          * @return the numeric HTTP status code
          */
-        fnc toCode(status: HttpStatus) -> Int64
+        fn toCode(status: HttpStatus) -> Int64
         {
             match status
             {
@@ -862,7 +862,7 @@ namespace tinox.core.rest
          * @param code the numeric status code
          * @return true if the code is in the 200-299 range
          */
-        fnc isSuccess(code: Int64) -> Bool
+        fn isSuccess(code: Int64) -> Bool
         {
             return code >= 200 && code < 300;
         }
@@ -873,7 +873,7 @@ namespace tinox.core.rest
          * @param code the numeric status code
          * @return true if the code is in the 400-499 range
          */
-        fnc isClientError(code: Int64) -> Bool
+        fn isClientError(code: Int64) -> Bool
         {
             return code >= 400 && code < 500;
         }
@@ -884,7 +884,7 @@ namespace tinox.core.rest
          * @param code the numeric status code
          * @return true if the code is in the 500-599 range
          */
-        fnc isServerError(code: Int64) -> Bool
+        fn isServerError(code: Int64) -> Bool
         {
             return code >= 500 && code < 600;
         }
@@ -920,7 +920,7 @@ namespace tinox.core.rest
          * @param mediaType the MediaType enum value
          * @return the MIME type string (e.g., "application/json")
          */
-        fnc toString(mediaType: MediaType) -> String
+        fn toString(mediaType: MediaType) -> String
         {
             match mediaType
             {

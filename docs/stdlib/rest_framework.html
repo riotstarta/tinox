@@ -83,7 +83,7 @@
         <tr><th>Methode / Feld</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>routes</td><td>List&lt;RouteEntry&gt;</td><td>Registrierte Routen dieses Controllers</td></tr>
         <tr><td>basePath</td><td>String</td><td>Basis-Pfad für alle Routen</td></tr>
-        <tr><td>new</td><td>fnc new() -&gt; RestController</td><td>Neuen Controller erstellen</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; RestController</td><td>Neuen Controller erstellen</td></tr>
         <tr><td>route</td><td>fn route(method: String, path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RouteEntry</td><td>Route manuell registrieren</td></tr>
       </table>
     </div>
@@ -92,7 +92,7 @@
       <h3>RestApi</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(port: Int64) -&gt; RestApi</td><td>REST-API auf Port erstellen</td></tr>
+        <tr><td>new</td><td>fn new(port: Int64) -&gt; RestApi</td><td>REST-API auf Port erstellen</td></tr>
         <tr><td>register</td><td>fn register(controller: RestController) -&gt; RestApi</td><td>Controller registrieren</td></tr>
         <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>GET-Route direkt registrieren</td></tr>
         <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>POST-Route direkt registrieren</td></tr>
@@ -117,10 +117,10 @@
         <tr><td>produces</td><td>String</td><td>Antwort-Content-Type</td></tr>
         <tr><td>consumes</td><td>String</td><td>Erwarteter Request-Content-Type</td></tr>
         <tr><td>authType</td><td>String</td><td>Auth-Typ ("bearer", "basic", "")</td></tr>
-        <tr><td>withStatus</td><td>fnc withStatus(code: Int64) -&gt; RouteEntry</td><td>Statuscode setzen</td></tr>
-        <tr><td>withProduces</td><td>fnc withProduces(contentType: String) -&gt; RouteEntry</td><td>Produces setzen</td></tr>
-        <tr><td>withConsumes</td><td>fnc withConsumes(contentType: String) -&gt; RouteEntry</td><td>Consumes setzen</td></tr>
-        <tr><td>withAuth</td><td>fnc withAuth(authType: String) -&gt; RouteEntry</td><td>Auth-Typ setzen</td></tr>
+        <tr><td>withStatus</td><td>fn withStatus(code: Int64) -&gt; RouteEntry</td><td>Statuscode setzen</td></tr>
+        <tr><td>withProduces</td><td>fn withProduces(contentType: String) -&gt; RouteEntry</td><td>Produces setzen</td></tr>
+        <tr><td>withConsumes</td><td>fn withConsumes(contentType: String) -&gt; RouteEntry</td><td>Consumes setzen</td></tr>
+        <tr><td>withAuth</td><td>fn withAuth(authType: String) -&gt; RouteEntry</td><td>Auth-Typ setzen</td></tr>
       </table>
     </div>
 

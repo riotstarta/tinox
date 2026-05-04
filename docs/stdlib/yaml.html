@@ -51,8 +51,8 @@
       <h3>Yaml</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>parse</td><td>fnc parse(content: String) -&gt; YamlValue</td><td>YAML-String parsen</td></tr>
-        <tr><td>stringify</td><td>fnc stringify(value: YamlValue) -&gt; String</td><td>YamlValue zu YAML-String serialisieren</td></tr>
+        <tr><td>parse</td><td>fn parse(content: String) -&gt; YamlValue</td><td>YAML-String parsen</td></tr>
+        <tr><td>stringify</td><td>fn stringify(value: YamlValue) -&gt; String</td><td>YamlValue zu YAML-String serialisieren</td></tr>
       </table>
     </div>
 
@@ -60,7 +60,7 @@
       <h3>YamlValue</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>isString/isInt/isFloat/isBool/isList/isMap</td><td>fnc isX() -&gt; Bool</td><td>Typ-Prüfung</td></tr>
+        <tr><td>isString/isInt/isFloat/isBool/isList/isMap</td><td>fn isX() -&gt; Bool</td><td>Typ-Prüfung</td></tr>
         <tr><td>stringValue</td><td>String</td><td>String-Wert (wenn isString)</td></tr>
         <tr><td>intValue</td><td>Int64</td><td>Integer-Wert (wenn isInt)</td></tr>
         <tr><td>floatValue</td><td>Float64</td><td>Float-Wert (wenn isFloat)</td></tr>

@@ -4,12 +4,12 @@ namespace tinox.core.graph
 {
     class Graph<V>
     {
-        fnc new() -> Graph<V>
+        fn new() -> Graph<V>
         {
             return Graph<V> { nodes: Map::new(), edges: Map::new() };
         }
 
-        fnc addNode(graph: Graph<V>, id: String, value: V) -> Unit
+        fn addNode(graph: Graph<V>, id: String, value: V) -> Unit
         {
             graph.nodes[id] = value;
             if graph.edges.contains(id) == false
@@ -18,7 +18,7 @@ namespace tinox.core.graph
             }
         }
 
-        fnc addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Unit
+        fn addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Unit
         {
             if graph.edges.contains(from) == false
             {
@@ -27,7 +27,7 @@ namespace tinox.core.graph
             graph.edges[from].push(GraphEdge { to: to, weight: weight });
         }
 
-        fnc neighbors(graph: Graph<V>, id: String) -> List<GraphEdge>
+        fn neighbors(graph: Graph<V>, id: String) -> List<GraphEdge>
         {
             if graph.edges.contains(id) == false
             {
@@ -36,7 +36,7 @@ namespace tinox.core.graph
             return graph.edges[id];
         }
 
-        fnc bfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
+        fn bfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
         {
             let visited: Map<String, Bool> = Map::new();
             let queue: List<String> = [start];
@@ -63,13 +63,13 @@ namespace tinox.core.graph
             }
         }
 
-        fnc dfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
+        fn dfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
         {
             let visited: Map<String, Bool> = Map::new();
             Graph::dfsHelper(graph, start, visited, visitor);
         }
 
-        fnc dfsHelper(graph: Graph<V>, current: String, visited: Map<String, Bool>, visitor: fnc(String) -> Unit) -> Unit
+        fn dfsHelper(graph: Graph<V>, current: String, visited: Map<String, Bool>, visitor: fnc(String) -> Unit) -> Unit
         {
             visited[current] = true;
             visitor(current);
@@ -85,7 +85,7 @@ namespace tinox.core.graph
             }
         }
 
-        fnc dijkstra(graph: Graph<V>, start: String, end: String) -> Float64
+        fn dijkstra(graph: Graph<V>, start: String, end: String) -> Float64
         {
             let distances: Map<String, Float64> = Map::new();
             let keys: List<String> = graph.nodes.keys();

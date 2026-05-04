@@ -4,23 +4,23 @@ namespace tinox.core.heap
 {
     class Heap<T>
     {
-        fnc new() -> Heap<T>
+        fn new() -> Heap<T>
         {
             return Heap<T> { items: [], comparator: fnc(a: T, b: T) -> Bool { return a < b; } };
         }
 
-        fnc newWithCompare(comparator: fnc(T, T) -> Bool) -> Heap<T>
+        fn newWithCompare(comparator: fnc(T, T) -> Bool) -> Heap<T>
         {
             return Heap<T> { items: [], comparator: comparator };
         }
 
-        fnc push(heap: Heap<T>, item: T) -> Unit
+        fn push(heap: Heap<T>, item: T) -> Unit
         {
             heap.items.push(item);
             Heap::siftUp(heap, heap.items.len() - 1);
         }
 
-        fnc pop(heap: Heap<T>) -> T
+        fn pop(heap: Heap<T>) -> T
         {
             if heap.items.len() == 0
             {
@@ -36,7 +36,7 @@ namespace tinox.core.heap
             return result;
         }
 
-        fnc peek(heap: Heap<T>) -> T
+        fn peek(heap: Heap<T>) -> T
         {
             if heap.items.len() == 0
             {
@@ -45,7 +45,7 @@ namespace tinox.core.heap
             return heap.items[0];
         }
 
-        fnc siftUp(heap: Heap<T>, startIndex: Int64) -> Unit
+        fn siftUp(heap: Heap<T>, startIndex: Int64) -> Unit
         {
             var index: Int64 = startIndex;
             while index > 0
@@ -65,7 +65,7 @@ namespace tinox.core.heap
             }
         }
 
-        fnc siftDown(heap: Heap<T>, startIndex: Int64) -> Unit
+        fn siftDown(heap: Heap<T>, startIndex: Int64) -> Unit
         {
             var index: Int64 = startIndex;
             let len: Int64 = heap.items.len();
@@ -96,17 +96,17 @@ namespace tinox.core.heap
             }
         }
 
-        fnc isEmpty(heap: Heap<T>) -> Bool
+        fn isEmpty(heap: Heap<T>) -> Bool
         {
             return heap.items.len() == 0;
         }
 
-        fnc size(heap: Heap<T>) -> Int64
+        fn size(heap: Heap<T>) -> Int64
         {
             return heap.items.len();
         }
 
-        fnc buildHeap(heap: Heap<T>, items: List<T>) -> Unit
+        fn buildHeap(heap: Heap<T>, items: List<T>) -> Unit
         {
             heap.items = items;
             var i: Int64 = (heap.items.len() / 2) - 1;
@@ -120,22 +120,22 @@ namespace tinox.core.heap
 
     class MinHeap<T>
     {
-        fnc new() -> MinHeap<T>
+        fn new() -> MinHeap<T>
         {
             return MinHeap<T> { heap: Heap::new() };
         }
 
-        fnc push(h: MinHeap<T>, item: T) -> Unit
+        fn push(h: MinHeap<T>, item: T) -> Unit
         {
             Heap::push(h.heap, item);
         }
 
-        fnc pop(h: MinHeap<T>) -> T
+        fn pop(h: MinHeap<T>) -> T
         {
             return Heap::pop(h.heap);
         }
 
-        fnc peek(h: MinHeap<T>) -> T
+        fn peek(h: MinHeap<T>) -> T
         {
             return Heap::peek(h.heap);
         }
@@ -143,23 +143,23 @@ namespace tinox.core.heap
 
     class MaxHeap<T>
     {
-        fnc new() -> MaxHeap<T>
+        fn new() -> MaxHeap<T>
         {
             let comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };
             return MaxHeap<T> { heap: Heap::newWithCompare(comp) };
         }
 
-        fnc push(h: MaxHeap<T>, item: T) -> Unit
+        fn push(h: MaxHeap<T>, item: T) -> Unit
         {
             Heap::push(h.heap, item);
         }
 
-        fnc pop(h: MaxHeap<T>) -> T
+        fn pop(h: MaxHeap<T>) -> T
         {
             return Heap::pop(h.heap);
         }
 
-        fnc peek(h: MaxHeap<T>) -> T
+        fn peek(h: MaxHeap<T>) -> T
         {
             return Heap::peek(h.heap);
         }

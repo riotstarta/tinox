@@ -18,7 +18,7 @@ namespace tinox.core.io
          *
          * @return a new Buffer instance
          */
-        fnc newBuffer() -> Buffer
+        fn newBuffer() -> Buffer
         {
             return Buffer::new();
         }
@@ -28,7 +28,7 @@ namespace tinox.core.io
          *
          * @param value the string to print
          */
-        fnc printLine(value: String) -> Unit
+        fn printLine(value: String) -> Unit
         {
             print(value);
             print("\n");
@@ -39,7 +39,7 @@ namespace tinox.core.io
          *
          * @param title the header text to display
          */
-        fnc printHeader(title: String) -> Unit
+        fn printHeader(title: String) -> Unit
         {
             print("=== ");
             print(title);
@@ -67,7 +67,7 @@ namespace tinox.core.io
          * @param path the file path
          * @return a new File instance
          */
-        fnc new(path: String) -> File
+        fn new(path: String) -> File
         {
             return File { path: path, handle: 0 };
         }
@@ -117,7 +117,7 @@ namespace tinox.core.io
          * @param filename the filename (e.g., "file.txt")
          * @return the extension without the dot (e.g., "txt"), or empty string
          */
-        fnc getExtension(filename: String) -> String
+        fn getExtension(filename: String) -> String
         {
             var dotIndex: Int64 = filename.lastIndexOf(".");
             if dotIndex == -1
@@ -133,7 +133,7 @@ namespace tinox.core.io
          * @param filePath the full path (e.g., "/path/to/file.txt")
          * @return the filename portion (e.g., "file.txt")
          */
-        fnc getFileName(filePath: String) -> String
+        fn getFileName(filePath: String) -> String
         {
             var lastSlash: Int64 = filePath.lastIndexOf("/");
             if lastSlash == -1
@@ -149,7 +149,7 @@ namespace tinox.core.io
          * @param filePath the full path (e.g., "/path/to/file.txt")
          * @return the directory portion (e.g., "/path/to"), or empty string
          */
-        fnc getDirectory(filePath: String) -> String
+        fn getDirectory(filePath: String) -> String
         {
             var lastSlash: Int64 = filePath.lastIndexOf("/");
             if lastSlash == -1
@@ -166,7 +166,7 @@ namespace tinox.core.io
          * @param file the filename
          * @return the combined path (e.g., "dir/file")
          */
-        fnc join(dir: String, file: String) -> String
+        fn join(dir: String, file: String) -> String
         {
             return dir + "/" + file;
         }
@@ -188,7 +188,7 @@ namespace tinox.core.io
          *
          * @return a new Buffer instance
          */
-        fnc new() -> Buffer
+        fn new() -> Buffer
         {
             return Buffer { data: "" };
         }

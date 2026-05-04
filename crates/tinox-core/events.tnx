@@ -4,12 +4,12 @@ namespace tinox.core.events
 {
     class EventEmitter
     {
-        fnc new() -> EventEmitter
+        fn new() -> EventEmitter
         {
             return EventEmitter { listeners: Map::new() };
         }
 
-        fnc on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
         {
             if emitter.listeners.contains(event) == false
             {
@@ -19,7 +19,7 @@ namespace tinox.core.events
             handlers.push(handler);
         }
 
-        fnc once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
         {
             let wrapper: fnc(JsonValue) -> Unit = ev => {
                 handler(ev);
@@ -27,7 +27,7 @@ namespace tinox.core.events
             EventEmitter::on(emitter, event, wrapper);
         }
 
-        fnc emit(emitter: EventEmitter, event: String, data: JsonValue) -> Unit
+        fn emit(emitter: EventEmitter, event: String, data: JsonValue) -> Unit
         {
             if emitter.listeners.contains(event) == false
             {
@@ -42,7 +42,7 @@ namespace tinox.core.events
             }
         }
 
-        fnc removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
         {
             if emitter.listeners.contains(event) == false
             {
@@ -61,12 +61,12 @@ namespace tinox.core.events
             }
         }
 
-        fnc removeAllListeners(emitter: EventEmitter, event: String) -> Unit
+        fn removeAllListeners(emitter: EventEmitter, event: String) -> Unit
         {
             emitter.listeners.remove(event);
         }
 
-        fnc listenerCount(emitter: EventEmitter, event: String) -> Int64
+        fn listenerCount(emitter: EventEmitter, event: String) -> Int64
         {
             if emitter.listeners.contains(event) == false
             {

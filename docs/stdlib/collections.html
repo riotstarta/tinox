@@ -52,7 +52,7 @@
       <p style="color:var(--muted); margin-bottom:1rem;">LIFO-Stack für Integer-Werte. Wirft Fehler bei Pop/Peek auf leerem Stack.</p>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; Stack</td><td>Leeren Stack erstellen</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; Stack</td><td>Leeren Stack erstellen</td></tr>
         <tr><td>push</td><td>fn push(value: Int64) -&gt; Unit</td><td>Wert oben auf Stack legen</td></tr>
         <tr><td>pop</td><td>fn pop() -&gt; Int64</td><td>Oberstes Element entfernen und zurückgeben</td></tr>
         <tr><td>peek</td><td>fn peek() -&gt; Int64</td><td>Oberstes Element ansehen (ohne Entfernen)</td></tr>
@@ -66,7 +66,7 @@
       <p style="color:var(--muted); margin-bottom:1rem;">FIFO-Queue für Integer-Werte.</p>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; Queue</td><td>Leere Queue erstellen</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; Queue</td><td>Leere Queue erstellen</td></tr>
         <tr><td>enqueue</td><td>fn enqueue(value: Int64) -&gt; Unit</td><td>Element hinten einreihen</td></tr>
         <tr><td>dequeue</td><td>fn dequeue() -&gt; Int64</td><td>Vorderstes Element entfernen</td></tr>
         <tr><td>peek</td><td>fn peek() -&gt; Int64</td><td>Vorderstes Element ansehen</td></tr>
@@ -82,7 +82,7 @@
         <tr><th>Feld / Methode</th><th>Typ / Signatur</th><th>Beschreibung</th></tr>
         <tr><td>first</td><td>Int64</td><td>Erster Wert</td></tr>
         <tr><td>second</td><td>Int64</td><td>Zweiter Wert</td></tr>
-        <tr><td>new</td><td>fnc new(first, second: Int64) -&gt; Pair</td><td>Pair erstellen</td></tr>
+        <tr><td>new</td><td>fn new(first, second: Int64) -&gt; Pair</td><td>Pair erstellen</td></tr>
         <tr><td>getFirst</td><td>fn getFirst() -&gt; Int64</td><td>Ersten Wert zurückgeben</td></tr>
         <tr><td>getSecond</td><td>fn getSecond() -&gt; Int64</td><td>Zweiten Wert zurückgeben</td></tr>
       </table>

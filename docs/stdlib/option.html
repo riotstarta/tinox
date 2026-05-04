@@ -51,13 +51,13 @@
       <h3>Option</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>none</td><td>fnc none() -&gt; Option</td><td>Leere Option erstellen</td></tr>
-        <tr><td>some</td><td>fnc some(value: Int64) -&gt; Option</td><td>Option mit Wert erstellen</td></tr>
-        <tr><td>isSome</td><td>fnc isSome() -&gt; Bool</td><td>Hat die Option einen Wert?</td></tr>
-        <tr><td>isNone</td><td>fnc isNone() -&gt; Bool</td><td>Ist die Option leer?</td></tr>
-        <tr><td>unwrap</td><td>fnc unwrap() -&gt; Int64</td><td>Wert extrahieren (throws wenn None)</td></tr>
-        <tr><td>unwrapOr</td><td>fnc unwrapOr(defaultValue: Int64) -&gt; Int64</td><td>Wert oder Fallback zurückgeben</td></tr>
-        <tr><td>map</td><td>fnc map(transform: fnc(Int64) -&gt; Int64) -&gt; Option</td><td>Wert transformieren (None bleibt None)</td></tr>
+        <tr><td>none</td><td>fn none() -&gt; Option</td><td>Leere Option erstellen</td></tr>
+        <tr><td>some</td><td>fn some(value: Int64) -&gt; Option</td><td>Option mit Wert erstellen</td></tr>
+        <tr><td>isSome</td><td>fn isSome() -&gt; Bool</td><td>Hat die Option einen Wert?</td></tr>
+        <tr><td>isNone</td><td>fn isNone() -&gt; Bool</td><td>Ist die Option leer?</td></tr>
+        <tr><td>unwrap</td><td>fn unwrap() -&gt; Int64</td><td>Wert extrahieren (throws wenn None)</td></tr>
+        <tr><td>unwrapOr</td><td>fn unwrapOr(defaultValue: Int64) -&gt; Int64</td><td>Wert oder Fallback zurückgeben</td></tr>
+        <tr><td>map</td><td>fn map(transform: fnc(Int64) -&gt; Int64) -&gt; Option</td><td>Wert transformieren (None bleibt None)</td></tr>
       </table>
     </div>
 

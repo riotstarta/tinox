@@ -4,58 +4,58 @@ namespace tinox.core.validation
 {
     class Validation
     {
-        fnc isEmail(s: String) -> Bool
+        fn isEmail(s: String) -> Bool
         {
             let pattern: String = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
             return regexIsMatch(pattern, s);
         }
 
-        fnc isUrl(s: String) -> Bool
+        fn isUrl(s: String) -> Bool
         {
             let pattern: String = "https?://[a-zA-Z0-9.-]+";
             return regexIsMatch(pattern, s);
         }
 
-        fnc isNumeric(s: String) -> Bool
+        fn isNumeric(s: String) -> Bool
         {
             let pattern: String = "^[0-9]+$";
             return regexIsMatch(pattern, s);
         }
 
-        fnc isAlpha(s: String) -> Bool
+        fn isAlpha(s: String) -> Bool
         {
             let pattern: String = "^[a-zA-Z]+$";
             return regexIsMatch(pattern, s);
         }
 
-        fnc isAlphanumeric(s: String) -> Bool
+        fn isAlphanumeric(s: String) -> Bool
         {
             let pattern: String = "^[a-zA-Z0-9]+$";
             return regexIsMatch(pattern, s);
         }
 
-        fnc isPhone(s: String) -> Bool
+        fn isPhone(s: String) -> Bool
         {
             let pattern: String = "^[0-9+\\-\\s()]+$";
             return regexIsMatch(pattern, s);
         }
 
-        fnc minLength(s: String, min: Int64) -> Bool
+        fn minLength(s: String, min: Int64) -> Bool
         {
             return s.len() >= min;
         }
 
-        fnc maxLength(s: String, max: Int64) -> Bool
+        fn maxLength(s: String, max: Int64) -> Bool
         {
             return s.len() <= max;
         }
 
-        fnc isInRange(n: Int64, min: Int64, max: Int64) -> Bool
+        fn isInRange(n: Int64, min: Int64, max: Int64) -> Bool
         {
             return n >= min && n <= max;
         }
 
-        fnc matchesPattern(s: String, pattern: String) -> Bool
+        fn matchesPattern(s: String, pattern: String) -> Bool
         {
             return regexIsMatch(pattern, s);
         }

@@ -4,12 +4,12 @@ namespace tinox.core.semaphore
 {
     class Semaphore
     {
-        fnc new(count: Int64) -> Semaphore
+        fn new(count: Int64) -> Semaphore
         {
             return Semaphore { count: count, waiting: [] };
         }
 
-        fnc acquire(sem: Semaphore) -> Unit
+        fn acquire(sem: Semaphore) -> Unit
         {
             if sem.count > 0
             {
@@ -19,12 +19,12 @@ namespace tinox.core.semaphore
             throw "Semaphore locked";
         }
 
-        fnc release(sem: Semaphore) -> Unit
+        fn release(sem: Semaphore) -> Unit
         {
             sem.count = sem.count + 1;
         }
 
-        fnc tryAcquire(sem: Semaphore) -> Bool
+        fn tryAcquire(sem: Semaphore) -> Bool
         {
             if sem.count > 0
             {
@@ -37,12 +37,12 @@ namespace tinox.core.semaphore
 
     class Mutex
     {
-        fnc new() -> Mutex
+        fn new() -> Mutex
         {
             return Mutex { locked: false, queue: [] };
         }
 
-        fnc lock(mutex: Mutex) -> Unit
+        fn lock(mutex: Mutex) -> Unit
         {
             if mutex.locked == false
             {
@@ -52,12 +52,12 @@ namespace tinox.core.semaphore
             throw "Mutex already locked";
         }
 
-        fnc unlock(mutex: Mutex) -> Unit
+        fn unlock(mutex: Mutex) -> Unit
         {
             mutex.locked = false;
         }
 
-        fnc tryLock(mutex: Mutex) -> Bool
+        fn tryLock(mutex: Mutex) -> Bool
         {
             if mutex.locked == false
             {
@@ -70,12 +70,12 @@ namespace tinox.core.semaphore
 
     class RWLock
     {
-        fnc new() -> RWLock
+        fn new() -> RWLock
         {
             return RWLock { readers: 0, writers: 0 };
         }
 
-        fnc readLock(lock: RWLock) -> Unit
+        fn readLock(lock: RWLock) -> Unit
         {
             if lock.writers > 0
             {
@@ -84,17 +84,17 @@ namespace tinox.core.semaphore
             lock.readers = lock.readers + 1;
         }
 
-        fnc readUnlock(lock: RWLock) -> Unit
+        fn readUnlock(lock: RWLock) -> Unit
         {
             lock.readers = lock.readers - 1;
         }
 
-        fnc writeLock(lock: RWLock) -> Unit
+        fn writeLock(lock: RWLock) -> Unit
         {
             lock.writers = lock.writers + 1;
         }
 
-        fnc writeUnlock(lock: RWLock) -> Unit
+        fn writeUnlock(lock: RWLock) -> Unit
         {
             lock.writers = lock.writers - 1;
         }

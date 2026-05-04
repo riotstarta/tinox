@@ -18,7 +18,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return the number of characters in the string
          */
-        fnc length(s: String) -> Int64
+        fn length(s: String) -> Int64
         {
             return s.len();
         }
@@ -29,7 +29,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return true if the string has zero length
          */
-        fnc isEmpty(s: String) -> Bool
+        fn isEmpty(s: String) -> Bool
         {
             return s.len() == 0;
         }
@@ -40,7 +40,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return a new string with all uppercase characters
          */
-        fnc toUpperCase(s: String) -> String
+        fn toUpperCase(s: String) -> String
         {
             return s.toUpper();
         }
@@ -51,7 +51,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return a new string with all lowercase characters
          */
-        fnc toLowerCase(s: String) -> String
+        fn toLowerCase(s: String) -> String
         {
             return s.toLower();
         }
@@ -62,7 +62,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return a new string with whitespace removed from both ends
          */
-        fnc trim(s: String) -> String
+        fn trim(s: String) -> String
         {
             return s.trim();
         }
@@ -74,7 +74,7 @@ namespace tinox.core.string
          * @param needle the substring to search for
          * @return true if needle is found in haystack
          */
-        fnc contains(haystack: String, needle: String) -> Bool
+        fn contains(haystack: String, needle: String) -> Bool
         {
             return haystack.contains(needle);
         }
@@ -86,7 +86,7 @@ namespace tinox.core.string
          * @param prefix the prefix to check for
          * @return true if s starts with prefix
          */
-        fnc startsWith(s: String, prefix: String) -> Bool
+        fn startsWith(s: String, prefix: String) -> Bool
         {
             return s.startsWith(prefix);
         }
@@ -98,7 +98,7 @@ namespace tinox.core.string
          * @param suffix the suffix to check for
          * @return true if s ends with suffix
          */
-        fnc endsWith(s: String, suffix: String) -> Bool
+        fn endsWith(s: String, suffix: String) -> Bool
         {
             return s.endsWith(suffix);
         }
@@ -111,7 +111,7 @@ namespace tinox.core.string
          * @param end the ending index (exclusive)
          * @return the extracted substring
          */
-        fnc substring(s: String, start: Int64, end: Int64) -> String
+        fn substring(s: String, start: Int64, end: Int64) -> String
         {
             return s.substring(start, end);
         }
@@ -123,7 +123,7 @@ namespace tinox.core.string
          * @param count the number of repetitions (must be non-negative)
          * @return a new string with s repeated count times
          */
-        fnc repeat(s: String, count: Int64) -> String
+        fn repeat(s: String, count: Int64) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -143,7 +143,7 @@ namespace tinox.core.string
          * @param new the replacement substring
          * @return a new string with all occurrences replaced
          */
-        fnc replace(s: String, old: String, repl: String) -> String
+        fn replace(s: String, old: String, repl: String) -> String
         {
             return s.replace(old, repl);
         }
@@ -154,7 +154,7 @@ namespace tinox.core.string
          * @param s the input string
          * @return a new string with characters in reverse order
          */
-        fnc reverse(s: String) -> String
+        fn reverse(s: String) -> String
         {
             return s.reverse();
         }
@@ -166,7 +166,7 @@ namespace tinox.core.string
          * @param delimiter the delimiter to split on
          * @return a list of substrings
          */
-        fnc split(s: String, delimiter: String) -> List<String>
+        fn split(s: String, delimiter: String) -> List<String>
         {
             return s.split(delimiter);
         }
@@ -178,7 +178,7 @@ namespace tinox.core.string
          * @param separator the string to insert between parts
          * @return the joined string
          */
-        fnc join(parts: List<String>, separator: String) -> String
+        fn join(parts: List<String>, separator: String) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -200,7 +200,7 @@ namespace tinox.core.string
          * @param n the integer to convert
          * @return the string representation of n
          */
-        fnc intToString(n: Int64) -> String
+        fn intToString(n: Int64) -> String
         {
             return n.toString();
         }
@@ -211,7 +211,7 @@ namespace tinox.core.string
          * @param f the float to convert
          * @return the string representation of f
          */
-        fnc floatToString(f: Float64) -> String
+        fn floatToString(f: Float64) -> String
         {
             return f.toString();
         }

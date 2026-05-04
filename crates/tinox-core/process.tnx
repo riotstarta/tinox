@@ -4,32 +4,32 @@ namespace tinox.core.process
 {
     class Process
     {
-        fnc exit(code: Int64) -> Unit
+        fn exit(code: Int64) -> Unit
         {
             processExit(code);
         }
 
-        fnc sleep(ms: Int64) -> Unit
+        fn sleep(ms: Int64) -> Unit
         {
             sleep(ms);
         }
 
-        fnc pid() -> Int64
+        fn pid() -> Int64
         {
             return processId();
         }
 
-        fnc args() -> List<String>
+        fn args() -> List<String>
         {
             return processArgs();
         }
 
-        fnc env(name: String) -> String
+        fn env(name: String) -> String
         {
             return envGet(name);
         }
 
-        fnc setEnv(name: String, value: String) -> Unit
+        fn setEnv(name: String, value: String) -> Unit
         {
             envSet(name, value);
         }

@@ -12,14 +12,14 @@
  *   {
  *       @GET("/users")
  *       @Produces("application/json")
- *       fnc listUsers(ctx: HttpContext) -> Unit
+ *       fn listUsers(ctx: HttpContext) -> Unit
  *       {
  *           ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
  *       }
  *
  *       @GET("/users/:id")
  *       @Produces("application/json")
- *       fnc getUser(ctx: HttpContext) -> Unit
+ *       fn getUser(ctx: HttpContext) -> Unit
  *       {
  *           let id: String = ctx.request.getParam("id");
  *           ctx.response.json("{\"id\": " + id + "}");
@@ -29,7 +29,7 @@
  *       @Consumes("application/json")
  *       @StatusCode(201)
  *       @Produces("application/json")
- *       fnc createUser(ctx: HttpContext) -> Unit
+ *       fn createUser(ctx: HttpContext) -> Unit
  *       {
  *           let data: JsonValue = ctx.request.json();
  *           ctx.response.status(201).json("{\"created\": true}");
@@ -57,12 +57,12 @@ namespace tinox.core.rest_framework
     {
         var path: String;
 
-        fnc new(path: String) -> GET
+        fn new(path: String) -> GET
         {
             return GET { path: path };
         }
 
-        fnc default() -> GET
+        fn default() -> GET
         {
             return GET { path: "" };
         }
@@ -77,12 +77,12 @@ namespace tinox.core.rest_framework
     {
         var path: String;
 
-        fnc new(path: String) -> POST
+        fn new(path: String) -> POST
         {
             return POST { path: path };
         }
 
-        fnc default() -> POST
+        fn default() -> POST
         {
             return POST { path: "" };
         }
@@ -97,12 +97,12 @@ namespace tinox.core.rest_framework
     {
         var path: String;
 
-        fnc new(path: String) -> PUT
+        fn new(path: String) -> PUT
         {
             return PUT { path: path };
         }
 
-        fnc default() -> PUT
+        fn default() -> PUT
         {
             return PUT { path: "" };
         }
@@ -117,12 +117,12 @@ namespace tinox.core.rest_framework
     {
         var path: String;
 
-        fnc new(path: String) -> PATCH
+        fn new(path: String) -> PATCH
         {
             return PATCH { path: path };
         }
 
-        fnc default() -> PATCH
+        fn default() -> PATCH
         {
             return PATCH { path: "" };
         }
@@ -137,12 +137,12 @@ namespace tinox.core.rest_framework
     {
         var path: String;
 
-        fnc new(path: String) -> DELETE
+        fn new(path: String) -> DELETE
         {
             return DELETE { path: path };
         }
 
-        fnc default() -> DELETE
+        fn default() -> DELETE
         {
             return DELETE { path: "" };
         }
@@ -157,7 +157,7 @@ namespace tinox.core.rest_framework
     {
         var value: String;
 
-        fnc new(value: String) -> Path
+        fn new(value: String) -> Path
         {
             return Path { value: value };
         }
@@ -172,7 +172,7 @@ namespace tinox.core.rest_framework
     {
         var value: String;
 
-        fnc new(value: String) -> Produces
+        fn new(value: String) -> Produces
         {
             return Produces { value: value };
         }
@@ -187,7 +187,7 @@ namespace tinox.core.rest_framework
     {
         var value: String;
 
-        fnc new(value: String) -> Consumes
+        fn new(value: String) -> Consumes
         {
             return Consumes { value: value };
         }
@@ -202,7 +202,7 @@ namespace tinox.core.rest_framework
     {
         var value: Int64;
 
-        fnc new(value: Int64) -> StatusCode
+        fn new(value: Int64) -> StatusCode
         {
             return StatusCode { value: value };
         }
@@ -218,7 +218,7 @@ namespace tinox.core.rest_framework
     {
         var value: String;
 
-        fnc new(value: String) -> Auth
+        fn new(value: String) -> Auth
         {
             return Auth { value: value };
         }
@@ -297,30 +297,30 @@ namespace tinox.core.rest_framework
         /** Auth type from @Auth annotation ("bearer", "basic", or empty) */
         var authType: String;
 
-        fnc new(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
+        fn new(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
         {
             return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: "", consumes: "", authType: "" };
         }
 
-        fnc withStatus(code: Int64) -> RouteEntry
+        fn withStatus(code: Int64) -> RouteEntry
         {
             this.statusCode = code;
             return this;
         }
 
-        fnc withProduces(contentType: String) -> RouteEntry
+        fn withProduces(contentType: String) -> RouteEntry
         {
             this.produces = contentType;
             return this;
         }
 
-        fnc withConsumes(contentType: String) -> RouteEntry
+        fn withConsumes(contentType: String) -> RouteEntry
         {
             this.consumes = contentType;
             return this;
         }
 
-        fnc withAuth(authType: String) -> RouteEntry
+        fn withAuth(authType: String) -> RouteEntry
         {
             this.authType = authType;
             return this;
@@ -339,7 +339,7 @@ namespace tinox.core.rest_framework
      *   {
      *       @GET("/")
      *       @Produces("application/json")
-     *       fnc list(ctx: HttpContext) -> Unit
+     *       fn list(ctx: HttpContext) -> Unit
      *       {
      *           ctx.response.json("[]");
      *       }
@@ -353,7 +353,7 @@ namespace tinox.core.rest_framework
         /** Base path for all routes in this controller */
         var basePath: String;
 
-        fnc new() -> RestController
+        fn new() -> RestController
         {
             return RestController { routes: [], basePath: "" };
         }
@@ -419,7 +419,7 @@ namespace tinox.core.rest_framework
         /** Allowed origins for CORS */
         var corsOrigin: String;
 
-        fnc new(port: Int64) -> RestApi
+        fn new(port: Int64) -> RestApi
         {
             return RestApi { server: HttpServer::new(port), routeEntries: [], globalMiddleware: [], corsEnabled: false, corsOrigin: "" };
         }
@@ -707,7 +707,7 @@ namespace tinox.core.rest_framework
          * @param path the route path (e.g., "/:id")
          * @return the combined path
          */
-        fnc join(base: String, path: String) -> String
+        fn join(base: String, path: String) -> String
         {
             if base.len() == 0
             {

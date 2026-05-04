@@ -4,17 +4,17 @@ namespace tinox.core.asm
 {
     class Assembler
     {
-        fnc new() -> Assembler
+        fn new() -> Assembler
         {
             return Assembler { bytecode: [], labels: Map::new() };
         }
 
-        fnc emit(asm: Assembler, op: Int64) -> Unit
+        fn emit(asm: Assembler, op: Int64) -> Unit
         {
             asm.bytecode.push(op);
         }
 
-        fnc emitInt(asm: Assembler, value: Int64) -> Unit
+        fn emitInt(asm: Assembler, value: Int64) -> Unit
         {
             var i: Int64 = 0;
             while i < 8
@@ -24,17 +24,17 @@ namespace tinox.core.asm
             }
         }
 
-        fnc emitLabel(asm: Assembler, name: String) -> Unit
+        fn emitLabel(asm: Assembler, name: String) -> Unit
         {
             asm.labels[name] = asm.bytecode.len();
         }
 
-        fnc resolveLabels(asm: Assembler) -> List<Int64>
+        fn resolveLabels(asm: Assembler) -> List<Int64>
         {
             return asm.bytecode;
         }
 
-        fnc toBytes(asm: Assembler) -> String
+        fn toBytes(asm: Assembler) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -49,21 +49,21 @@ namespace tinox.core.asm
 
     class Ops
     {
-        fnc Nop() -> Int64 { return 0; }
-        fnc Halt() -> Int64 { return 1; }
-        fnc Load() -> Int64 { return 2; }
-        fnc Store() -> Int64 { return 3; }
-        fnc Push() -> Int64 { return 4; }
-        fnc Pop() -> Int64 { return 5; }
-        fnc Add() -> Int64 { return 6; }
-        fnc Sub() -> Int64 { return 7; }
-        fnc Mul() -> Int64 { return 8; }
-        fnc Div() -> Int64 { return 9; }
-        fnc Jmp() -> Int64 { return 10; }
-        fnc Jz() -> Int64 { return 11; }
-        fnc Jnz() -> Int64 { return 12; }
-        fnc Cmp() -> Int64 { return 13; }
-        fnc Call() -> Int64 { return 14; }
-        fnc Ret() -> Int64 { return 15; }
+        fn Nop() -> Int64 { return 0; }
+        fn Halt() -> Int64 { return 1; }
+        fn Load() -> Int64 { return 2; }
+        fn Store() -> Int64 { return 3; }
+        fn Push() -> Int64 { return 4; }
+        fn Pop() -> Int64 { return 5; }
+        fn Add() -> Int64 { return 6; }
+        fn Sub() -> Int64 { return 7; }
+        fn Mul() -> Int64 { return 8; }
+        fn Div() -> Int64 { return 9; }
+        fn Jmp() -> Int64 { return 10; }
+        fn Jz() -> Int64 { return 11; }
+        fn Jnz() -> Int64 { return 12; }
+        fn Cmp() -> Int64 { return 13; }
+        fn Call() -> Int64 { return 14; }
+        fn Ret() -> Int64 { return 15; }
     }
 }

@@ -4,7 +4,7 @@ namespace tinox.core.mathx
 {
     class Mathx
     {
-        fnc gcd(a: Int64, b: Int64) -> Int64
+        fn gcd(a: Int64, b: Int64) -> Int64
         {
             var x: Int64 = a;
             var y: Int64 = b;
@@ -17,12 +17,12 @@ namespace tinox.core.mathx
             return x;
         }
 
-        fnc lcm(a: Int64, b: Int64) -> Int64
+        fn lcm(a: Int64, b: Int64) -> Int64
         {
             return (a * b) / Mathx::gcd(a, b);
         }
 
-        fnc isPrime(n: Int64) -> Bool
+        fn isPrime(n: Int64) -> Bool
         {
             if n < 2
             {
@@ -48,7 +48,7 @@ namespace tinox.core.mathx
             return true;
         }
 
-        fnc nextPrime(n: Int64) -> Int64
+        fn nextPrime(n: Int64) -> Int64
         {
             var candidate: Int64 = n;
             if candidate < 2
@@ -62,7 +62,7 @@ namespace tinox.core.mathx
             return candidate;
         }
 
-        fnc fibonacci(n: Int64) -> Int64
+        fn fibonacci(n: Int64) -> Int64
         {
             if n <= 1
             {
@@ -81,7 +81,7 @@ namespace tinox.core.mathx
             return b;
         }
 
-        fnc combinations(n: Int64, k: Int64) -> Int64
+        fn combinations(n: Int64, k: Int64) -> Int64
         {
             if k > n
             {
@@ -94,7 +94,7 @@ namespace tinox.core.mathx
             return Mathx::factorial(n) / (Mathx::factorial(k) * Mathx::factorial(n - k));
         }
 
-        fnc permutations(n: Int64, k: Int64) -> Int64
+        fn permutations(n: Int64, k: Int64) -> Int64
         {
             if k > n
             {
@@ -103,7 +103,7 @@ namespace tinox.core.mathx
             return Mathx::factorial(n) / Mathx::factorial(n - k);
         }
 
-        fnc factorial(n: Int64) -> Int64
+        fn factorial(n: Int64) -> Int64
         {
             if n <= 1
             {
@@ -119,7 +119,7 @@ namespace tinox.core.mathx
             return result;
         }
 
-        fnc modPow(base: Int64, exp: Int64, mod: Int64) -> Int64
+        fn modPow(base: Int64, exp: Int64, mod: Int64) -> Int64
         {
             var result: Int64 = 1;
             var b: Int64 = base;
@@ -136,7 +136,7 @@ namespace tinox.core.mathx
             return result;
         }
 
-        fnc digitSum(n: Int64) -> Int64
+        fn digitSum(n: Int64) -> Int64
         {
             var sum: Int64 = 0;
             var value: Int64 = n;
@@ -152,7 +152,7 @@ namespace tinox.core.mathx
             return sum;
         }
 
-        fnc digitCount(n: Int64) -> Int64
+        fn digitCount(n: Int64) -> Int64
         {
             if n == 0
             {

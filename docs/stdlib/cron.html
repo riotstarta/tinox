@@ -51,9 +51,9 @@
       <h3>Cron</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>parse</td><td>fnc parse(expr: String) -&gt; CronExpr</td><td>Cron-Ausdruck parsen (5 Felder)</td></tr>
-        <tr><td>nextRun</td><td>fnc nextRun(expr: CronExpr) -&gt; Int64</td><td>Nächste Ausführungszeit in ms</td></tr>
-        <tr><td>matches</td><td>fnc matches(expr: CronExpr, timestamp: Int64) -&gt; Bool</td><td>Prüft ob Zeitstempel zum Ausdruck passt</td></tr>
+        <tr><td>parse</td><td>fn parse(expr: String) -&gt; CronExpr</td><td>Cron-Ausdruck parsen (5 Felder)</td></tr>
+        <tr><td>nextRun</td><td>fn nextRun(expr: CronExpr) -&gt; Int64</td><td>Nächste Ausführungszeit in ms</td></tr>
+        <tr><td>matches</td><td>fn matches(expr: CronExpr, timestamp: Int64) -&gt; Bool</td><td>Prüft ob Zeitstempel zum Ausdruck passt</td></tr>
       </table>
     </div>
 
@@ -66,11 +66,11 @@
       <h3>CronScheduler</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new() -&gt; CronScheduler</td><td>Neuen Scheduler erstellen</td></tr>
-        <tr><td>addJob</td><td>fnc addJob(scheduler, expr: String, callback: fnc() -&gt; Unit) -&gt; Unit</td><td>Job mit Cron-Ausdruck registrieren</td></tr>
-        <tr><td>start</td><td>fnc start(scheduler) -&gt; Unit</td><td>Scheduler aktivieren</td></tr>
-        <tr><td>stop</td><td>fnc stop(scheduler) -&gt; Unit</td><td>Scheduler deaktivieren</td></tr>
-        <tr><td>tick</td><td>fnc tick(scheduler) -&gt; Unit</td><td>Einen Tick verarbeiten, fällige Jobs ausführen</td></tr>
+        <tr><td>new</td><td>fn new() -&gt; CronScheduler</td><td>Neuen Scheduler erstellen</td></tr>
+        <tr><td>addJob</td><td>fn addJob(scheduler, expr: String, callback: fnc() -&gt; Unit) -&gt; Unit</td><td>Job mit Cron-Ausdruck registrieren</td></tr>
+        <tr><td>start</td><td>fn start(scheduler) -&gt; Unit</td><td>Scheduler aktivieren</td></tr>
+        <tr><td>stop</td><td>fn stop(scheduler) -&gt; Unit</td><td>Scheduler deaktivieren</td></tr>
+        <tr><td>tick</td><td>fn tick(scheduler) -&gt; Unit</td><td>Einen Tick verarbeiten, fällige Jobs ausführen</td></tr>
       </table>
     </div>
 

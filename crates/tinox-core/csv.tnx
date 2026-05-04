@@ -4,7 +4,7 @@ namespace tinox.core.csv
 {
     class Csv
     {
-        fnc parse(content: String) -> List<List<String>>
+        fn parse(content: String) -> List<List<String>>
         {
             let lines: List<String> = content.split("\n");
             var result: List<List<String>> = [];
@@ -21,7 +21,7 @@ namespace tinox.core.csv
             return result;
         }
 
-        fnc parseRow(line: String) -> List<String>
+        fn parseRow(line: String) -> List<String>
         {
             var result: List<String> = [];
             var current: String = "";
@@ -49,7 +49,7 @@ namespace tinox.core.csv
             return result;
         }
 
-        fnc toString(data: List<List<String>>) -> String
+        fn toString(data: List<List<String>>) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -61,7 +61,7 @@ namespace tinox.core.csv
             return result;
         }
 
-        fnc rowToString(row: List<String>) -> String
+        fn rowToString(row: List<String>) -> String
         {
             var result: String = "";
             var i: Int64 = 0;

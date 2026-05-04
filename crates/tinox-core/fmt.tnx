@@ -4,7 +4,7 @@ namespace tinox.core.fmt
 {
     class Fmt
     {
-        fnc sprintf(format: String, args: List<String>) -> String
+        fn sprintf(format: String, args: List<String>) -> String
         {
             var result: String = "";
             var argIndex: Int64 = 0;
@@ -79,12 +79,12 @@ namespace tinox.core.fmt
             return result;
         }
 
-        fnc printf(format: String, args: List<String>) -> Unit
+        fn printf(format: String, args: List<String>) -> Unit
         {
             print(Fmt::sprintf(format, args));
         }
 
-        fnc printlnf(format: String, args: List<String>) -> Unit
+        fn printlnf(format: String, args: List<String>) -> Unit
         {
             println(Fmt::sprintf(format, args));
         }

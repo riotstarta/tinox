@@ -4,22 +4,22 @@ namespace tinox.core.decimal
 {
     class Decimal
     {
-        fnc new(value: String) -> Decimal
+        fn new(value: String) -> Decimal
         {
             return Decimal { value: value, scale: 0 };
         }
 
-        fnc fromInt(value: Int64) -> Decimal
+        fn fromInt(value: Int64) -> Decimal
         {
             return Decimal { value: value.toString(), scale: 0 };
         }
 
-        fnc fromFloat(value: Float64) -> Decimal
+        fn fromFloat(value: Float64) -> Decimal
         {
             return Decimal { value: value.toString(), scale: 10 };
         }
 
-        fnc add(a: Decimal, b: Decimal) -> Decimal
+        fn add(a: Decimal, b: Decimal) -> Decimal
         {
             let scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
             let aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
@@ -28,7 +28,7 @@ namespace tinox.core.decimal
             return Decimal { value: result, scale: scale };
         }
 
-        fnc subtract(a: Decimal, b: Decimal) -> Decimal
+        fn subtract(a: Decimal, b: Decimal) -> Decimal
         {
             let scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
             let aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
@@ -37,18 +37,18 @@ namespace tinox.core.decimal
             return Decimal { value: result, scale: scale };
         }
 
-        fnc multiply(a: Decimal, b: Decimal) -> Decimal
+        fn multiply(a: Decimal, b: Decimal) -> Decimal
         {
             let scale: Int64 = a.scale + b.scale;
             return Decimal { value: Decimal::multiplyStrings(a.value, b.value), scale: scale };
         }
 
-        fnc divide(a: Decimal, b: Decimal, precision: Int64) -> Decimal
+        fn divide(a: Decimal, b: Decimal, precision: Int64) -> Decimal
         {
             return Decimal { value: "0", scale: precision };
         }
 
-        fnc scaleValue(value: String, digits: Int64) -> String
+        fn scaleValue(value: String, digits: Int64) -> String
         {
             if digits == 0
             {
@@ -64,28 +64,28 @@ namespace tinox.core.decimal
             return result;
         }
 
-        fnc addStrings(a: String, b: String) -> String
+        fn addStrings(a: String, b: String) -> String
         {
             let aInt: Int64 = (Int64)a;
             let bInt: Int64 = (Int64)b;
             return (aInt + bInt).toString();
         }
 
-        fnc subtractStrings(a: String, b: String) -> String
+        fn subtractStrings(a: String, b: String) -> String
         {
             let aInt: Int64 = (Int64)a;
             let bInt: Int64 = (Int64)b;
             return (aInt - bInt).toString();
         }
 
-        fnc multiplyStrings(a: String, b: String) -> String
+        fn multiplyStrings(a: String, b: String) -> String
         {
             let aInt: Int64 = (Int64)a;
             let bInt: Int64 = (Int64)b;
             return (aInt * bInt).toString();
         }
 
-        fnc toString(d: Decimal) -> String
+        fn toString(d: Decimal) -> String
         {
             if d.scale == 0
             {

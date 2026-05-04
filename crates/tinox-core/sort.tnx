@@ -4,7 +4,7 @@ namespace tinox.core.sort
 {
     class Sort
     {
-        fnc quickSort(arr: List<Int64>) -> List<Int64>
+        fn quickSort(arr: List<Int64>) -> List<Int64>
         {
             if arr.len() <= 1
             {
@@ -13,7 +13,7 @@ namespace tinox.core.sort
             return Sort::quickSortHelper(arr, 0, arr.len() - 1);
         }
 
-        fnc quickSortHelper(arr: List<Int64>, low: Int64, high: Int64) -> List<Int64>
+        fn quickSortHelper(arr: List<Int64>, low: Int64, high: Int64) -> List<Int64>
         {
             var result: List<Int64> = arr;
             if low < high
@@ -25,7 +25,7 @@ namespace tinox.core.sort
             return result;
         }
 
-        fnc partition(arr: List<Int64>, low: Int64, high: Int64) -> Int64
+        fn partition(arr: List<Int64>, low: Int64, high: Int64) -> Int64
         {
             let pivot: Int64 = arr[high];
             var i: Int64 = low - 1;
@@ -47,7 +47,7 @@ namespace tinox.core.sort
             return i + 1;
         }
 
-        fnc mergeSort(arr: List<Int64>) -> List<Int64>
+        fn mergeSort(arr: List<Int64>) -> List<Int64>
         {
             if arr.len() <= 1
             {
@@ -56,7 +56,7 @@ namespace tinox.core.sort
             return Sort::mergeSortHelper(arr);
         }
 
-        fnc mergeSortHelper(arr: List<Int64>) -> List<Int64>
+        fn mergeSortHelper(arr: List<Int64>) -> List<Int64>
         {
             let len: Int64 = arr.len();
             if len <= 1
@@ -82,7 +82,7 @@ namespace tinox.core.sort
             return Sort::merge(left, right);
         }
 
-        fnc merge(left: List<Int64>, right: List<Int64>) -> List<Int64>
+        fn merge(left: List<Int64>, right: List<Int64>) -> List<Int64>
         {
             var result: List<Int64> = [];
             var l: Int64 = 0;
@@ -113,7 +113,7 @@ namespace tinox.core.sort
             return result;
         }
 
-        fnc insertionSort(arr: List<Int64>) -> List<Int64>
+        fn insertionSort(arr: List<Int64>) -> List<Int64>
         {
             var result: List<Int64> = arr;
             var i: Int64 = 1;

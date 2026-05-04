@@ -51,8 +51,8 @@
       <h3>RestClient</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(baseUrl: String) -&gt; RestClient</td><td>Neuen REST-Client erstellen</td></tr>
-        <tr><td>newWithHeaders</td><td>fnc newWithHeaders(baseUrl: String, defaultHeaders: List&lt;String&gt;) -&gt; RestClient</td><td>REST-Client mit Standard-Headern erstellen</td></tr>
+        <tr><td>new</td><td>fn new(baseUrl: String) -&gt; RestClient</td><td>Neuen REST-Client erstellen</td></tr>
+        <tr><td>newWithHeaders</td><td>fn newWithHeaders(baseUrl: String, defaultHeaders: List&lt;String&gt;) -&gt; RestClient</td><td>REST-Client mit Standard-Headern erstellen</td></tr>
         <tr><td>setTimeout</td><td>fn setTimeout(timeoutMs: Int64) -&gt; Unit</td><td>Timeout in Millisekunden setzen</td></tr>
         <tr><td>addHeader</td><td>fn addHeader(name: String, value: String) -&gt; Unit</td><td>Standard-Header hinzufügen</td></tr>
         <tr><td>clearHeaders</td><td>fn clearHeaders() -&gt; Unit</td><td>Alle Standard-Header entfernen</td></tr>
@@ -74,8 +74,8 @@
         <tr><td>statusCode</td><td>Int64</td><td>HTTP-Statuscode</td></tr>
         <tr><td>body</td><td>String</td><td>Antwort-Body als String</td></tr>
         <tr><td>ok</td><td>Bool</td><td>true wenn Status 2xx</td></tr>
-        <tr><td>new</td><td>fnc new(statusCode: Int64, body: String) -&gt; RestResponse</td><td>Neue Antwort erstellen</td></tr>
-        <tr><td>fromHttp</td><td>fnc fromHttp(response: HttpResponse) -&gt; RestResponse</td><td>Aus HttpResponse konvertieren</td></tr>
+        <tr><td>new</td><td>fn new(statusCode: Int64, body: String) -&gt; RestResponse</td><td>Neue Antwort erstellen</td></tr>
+        <tr><td>fromHttp</td><td>fn fromHttp(response: HttpResponse) -&gt; RestResponse</td><td>Aus HttpResponse konvertieren</td></tr>
         <tr><td>text</td><td>fn text() -&gt; String</td><td>Body als Text zurückgeben</td></tr>
         <tr><td>json</td><td>fn json() -&gt; JsonValue</td><td>Body als JSON parsen</td></tr>
         <tr><td>isOk</td><td>fn isOk() -&gt; Bool</td><td>Erfolgsstatus prüfen (2xx)</td></tr>
@@ -90,7 +90,7 @@
       <h3>RequestBuilder</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(baseUrl: String) -&gt; RequestBuilder</td><td>Neuen Builder erstellen</td></tr>
+        <tr><td>new</td><td>fn new(baseUrl: String) -&gt; RequestBuilder</td><td>Neuen Builder erstellen</td></tr>
         <tr><td>header</td><td>fn header(name: String, value: String) -&gt; RequestBuilder</td><td>Header hinzufügen (Chaining)</td></tr>
         <tr><td>query</td><td>fn query(key: String, value: String) -&gt; RequestBuilder</td><td>Query-Parameter hinzufügen</td></tr>
         <tr><td>body</td><td>fn body(body: String) -&gt; RequestBuilder</td><td>Request-Body setzen</td></tr>
@@ -108,10 +108,10 @@
       <h3>Url</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>build</td><td>fnc build(baseUrl: String, path: String) -&gt; String</td><td>Base-URL und Pfad zusammenführen</td></tr>
-        <tr><td>buildWithParams</td><td>fnc buildWithParams(baseUrl: String, path: String, params: Map&lt;String, String&gt;) -&gt; String</td><td>URL mit Query-Parametern bauen</td></tr>
-        <tr><td>encode</td><td>fnc encode(s: String) -&gt; String</td><td>URL-Encoding (Percent-Encoding)</td></tr>
-        <tr><td>joinPath</td><td>fnc joinPath(segments: List&lt;String&gt;) -&gt; String</td><td>Pfad-Segmente zusammenfügen</td></tr>
+        <tr><td>build</td><td>fn build(baseUrl: String, path: String) -&gt; String</td><td>Base-URL und Pfad zusammenführen</td></tr>
+        <tr><td>buildWithParams</td><td>fn buildWithParams(baseUrl: String, path: String, params: Map&lt;String, String&gt;) -&gt; String</td><td>URL mit Query-Parametern bauen</td></tr>
+        <tr><td>encode</td><td>fn encode(s: String) -&gt; String</td><td>URL-Encoding (Percent-Encoding)</td></tr>
+        <tr><td>joinPath</td><td>fn joinPath(segments: List&lt;String&gt;) -&gt; String</td><td>Pfad-Segmente zusammenfügen</td></tr>
       </table>
     </div>
 
@@ -120,11 +120,11 @@
       <table>
         <tr><th>Wert / Methode</th><th>Typ / Signatur</th><th>Beschreibung</th></tr>
         <tr><td>Ok, Created, NoContent, ...</td><td>HttpStatus</td><td>Enum-Werte für HTTP-Statuscodes</td></tr>
-        <tr><td>fromCode</td><td>fnc fromCode(code: Int64) -&gt; HttpStatus</td><td>Int zu HttpStatus konvertieren</td></tr>
-        <tr><td>toCode</td><td>fnc toCode(status: HttpStatus) -&gt; Int64</td><td>HttpStatus zu Int konvertieren</td></tr>
-        <tr><td>isSuccess</td><td>fnc isSuccess(code: Int64) -&gt; Bool</td><td>2xx prüfen</td></tr>
-        <tr><td>isClientError</td><td>fnc isClientError(code: Int64) -&gt; Bool</td><td>4xx prüfen</td></tr>
-        <tr><td>isServerError</td><td>fnc isServerError(code: Int64) -&gt; Bool</td><td>5xx prüfen</td></tr>
+        <tr><td>fromCode</td><td>fn fromCode(code: Int64) -&gt; HttpStatus</td><td>Int zu HttpStatus konvertieren</td></tr>
+        <tr><td>toCode</td><td>fn toCode(status: HttpStatus) -&gt; Int64</td><td>HttpStatus zu Int konvertieren</td></tr>
+        <tr><td>isSuccess</td><td>fn isSuccess(code: Int64) -&gt; Bool</td><td>2xx prüfen</td></tr>
+        <tr><td>isClientError</td><td>fn isClientError(code: Int64) -&gt; Bool</td><td>4xx prüfen</td></tr>
+        <tr><td>isServerError</td><td>fn isServerError(code: Int64) -&gt; Bool</td><td>5xx prüfen</td></tr>
       </table>
     </div>
 

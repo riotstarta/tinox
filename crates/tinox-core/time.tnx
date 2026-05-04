@@ -17,7 +17,7 @@ namespace tinox.core.time
          *
          * @return current time in milliseconds since epoch
          */
-        fnc now() -> Int64
+        fn now() -> Int64
         {
             return now();
         }
@@ -27,7 +27,7 @@ namespace tinox.core.time
          *
          * @param ms the number of milliseconds to sleep
          */
-        fnc sleep(ms: Int64) -> Unit
+        fn sleep(ms: Int64) -> Unit
         {
             sleep(ms);
         }
@@ -37,7 +37,7 @@ namespace tinox.core.time
          *
          * @return a new Timer ready to measure elapsed time
          */
-        fnc newTimer() -> Timer
+        fn newTimer() -> Timer
         {
             return Timer::new();
         }
@@ -47,7 +47,7 @@ namespace tinox.core.time
          *
          * @return a new Stopwatch ready to measure elapsed time
          */
-        fnc newStopwatch() -> Stopwatch
+        fn newStopwatch() -> Stopwatch
         {
             return Stopwatch::new();
         }
@@ -58,7 +58,7 @@ namespace tinox.core.time
          * @param seconds the number of seconds
          * @return a new Duration instance
          */
-        fnc newDuration(seconds: Int64) -> Duration
+        fn newDuration(seconds: Int64) -> Duration
         {
             return Duration::new(seconds);
         }
@@ -69,7 +69,7 @@ namespace tinox.core.time
          * @param minutes the number of minutes
          * @return a new Duration instance
          */
-        fnc durationFromMinutes(minutes: Int64) -> Duration
+        fn durationFromMinutes(minutes: Int64) -> Duration
         {
             return Duration::fromMinutes(minutes);
         }
@@ -80,7 +80,7 @@ namespace tinox.core.time
          * @param hours the number of hours
          * @return a new Duration instance
          */
-        fnc durationFromHours(hours: Int64) -> Duration
+        fn durationFromHours(hours: Int64) -> Duration
         {
             return Duration::fromHours(hours);
         }
@@ -103,7 +103,7 @@ namespace tinox.core.time
          * @param seconds the number of seconds
          * @return a new Duration instance
          */
-        fnc new(seconds: Int64) -> Duration
+        fn new(seconds: Int64) -> Duration
         {
             return Duration { seconds: seconds };
         }
@@ -114,7 +114,7 @@ namespace tinox.core.time
          * @param minutes the number of minutes
          * @return a new Duration instance
          */
-        fnc fromMinutes(minutes: Int64) -> Duration
+        fn fromMinutes(minutes: Int64) -> Duration
         {
             return Duration { seconds: minutes * 60 };
         }
@@ -125,7 +125,7 @@ namespace tinox.core.time
          * @param hours the number of hours
          * @return a new Duration instance
          */
-        fnc fromHours(hours: Int64) -> Duration
+        fn fromHours(hours: Int64) -> Duration
         {
             return Duration { seconds: hours * 3600 };
         }
@@ -202,7 +202,7 @@ namespace tinox.core.time
          *
          * @return a new Timer instance
          */
-        fnc new() -> Timer
+        fn new() -> Timer
         {
             return Timer { startTime: 0, endTime: 0 };
         }
@@ -270,7 +270,7 @@ namespace tinox.core.time
          *
          * @return a new Stopwatch instance
          */
-        fnc new() -> Stopwatch
+        fn new() -> Stopwatch
         {
             return Stopwatch { startTime: 0, running: false };
         }

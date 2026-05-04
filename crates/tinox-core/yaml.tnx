@@ -4,12 +4,12 @@ namespace tinox.core.yaml
 {
     class Yaml
     {
-        fnc parse(content: String) -> YamlValue
+        fn parse(content: String) -> YamlValue
         {
             return YamlParser::parse(content);
         }
 
-        fnc stringify(value: YamlValue) -> String
+        fn stringify(value: YamlValue) -> String
         {
             return YamlRenderer::render(value, 0);
         }
@@ -35,7 +35,7 @@ namespace tinox.core.yaml
 
     class YamlParser
     {
-        fnc parse(content: String) -> YamlValue
+        fn parse(content: String) -> YamlValue
         {
             return YamlValue { kind: "map", mapValue: Map::new() };
         }
@@ -43,7 +43,7 @@ namespace tinox.core.yaml
 
     class YamlRenderer
     {
-        fnc render(value: YamlValue, indent: Int64) -> String
+        fn render(value: YamlValue, indent: Int64) -> String
         {
             if value.isMap()
             {
@@ -81,7 +81,7 @@ namespace tinox.core.yaml
             return YamlRenderer::indent(indent) + "\n";
         }
 
-        fnc indent(level: Int64) -> String
+        fn indent(level: Int64) -> String
         {
             var result: String = "";
             var i: Int64 = 0;

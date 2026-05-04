@@ -4,27 +4,27 @@ namespace tinox.core.result
 {
     class Result
     {
-        fnc ok(value: Int64) -> Result
+        fn ok(value: Int64) -> Result
         {
             return Result { isOk: true, value: value, error: "" };
         }
 
-        fnc err(error: String) -> Result
+        fn err(error: String) -> Result
         {
             return Result { isOk: false, value: 0, error: error };
         }
 
-        fnc isOk() -> Bool
+        fn isOk() -> Bool
         {
             return this.isOk;
         }
 
-        fnc isErr() -> Bool
+        fn isErr() -> Bool
         {
             return this.isOk == false;
         }
 
-        fnc unwrap() -> Int64
+        fn unwrap() -> Int64
         {
             if this.isOk == false
             {
@@ -33,7 +33,7 @@ namespace tinox.core.result
             return this.value;
         }
 
-        fnc unwrapOr(defaultValue: Int64) -> Int64
+        fn unwrapOr(defaultValue: Int64) -> Int64
         {
             if this.isOk == false
             {
@@ -42,7 +42,7 @@ namespace tinox.core.result
             return this.value;
         }
 
-        fnc map(transform: fnc(Int64) -> Int64) -> Result
+        fn map(transform: fnc(Int64) -> Int64) -> Result
         {
             if this.isOk == false
             {

@@ -51,7 +51,7 @@
       <h3>HttpServer</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>new</td><td>fnc new(port: Int64) -&gt; HttpServer</td><td>Server auf Port erstellen</td></tr>
+        <tr><td>new</td><td>fn new(port: Int64) -&gt; HttpServer</td><td>Server auf Port erstellen</td></tr>
         <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>GET-Route registrieren</td></tr>
         <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>POST-Route registrieren</td></tr>
         <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>PUT-Route registrieren</td></tr>

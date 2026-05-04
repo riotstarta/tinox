@@ -51,8 +51,8 @@
       <h3>Toml</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>parse</td><td>fnc parse(content: String) -&gt; TomlValue</td><td>TOML-String parsen</td></tr>
-        <tr><td>stringify</td><td>fnc stringify(value: TomlValue) -&gt; String</td><td>TomlValue serialisieren</td></tr>
+        <tr><td>parse</td><td>fn parse(content: String) -&gt; TomlValue</td><td>TOML-String parsen</td></tr>
+        <tr><td>stringify</td><td>fn stringify(value: TomlValue) -&gt; String</td><td>TomlValue serialisieren</td></tr>
       </table>
     </div>
 
@@ -60,13 +60,13 @@
       <h3>TomlValue</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>isString/isInt/isFloat/isBool/isTable/isArray</td><td>fnc isX() -&gt; Bool</td><td>Typ-Prüfung</td></tr>
-        <tr><td>asString</td><td>fnc asString() -&gt; String</td><td>Wert als String</td></tr>
-        <tr><td>asInt</td><td>fnc asInt() -&gt; Int64</td><td>Wert als Integer</td></tr>
-        <tr><td>asFloat</td><td>fnc asFloat() -&gt; Float64</td><td>Wert als Float</td></tr>
-        <tr><td>asBool</td><td>fnc asBool() -&gt; Bool</td><td>Wert als Bool</td></tr>
-        <tr><td>asTable</td><td>fnc asTable() -&gt; Map&lt;String, TomlValue&gt;</td><td>Wert als Table/Map</td></tr>
-        <tr><td>asArray</td><td>fnc asArray() -&gt; List&lt;TomlValue&gt;</td><td>Wert als Array</td></tr>
+        <tr><td>isString/isInt/isFloat/isBool/isTable/isArray</td><td>fn isX() -&gt; Bool</td><td>Typ-Prüfung</td></tr>
+        <tr><td>asString</td><td>fn asString() -&gt; String</td><td>Wert als String</td></tr>
+        <tr><td>asInt</td><td>fn asInt() -&gt; Int64</td><td>Wert als Integer</td></tr>
+        <tr><td>asFloat</td><td>fn asFloat() -&gt; Float64</td><td>Wert als Float</td></tr>
+        <tr><td>asBool</td><td>fn asBool() -&gt; Bool</td><td>Wert als Bool</td></tr>
+        <tr><td>asTable</td><td>fn asTable() -&gt; Map&lt;String, TomlValue&gt;</td><td>Wert als Table/Map</td></tr>
+        <tr><td>asArray</td><td>fn asArray() -&gt; List&lt;TomlValue&gt;</td><td>Wert als Array</td></tr>
       </table>
     </div>
 

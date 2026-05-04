@@ -51,13 +51,13 @@
       <h3>Http</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>get</td><td>fnc get(url: String) -&gt; HttpResponse</td><td>GET-Anfrage senden</td></tr>
-        <tr><td>post</td><td>fnc post(url: String, body: String) -&gt; HttpResponse</td><td>POST-Anfrage mit Body senden</td></tr>
-        <tr><td>put</td><td>fnc put(url: String, body: String) -&gt; HttpResponse</td><td>PUT-Anfrage senden</td></tr>
-        <tr><td>delete</td><td>fnc delete(url: String) -&gt; HttpResponse</td><td>DELETE-Anfrage senden</td></tr>
-        <tr><td>patch</td><td>fnc patch(url: String, body: String) -&gt; HttpResponse</td><td>PATCH-Anfrage senden</td></tr>
-        <tr><td>setHeader</td><td>fnc setHeader(name: String, value: String) -&gt; Unit</td><td>HTTP-Header setzen (global)</td></tr>
-        <tr><td>clearHeaders</td><td>fnc clearHeaders() -&gt; Unit</td><td>Alle gesetzten Header löschen</td></tr>
+        <tr><td>get</td><td>fn get(url: String) -&gt; HttpResponse</td><td>GET-Anfrage senden</td></tr>
+        <tr><td>post</td><td>fn post(url: String, body: String) -&gt; HttpResponse</td><td>POST-Anfrage mit Body senden</td></tr>
+        <tr><td>put</td><td>fn put(url: String, body: String) -&gt; HttpResponse</td><td>PUT-Anfrage senden</td></tr>
+        <tr><td>delete</td><td>fn delete(url: String) -&gt; HttpResponse</td><td>DELETE-Anfrage senden</td></tr>
+        <tr><td>patch</td><td>fn patch(url: String, body: String) -&gt; HttpResponse</td><td>PATCH-Anfrage senden</td></tr>
+        <tr><td>setHeader</td><td>fn setHeader(name: String, value: String) -&gt; Unit</td><td>HTTP-Header setzen (global)</td></tr>
+        <tr><td>clearHeaders</td><td>fn clearHeaders() -&gt; Unit</td><td>Alle gesetzten Header löschen</td></tr>
       </table>
     </div>
 
@@ -65,9 +65,9 @@
       <h3>HttpResponse</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>statusCode</td><td>fnc statusCode() -&gt; Int64</td><td>HTTP-Statuscode (z.B. 200, 404)</td></tr>
-        <tr><td>body</td><td>fnc body() -&gt; String</td><td>Antwort-Body als String</td></tr>
-        <tr><td>header</td><td>fnc header(name: String) -&gt; String</td><td>Einzelnen Antwort-Header lesen</td></tr>
+        <tr><td>statusCode</td><td>fn statusCode() -&gt; Int64</td><td>HTTP-Statuscode (z.B. 200, 404)</td></tr>
+        <tr><td>body</td><td>fn body() -&gt; String</td><td>Antwort-Body als String</td></tr>
+        <tr><td>header</td><td>fn header(name: String) -&gt; String</td><td>Einzelnen Antwort-Header lesen</td></tr>
       </table>
     </div>
 

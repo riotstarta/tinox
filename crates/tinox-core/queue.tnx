@@ -4,18 +4,18 @@ namespace tinox.core.queue
 {
     class PriorityQueue<T>
     {
-        fnc new() -> PriorityQueue<T>
+        fn new() -> PriorityQueue<T>
         {
             return PriorityQueue<T> { items: [] };
         }
 
-        fnc enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Unit
+        fn enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Unit
         {
             q.items.push(PriorityItem { item: item, priority: priority });
             PriorityQueue::sort(q);
         }
 
-        fnc dequeue(q: PriorityQueue<T>) -> T
+        fn dequeue(q: PriorityQueue<T>) -> T
         {
             if q.items.len() == 0
             {
@@ -26,7 +26,7 @@ namespace tinox.core.queue
             return item;
         }
 
-        fnc peek(q: PriorityQueue<T>) -> T
+        fn peek(q: PriorityQueue<T>) -> T
         {
             if q.items.len() == 0
             {
@@ -35,7 +35,7 @@ namespace tinox.core.queue
             return q.items[0].item;
         }
 
-        fnc sort(q: PriorityQueue<T>) -> Unit
+        fn sort(q: PriorityQueue<T>) -> Unit
         {
             var i: Int64 = 1;
             while i < q.items.len()
@@ -52,12 +52,12 @@ namespace tinox.core.queue
             }
         }
 
-        fnc isEmpty(q: PriorityQueue<T>) -> Bool
+        fn isEmpty(q: PriorityQueue<T>) -> Bool
         {
             return q.items.len() == 0;
         }
 
-        fnc size(q: PriorityQueue<T>) -> Int64
+        fn size(q: PriorityQueue<T>) -> Int64
         {
             return q.items.len();
         }
@@ -71,12 +71,12 @@ namespace tinox.core.queue
 
     class CircularBuffer<T>
     {
-        fnc new(size: Int64) -> CircularBuffer<T>
+        fn new(size: Int64) -> CircularBuffer<T>
         {
             return CircularBuffer<T> { data: [], size: size, head: 0, tail: 0, count: 0 };
         }
 
-        fnc push(buf: CircularBuffer<T>, item: T) -> Bool
+        fn push(buf: CircularBuffer<T>, item: T) -> Bool
         {
             if buf.count >= buf.size
             {
@@ -87,7 +87,7 @@ namespace tinox.core.queue
             return true;
         }
 
-        fnc pop(buf: CircularBuffer<T>) -> T
+        fn pop(buf: CircularBuffer<T>) -> T
         {
             if buf.count == 0
             {
@@ -99,12 +99,12 @@ namespace tinox.core.queue
             return item;
         }
 
-        fnc isFull(buf: CircularBuffer<T>) -> Bool
+        fn isFull(buf: CircularBuffer<T>) -> Bool
         {
             return buf.count >= buf.size;
         }
 
-        fnc isEmpty(buf: CircularBuffer<T>) -> Bool
+        fn isEmpty(buf: CircularBuffer<T>) -> Bool
         {
             return buf.count == 0;
         }

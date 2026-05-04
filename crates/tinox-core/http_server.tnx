@@ -47,7 +47,7 @@ namespace tinox.core.http_server
          * @param port the port number to bind to
          * @return a new HttpServer instance
          */
-        fnc new(port: Int64) -> HttpServer
+        fn new(port: Int64) -> HttpServer
         {
             return HttpServer { port: port, routes: [], middleware: [], socketHandle: -1, running: false };
         }
@@ -250,7 +250,7 @@ namespace tinox.core.http_server
         /**
          * Returns the HTTP status text for a given status code
          */
-        fnc statusText(code: Int64) -> String
+        fn statusText(code: Int64) -> String
         {
             if code == 200 { return "OK"; }
             if code == 201 { return "Created"; }
@@ -388,7 +388,7 @@ namespace tinox.core.http_server
          * @param body the request body
          * @return a new HttpRequest instance
          */
-        fnc new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
+        fn new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
         {
             return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() };
         }
@@ -510,7 +510,7 @@ namespace tinox.core.http_server
          *
          * @return a new HttpResponse instance
          */
-        fnc new() -> HttpResponse
+        fn new() -> HttpResponse
         {
             return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
         }
@@ -710,7 +710,7 @@ namespace tinox.core.http_server
          * @param response the outgoing response (defaults to new 200 response)
          * @return a new HttpContext instance
          */
-        fnc new(request: HttpRequest, response: HttpResponse) -> HttpContext
+        fn new(request: HttpRequest, response: HttpResponse) -> HttpContext
         {
             return HttpContext { request: request, response: response };
         }
@@ -721,7 +721,7 @@ namespace tinox.core.http_server
          * @param request the incoming request
          * @return a new HttpContext with a fresh 200 response
          */
-        fnc fromRequest(request: HttpRequest) -> HttpContext
+        fn fromRequest(request: HttpRequest) -> HttpContext
         {
             return HttpContext { request: request, response: HttpResponse::new() };
         }
@@ -760,7 +760,7 @@ namespace tinox.core.http_server
          * @param path the actual request path
          * @return true if the path matches the pattern
          */
-        fnc matches(pattern: String, path: String) -> Bool
+        fn matches(pattern: String, path: String) -> Bool
         {
             let patternParts: List<String> = RouteMatcher::splitPath(pattern);
             let pathParts: List<String> = RouteMatcher::splitPath(path);
@@ -805,7 +805,7 @@ namespace tinox.core.http_server
          * @param path the actual request path
          * @return a map of parameter names to their values
          */
-        fnc extractParams(pattern: String, path: String) -> Map<String, String>
+        fn extractParams(pattern: String, path: String) -> Map<String, String>
         {
             let params: Map<String, String> = Map::new();
             let patternParts: List<String> = RouteMatcher::splitPath(pattern);
@@ -831,7 +831,7 @@ namespace tinox.core.http_server
          * @param path the path to split
          * @return a list of non-empty path segments
          */
-        fnc splitPath(path: String) -> List<String>
+        fn splitPath(path: String) -> List<String>
         {
             let parts: List<String> = [];
             var current: String = "";
@@ -872,7 +872,7 @@ namespace tinox.core.http_server
          * @param qs the raw query string (e.g., "page=1&limit=10")
          * @return a map of parameter names to values
          */
-        fnc parse(qs: String) -> Map<String, String>
+        fn parse(qs: String) -> Map<String, String>
         {
             let params: Map<String, String> = Map::new();
             if qs.len() == 0
@@ -927,7 +927,7 @@ namespace tinox.core.http_server
          * @param name the parameter name
          * @return the parameter value, or empty string if not found
          */
-        fnc get(qs: String, name: String) -> String
+        fn get(qs: String, name: String) -> String
         {
             let params: Map<String, String> = QueryString::parse(qs);
             if params.contains(name)

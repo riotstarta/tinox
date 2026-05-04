@@ -4,7 +4,7 @@ namespace tinox.core.format
 {
     class Format
     {
-        fnc padLeft(s: String, width: Int64, char: String) -> String
+        fn padLeft(s: String, width: Int64, char: String) -> String
         {
             let len: Int64 = s.len();
             if width <= len
@@ -22,7 +22,7 @@ namespace tinox.core.format
             return padding + s;
         }
 
-        fnc padRight(s: String, width: Int64, char: String) -> String
+        fn padRight(s: String, width: Int64, char: String) -> String
         {
             let len: Int64 = s.len();
             if width <= len
@@ -40,7 +40,7 @@ namespace tinox.core.format
             return s + padding;
         }
 
-        fnc intToBinary(n: Int64) -> String
+        fn intToBinary(n: Int64) -> String
         {
             if n == 0
             {
@@ -63,7 +63,7 @@ namespace tinox.core.format
             return result;
         }
 
-        fnc intToHex(n: Int64) -> String
+        fn intToHex(n: Int64) -> String
         {
             if n == 0
             {
@@ -81,7 +81,7 @@ namespace tinox.core.format
             return result;
         }
 
-        fnc formatInt(n: Int64, width: Int64) -> String
+        fn formatInt(n: Int64, width: Int64) -> String
         {
             return Format::padLeft(n.toString(), width, " ");
         }

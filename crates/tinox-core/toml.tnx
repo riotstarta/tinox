@@ -4,12 +4,12 @@ namespace tinox.core.toml
 {
     class Toml
     {
-        fnc parse(content: String) -> TomlValue
+        fn parse(content: String) -> TomlValue
         {
             return TomlParser::parse(content);
         }
 
-        fnc stringify(value: TomlValue) -> String
+        fn stringify(value: TomlValue) -> String
         {
             return TomlRenderer::render(value);
         }
@@ -17,19 +17,19 @@ namespace tinox.core.toml
 
     class TomlValue
     {
-        fnc isString() -> Bool { return this.kind == "string"; }
-        fnc isInt() -> Bool { return this.kind == "int"; }
-        fnc isFloat() -> Bool { return this.kind == "float"; }
-        fnc isBool() -> Bool { return this.kind == "bool"; }
-        fnc isTable() -> Bool { return this.kind == "table"; }
-        fnc isArray() -> Bool { return this.kind == "array"; }
+        fn isString() -> Bool { return this.kind == "string"; }
+        fn isInt() -> Bool { return this.kind == "int"; }
+        fn isFloat() -> Bool { return this.kind == "float"; }
+        fn isBool() -> Bool { return this.kind == "bool"; }
+        fn isTable() -> Bool { return this.kind == "table"; }
+        fn isArray() -> Bool { return this.kind == "array"; }
 
-        fnc asString() -> String { return this.stringValue; }
-        fnc asInt() -> Int64 { return this.intValue; }
-        fnc asFloat() -> Float64 { return this.floatValue; }
-        fnc asBool() -> Bool { return this.boolValue; }
-        fnc asTable() -> Map<String, TomlValue> { return this.tableValue; }
-        fnc asArray() -> List<TomlValue> { return this.arrayValue; }
+        fn asString() -> String { return this.stringValue; }
+        fn asInt() -> Int64 { return this.intValue; }
+        fn asFloat() -> Float64 { return this.floatValue; }
+        fn asBool() -> Bool { return this.boolValue; }
+        fn asTable() -> Map<String, TomlValue> { return this.tableValue; }
+        fn asArray() -> List<TomlValue> { return this.arrayValue; }
 
         kind: String;
         stringValue: String;
@@ -42,7 +42,7 @@ namespace tinox.core.toml
 
     class TomlParser
     {
-        fnc parse(content: String) -> TomlValue
+        fn parse(content: String) -> TomlValue
         {
             let root: Map<String, TomlValue> = Map::new();
             var currentSection: String = "";
@@ -81,7 +81,7 @@ namespace tinox.core.toml
             return TomlValue { kind: "table", tableValue: root };
         }
 
-        fnc parseValue(value: String) -> TomlValue
+        fn parseValue(value: String) -> TomlValue
         {
             if value.startsWith("\"")
             {
@@ -105,7 +105,7 @@ namespace tinox.core.toml
 
     class TomlRenderer
     {
-        fnc render(value: TomlValue) -> String
+        fn render(value: TomlValue) -> String
         {
             return "";
         }

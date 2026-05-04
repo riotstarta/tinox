@@ -4,17 +4,17 @@ namespace tinox.core.xml
 {
     class Xml
     {
-        fnc parse(text: String) -> XmlNode
+        fn parse(text: String) -> XmlNode
         {
             return XmlParser::parse(text);
         }
 
-        fnc stringify(node: XmlNode) -> String
+        fn stringify(node: XmlNode) -> String
         {
             return XmlRenderer::render(node);
         }
 
-        fnc query(node: XmlNode, xpath: String) -> List<XmlNode>
+        fn query(node: XmlNode, xpath: String) -> List<XmlNode>
         {
             return XmlQuery::query(node, xpath);
         }
@@ -22,27 +22,27 @@ namespace tinox.core.xml
 
     class XmlNode
     {
-        fnc tagName() -> String
+        fn tagName() -> String
         {
             return xmlTagName(this);
         }
 
-        fnc textContent() -> String
+        fn textContent() -> String
         {
             return xmlTextContent(this);
         }
 
-        fnc attr(name: String) -> String
+        fn attr(name: String) -> String
         {
             return xmlAttr(this, name);
         }
 
-        fnc children() -> List<XmlNode>
+        fn children() -> List<XmlNode>
         {
             return xmlChildren(this);
         }
 
-        fnc firstChild(tag: String) -> XmlNode
+        fn firstChild(tag: String) -> XmlNode
         {
             let children: List<XmlNode> = XmlNode::children(this);
             var i: Int64 = 0;
@@ -60,13 +60,13 @@ namespace tinox.core.xml
 
     class XmlParser
     {
-        fnc parse(text: String) -> XmlNode
+        fn parse(text: String) -> XmlNode
         {
             let trimmed: String = Strings::trim(text);
             return XmlParser::parseNode(trimmed);
         }
 
-        fnc parseNode(text: String) -> XmlNode
+        fn parseNode(text: String) -> XmlNode
         {
             let tagStart: Int64 = text.indexOf("<");
             let tagEnd: Int64 = text.indexOf(">");
@@ -92,7 +92,7 @@ namespace tinox.core.xml
             return XmlNode { tagName: tagName, text: content, attrs: attrs, children: children };
         }
 
-        fnc extractTagName(tagContent: String) -> String
+        fn extractTagName(tagContent: String) -> String
         {
             var i: Int64 = 0;
             while i < tagContent.len()
@@ -107,7 +107,7 @@ namespace tinox.core.xml
             return tagContent;
         }
 
-        fnc parseAttrs(tagContent: String) -> Map<String, String>
+        fn parseAttrs(tagContent: String) -> Map<String, String>
         {
             let attrs: Map<String, String> = Map::new();
             let parts: List<String> = tagContent.split(" ");
@@ -133,7 +133,7 @@ namespace tinox.core.xml
 
     class XmlRenderer
     {
-        fnc render(node: XmlNode) -> String
+        fn render(node: XmlNode) -> String
         {
             var result: String = "<" + node.tagName;
             let keys: List<String> = node.attrs.keys();
@@ -165,7 +165,7 @@ namespace tinox.core.xml
 
     class XmlQuery
     {
-        fnc query(node: XmlNode, xpath: String) -> List<XmlNode>
+        fn query(node: XmlNode, xpath: String) -> List<XmlNode>
         {
             return [node];
         }

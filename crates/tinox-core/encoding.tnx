@@ -4,7 +4,7 @@ namespace tinox.core.encoding
 {
     class Encoding
     {
-        fnc toCharCode(s: String) -> Int64
+        fn toCharCode(s: String) -> Int64
         {
             if s.len() == 0
             {
@@ -13,12 +13,12 @@ namespace tinox.core.encoding
             return s.charCodeAt(0);
         }
 
-        fnc fromCharCode(code: Int64) -> String
+        fn fromCharCode(code: Int64) -> String
         {
             return fromCharCode(code);
         }
 
-        fnc toUtf8(s: String) -> List<Int64>
+        fn toUtf8(s: String) -> List<Int64>
         {
             var result: List<Int64> = [];
             var i: Int64 = 0;
@@ -30,7 +30,7 @@ namespace tinox.core.encoding
             return result;
         }
 
-        fnc fromUtf8(codes: List<Int64>) -> String
+        fn fromUtf8(codes: List<Int64>) -> String
         {
             var result: String = "";
             var i: Int64 = 0;
@@ -42,7 +42,7 @@ namespace tinox.core.encoding
             return result;
         }
 
-        fnc htmlEncode(s: String) -> String
+        fn htmlEncode(s: String) -> String
         {
             var result: String = s;
             result = result.replace("&", "&amp;");
@@ -53,7 +53,7 @@ namespace tinox.core.encoding
             return result;
         }
 
-        fnc htmlDecode(s: String) -> String
+        fn htmlDecode(s: String) -> String
         {
             var result: String = s;
             result = result.replace("&amp;", "&");
