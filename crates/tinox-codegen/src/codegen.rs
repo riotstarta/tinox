@@ -1728,9 +1728,21 @@ impl CodeGen {
                 }
             }
             StmtKind::Throw(expr) => {
-                let (val, _) = self.gen_expr(expr, ctx)?;
+                let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 if let Some((catch_bb, error_var)) = &ctx.error_catch {
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", val, error_var).unwrap();
+                    let store_val = if val_ty == "double" || val_ty == "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else {
+                        val
+                    };
+                    let (catch_bb, error_var) = (catch_bb.clone(), error_var.clone());
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, error_var).unwrap();
                     writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
                 }
             }
@@ -4701,23 +4713,15 @@ impl CodeGen {
                     err_val, error_var
                 )
                 .unwrap();
-                // truncate/extend if the catch param type differs from i64
+                // Cast the stored i64 back to the catch param's type
                 let store_val = if llvm_ty != "i64" {
                     let cast_val = self.temp();
                     if Self::is_float(&llvm_ty) {
-                        writeln!(
-                            &mut self.ir,
-                            "{} = sitofp i64 {} to {}",
-                            cast_val, err_val, llvm_ty
-                        )
-                        .unwrap();
+                        writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", cast_val, err_val, llvm_ty).unwrap();
+                    } else if llvm_ty.ends_with('*') {
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", cast_val, err_val, llvm_ty).unwrap();
                     } else {
-                        writeln!(
-                            &mut self.ir,
-                            "{} = trunc i64 {} to {}",
-                            cast_val, err_val, llvm_ty
-                        )
-                        .unwrap();
+                        writeln!(&mut self.ir, "{} = trunc i64 {} to {}", cast_val, err_val, llvm_ty).unwrap();
                     }
                     cast_val
                 } else {

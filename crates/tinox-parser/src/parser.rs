@@ -897,8 +897,14 @@ impl Parser {
                     }
                 } else {
                     let expr = self.parse_expr()?;
-                    if !self.check(TokenKind::RBrace) {
+                    let is_block_expr = matches!(
+                        expr.node,
+                        ExprKind::Match { .. } | ExprKind::Block(_) | ExprKind::If { .. }
+                    );
+                    if !is_block_expr && !self.check(TokenKind::RBrace) {
                         self.expect(TokenKind::Semicolon)?;
+                    } else {
+                        self.consume(TokenKind::Semicolon);
                     }
                     StmtKind::Expr(expr)
                 }
@@ -1097,6 +1103,18 @@ impl Parser {
 
     fn parse_assign_expr(&mut self) -> Result<Expr, Error> {
         let lhs = self.parse_or_expr()?;
+
+        // Arrow lambda: `n => expr` or `(a, b) => expr`
+        if self.check(TokenKind::FatArrow) {
+            self.bump();
+            let span = lhs.span;
+            let params = Self::expr_to_lambda_params(lhs)?;
+            let body = self.parse_assign_expr()?;
+            return Ok(Spanned::new(
+                ExprKind::Lambda { params, ret_type: None, body: Box::new(body) },
+                span,
+            ));
+        }
 
         if self.check(TokenKind::Equals) {
             self.bump();
@@ -1466,13 +1484,38 @@ impl Parser {
                     );
                 } else {
                     let span = expr.span;
-                    expr = Spanned::new(
-                        ExprKind::FieldAccess {
-                            obj: Box::new(expr),
-                            field: name,
-                        },
-                        span,
-                    );
+                    // `TypeName.Variant` → treat as enum variant (heuristic: obj is uppercase ident)
+                    let is_type_access = matches!(&expr.node, ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase()));
+                    if is_type_access {
+                        let enum_name = match &expr.node { ExprKind::Ident(n) => n.clone(), _ => unreachable!() };
+                        let mut args = vec![];
+                        if self.check(TokenKind::LParen) {
+                            self.bump();
+                            if !self.check(TokenKind::RParen) {
+                                args.push(self.parse_expr()?);
+                                while self.consume(TokenKind::Comma) {
+                                    args.push(self.parse_expr()?);
+                                }
+                            }
+                            self.expect(TokenKind::RParen)?;
+                        }
+                        expr = Spanned::new(
+                            ExprKind::EnumValue {
+                                enum_name,
+                                variant: name,
+                                args,
+                            },
+                            span,
+                        );
+                    } else {
+                        expr = Spanned::new(
+                            ExprKind::FieldAccess {
+                                obj: Box::new(expr),
+                                field: name,
+                            },
+                            span,
+                        );
+                    }
                 }
             } else if self.check(TokenKind::ColonColon) {
                 // Handle enum value construction: Color::Red or Option::Some(value)
@@ -1766,7 +1809,18 @@ impl Parser {
             }
             TokenKind::Backslash => self.parse_lambda(),
             TokenKind::Keyword(Keyword::Fn) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fn_lambda(),
-            TokenKind::LParen => self.parse_tuple_or_grouped(),
+            TokenKind::LParen => {
+                // Peek ahead: `(ident :` → typed lambda params
+                let is_typed_lambda = matches!(
+                    (self.peek_ahead(1).map(|t| t.kind.clone()), self.peek_ahead(2).map(|t| t.kind.clone())),
+                    (Some(TokenKind::Ident(_)), Some(TokenKind::Colon))
+                );
+                if is_typed_lambda {
+                    self.parse_typed_lambda()
+                } else {
+                    self.parse_tuple_or_grouped()
+                }
+            }
             TokenKind::LBrace => {
                 let block_stmt = self.parse_block()?;
                 let span = block_stmt.span;
@@ -1892,6 +1946,7 @@ impl Parser {
 
             self.expect(TokenKind::FatArrow)?;
             let body = self.parse_expr()?;
+            let body_is_block = matches!(body.node, ExprKind::Block(_));
 
             cases.push(MatchCase {
                 pattern,
@@ -1900,9 +1955,15 @@ impl Parser {
                 span: pattern_span,
             });
 
-            if !self.check(TokenKind::RBrace) {
-                if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
-                    return Err(self.error("expected ',' or ';'"));
+            // Block bodies don't need a trailing separator
+            if !body_is_block {
+                if !self.check(TokenKind::RBrace) {
+                    if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
+                        return Err(self.error("expected ',' or ';'"));
+                    }
+                } else {
+                    self.consume(TokenKind::Comma);
+                    self.consume(TokenKind::Semicolon);
                 }
             } else {
                 self.consume(TokenKind::Comma);
@@ -1976,8 +2037,8 @@ impl Parser {
 
         let name = self.parse_ident()?;
 
-        // Handle enum variant patterns: Color::Red or Option::Some(x)
-        if self.check(TokenKind::ColonColon) {
+        // Handle enum variant patterns: Color::Red, Color.Red, or Option::Some(x)
+        if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) {
             self.bump();
             let variant = self.parse_ident()?;
             let mut args = Vec::new();
@@ -2148,6 +2209,23 @@ impl Parser {
         ))
     }
 
+    fn parse_typed_lambda(&mut self) -> Result<Expr, Error> {
+        let span = self.mk_span();
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            params.push(self.parse_lambda_param()?);
+            while self.consume(TokenKind::Comma) {
+                if self.check(TokenKind::RParen) { break; }
+                params.push(self.parse_lambda_param()?);
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::FatArrow)?;
+        let body = self.parse_assign_expr()?;
+        Ok(Spanned::new(ExprKind::Lambda { params, ret_type: None, body: Box::new(body) }, span))
+    }
+
     fn parse_fn_lambda(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Fn)?;
@@ -2227,6 +2305,23 @@ impl Parser {
 
         self.expect(TokenKind::RParen)?;
         Ok(expr)
+    }
+
+    fn expr_to_lambda_params(expr: Expr) -> Result<Vec<Param>, Error> {
+        match expr.node {
+            ExprKind::Ident(name) => Ok(vec![Param { name, param_type: Type::Infer, span: expr.span }]),
+            ExprKind::Tuple(exprs) => {
+                let mut params = Vec::new();
+                for e in exprs {
+                    match e.node {
+                        ExprKind::Ident(name) => params.push(Param { name, param_type: Type::Infer, span: e.span }),
+                        _ => return Err(Error::new(e.span, "expected identifier in lambda parameter list")),
+                    }
+                }
+                Ok(params)
+            }
+            _ => Err(Error::new(expr.span, "expected identifier or parameter list before '=>'")),
+        }
     }
 
     fn parse_ident(&mut self) -> Result<String, Error> {
