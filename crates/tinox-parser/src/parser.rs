@@ -1808,6 +1808,7 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Channel, token.span))
             }
             TokenKind::Backslash => self.parse_lambda(),
+            TokenKind::Keyword(Keyword::Fnc) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fnc_lambda(),
             TokenKind::Keyword(Keyword::Fn) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fn_lambda(),
             TokenKind::LParen => {
                 // Peek ahead: `(ident :` → typed lambda params
@@ -2253,6 +2254,28 @@ impl Parser {
             },
             span,
         ))
+    }
+
+    fn parse_fnc_lambda(&mut self) -> Result<Expr, Error> {
+        let span = self.mk_span();
+        self.expect_keyword(Keyword::Fnc)?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            params.push(self.parse_fn_lambda_param()?);
+            while self.consume(TokenKind::Comma) {
+                if self.check(TokenKind::RParen) { break; }
+                params.push(self.parse_fn_lambda_param()?);
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret_type = if self.consume(TokenKind::ThinArrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_expr()?;
+        Ok(Spanned::new(ExprKind::Lambda { params, ret_type, body: Box::new(body) }, span))
     }
 
     fn parse_fn_lambda_param(&mut self) -> Result<Param, Error> {
