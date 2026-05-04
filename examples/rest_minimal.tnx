@@ -8,7 +8,7 @@ class UserController
     @GET
     @Path("/users")
     @StatusCode(200)
-    fn listUsers(ctx: HttpContext) -> Unit
+    fn listUsers(ctx: HttpContext) -> Nothing
     {
         ctx.x = 42;
     }

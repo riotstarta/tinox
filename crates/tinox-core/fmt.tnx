@@ -79,12 +79,12 @@ namespace tinox.core.fmt
             return result;
         }
 
-        fn printf(format: String, args: List<String>) -> Unit
+        fn printf(format: String, args: List<String>) -> Nothing
         {
             print(Fmt::sprintf(format, args));
         }
 
-        fn printlnf(format: String, args: List<String>) -> Unit
+        fn printlnf(format: String, args: List<String>) -> Nothing
         {
             println(Fmt::sprintf(format, args));
         }

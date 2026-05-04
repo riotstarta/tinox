@@ -153,7 +153,7 @@ impl Parser {
         let ret_type = if self.consume(TokenKind::ThinArrow) {
             self.parse_type()?
         } else {
-            Type::Unit
+            Type::Nothing
         };
 
         self.expect(TokenKind::Semicolon)?;
@@ -204,7 +204,7 @@ impl Parser {
         let ret_type = if self.consume(TokenKind::ThinArrow) {
             self.parse_type()?
         } else {
-            Type::Unit
+            Type::Nothing
         };
 
         let body = if self.consume(TokenKind::Semicolon) {
@@ -372,7 +372,7 @@ impl Parser {
         let ret_type = if self.consume(TokenKind::ThinArrow) {
             self.parse_type()?
         } else {
-            Type::Unit
+            Type::Nothing
         };
 
         let body = self.parse_block()?;
@@ -665,7 +665,7 @@ impl Parser {
             let ret = if self.consume(TokenKind::ThinArrow) {
                 Box::new(self.parse_type()?)
             } else {
-                Box::new(Type::Unit)
+                Box::new(Type::Nothing)
             };
             return Ok(Type::Fn { params, ret });
         }
@@ -708,10 +708,10 @@ impl Parser {
     }
 
     fn parse_type_base(&mut self) -> Result<Type, Error> {
-        // `Unit` is a keyword token, not an identifier — handle it before parse_ident
-        if self.check_keyword(Keyword::Unit) {
+        // `Nothing` is a keyword token, not an identifier — handle it before parse_ident
+        if self.check_keyword(Keyword::Nothing) {
             self.bump();
-            return Ok(Type::Unit);
+            return Ok(Type::Nothing);
         }
         let ident = self.parse_ident()?;
 
@@ -729,7 +729,7 @@ impl Parser {
             "Bool" => Ok(Type::Bool),
             "Char" => Ok(Type::Char),
             "String" => Ok(Type::String),
-            "Unit" => Ok(Type::Unit),
+            "Nothing" => Ok(Type::Nothing),
             "Never" => Ok(Type::Never),
             "Any" => Ok(Type::Any),
             "Map" => {

@@ -53,7 +53,7 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(maxRequests: Int64, windowMs: Int64) -&gt; RateLimiter</td><td>Sliding-Window-Limiter erstellen</td></tr>
         <tr><td>allow</td><td>fn allow(limiter: RateLimiter) -&gt; Bool</td><td>Anfrage prüfen und registrieren</td></tr>
-        <tr><td>reset</td><td>fn reset(limiter: RateLimiter) -&gt; Unit</td><td>Anfrage-Historie zurücksetzen</td></tr>
+        <tr><td>reset</td><td>fn reset(limiter: RateLimiter) -&gt; Nothing</td><td>Anfrage-Historie zurücksetzen</td></tr>
         <tr><td>remaining</td><td>fn remaining(limiter: RateLimiter) -&gt; Int64</td><td>Verbleibende Anfragen im Fenster</td></tr>
       </table>
     </div>

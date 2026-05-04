@@ -20,7 +20,7 @@ namespace tinox.core.cache
             return Option::none();
         }
 
-        fn set(cache: Cache<K, V>, key: K, value: V) -> Unit
+        fn set(cache: Cache<K, V>, key: K, value: V) -> Nothing
         {
             if cache.data.contains(key)
             {
@@ -58,13 +58,13 @@ namespace tinox.core.cache
             return true;
         }
 
-        fn clear(cache: Cache<K, V>) -> Unit
+        fn clear(cache: Cache<K, V>) -> Nothing
         {
             cache.data = Map::new();
             cache.accessOrder = [];
         }
 
-        fn touch(cache: Cache<K, V>, key: K) -> Unit
+        fn touch(cache: Cache<K, V>, key: K) -> Nothing
         {
             var i: Int64 = 0;
             while i < cache.accessOrder.len()
@@ -92,7 +92,7 @@ namespace tinox.core.cache
             return Cache::get(cache.cache, key);
         }
 
-        fn set(cache: LruCache<K, V>, key: K, value: V) -> Unit
+        fn set(cache: LruCache<K, V>, key: K, value: V) -> Nothing
         {
             Cache::set(cache.cache, key, value);
         }

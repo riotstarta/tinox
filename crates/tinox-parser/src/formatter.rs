@@ -534,7 +534,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             Type::Bool => "Bool".to_string(),
             Type::Char => "Char".to_string(),
             Type::String => "String".to_string(),
-            Type::Unit => "Unit".to_string(),
+            Type::Nothing => "Nothing".to_string(),
             Type::Never => "Never".to_string(),
             Type::Any => "Any".to_string(),
             Type::Infer => "_".to_string(),

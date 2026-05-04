@@ -52,10 +52,10 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; Buffer</td><td>Leeren Buffer erstellen</td></tr>
-        <tr><td>append</td><td>fn append(s: String) -&gt; Unit</td><td>String anhängen</td></tr>
-        <tr><td>appendInt</td><td>fn appendInt(n: Int64) -&gt; Unit</td><td>Integer als String anhängen</td></tr>
-        <tr><td>appendLine</td><td>fn appendLine(s: String) -&gt; Unit</td><td>String + Newline anhängen</td></tr>
-        <tr><td>clear</td><td>fn clear() -&gt; Unit</td><td>Buffer leeren</td></tr>
+        <tr><td>append</td><td>fn append(s: String) -&gt; Nothing</td><td>String anhängen</td></tr>
+        <tr><td>appendInt</td><td>fn appendInt(n: Int64) -&gt; Nothing</td><td>Integer als String anhängen</td></tr>
+        <tr><td>appendLine</td><td>fn appendLine(s: String) -&gt; Nothing</td><td>String + Newline anhängen</td></tr>
+        <tr><td>clear</td><td>fn clear() -&gt; Nothing</td><td>Buffer leeren</td></tr>
         <tr><td>toString</td><td>fn toString() -&gt; String</td><td>Gesamten Inhalt als String zurückgeben</td></tr>
         <tr><td>isEmpty</td><td>fn isEmpty() -&gt; Bool</td><td>Prüfen ob Buffer leer ist</td></tr>
       </table>
@@ -77,8 +77,8 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>newBuffer</td><td>fn newBuffer() -&gt; Buffer</td><td>Neuen Buffer erstellen</td></tr>
-        <tr><td>printLine</td><td>fn printLine(value: String) -&gt; Unit</td><td>String mit Newline ausgeben</td></tr>
-        <tr><td>printHeader</td><td>fn printHeader(title: String) -&gt; Unit</td><td>=== Titel === ausgeben</td></tr>
+        <tr><td>printLine</td><td>fn printLine(value: String) -&gt; Nothing</td><td>String mit Newline ausgeben</td></tr>
+        <tr><td>printHeader</td><td>fn printHeader(title: String) -&gt; Nothing</td><td>=== Titel === ausgeben</td></tr>
       </table>
     </div>
 

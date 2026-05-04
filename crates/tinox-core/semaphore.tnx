@@ -9,7 +9,7 @@ namespace tinox.core.semaphore
             return Semaphore { count: count, waiting: [] };
         }
 
-        fn acquire(sem: Semaphore) -> Unit
+        fn acquire(sem: Semaphore) -> Nothing
         {
             if sem.count > 0
             {
@@ -19,7 +19,7 @@ namespace tinox.core.semaphore
             throw "Semaphore locked";
         }
 
-        fn release(sem: Semaphore) -> Unit
+        fn release(sem: Semaphore) -> Nothing
         {
             sem.count = sem.count + 1;
         }
@@ -42,7 +42,7 @@ namespace tinox.core.semaphore
             return Mutex { locked: false, queue: [] };
         }
 
-        fn lock(mutex: Mutex) -> Unit
+        fn lock(mutex: Mutex) -> Nothing
         {
             if mutex.locked == false
             {
@@ -52,7 +52,7 @@ namespace tinox.core.semaphore
             throw "Mutex already locked";
         }
 
-        fn unlock(mutex: Mutex) -> Unit
+        fn unlock(mutex: Mutex) -> Nothing
         {
             mutex.locked = false;
         }
@@ -75,7 +75,7 @@ namespace tinox.core.semaphore
             return RWLock { readers: 0, writers: 0 };
         }
 
-        fn readLock(lock: RWLock) -> Unit
+        fn readLock(lock: RWLock) -> Nothing
         {
             if lock.writers > 0
             {
@@ -84,17 +84,17 @@ namespace tinox.core.semaphore
             lock.readers = lock.readers + 1;
         }
 
-        fn readUnlock(lock: RWLock) -> Unit
+        fn readUnlock(lock: RWLock) -> Nothing
         {
             lock.readers = lock.readers - 1;
         }
 
-        fn writeLock(lock: RWLock) -> Unit
+        fn writeLock(lock: RWLock) -> Nothing
         {
             lock.writers = lock.writers + 1;
         }
 
-        fn writeUnlock(lock: RWLock) -> Unit
+        fn writeUnlock(lock: RWLock) -> Nothing
         {
             lock.writers = lock.writers - 1;
         }

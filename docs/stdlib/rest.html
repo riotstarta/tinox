@@ -53,17 +53,17 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(baseUrl: String) -&gt; RestClient</td><td>Neuen REST-Client erstellen</td></tr>
         <tr><td>newWithHeaders</td><td>fn newWithHeaders(baseUrl: String, defaultHeaders: List&lt;String&gt;) -&gt; RestClient</td><td>REST-Client mit Standard-Headern erstellen</td></tr>
-        <tr><td>setTimeout</td><td>fn setTimeout(timeoutMs: Int64) -&gt; Unit</td><td>Timeout in Millisekunden setzen</td></tr>
-        <tr><td>addHeader</td><td>fn addHeader(name: String, value: String) -&gt; Unit</td><td>Standard-Header hinzufügen</td></tr>
-        <tr><td>clearHeaders</td><td>fn clearHeaders() -&gt; Unit</td><td>Alle Standard-Header entfernen</td></tr>
+        <tr><td>setTimeout</td><td>fn setTimeout(timeoutMs: Int64) -&gt; Nothing</td><td>Timeout in Millisekunden setzen</td></tr>
+        <tr><td>addHeader</td><td>fn addHeader(name: String, value: String) -&gt; Nothing</td><td>Standard-Header hinzufügen</td></tr>
+        <tr><td>clearHeaders</td><td>fn clearHeaders() -&gt; Nothing</td><td>Alle Standard-Header entfernen</td></tr>
         <tr><td>get</td><td>fn get(path: String) -&gt; RestResponse</td><td>GET-Anfrage senden</td></tr>
         <tr><td>getWithParams</td><td>fn getWithParams(path: String, params: Map&lt;String, String&gt;) -&gt; RestResponse</td><td>GET mit Query-Parametern</td></tr>
         <tr><td>post</td><td>fn post(path: String, body: String) -&gt; RestResponse</td><td>POST mit JSON-Body</td></tr>
         <tr><td>put</td><td>fn put(path: String, body: String) -&gt; RestResponse</td><td>PUT mit JSON-Body</td></tr>
         <tr><td>patch</td><td>fn patch(path: String, body: String) -&gt; RestResponse</td><td>PATCH mit JSON-Body</td></tr>
         <tr><td>delete</td><td>fn delete(path: String) -&gt; RestResponse</td><td>DELETE-Anfrage senden</td></tr>
-        <tr><td>bearerAuth</td><td>fn bearerAuth(token: String) -&gt; Unit</td><td>Bearer-Token-Auth-Header setzen</td></tr>
-        <tr><td>basicAuth</td><td>fn basicAuth(username: String, password: String) -&gt; Unit</td><td>Basic-Auth-Header setzen</td></tr>
+        <tr><td>bearerAuth</td><td>fn bearerAuth(token: String) -&gt; Nothing</td><td>Bearer-Token-Auth-Header setzen</td></tr>
+        <tr><td>basicAuth</td><td>fn basicAuth(username: String, password: String) -&gt; Nothing</td><td>Basic-Auth-Header setzen</td></tr>
       </table>
     </div>
 

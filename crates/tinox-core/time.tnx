@@ -27,7 +27,7 @@ namespace tinox.core.time
          *
          * @param ms the number of milliseconds to sleep
          */
-        fn sleep(ms: Int64) -> Unit
+        fn sleep(ms: Int64) -> Nothing
         {
             sleep(ms);
         }
@@ -210,7 +210,7 @@ namespace tinox.core.time
         /**
          * Starts the timer, recording the current time
          */
-        fn start() -> Unit
+        fn start() -> Nothing
         {
             this.startTime = now();
         }
@@ -218,7 +218,7 @@ namespace tinox.core.time
         /**
          * Stops the timer, recording the end time
          */
-        fn stop() -> Unit
+        fn stop() -> Nothing
         {
             this.endTime = now();
         }
@@ -278,7 +278,7 @@ namespace tinox.core.time
         /**
          * Starts the stopwatch, recording the current time
          */
-        fn start() -> Unit
+        fn start() -> Nothing
         {
             this.startTime = now();
             this.running = true;
@@ -287,7 +287,7 @@ namespace tinox.core.time
         /**
          * Stops the stopwatch
          */
-        fn stop() -> Unit
+        fn stop() -> Nothing
         {
             this.running = false;
         }

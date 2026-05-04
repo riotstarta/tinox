@@ -29,12 +29,12 @@ namespace tinox.core.http
             return httpPatch(url, body);
         }
 
-        fn setHeader(name: String, value: String) -> Unit
+        fn setHeader(name: String, value: String) -> Nothing
         {
             httpSetHeader(name, value);
         }
 
-        fn clearHeaders() -> Unit
+        fn clearHeaders() -> Nothing
         {
             httpClearHeaders();
         }

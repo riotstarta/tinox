@@ -9,29 +9,29 @@ namespace tinox.core.fs
             return fileReadAllText(path);
         }
 
-        fn writeFile(path: String, content: String) -> Unit
+        fn writeFile(path: String, content: String) -> Nothing
         {
             fileWriteAllText(path, content);
         }
 
-        fn appendFile(path: String, content: String) -> Unit
+        fn appendFile(path: String, content: String) -> Nothing
         {
             let existing: String = Fs::readFile(path);
             Fs::writeFile(path, existing + content);
         }
 
-        fn deleteFile(path: String) -> Unit
+        fn deleteFile(path: String) -> Nothing
         {
             fileDelete(path);
         }
 
-        fn copyFile(src: String, dest: String) -> Unit
+        fn copyFile(src: String, dest: String) -> Nothing
         {
             let content: String = Fs::readFile(src);
             Fs::writeFile(dest, content);
         }
 
-        fn moveFile(src: String, dest: String) -> Unit
+        fn moveFile(src: String, dest: String) -> Nothing
         {
             Fs::copyFile(src, dest);
             Fs::deleteFile(src);
@@ -42,12 +42,12 @@ namespace tinox.core.fs
             return dirList(path);
         }
 
-        fn createDirectory(path: String) -> Unit
+        fn createDirectory(path: String) -> Nothing
         {
             dirCreate(path);
         }
 
-        fn deleteDirectory(path: String) -> Unit
+        fn deleteDirectory(path: String) -> Nothing
         {
             dirDelete(path);
         }

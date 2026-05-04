@@ -6,7 +6,7 @@ class UserController
     @Path("/users")
     @Produces("application/json")
     @StatusCode(200)
-    fn listUsers(ctx: HttpContext) -> Unit
+    fn listUsers(ctx: HttpContext) -> Nothing
     {
         ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
     }
@@ -16,7 +16,7 @@ class UserController
     @Consumes("application/json")
     @Produces("application/json")
     @StatusCode(201)
-    fn createUser(ctx: HttpContext) -> Unit
+    fn createUser(ctx: HttpContext) -> Nothing
     {
         ctx.response.body = "{\"id\":2,\"name\":\"Bob\"}";
     }

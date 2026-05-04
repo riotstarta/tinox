@@ -53,12 +53,12 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; Heap&lt;T&gt;</td><td>Heap mit Standard-Comparator (a &lt; b)</td></tr>
         <tr><td>newWithCompare</td><td>fn newWithCompare(comparator: fnc(T, T) -&gt; Bool) -&gt; Heap&lt;T&gt;</td><td>Heap mit benutzerdefiniertem Comparator</td></tr>
-        <tr><td>push</td><td>fn push(heap: Heap&lt;T&gt;, item: T) -&gt; Unit</td><td>Element einfügen</td></tr>
+        <tr><td>push</td><td>fn push(heap: Heap&lt;T&gt;, item: T) -&gt; Nothing</td><td>Element einfügen</td></tr>
         <tr><td>pop</td><td>fn pop(heap: Heap&lt;T&gt;) -&gt; T</td><td>Minimum/Maximum entfernen und zurückgeben</td></tr>
         <tr><td>peek</td><td>fn peek(heap: Heap&lt;T&gt;) -&gt; T</td><td>Minimum/Maximum ansehen (ohne Entfernen)</td></tr>
         <tr><td>isEmpty</td><td>fn isEmpty(heap: Heap&lt;T&gt;) -&gt; Bool</td><td>Prüfen ob Heap leer ist</td></tr>
         <tr><td>size</td><td>fn size(heap: Heap&lt;T&gt;) -&gt; Int64</td><td>Anzahl Elemente</td></tr>
-        <tr><td>buildHeap</td><td>fn buildHeap(heap: Heap&lt;T&gt;, items: List&lt;T&gt;) -&gt; Unit</td><td>Heap aus Liste aufbauen (O(n))</td></tr>
+        <tr><td>buildHeap</td><td>fn buildHeap(heap: Heap&lt;T&gt;, items: List&lt;T&gt;) -&gt; Nothing</td><td>Heap aus Liste aufbauen (O(n))</td></tr>
       </table>
     </div>
 
@@ -68,7 +68,7 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; MinHeap&lt;T&gt;</td><td>Neuen MinHeap/MaxHeap erstellen</td></tr>
-        <tr><td>push</td><td>fn push(h: MinHeap&lt;T&gt;, item: T) -&gt; Unit</td><td>Element einfügen</td></tr>
+        <tr><td>push</td><td>fn push(h: MinHeap&lt;T&gt;, item: T) -&gt; Nothing</td><td>Element einfügen</td></tr>
         <tr><td>pop</td><td>fn pop(h: MinHeap&lt;T&gt;) -&gt; T</td><td>Kleinstes/Größtes entfernen</td></tr>
         <tr><td>peek</td><td>fn peek(h: MinHeap&lt;T&gt;) -&gt; T</td><td>Kleinstes/Größtes ansehen</td></tr>
       </table>

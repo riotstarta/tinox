@@ -52,11 +52,11 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(name: String) -&gt; Logger</td><td>Logger mit Name erstellen (Standard-Level: Info)</td></tr>
-        <tr><td>debug</td><td>fn debug(logger: Logger, message: String) -&gt; Unit</td><td>Debug-Nachricht (nur wenn Level ≤ Debug)</td></tr>
-        <tr><td>info</td><td>fn info(logger: Logger, message: String) -&gt; Unit</td><td>Info-Nachricht</td></tr>
-        <tr><td>warn</td><td>fn warn(logger: Logger, message: String) -&gt; Unit</td><td>Warn-Nachricht</td></tr>
-        <tr><td>error</td><td>fn error(logger: Logger, message: String) -&gt; Unit</td><td>Error-Nachricht</td></tr>
-        <tr><td>setLevel</td><td>fn setLevel(logger: Logger, level: LogLevel) -&gt; Unit</td><td>Mindest-Log-Level setzen</td></tr>
+        <tr><td>debug</td><td>fn debug(logger: Logger, message: String) -&gt; Nothing</td><td>Debug-Nachricht (nur wenn Level ≤ Debug)</td></tr>
+        <tr><td>info</td><td>fn info(logger: Logger, message: String) -&gt; Nothing</td><td>Info-Nachricht</td></tr>
+        <tr><td>warn</td><td>fn warn(logger: Logger, message: String) -&gt; Nothing</td><td>Warn-Nachricht</td></tr>
+        <tr><td>error</td><td>fn error(logger: Logger, message: String) -&gt; Nothing</td><td>Error-Nachricht</td></tr>
+        <tr><td>setLevel</td><td>fn setLevel(logger: Logger, level: LogLevel) -&gt; Nothing</td><td>Mindest-Log-Level setzen</td></tr>
       </table>
     </div>
 

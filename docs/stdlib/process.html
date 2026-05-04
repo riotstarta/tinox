@@ -51,12 +51,12 @@
       <h3>Process</h3>
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
-        <tr><td>exit</td><td>fn exit(code: Int64) -&gt; Unit</td><td>Prozess mit Exit-Code beenden</td></tr>
-        <tr><td>sleep</td><td>fn sleep(ms: Int64) -&gt; Unit</td><td>Ausführung für ms Millisekunden pausieren</td></tr>
+        <tr><td>exit</td><td>fn exit(code: Int64) -&gt; Nothing</td><td>Prozess mit Exit-Code beenden</td></tr>
+        <tr><td>sleep</td><td>fn sleep(ms: Int64) -&gt; Nothing</td><td>Ausführung für ms Millisekunden pausieren</td></tr>
         <tr><td>pid</td><td>fn pid() -&gt; Int64</td><td>Aktuelle Prozess-ID</td></tr>
         <tr><td>args</td><td>fn args() -&gt; List&lt;String&gt;</td><td>Kommandozeilenargumente</td></tr>
         <tr><td>env</td><td>fn env(name: String) -&gt; String</td><td>Umgebungsvariable lesen</td></tr>
-        <tr><td>setEnv</td><td>fn setEnv(name: String, value: String) -&gt; Unit</td><td>Umgebungsvariable setzen</td></tr>
+        <tr><td>setEnv</td><td>fn setEnv(name: String, value: String) -&gt; Nothing</td><td>Umgebungsvariable setzen</td></tr>
       </table>
     </div>
 

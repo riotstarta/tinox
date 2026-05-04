@@ -28,7 +28,7 @@ namespace tinox.core.io
          *
          * @param value the string to print
          */
-        fn printLine(value: String) -> Unit
+        fn printLine(value: String) -> Nothing
         {
             print(value);
             print("\n");
@@ -39,7 +39,7 @@ namespace tinox.core.io
          *
          * @param title the header text to display
          */
-        fn printHeader(title: String) -> Unit
+        fn printHeader(title: String) -> Nothing
         {
             print("=== ");
             print(title);
@@ -85,7 +85,7 @@ namespace tinox.core.io
         /**
          * Closes the file if it is open
          */
-        fn close() -> Unit
+        fn close() -> Nothing
         {
             if this.handle != 0
             {
@@ -198,7 +198,7 @@ namespace tinox.core.io
          *
          * @param s the string to append
          */
-        fn append(s: String) -> Unit
+        fn append(s: String) -> Nothing
         {
             this.data = this.data + s;
         }
@@ -208,7 +208,7 @@ namespace tinox.core.io
          *
          * @param n the integer to append
          */
-        fn appendInt(n: Int64) -> Unit
+        fn appendInt(n: Int64) -> Nothing
         {
             this.data = this.data + n.toString();
         }
@@ -218,7 +218,7 @@ namespace tinox.core.io
          *
          * @param s the string to append
          */
-        fn appendLine(s: String) -> Unit
+        fn appendLine(s: String) -> Nothing
         {
             this.data = this.data + s + "\n";
         }
@@ -226,7 +226,7 @@ namespace tinox.core.io
         /**
          * Clears all content from the buffer
          */
-        fn clear() -> Unit
+        fn clear() -> Nothing
         {
             this.data = "";
         }

@@ -9,7 +9,7 @@ namespace tinox.core.trie
             return Trie { root: TrieNode::new() };
         }
 
-        fn insert(trie: Trie, word: String) -> Unit
+        fn insert(trie: Trie, word: String) -> Nothing
         {
             var current: TrieNode = trie.root;
             var i: Int64 = 0;

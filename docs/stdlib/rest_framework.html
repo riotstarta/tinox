@@ -84,7 +84,7 @@
         <tr><td>routes</td><td>List&lt;RouteEntry&gt;</td><td>Registrierte Routen dieses Controllers</td></tr>
         <tr><td>basePath</td><td>String</td><td>Basis-Pfad für alle Routen</td></tr>
         <tr><td>new</td><td>fn new() -&gt; RestController</td><td>Neuen Controller erstellen</td></tr>
-        <tr><td>route</td><td>fn route(method: String, path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RouteEntry</td><td>Route manuell registrieren</td></tr>
+        <tr><td>route</td><td>fn route(method: String, path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RouteEntry</td><td>Route manuell registrieren</td></tr>
       </table>
     </div>
 
@@ -94,16 +94,16 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(port: Int64) -&gt; RestApi</td><td>REST-API auf Port erstellen</td></tr>
         <tr><td>register</td><td>fn register(controller: RestController) -&gt; RestApi</td><td>Controller registrieren</td></tr>
-        <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>GET-Route direkt registrieren</td></tr>
-        <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>POST-Route direkt registrieren</td></tr>
-        <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>PUT-Route direkt registrieren</td></tr>
-        <tr><td>patch</td><td>fn patch(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>PATCH-Route direkt registrieren</td></tr>
-        <tr><td>delete</td><td>fn delete(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; RestApi</td><td>DELETE-Route direkt registrieren</td></tr>
+        <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</td><td>GET-Route direkt registrieren</td></tr>
+        <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</td><td>POST-Route direkt registrieren</td></tr>
+        <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</td><td>PUT-Route direkt registrieren</td></tr>
+        <tr><td>patch</td><td>fn patch(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</td><td>PATCH-Route direkt registrieren</td></tr>
+        <tr><td>delete</td><td>fn delete(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</td><td>DELETE-Route direkt registrieren</td></tr>
         <tr><td>use</td><td>fn use(mware: fnc(HttpContext) -&gt; Bool) -&gt; RestApi</td><td>Globale Middleware hinzufügen</td></tr>
         <tr><td>enableCors</td><td>fn enableCors(origin: String) -&gt; RestApi</td><td>CORS für alle Antworten aktivieren</td></tr>
         <tr><td>defaultJson</td><td>fn defaultJson() -&gt; RestApi</td><td>Standard Content-Type JSON setzen</td></tr>
-        <tr><td>start</td><td>fn start() -&gt; Unit</td><td>Server starten (blockierend)</td></tr>
-        <tr><td>stop</td><td>fn stop() -&gt; Unit</td><td>Server stoppen</td></tr>
+        <tr><td>start</td><td>fn start() -&gt; Nothing</td><td>Server starten (blockierend)</td></tr>
+        <tr><td>stop</td><td>fn stop() -&gt; Nothing</td><td>Server stoppen</td></tr>
       </table>
     </div>
 
@@ -132,14 +132,14 @@
 {
     <span class="ann">@GET</span>(<span class="str">"/"</span>)
     <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
-    <span class="kw">fnc</span> <span class="fn-name">list</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    <span class="kw">fnc</span> <span class="fn-name">list</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span>
     {
         ctx.response.<span class="fn-name">json</span>(<span class="str">"[{\"id\":1,\"name\":\"Alice\"}]"</span>);
     }
 
     <span class="ann">@GET</span>(<span class="str">"/:id"</span>)
     <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
-    <span class="kw">fnc</span> <span class="fn-name">getOne</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    <span class="kw">fnc</span> <span class="fn-name">getOne</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span>
     {
         <span class="kw">let</span> id: <span class="type">String</span> = ctx.request.<span class="fn-name">getParam</span>(<span class="str">"id"</span>);
         ctx.response.<span class="fn-name">json</span>(<span class="str">"{\"id\":"</span> + id + <span class="str">"}"</span>);
@@ -149,7 +149,7 @@
     <span class="ann">@Consumes</span>(<span class="str">"application/json"</span>)
     <span class="ann">@StatusCode</span>(<span class="num">201</span>)
     <span class="ann">@Produces</span>(<span class="str">"application/json"</span>)
-    <span class="kw">fnc</span> <span class="fn-name">create</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    <span class="kw">fnc</span> <span class="fn-name">create</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span>
     {
         <span class="kw">let</span> data: <span class="type">JsonValue</span> = ctx.request.<span class="fn-name">json</span>();
         ctx.response.<span class="fn-name">status</span>(<span class="num">201</span>).<span class="fn-name">json</span>(<span class="str">"{\"created\":true}"</span>);
@@ -157,7 +157,7 @@
 
     <span class="ann">@DELETE</span>(<span class="str">"/:id"</span>)
     <span class="ann">@Auth</span>(<span class="str">"bearer"</span>)
-    <span class="kw">fnc</span> <span class="fn-name">remove</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span>
+    <span class="kw">fnc</span> <span class="fn-name">remove</span>(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span>
     {
         ctx.response.<span class="fn-name">status</span>(<span class="num">204</span>).<span class="fn-name">text</span>(<span class="str">""</span>);
     }

@@ -9,7 +9,7 @@ namespace tinox.core.queue
             return PriorityQueue<T> { items: [] };
         }
 
-        fn enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Unit
+        fn enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Nothing
         {
             q.items.push(PriorityItem { item: item, priority: priority });
             PriorityQueue::sort(q);
@@ -35,7 +35,7 @@ namespace tinox.core.queue
             return q.items[0].item;
         }
 
-        fn sort(q: PriorityQueue<T>) -> Unit
+        fn sort(q: PriorityQueue<T>) -> Nothing
         {
             var i: Int64 = 1;
             while i < q.items.len()

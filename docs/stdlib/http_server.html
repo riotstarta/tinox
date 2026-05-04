@@ -52,14 +52,14 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(port: Int64) -&gt; HttpServer</td><td>Server auf Port erstellen</td></tr>
-        <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>GET-Route registrieren</td></tr>
-        <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>POST-Route registrieren</td></tr>
-        <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>PUT-Route registrieren</td></tr>
-        <tr><td>patch</td><td>fn patch(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>PATCH-Route registrieren</td></tr>
-        <tr><td>delete</td><td>fn delete(path: String, handler: fnc(HttpContext) -&gt; Unit) -&gt; HttpServer</td><td>DELETE-Route registrieren</td></tr>
+        <tr><td>get</td><td>fn get(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; HttpServer</td><td>GET-Route registrieren</td></tr>
+        <tr><td>post</td><td>fn post(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; HttpServer</td><td>POST-Route registrieren</td></tr>
+        <tr><td>put</td><td>fn put(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; HttpServer</td><td>PUT-Route registrieren</td></tr>
+        <tr><td>patch</td><td>fn patch(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; HttpServer</td><td>PATCH-Route registrieren</td></tr>
+        <tr><td>delete</td><td>fn delete(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; HttpServer</td><td>DELETE-Route registrieren</td></tr>
         <tr><td>use</td><td>fn use(mware: fnc(HttpContext) -&gt; Bool) -&gt; HttpServer</td><td>Middleware registrieren (false = Abbruch)</td></tr>
-        <tr><td>listen</td><td>fn listen() -&gt; Unit</td><td>Server starten (blockierend)</td></tr>
-        <tr><td>stop</td><td>fn stop() -&gt; Unit</td><td>Server stoppen</td></tr>
+        <tr><td>listen</td><td>fn listen() -&gt; Nothing</td><td>Server starten (blockierend)</td></tr>
+        <tr><td>stop</td><td>fn stop() -&gt; Nothing</td><td>Server stoppen</td></tr>
       </table>
     </div>
 
@@ -73,8 +73,8 @@
         <tr><td>ctx.request.headers</td><td>Map&lt;String, String&gt;</td><td>Request-Header</td></tr>
         <tr><td>ctx.request.params</td><td>Map&lt;String, String&gt;</td><td>Pfad-Parameter (z.B. :id)</td></tr>
         <tr><td>ctx.response.status(code)</td><td>-&gt; HttpResponse</td><td>Status setzen (chainbar)</td></tr>
-        <tr><td>ctx.response.json(body)</td><td>-&gt; Unit</td><td>JSON-Antwort senden</td></tr>
-        <tr><td>ctx.response.text(body)</td><td>-&gt; Unit</td><td>Text-Antwort senden</td></tr>
+        <tr><td>ctx.response.json(body)</td><td>-&gt; Nothing</td><td>JSON-Antwort senden</td></tr>
+        <tr><td>ctx.response.text(body)</td><td>-&gt; Nothing</td><td>Text-Antwort senden</td></tr>
         <tr><td>ctx.response.header(k, v)</td><td>-&gt; HttpResponse</td><td>Antwort-Header setzen (chainbar)</td></tr>
       </table>
     </div>
@@ -86,16 +86,16 @@
 {
     <span class="kw">let</span> server: <span class="type">HttpServer</span> = HttpServer::<span class="fn-name">new</span>(<span class="num">8080</span>);
 
-    server.<span class="fn-name">get</span>(<span class="str">"/hello"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span> {
+    server.<span class="fn-name">get</span>(<span class="str">"/hello"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span> {
         ctx.response.<span class="fn-name">text</span>(<span class="str">"Hallo Welt!"</span>);
     });
 
-    server.<span class="fn-name">get</span>(<span class="str">"/users/:id"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span> {
+    server.<span class="fn-name">get</span>(<span class="str">"/users/:id"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span> {
         <span class="kw">let</span> id: <span class="type">String</span> = ctx.request.params[<span class="str">"id"</span>];
         ctx.response.<span class="fn-name">status</span>(<span class="num">200</span>).<span class="fn-name">json</span>(<span class="str">"{\"id\":"</span> + id + <span class="str">"}"</span>);
     });
 
-    server.<span class="fn-name">post</span>(<span class="str">"/users"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Unit</span> {
+    server.<span class="fn-name">post</span>(<span class="str">"/users"</span>, fnc(ctx: <span class="type">HttpContext</span>) -&gt; <span class="type">Nothing</span> {
         ctx.response.<span class="fn-name">status</span>(<span class="num">201</span>).<span class="fn-name">json</span>(<span class="str">"{\"created\":true}"</span>);
     });
 

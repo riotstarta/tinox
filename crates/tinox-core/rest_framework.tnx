@@ -12,14 +12,14 @@
  *   {
  *       @GET("/users")
  *       @Produces("application/json")
- *       fn listUsers(ctx: HttpContext) -> Unit
+ *       fn listUsers(ctx: HttpContext) -> Nothing
  *       {
  *           ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
  *       }
  *
  *       @GET("/users/:id")
  *       @Produces("application/json")
- *       fn getUser(ctx: HttpContext) -> Unit
+ *       fn getUser(ctx: HttpContext) -> Nothing
  *       {
  *           let id: String = ctx.request.getParam("id");
  *           ctx.response.json("{\"id\": " + id + "}");
@@ -29,7 +29,7 @@
  *       @Consumes("application/json")
  *       @StatusCode(201)
  *       @Produces("application/json")
- *       fn createUser(ctx: HttpContext) -> Unit
+ *       fn createUser(ctx: HttpContext) -> Nothing
  *       {
  *           let data: JsonValue = ctx.request.json();
  *           ctx.response.status(201).json("{\"created\": true}");
@@ -283,7 +283,7 @@ namespace tinox.core.rest_framework
         var path: String;
 
         /** Handler function */
-        var handler: fnc(HttpContext) -> Unit;
+        var handler: fnc(HttpContext) -> Nothing;
 
         /** Default status code from @StatusCode annotation */
         var statusCode: Int64;
@@ -297,7 +297,7 @@ namespace tinox.core.rest_framework
         /** Auth type from @Auth annotation ("bearer", "basic", or empty) */
         var authType: String;
 
-        fn new(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
+        fn new(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
             return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: "", consumes: "", authType: "" };
         }
@@ -339,7 +339,7 @@ namespace tinox.core.rest_framework
      *   {
      *       @GET("/")
      *       @Produces("application/json")
-     *       fn list(ctx: HttpContext) -> Unit
+     *       fn list(ctx: HttpContext) -> Nothing
      *       {
      *           ctx.response.json("[]");
      *       }
@@ -367,7 +367,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return the RouteEntry for further configuration
          */
-        fn route(method: String, path: String, handler: fnc(HttpContext) -> Unit) -> RouteEntry
+        fn route(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
             let entry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
             this.routes.push(entry);
@@ -452,7 +452,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return this RestApi for chaining
          */
-        fn get(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        fn get(path: String, handler: fnc(HttpContext) -> Nothing) -> RestApi
         {
             this.addRouteEntry(RouteEntry::new("GET", path, handler));
             return this;
@@ -465,7 +465,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return this RestApi for chaining
          */
-        fn post(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        fn post(path: String, handler: fnc(HttpContext) -> Nothing) -> RestApi
         {
             this.addRouteEntry(RouteEntry::new("POST", path, handler));
             return this;
@@ -478,7 +478,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return this RestApi for chaining
          */
-        fn put(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        fn put(path: String, handler: fnc(HttpContext) -> Nothing) -> RestApi
         {
             this.addRouteEntry(RouteEntry::new("PUT", path, handler));
             return this;
@@ -491,7 +491,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return this RestApi for chaining
          */
-        fn patch(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        fn patch(path: String, handler: fnc(HttpContext) -> Nothing) -> RestApi
         {
             this.addRouteEntry(RouteEntry::new("PATCH", path, handler));
             return this;
@@ -504,7 +504,7 @@ namespace tinox.core.rest_framework
          * @param handler the handler function
          * @return this RestApi for chaining
          */
-        fn delete(path: String, handler: fnc(HttpContext) -> Unit) -> RestApi
+        fn delete(path: String, handler: fnc(HttpContext) -> Nothing) -> RestApi
         {
             this.addRouteEntry(RouteEntry::new("DELETE", path, handler));
             return this;
@@ -570,7 +570,7 @@ namespace tinox.core.rest_framework
          * Registers all route entries with the underlying HttpServer
          * and begins listening for connections. This is a blocking call.
          */
-        fn start() -> Unit
+        fn start() -> Nothing
         {
             this.registerRoutes();
             this.server.listen();
@@ -579,7 +579,7 @@ namespace tinox.core.rest_framework
         /**
          * Stops the REST API server.
          */
-        fn stop() -> Unit
+        fn stop() -> Nothing
         {
             this.server.stop();
         }
@@ -588,13 +588,13 @@ namespace tinox.core.rest_framework
          * Registers all collected route entries with the underlying HttpServer,
          * applying annotation metadata (status code, content types, auth).
          */
-        fn registerRoutes() -> Unit
+        fn registerRoutes() -> Nothing
         {
             var i: Int64 = 0;
             while i < this.routeEntries.len()
             {
                 let entry: RouteEntry = this.routeEntries[i];
-                let handler: fnc(HttpContext) -> Unit = this.wrapHandler(entry);
+                let handler: fnc(HttpContext) -> Nothing = this.wrapHandler(entry);
                 if entry.method == "GET"
                 {
                     this.server.get(entry.path, handler);
@@ -629,13 +629,13 @@ namespace tinox.core.rest_framework
          * @param entry the route entry with metadata
          * @return a wrapped handler that applies metadata before calling the original
          */
-        fn wrapHandler(entry: RouteEntry) -> fnc(HttpContext) -> Unit
+        fn wrapHandler(entry: RouteEntry) -> fnc(HttpContext) -> Nothing
         {
             let statusCode: Int64 = entry.statusCode;
             let produces: String = entry.produces;
             let consumes: String = entry.consumes;
             let authType: String = entry.authType;
-            let originalHandler: fnc(HttpContext) -> Unit = entry.handler;
+            let originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
 
             return ctx => {
                 if consumes.len() > 0
@@ -685,7 +685,7 @@ namespace tinox.core.rest_framework
         /**
          * Adds a RouteEntry to the internal list
          */
-        fn addRouteEntry(entry: RouteEntry) -> Unit
+        fn addRouteEntry(entry: RouteEntry) -> Nothing
         {
             this.routeEntries.push(entry);
         }

@@ -52,7 +52,7 @@ namespace tinox.core.rest
          *
          * @param timeoutMs timeout in milliseconds
          */
-        fn setTimeout(timeoutMs: Int64) -> Unit
+        fn setTimeout(timeoutMs: Int64) -> Nothing
         {
             this.timeout = timeoutMs;
         }
@@ -63,7 +63,7 @@ namespace tinox.core.rest
          * @param name the header name
          * @param value the header value
          */
-        fn addHeader(name: String, value: String) -> Unit
+        fn addHeader(name: String, value: String) -> Nothing
         {
             this.headers.push(name + ": " + value);
         }
@@ -71,7 +71,7 @@ namespace tinox.core.rest
         /**
          * Clears all default headers
          */
-        fn clearHeaders() -> Unit
+        fn clearHeaders() -> Nothing
         {
             this.headers = [];
         }
@@ -232,7 +232,7 @@ namespace tinox.core.rest
          *
          * @param token the bearer token
          */
-        fn bearerAuth(token: String) -> Unit
+        fn bearerAuth(token: String) -> Nothing
         {
             this.addHeader("Authorization", "Bearer " + token);
         }
@@ -243,7 +243,7 @@ namespace tinox.core.rest
          * @param username the username
          * @param password the password
          */
-        fn basicAuth(username: String, password: String) -> Unit
+        fn basicAuth(username: String, password: String) -> Nothing
         {
             let credentials: String = Base64::encode(username + ":" + password);
             this.addHeader("Authorization", "Basic " + credentials);
@@ -732,7 +732,7 @@ namespace tinox.core.rest
         /**
          * Applies all stored headers to the HTTP client
          */
-        fn applyHeaders() -> Unit
+        fn applyHeaders() -> Nothing
         {
             var i: Int64 = 0;
             while i < this.reqHeaders.len()

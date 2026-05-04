@@ -47,17 +47,17 @@ class HttpServer
         return HttpServer { port: port };
     }
 
-    fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+    fn get(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
     {
         return this;
     }
 
-    fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+    fn post(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
     {
         return this;
     }
 
-    fn listen() -> Unit
+    fn listen() -> Nothing
     {
         return;
     }

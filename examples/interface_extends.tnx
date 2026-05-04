@@ -5,12 +5,12 @@ interface IShape
 
 interface IDrawable extends IShape
 {
-    fn draw() -> Unit;
+    fn draw() -> Nothing;
 }
 
 class Circle implements IDrawable
 {
-    package fn draw() -> Unit
+    package fn draw() -> Nothing
     {
     }
 

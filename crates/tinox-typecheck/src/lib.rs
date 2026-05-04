@@ -206,7 +206,7 @@ pub enum ValueType {
     Bool,
     Char,
     String,
-    Unit,
+    Nothing,
     Never,
     Any,
     Array,
@@ -233,7 +233,7 @@ impl ValueType {
             Type::Bool => ValueType::Bool,
             Type::Char => ValueType::Char,
             Type::String => ValueType::String,
-            Type::Unit => ValueType::Unit,
+            Type::Nothing => ValueType::Nothing,
             Type::Never => ValueType::Never,
             Type::Any => ValueType::Any,
             Type::Infer => ValueType::Any,
@@ -258,7 +258,7 @@ impl ValueType {
             ValueType::Bool => "Bool".to_string(),
             ValueType::Char => "Char".to_string(),
             ValueType::String => "String".to_string(),
-            ValueType::Unit => "Unit".to_string(),
+            ValueType::Nothing => "Nothing".to_string(),
             ValueType::Never => "Never".to_string(),
             ValueType::Any => "Any".to_string(),
             ValueType::Array => "Array".to_string(),
@@ -324,14 +324,14 @@ impl TypeChecker {
             "print".to_string(),
             FunctionSignature {
                 params: vec![("value".to_string(), ValueType::Any)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         symbols.functions.insert(
             "println".to_string(),
             FunctionSignature {
                 params: vec![("value".to_string(), ValueType::Any)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         symbols.functions.insert(
@@ -345,7 +345,7 @@ impl TypeChecker {
             "assert".to_string(),
             FunctionSignature {
                 params: vec![("cond".to_string(), ValueType::Bool)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         for name in &["first", "last"] {
@@ -452,7 +452,7 @@ impl TypeChecker {
             "exit".to_string(),
             FunctionSignature {
                 params: vec![("code".to_string(), ValueType::Int)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         // Polymorphic contains/indexOf (string or array)
@@ -577,7 +577,7 @@ impl TypeChecker {
                     ("key".to_string(), ValueType::Any),
                     ("val".to_string(), ValueType::Any),
                 ],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         symbols.functions.insert(
@@ -591,7 +591,7 @@ impl TypeChecker {
             "Map_remove".to_string(),
             FunctionSignature {
                 params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             },
         );
         symbols.functions.insert(
@@ -611,7 +611,7 @@ impl TypeChecker {
         });
         symbols.functions.insert("Map_set".to_string(), FunctionSignature {
             params: vec![("m".to_string(), ValueType::Map), ("k".to_string(), ValueType::Any), ("v".to_string(), ValueType::Any)],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         // Int / Float toString
         for prefix in &["Int64", "Int32", "Int", "Float64", "Float32", "Float", "Bool"] {
@@ -624,9 +624,9 @@ impl TypeChecker {
         symbols.functions.insert("httpServerCreate".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
-        symbols.functions.insert("httpServerSendRaw".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Unit });
-        symbols.functions.insert("httpServerCloseConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
-        symbols.functions.insert("httpServerClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
+        symbols.functions.insert("httpServerSendRaw".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpServerCloseConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpServerClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
@@ -638,7 +638,7 @@ impl TypeChecker {
         });
         symbols.functions.insert("deleteFile".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String)],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         let file_ty = ValueType::Named("File".to_string());
         symbols.functions.insert("File_read".to_string(), FunctionSignature {
@@ -651,11 +651,11 @@ impl TypeChecker {
         });
         symbols.functions.insert("File_write".to_string(), FunctionSignature {
             params: vec![("f".to_string(), file_ty.clone()), ("s".to_string(), ValueType::String)],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         symbols.functions.insert("File_close".to_string(), FunctionSignature {
             params: vec![("f".to_string(), file_ty.clone())],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         symbols.functions.insert("File_eof".to_string(), FunctionSignature {
             params: vec![("f".to_string(), file_ty)],
@@ -692,11 +692,11 @@ impl TypeChecker {
         // Array removeAt
         symbols.functions.insert("Array_removeAt".to_string(), FunctionSignature {
             params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         symbols.functions.insert("List_removeAt".to_string(), FunctionSignature {
             params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
-            return_type: ValueType::Unit,
+            return_type: ValueType::Nothing,
         });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
@@ -705,7 +705,7 @@ impl TypeChecker {
         symbols.functions.insert("Time_parse".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("Time_diff".to_string(), FunctionSignature { params: vec![("a".to_string(), ValueType::Int), ("b".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("sleep".to_string(), FunctionSignature {
-            params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Unit,
+            params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
         });
         symbols.functions.insert("Time_toString".to_string(), FunctionSignature {
             params: vec![("t".to_string(), ValueType::Any)], return_type: ValueType::String,
@@ -722,7 +722,7 @@ impl TypeChecker {
         }
         // Env
         for name in &["envGet", "envSet", "envRemove", "envCurrentDir", "envSetCurrentDir"] {
-            let ret = if *name == "envGet" || *name == "envCurrentDir" { ValueType::String } else { ValueType::Unit };
+            let ret = if *name == "envGet" || *name == "envCurrentDir" { ValueType::String } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("k".to_string(), ValueType::String)],
                 return_type: ret,
@@ -732,7 +732,7 @@ impl TypeChecker {
         for name in &["processExit", "processId", "processArgs", "printStackTrace", "gcCollect", "memoryUsage"] {
             let ret = if *name == "processArgs" { ValueType::Array }
                       else if *name == "processId" || *name == "memoryUsage" { ValueType::Int }
-                      else { ValueType::Unit };
+                      else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![], return_type: ret,
             });
@@ -768,13 +768,13 @@ impl TypeChecker {
         }
         // File I/O extended
         for name in &["fileReadAllText", "fileWriteAllText", "fileDelete", "fileClose"] {
-            let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Unit };
+            let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
         }
         for name in &["dirList", "dirCreate", "dirDelete"] {
-            let ret = if *name == "dirList" { ValueType::Array } else { ValueType::Unit };
+            let ret = if *name == "dirList" { ValueType::Array } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
@@ -792,7 +792,7 @@ impl TypeChecker {
         symbols.functions.insert("socketAccept".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("socketSend".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("socketReceive".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("size".to_string(), ValueType::Int)], return_type: ValueType::String });
-        symbols.functions.insert("socketClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Unit });
+        symbols.functions.insert("socketClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // HTTP client builtins
         for name in &["httpGet", "httpPost", "httpPut", "httpDelete", "httpPatch"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
@@ -803,7 +803,7 @@ impl TypeChecker {
         for name in &["httpSetHeader", "httpClearHeaders", "httpHeader", "httpBody", "httpStatusCode"] {
             let ret = if name.ends_with("Header") || name.ends_with("Body") { ValueType::String }
                       else if name.ends_with("Code") { ValueType::Int }
-                      else { ValueType::Unit };
+                      else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("v".to_string(), ValueType::Any)], return_type: ret,
             });
@@ -823,14 +823,14 @@ impl TypeChecker {
         for name in &["HttpServer_get", "HttpServer_post", "HttpServer_put", "HttpServer_delete", "HttpServer_patch", "HttpServer_use"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("srv".to_string(), hs.clone()), ("path".to_string(), ValueType::String), ("handler".to_string(), ValueType::Fn)],
-                return_type: ValueType::Unit,
+                return_type: ValueType::Nothing,
             });
         }
         symbols.functions.insert("HttpServer_listen".to_string(), FunctionSignature {
-            params: vec![("srv".to_string(), hs.clone())], return_type: ValueType::Unit,
+            params: vec![("srv".to_string(), hs.clone())], return_type: ValueType::Nothing,
         });
         symbols.functions.insert("HttpServer_stop".to_string(), FunctionSignature {
-            params: vec![("srv".to_string(), hs)], return_type: ValueType::Unit,
+            params: vec![("srv".to_string(), hs)], return_type: ValueType::Nothing,
         });
         // Heap_comparator (function-typed field)
         symbols.functions.insert("Heap_comparator".to_string(), FunctionSignature {
@@ -853,7 +853,7 @@ impl TypeChecker {
         });
         // Zip
         for name in &["zipAddFile", "zipExtractFile", "zipListEntries", "zipRemoveFile"] {
-            let ret = if *name == "zipListEntries" { ValueType::Array } else { ValueType::Unit };
+            let ret = if *name == "zipListEntries" { ValueType::Array } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
@@ -1349,7 +1349,7 @@ impl TypeChecker {
         let is_extern = matches!(f.body.node, StmtKind::Empty);
         let has_return = self.check_stmt(&f.body);
         let expected = self.resolve_type(&f.ret_type);
-        if !is_extern && expected != ValueType::Unit && expected != ValueType::Never && !has_return {
+        if !is_extern && expected != ValueType::Nothing && expected != ValueType::Never && !has_return {
             self.errors
                 .push(Error::new(f.span, "missing return statement"));
         }
@@ -1374,7 +1374,7 @@ impl TypeChecker {
             }
             let has_return = self.check_stmt(&method.body);
             let expected = Self::type_to_value(&method.ret_type);
-            if expected != ValueType::Unit && expected != ValueType::Never && !has_return {
+            if expected != ValueType::Nothing && expected != ValueType::Never && !has_return {
                 self.errors
                     .push(Error::new(method.span, "missing return statement"));
             }
@@ -1911,7 +1911,7 @@ impl TypeChecker {
             }
             ExprKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
-                let mut last_ty = ValueType::Unit;
+                let mut last_ty = ValueType::Nothing;
                 for stmt in stmts {
                     self.check_stmt(stmt);
                 }
@@ -1944,7 +1944,7 @@ impl TypeChecker {
                     let else_ty = self.infer_type(else_br);
                     Self::lub(&then_ty, &else_ty)
                 } else {
-                    ValueType::Unit
+                    ValueType::Nothing
                 }
             }
             ExprKind::While { cond, body } => {
@@ -1960,13 +1960,13 @@ impl TypeChecker {
                     );
                 }
                 self.infer_type(body);
-                ValueType::Unit
+                ValueType::Nothing
             }
             ExprKind::For { var, iter, body } => {
                 let iter_ty = self.infer_type(iter);
                 self.symbols.variables.insert(var.clone(), (iter_ty, false));
                 self.infer_type(body);
-                ValueType::Unit
+                ValueType::Nothing
             }
             ExprKind::Loop { body } => {
                 self.infer_type(body);
@@ -2057,7 +2057,7 @@ impl TypeChecker {
             ExprKind::Send { channel, value } => {
                 self.infer_type(channel);
                 self.infer_type(value);
-                ValueType::Unit
+                ValueType::Nothing
             }
             ExprKind::Recv(inner) => {
                 self.infer_type(inner);

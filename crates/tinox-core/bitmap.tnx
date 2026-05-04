@@ -25,7 +25,7 @@ namespace tinox.core.bitmap
             return bitmap.pixels[y * bitmap.width + x];
         }
 
-        fn setPixel(bitmap: Bitmap, x: Int64, y: Int64, color: Int64) -> Unit
+        fn setPixel(bitmap: Bitmap, x: Int64, y: Int64, color: Int64) -> Nothing
         {
             if x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height
             {
@@ -34,7 +34,7 @@ namespace tinox.core.bitmap
             bitmap.pixels[y * bitmap.width + x] = color;
         }
 
-        fn fillRect(bitmap: Bitmap, x: Int64, y: Int64, w: Int64, h: Int64, color: Int64) -> Unit
+        fn fillRect(bitmap: Bitmap, x: Int64, y: Int64, w: Int64, h: Int64, color: Int64) -> Nothing
         {
             var j: Int64 = y;
             while j < y + h
@@ -49,7 +49,7 @@ namespace tinox.core.bitmap
             }
         }
 
-        fn drawLine(bitmap: Bitmap, x0: Int64, y0: Int64, x1: Int64, y1: Int64, color: Int64) -> Unit
+        fn drawLine(bitmap: Bitmap, x0: Int64, y0: Int64, x1: Int64, y1: Int64, color: Int64) -> Nothing
         {
             let dx: Int64 = Mathf::abs(x1 - x0);
             let dy: Int64 = Mathf::abs(y1 - y0);
@@ -79,7 +79,7 @@ namespace tinox.core.bitmap
             }
         }
 
-        fn drawCircle(bitmap: Bitmap, cx: Int64, cy: Int64, radius: Int64, color: Int64) -> Unit
+        fn drawCircle(bitmap: Bitmap, cx: Int64, cy: Int64, radius: Int64, color: Int64) -> Nothing
         {
             var x: Int64 = radius;
             var y: Int64 = 0;

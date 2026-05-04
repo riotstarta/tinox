@@ -32,7 +32,7 @@ namespace tinox.core.ratelimit
             return false;
         }
 
-        fn reset(limiter: RateLimiter) -> Unit
+        fn reset(limiter: RateLimiter) -> Nothing
         {
             limiter.requests = [];
         }
@@ -73,7 +73,7 @@ namespace tinox.core.ratelimit
             return false;
         }
 
-        fn refill(bucket: TokenBucket) -> Unit
+        fn refill(bucket: TokenBucket) -> Nothing
         {
             let now: Int64 = Time::now();
             let elapsed: Float64 = (Float64)(now - bucket.lastRefill) / 1000.0;

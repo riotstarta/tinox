@@ -4651,7 +4651,7 @@ impl CodeGen {
             Type::Bool => "i1".to_string(),
             Type::Char => "i32".to_string(),
             Type::String => "i8*".to_string(),
-            Type::Unit => "void".to_string(),
+            Type::Nothing => "void".to_string(),
             Type::Named(_) => "i64*".to_string(),
             Type::Generic { name, args } if name == "Array" => {
                 args.first().map(|t| format!("{}*", Self::type_to_llvm(t))).unwrap_or_else(|| "i64*".to_string())
@@ -5102,7 +5102,7 @@ impl CodeGen {
             "float" => tinox_parser::Type::Float32,
             "i1" => tinox_parser::Type::Bool,
             "i8*" => tinox_parser::Type::String,
-            "void" => tinox_parser::Type::Unit,
+            "void" => tinox_parser::Type::Nothing,
             other if other.ends_with('*') => {
                 let inner = &other[..other.len() - 1];
                 tinox_parser::Type::Ref(Box::new(Self::llvm_ty_to_parser_type(inner)))

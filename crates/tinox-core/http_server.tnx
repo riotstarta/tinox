@@ -59,7 +59,7 @@ namespace tinox.core.http_server
          * @param handler the function to handle matching requests
          * @return this server for chaining
          */
-        fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        fn get(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
         {
             this.routes.push(Route { method: "GET", path: path, handler: handler });
             return this;
@@ -72,7 +72,7 @@ namespace tinox.core.http_server
          * @param handler the function to handle matching requests
          * @return this server for chaining
          */
-        fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        fn post(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
         {
             this.routes.push(Route { method: "POST", path: path, handler: handler });
             return this;
@@ -85,7 +85,7 @@ namespace tinox.core.http_server
          * @param handler the function to handle matching requests
          * @return this server for chaining
          */
-        fn put(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        fn put(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
         {
             this.routes.push(Route { method: "PUT", path: path, handler: handler });
             return this;
@@ -98,7 +98,7 @@ namespace tinox.core.http_server
          * @param handler the function to handle matching requests
          * @return this server for chaining
          */
-        fn patch(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        fn patch(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
         {
             this.routes.push(Route { method: "PATCH", path: path, handler: handler });
             return this;
@@ -111,7 +111,7 @@ namespace tinox.core.http_server
          * @param handler the function to handle matching requests
          * @return this server for chaining
          */
-        fn delete(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer
+        fn delete(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
         {
             this.routes.push(Route { method: "DELETE", path: path, handler: handler });
             return this;
@@ -138,7 +138,7 @@ namespace tinox.core.http_server
          * This is a blocking call that enters the server event loop.
          * Use stop() to shut down the server.
          */
-        fn listen() -> Unit
+        fn listen() -> Nothing
         {
             this.socketHandle = httpServerCreate(this.port);
             if this.socketHandle < 0
@@ -269,7 +269,7 @@ namespace tinox.core.http_server
         /**
          * Stops the running server
          */
-        fn stop() -> Unit
+        fn stop() -> Nothing
         {
             this.running = false;
         }
@@ -281,7 +281,7 @@ namespace tinox.core.http_server
          * @param ctx the request context
          * @param clientFd the client socket file descriptor
          */
-        fn handleRequest(ctx: HttpContext, clientFd: Int64) -> Unit
+        fn handleRequest(ctx: HttpContext, clientFd: Int64) -> Nothing
         {
             let middlewareContinue: Bool = this.runMiddleware(ctx);
             if middlewareContinue == false
@@ -470,7 +470,7 @@ namespace tinox.core.http_server
          *
          * @param params the extracted path parameters
          */
-        fn setParams(params: Map<String, String>) -> Unit
+        fn setParams(params: Map<String, String>) -> Nothing
         {
             this.params = params;
         }
@@ -739,7 +739,7 @@ namespace tinox.core.http_server
         var path: String;
 
         /** The handler function to execute */
-        var handler: fnc(HttpContext) -> Unit;
+        var handler: fnc(HttpContext) -> Nothing;
     }
 
     /**

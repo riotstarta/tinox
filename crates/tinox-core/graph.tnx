@@ -9,7 +9,7 @@ namespace tinox.core.graph
             return Graph<V> { nodes: Map::new(), edges: Map::new() };
         }
 
-        fn addNode(graph: Graph<V>, id: String, value: V) -> Unit
+        fn addNode(graph: Graph<V>, id: String, value: V) -> Nothing
         {
             graph.nodes[id] = value;
             if graph.edges.contains(id) == false
@@ -18,7 +18,7 @@ namespace tinox.core.graph
             }
         }
 
-        fn addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Unit
+        fn addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Nothing
         {
             if graph.edges.contains(from) == false
             {
@@ -36,7 +36,7 @@ namespace tinox.core.graph
             return graph.edges[id];
         }
 
-        fn bfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
+        fn bfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Nothing) -> Nothing
         {
             let visited: Map<String, Bool> = Map::new();
             let queue: List<String> = [start];
@@ -63,13 +63,13 @@ namespace tinox.core.graph
             }
         }
 
-        fn dfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Unit) -> Unit
+        fn dfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Nothing) -> Nothing
         {
             let visited: Map<String, Bool> = Map::new();
             Graph::dfsHelper(graph, start, visited, visitor);
         }
 
-        fn dfsHelper(graph: Graph<V>, current: String, visited: Map<String, Bool>, visitor: fnc(String) -> Unit) -> Unit
+        fn dfsHelper(graph: Graph<V>, current: String, visited: Map<String, Bool>, visitor: fnc(String) -> Nothing) -> Nothing
         {
             visited[current] = true;
             visitor(current);

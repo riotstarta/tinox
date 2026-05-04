@@ -52,8 +52,8 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(count: Int64) -&gt; Semaphore</td><td>Semaphore mit initialem Zähler erstellen</td></tr>
-        <tr><td>acquire</td><td>fn acquire(sem: Semaphore) -&gt; Unit</td><td>Zähler dekrementieren (throws wenn 0)</td></tr>
-        <tr><td>release</td><td>fn release(sem: Semaphore) -&gt; Unit</td><td>Zähler inkrementieren</td></tr>
+        <tr><td>acquire</td><td>fn acquire(sem: Semaphore) -&gt; Nothing</td><td>Zähler dekrementieren (throws wenn 0)</td></tr>
+        <tr><td>release</td><td>fn release(sem: Semaphore) -&gt; Nothing</td><td>Zähler inkrementieren</td></tr>
         <tr><td>tryAcquire</td><td>fn tryAcquire(sem: Semaphore) -&gt; Bool</td><td>Nicht-blockierendes Acquire</td></tr>
       </table>
     </div>
@@ -63,8 +63,8 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; Mutex</td><td>Entsperrten Mutex erstellen</td></tr>
-        <tr><td>lock</td><td>fn lock(mutex: Mutex) -&gt; Unit</td><td>Sperren (throws wenn bereits gesperrt)</td></tr>
-        <tr><td>unlock</td><td>fn unlock(mutex: Mutex) -&gt; Unit</td><td>Entsperren</td></tr>
+        <tr><td>lock</td><td>fn lock(mutex: Mutex) -&gt; Nothing</td><td>Sperren (throws wenn bereits gesperrt)</td></tr>
+        <tr><td>unlock</td><td>fn unlock(mutex: Mutex) -&gt; Nothing</td><td>Entsperren</td></tr>
         <tr><td>tryLock</td><td>fn tryLock(mutex: Mutex) -&gt; Bool</td><td>Nicht-blockierendes Lock</td></tr>
       </table>
     </div>
@@ -74,10 +74,10 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; RWLock</td><td>Reader-Writer-Lock erstellen</td></tr>
-        <tr><td>readLock</td><td>fn readLock(lock: RWLock) -&gt; Unit</td><td>Lesesperre (blockiert bei aktivem Schreiber)</td></tr>
-        <tr><td>readUnlock</td><td>fn readUnlock(lock: RWLock) -&gt; Unit</td><td>Lesesperre freigeben</td></tr>
-        <tr><td>writeLock</td><td>fn writeLock(lock: RWLock) -&gt; Unit</td><td>Exklusivsperre für Schreiber</td></tr>
-        <tr><td>writeUnlock</td><td>fn writeUnlock(lock: RWLock) -&gt; Unit</td><td>Schreibsperre freigeben</td></tr>
+        <tr><td>readLock</td><td>fn readLock(lock: RWLock) -&gt; Nothing</td><td>Lesesperre (blockiert bei aktivem Schreiber)</td></tr>
+        <tr><td>readUnlock</td><td>fn readUnlock(lock: RWLock) -&gt; Nothing</td><td>Lesesperre freigeben</td></tr>
+        <tr><td>writeLock</td><td>fn writeLock(lock: RWLock) -&gt; Nothing</td><td>Exklusivsperre für Schreiber</td></tr>
+        <tr><td>writeUnlock</td><td>fn writeUnlock(lock: RWLock) -&gt; Nothing</td><td>Schreibsperre freigeben</td></tr>
       </table>
     </div>
 

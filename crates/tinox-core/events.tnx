@@ -9,31 +9,31 @@ namespace tinox.core.events
             return EventEmitter { listeners: Map::new() };
         }
 
-        fn on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
             if emitter.listeners.contains(event) == false
             {
                 emitter.listeners[event] = [];
             }
-            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             handlers.push(handler);
         }
 
-        fn once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
-            let wrapper: fnc(JsonValue) -> Unit = ev => {
+            let wrapper: fnc(JsonValue) -> Nothing = ev => {
                 handler(ev);
             };
             EventEmitter::on(emitter, event, wrapper);
         }
 
-        fn emit(emitter: EventEmitter, event: String, data: JsonValue) -> Unit
+        fn emit(emitter: EventEmitter, event: String, data: JsonValue) -> Nothing
         {
             if emitter.listeners.contains(event) == false
             {
                 return;
             }
-            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             var i: Int64 = 0;
             while i < handlers.len()
             {
@@ -42,13 +42,13 @@ namespace tinox.core.events
             }
         }
 
-        fn removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Unit) -> Unit
+        fn removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
             if emitter.listeners.contains(event) == false
             {
                 return;
             }
-            let handlers: List<fnc(JsonValue) -> Unit> = emitter.listeners[event];
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             var i: Int64 = 0;
             while i < handlers.len()
             {
@@ -61,7 +61,7 @@ namespace tinox.core.events
             }
         }
 
-        fn removeAllListeners(emitter: EventEmitter, event: String) -> Unit
+        fn removeAllListeners(emitter: EventEmitter, event: String) -> Nothing
         {
             emitter.listeners.remove(event);
         }

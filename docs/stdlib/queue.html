@@ -52,7 +52,7 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; PriorityQueue&lt;T&gt;</td><td>Leere Priority Queue erstellen</td></tr>
-        <tr><td>enqueue</td><td>fn enqueue(q, item: T, priority: Int64) -&gt; Unit</td><td>Element mit Priorität einreihen (kleiner = höher)</td></tr>
+        <tr><td>enqueue</td><td>fn enqueue(q, item: T, priority: Int64) -&gt; Nothing</td><td>Element mit Priorität einreihen (kleiner = höher)</td></tr>
         <tr><td>dequeue</td><td>fn dequeue(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Element mit höchster Priorität entfernen</td></tr>
         <tr><td>peek</td><td>fn peek(q: PriorityQueue&lt;T&gt;) -&gt; T</td><td>Nächstes Element ansehen (ohne Entfernen)</td></tr>
         <tr><td>isEmpty</td><td>fn isEmpty(q: PriorityQueue&lt;T&gt;) -&gt; Bool</td><td>Queue leer?</td></tr>

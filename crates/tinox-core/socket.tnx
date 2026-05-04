@@ -45,7 +45,7 @@ namespace tinox.core.socket
             return socketReceive(socket.handle, size);
         }
 
-        fn close(socket: Socket) -> Unit
+        fn close(socket: Socket) -> Nothing
         {
             socketClose(socket.handle);
         }

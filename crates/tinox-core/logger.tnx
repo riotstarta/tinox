@@ -9,7 +9,7 @@ namespace tinox.core.logger
             return Logger { name: name, level: LogLevel::Info };
         }
 
-        fn debug(logger: Logger, message: String) -> Unit
+        fn debug(logger: Logger, message: String) -> Nothing
         {
             if logger.level <= LogLevel::Debug
             {
@@ -17,7 +17,7 @@ namespace tinox.core.logger
             }
         }
 
-        fn info(logger: Logger, message: String) -> Unit
+        fn info(logger: Logger, message: String) -> Nothing
         {
             if logger.level <= LogLevel::Info
             {
@@ -25,7 +25,7 @@ namespace tinox.core.logger
             }
         }
 
-        fn warn(logger: Logger, message: String) -> Unit
+        fn warn(logger: Logger, message: String) -> Nothing
         {
             if logger.level <= LogLevel::Warn
             {
@@ -33,7 +33,7 @@ namespace tinox.core.logger
             }
         }
 
-        fn error(logger: Logger, message: String) -> Unit
+        fn error(logger: Logger, message: String) -> Nothing
         {
             if logger.level <= LogLevel::Error
             {
@@ -41,12 +41,12 @@ namespace tinox.core.logger
             }
         }
 
-        fn setLevel(logger: Logger, level: LogLevel) -> Unit
+        fn setLevel(logger: Logger, level: LogLevel) -> Nothing
         {
             logger.level = level;
         }
 
-        fn log(logger: Logger, level: String, message: String) -> Unit
+        fn log(logger: Logger, level: String, message: String) -> Nothing
         {
             let timestamp: String = Time::now().toString();
             print("[");

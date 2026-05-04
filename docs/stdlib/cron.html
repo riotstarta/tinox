@@ -67,10 +67,10 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; CronScheduler</td><td>Neuen Scheduler erstellen</td></tr>
-        <tr><td>addJob</td><td>fn addJob(scheduler, expr: String, callback: fnc() -&gt; Unit) -&gt; Unit</td><td>Job mit Cron-Ausdruck registrieren</td></tr>
-        <tr><td>start</td><td>fn start(scheduler) -&gt; Unit</td><td>Scheduler aktivieren</td></tr>
-        <tr><td>stop</td><td>fn stop(scheduler) -&gt; Unit</td><td>Scheduler deaktivieren</td></tr>
-        <tr><td>tick</td><td>fn tick(scheduler) -&gt; Unit</td><td>Einen Tick verarbeiten, fällige Jobs ausführen</td></tr>
+        <tr><td>addJob</td><td>fn addJob(scheduler, expr: String, callback: fnc() -&gt; Nothing) -&gt; Nothing</td><td>Job mit Cron-Ausdruck registrieren</td></tr>
+        <tr><td>start</td><td>fn start(scheduler) -&gt; Nothing</td><td>Scheduler aktivieren</td></tr>
+        <tr><td>stop</td><td>fn stop(scheduler) -&gt; Nothing</td><td>Scheduler deaktivieren</td></tr>
+        <tr><td>tick</td><td>fn tick(scheduler) -&gt; Nothing</td><td>Einen Tick verarbeiten, fällige Jobs ausführen</td></tr>
       </table>
     </div>
 
@@ -82,13 +82,13 @@
     <span class="kw">let</span> scheduler: <span class="type">CronScheduler</span> = CronScheduler::<span class="fn-name">new</span>();
 
     <span class="cmt">// Jeden Monat um Mitternacht</span>
-    CronScheduler::<span class="fn-name">addJob</span>(scheduler, <span class="str">"0 0 1 * *"</span>, fnc() -&gt; <span class="type">Unit</span>
+    CronScheduler::<span class="fn-name">addJob</span>(scheduler, <span class="str">"0 0 1 * *"</span>, fnc() -&gt; <span class="type">Nothing</span>
     {
         println(<span class="str">"Monatlicher Report gestartet"</span>);
     });
 
     <span class="cmt">// Jede Minute</span>
-    CronScheduler::<span class="fn-name">addJob</span>(scheduler, <span class="str">"* * * * *"</span>, fnc() -&gt; <span class="type">Unit</span>
+    CronScheduler::<span class="fn-name">addJob</span>(scheduler, <span class="str">"* * * * *"</span>, fnc() -&gt; <span class="type">Nothing</span>
     {
         println(<span class="str">"Heartbeat"</span>);
     });

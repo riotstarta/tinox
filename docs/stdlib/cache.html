@@ -54,9 +54,9 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(maxSize: Int64) -&gt; Cache&lt;K,V&gt;</td><td>Cache mit Maximalgröße erstellen</td></tr>
         <tr><td>get</td><td>fn get(cache, key: K) -&gt; Option&lt;V&gt;</td><td>Wert abrufen, aktualisiert LRU-Reihenfolge</td></tr>
-        <tr><td>set</td><td>fn set(cache, key: K, value: V) -&gt; Unit</td><td>Wert setzen, ggf. ältesten Eintrag entfernen</td></tr>
+        <tr><td>set</td><td>fn set(cache, key: K, value: V) -&gt; Nothing</td><td>Wert setzen, ggf. ältesten Eintrag entfernen</td></tr>
         <tr><td>remove</td><td>fn remove(cache, key: K) -&gt; Bool</td><td>Eintrag entfernen</td></tr>
-        <tr><td>clear</td><td>fn clear(cache) -&gt; Unit</td><td>Alle Einträge löschen</td></tr>
+        <tr><td>clear</td><td>fn clear(cache) -&gt; Nothing</td><td>Alle Einträge löschen</td></tr>
       </table>
     </div>
 
@@ -67,7 +67,7 @@
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new(maxSize: Int64) -&gt; LruCache&lt;K,V&gt;</td><td>LRU-Cache erstellen</td></tr>
         <tr><td>get</td><td>fn get(cache, key: K) -&gt; Option&lt;V&gt;</td><td>Wert abrufen</td></tr>
-        <tr><td>set</td><td>fn set(cache, key: K, value: V) -&gt; Unit</td><td>Wert setzen</td></tr>
+        <tr><td>set</td><td>fn set(cache, key: K, value: V) -&gt; Nothing</td><td>Wert setzen</td></tr>
       </table>
     </div>
 

@@ -4,12 +4,12 @@ namespace tinox.core.process
 {
     class Process
     {
-        fn exit(code: Int64) -> Unit
+        fn exit(code: Int64) -> Nothing
         {
             processExit(code);
         }
 
-        fn sleep(ms: Int64) -> Unit
+        fn sleep(ms: Int64) -> Nothing
         {
             sleep(ms);
         }
@@ -29,7 +29,7 @@ namespace tinox.core.process
             return envGet(name);
         }
 
-        fn setEnv(name: String, value: String) -> Unit
+        fn setEnv(name: String, value: String) -> Nothing
         {
             envSet(name, value);
         }

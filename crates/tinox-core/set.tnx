@@ -9,7 +9,7 @@ namespace tinox.core.set
             return Set<T> { items: [] };
         }
 
-        fn add(set: Set<T>, item: T) -> Unit
+        fn add(set: Set<T>, item: T) -> Nothing
         {
             if Set::contains(set, item) == false
             {

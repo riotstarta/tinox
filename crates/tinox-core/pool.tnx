@@ -24,7 +24,7 @@ namespace tinox.core.pool
             throw "Pool exhausted";
         }
 
-        fn release(pool: Pool<T>, obj: T) -> Unit
+        fn release(pool: Pool<T>, obj: T) -> Nothing
         {
             var found: Bool = false;
             var i: Int64 = 0;
@@ -44,7 +44,7 @@ namespace tinox.core.pool
             }
         }
 
-        fn clear(pool: Pool<T>) -> Unit
+        fn clear(pool: Pool<T>) -> Nothing
         {
             pool.available = [];
             pool.inUse = [];

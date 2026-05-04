@@ -324,7 +324,7 @@ pub fn type_str(ty: &Type) -> String {
         Type::Bool => "Bool".into(),
         Type::String => "String".into(),
         Type::Char => "Char".into(),
-        Type::Unit => "Unit".into(),
+        Type::Nothing => "Nothing".into(),
         Type::Never => "Never".into(),
         Type::Any => "Any".into(),
         Type::Infer => "_".into(),

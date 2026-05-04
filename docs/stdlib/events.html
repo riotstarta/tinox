@@ -52,11 +52,11 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; EventEmitter</td><td>Neuen EventEmitter erstellen</td></tr>
-        <tr><td>on</td><td>fn on(emitter, event: String, handler: fnc(JsonValue) -&gt; Unit) -&gt; Unit</td><td>Permanenten Listener registrieren</td></tr>
-        <tr><td>once</td><td>fn once(emitter, event: String, handler: fnc(JsonValue) -&gt; Unit) -&gt; Unit</td><td>Einmaligen Listener registrieren</td></tr>
-        <tr><td>emit</td><td>fn emit(emitter, event: String, data: JsonValue) -&gt; Unit</td><td>Event an alle Listener senden</td></tr>
-        <tr><td>removeListener</td><td>fn removeListener(emitter, event: String, handler) -&gt; Unit</td><td>Einzelnen Listener entfernen</td></tr>
-        <tr><td>removeAllListeners</td><td>fn removeAllListeners(emitter, event: String) -&gt; Unit</td><td>Alle Listener eines Events entfernen</td></tr>
+        <tr><td>on</td><td>fn on(emitter, event: String, handler: fnc(JsonValue) -&gt; Nothing) -&gt; Nothing</td><td>Permanenten Listener registrieren</td></tr>
+        <tr><td>once</td><td>fn once(emitter, event: String, handler: fnc(JsonValue) -&gt; Nothing) -&gt; Nothing</td><td>Einmaligen Listener registrieren</td></tr>
+        <tr><td>emit</td><td>fn emit(emitter, event: String, data: JsonValue) -&gt; Nothing</td><td>Event an alle Listener senden</td></tr>
+        <tr><td>removeListener</td><td>fn removeListener(emitter, event: String, handler) -&gt; Nothing</td><td>Einzelnen Listener entfernen</td></tr>
+        <tr><td>removeAllListeners</td><td>fn removeAllListeners(emitter, event: String) -&gt; Nothing</td><td>Alle Listener eines Events entfernen</td></tr>
         <tr><td>listenerCount</td><td>fn listenerCount(emitter, event: String) -&gt; Int64</td><td>Anzahl der Listener für ein Event</td></tr>
       </table>
     </div>
@@ -70,13 +70,13 @@
     <span class="kw">let</span> emitter: <span class="type">EventEmitter</span> = EventEmitter::<span class="fn-name">new</span>();
 
     <span class="cmt">// Listener registrieren</span>
-    EventEmitter::<span class="fn-name">on</span>(emitter, <span class="str">"userLogin"</span>, fnc(data: <span class="type">JsonValue</span>) -&gt; <span class="type">Unit</span>
+    EventEmitter::<span class="fn-name">on</span>(emitter, <span class="str">"userLogin"</span>, fnc(data: <span class="type">JsonValue</span>) -&gt; <span class="type">Nothing</span>
     {
         println(<span class="str">"User eingeloggt"</span>);
     });
 
     <span class="cmt">// Einmaliger Listener für Initialisierung</span>
-    EventEmitter::<span class="fn-name">once</span>(emitter, <span class="str">"ready"</span>, fnc(data: <span class="type">JsonValue</span>) -&gt; <span class="type">Unit</span>
+    EventEmitter::<span class="fn-name">once</span>(emitter, <span class="str">"ready"</span>, fnc(data: <span class="type">JsonValue</span>) -&gt; <span class="type">Nothing</span>
     {
         println(<span class="str">"System bereit"</span>);
     });

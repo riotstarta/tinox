@@ -73,23 +73,23 @@ namespace tinox.core.cron
             return CronScheduler { jobs: [], running: false };
         }
 
-        fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Unit) -> Unit
+        fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Nothing) -> Nothing
         {
             let cronExpr: CronExpr = Cron::parse(expr);
             scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: 0 });
         }
 
-        fn start(scheduler: CronScheduler) -> Unit
+        fn start(scheduler: CronScheduler) -> Nothing
         {
             scheduler.running = true;
         }
 
-        fn stop(scheduler: CronScheduler) -> Unit
+        fn stop(scheduler: CronScheduler) -> Nothing
         {
             scheduler.running = false;
         }
 
-        fn tick(scheduler: CronScheduler) -> Unit
+        fn tick(scheduler: CronScheduler) -> Nothing
         {
             if scheduler.running == false
             {
@@ -113,7 +113,7 @@ namespace tinox.core.cron
     class CronJob
     {
         expr: CronExpr;
-        callback: fnc() -> Unit;
+        callback: fnc() -> Nothing;
         lastRun: Int64;
     }
 }

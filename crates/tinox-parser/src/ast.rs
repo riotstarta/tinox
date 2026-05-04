@@ -17,7 +17,7 @@ pub enum Type {
     Bool,
     Char,
     String,
-    Unit,
+    Nothing,
     Never,
     Any,
     Infer,
@@ -34,7 +34,7 @@ pub enum Type {
 
 impl Type {
     pub fn unit() -> Self {
-        Type::Unit
+        Type::Nothing
     }
 }
 

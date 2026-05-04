@@ -52,11 +52,11 @@
       <table>
         <tr><th>Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
         <tr><td>new</td><td>fn new() -&gt; Graph&lt;V&gt;</td><td>Leeren Graphen erstellen</td></tr>
-        <tr><td>addNode</td><td>fn addNode(graph: Graph&lt;V&gt;, id: String, value: V) -&gt; Unit</td><td>Knoten mit ID und Wert hinzufügen</td></tr>
-        <tr><td>addEdge</td><td>fn addEdge(graph: Graph&lt;V&gt;, from: String, to: String, weight: Float64) -&gt; Unit</td><td>Gewichtete Kante hinzufügen</td></tr>
+        <tr><td>addNode</td><td>fn addNode(graph: Graph&lt;V&gt;, id: String, value: V) -&gt; Nothing</td><td>Knoten mit ID und Wert hinzufügen</td></tr>
+        <tr><td>addEdge</td><td>fn addEdge(graph: Graph&lt;V&gt;, from: String, to: String, weight: Float64) -&gt; Nothing</td><td>Gewichtete Kante hinzufügen</td></tr>
         <tr><td>neighbors</td><td>fn neighbors(graph: Graph&lt;V&gt;, id: String) -&gt; List&lt;GraphEdge&gt;</td><td>Alle Nachbarkanten eines Knotens</td></tr>
-        <tr><td>bfs</td><td>fn bfs(graph: Graph&lt;V&gt;, start: String, visitor: fnc(String) -&gt; Unit) -&gt; Unit</td><td>Breitensuche ab start</td></tr>
-        <tr><td>dfs</td><td>fn dfs(graph: Graph&lt;V&gt;, start: String, visitor: fnc(String) -&gt; Unit) -&gt; Unit</td><td>Tiefensuche ab start</td></tr>
+        <tr><td>bfs</td><td>fn bfs(graph: Graph&lt;V&gt;, start: String, visitor: fnc(String) -&gt; Nothing) -&gt; Nothing</td><td>Breitensuche ab start</td></tr>
+        <tr><td>dfs</td><td>fn dfs(graph: Graph&lt;V&gt;, start: String, visitor: fnc(String) -&gt; Nothing) -&gt; Nothing</td><td>Tiefensuche ab start</td></tr>
         <tr><td>dijkstra</td><td>fn dijkstra(graph: Graph&lt;V&gt;, start: String, end: String) -&gt; Float64</td><td>Kürzester Pfad (Dijkstra), -1.0 wenn kein Pfad</td></tr>
       </table>
     </div>
@@ -84,7 +84,7 @@
     Graph::<span class="fn-name">addEdge</span>(g, <span class="str">"A"</span>, <span class="str">"C"</span>, <span class="num">10.0</span>);
 
     <span class="cmt">// BFS-Traversierung</span>
-    Graph::<span class="fn-name">bfs</span>(g, <span class="str">"A"</span>, fnc(id: <span class="type">String</span>) -&gt; <span class="type">Unit</span> { println(id); });
+    Graph::<span class="fn-name">bfs</span>(g, <span class="str">"A"</span>, fnc(id: <span class="type">String</span>) -&gt; <span class="type">Nothing</span> { println(id); });
 
     <span class="cmt">// Kürzester Pfad A → C = 3.0</span>
     <span class="kw">let</span> dist: <span class="type">Float64</span> = Graph::<span class="fn-name">dijkstra</span>(g, <span class="str">"A"</span>, <span class="str">"C"</span>);

@@ -14,7 +14,7 @@ namespace tinox.core.heap
             return Heap<T> { items: [], comparator: comparator };
         }
 
-        fn push(heap: Heap<T>, item: T) -> Unit
+        fn push(heap: Heap<T>, item: T) -> Nothing
         {
             heap.items.push(item);
             Heap::siftUp(heap, heap.items.len() - 1);
@@ -45,7 +45,7 @@ namespace tinox.core.heap
             return heap.items[0];
         }
 
-        fn siftUp(heap: Heap<T>, startIndex: Int64) -> Unit
+        fn siftUp(heap: Heap<T>, startIndex: Int64) -> Nothing
         {
             var index: Int64 = startIndex;
             while index > 0
@@ -65,7 +65,7 @@ namespace tinox.core.heap
             }
         }
 
-        fn siftDown(heap: Heap<T>, startIndex: Int64) -> Unit
+        fn siftDown(heap: Heap<T>, startIndex: Int64) -> Nothing
         {
             var index: Int64 = startIndex;
             let len: Int64 = heap.items.len();
@@ -106,7 +106,7 @@ namespace tinox.core.heap
             return heap.items.len();
         }
 
-        fn buildHeap(heap: Heap<T>, items: List<T>) -> Unit
+        fn buildHeap(heap: Heap<T>, items: List<T>) -> Nothing
         {
             heap.items = items;
             var i: Int64 = (heap.items.len() / 2) - 1;
@@ -125,7 +125,7 @@ namespace tinox.core.heap
             return MinHeap<T> { heap: Heap::new() };
         }
 
-        fn push(h: MinHeap<T>, item: T) -> Unit
+        fn push(h: MinHeap<T>, item: T) -> Nothing
         {
             Heap::push(h.heap, item);
         }
@@ -149,7 +149,7 @@ namespace tinox.core.heap
             return MaxHeap<T> { heap: Heap::newWithCompare(comp) };
         }
 
-        fn push(h: MaxHeap<T>, item: T) -> Unit
+        fn push(h: MaxHeap<T>, item: T) -> Nothing
         {
             Heap::push(h.heap, item);
         }

@@ -129,7 +129,7 @@ class Point
         return ((dx * dx) + (dy * dy)).sqrt();
     }
 
-    fn describe() -> Unit
+    fn describe() -> Nothing
     {
         print("Point(");
         print(this.x);
@@ -216,7 +216,7 @@ fn example_enums() -> Int32
 // ============================================================
 interface Drawable
 {
-    fn draw() -> Unit;
+    fn draw() -> Nothing;
     fn getArea() -> Float64;
 }
 
@@ -229,7 +229,7 @@ class Circle implements Drawable
         return Circle { radius: radius };
     }
 
-    fn draw() -> Unit
+    fn draw() -> Nothing
     {
         print("Drawing circle with radius ");
         print(this.radius);
@@ -252,7 +252,7 @@ class Rectangle implements Drawable
         return Rectangle { width: w, height: h };
     }
 
-    fn draw() -> Unit
+    fn draw() -> Nothing
     {
         print("Drawing rectangle ");
         print(this.width);

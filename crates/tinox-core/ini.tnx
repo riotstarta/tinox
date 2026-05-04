@@ -99,7 +99,7 @@ namespace tinox.core.ini
             return (Int64)strVal;
         }
 
-        fn setString(config: IniConfig, section: String, key: String, value: String) -> Unit
+        fn setString(config: IniConfig, section: String, key: String, value: String) -> Nothing
         {
             if config.sections.contains(section) == false
             {
