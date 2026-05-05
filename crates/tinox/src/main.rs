@@ -417,7 +417,7 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
 
     let mut codegen = CodeGen::new();
     codegen.set_interface_info(iface_methods, class_implements);
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components);
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

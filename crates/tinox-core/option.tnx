@@ -2,53 +2,77 @@ module tinox.core.option;
 
 namespace tinox.core.option
 {
-    class Option
+    /**
+     * Represents an optional value of type T.
+     * Uses a List<T> internally to avoid requiring a zero value for T.
+     */
+    class Option<T>
     {
-        fn none() -> Option
+        var values: List<T>;
+
+        fn none() -> Option<T>
         {
-            return Option { hasValue: false, value: 0 };
+            return Option<T> { values: [] };
         }
 
-        fn some(value: Int64) -> Option
+        fn some(value: T) -> Option<T>
         {
-            return Option { hasValue: true, value: value };
+            return Option<T> { values: [value] };
         }
 
         fn isSome() -> Bool
         {
-            return this.hasValue;
+            return this.values.len() > 0;
         }
 
         fn isNone() -> Bool
         {
-            return this.hasValue == false;
+            return this.values.len() == 0;
         }
 
-        fn unwrap() -> Int64
+        fn unwrap() -> T
         {
-            if this.hasValue == false
+            if this.values.len() == 0
             {
                 throw "Option is None";
             }
-            return this.value;
+            return this.values[0];
         }
 
-        fn unwrapOr(defaultValue: Int64) -> Int64
+        fn unwrapOr(defaultValue: T) -> T
         {
-            if this.hasValue == false
+            if this.values.len() == 0
             {
                 return defaultValue;
             }
-            return this.value;
+            return this.values[0];
         }
 
-        fn map(transform: fnc(Int64) -> Int64) -> Option
+        fn map<U>(transform: fnc(T) -> U) -> Option<U>
         {
-            if this.hasValue == false
+            if this.values.len() == 0
             {
-                return Option::none();
+                return Option<U>::none();
             }
-            return Option::some(transform(this.value));
+            return Option<U>::some(transform(this.values[0]));
+        }
+
+        fn andThen<U>(transform: fnc(T) -> Option<U>) -> Option<U>
+        {
+            if this.values.len() == 0
+            {
+                return Option<U>::none();
+            }
+            return transform(this.values[0]);
+        }
+
+        fn orElse(fallback: fnc() -> Option<T>) -> Option<T>
+        {
+            if this.values.len() == 0
+            {
+                return fallback();
+            }
+            return this;
         }
     }
 }

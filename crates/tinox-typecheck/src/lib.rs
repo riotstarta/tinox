@@ -925,6 +925,11 @@ impl TypeChecker {
                         self.symbols.variables.insert(key.clone(), (ty, true));
                         self.field_visibility.insert(key, field.visibility.clone());
                     }
+                    if c.annotations.iter().any(|a| a.name == "Log") {
+                        let key = format!("{}.log", c.name);
+                        self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string()), false));
+                        self.field_visibility.insert(key, Visibility::Public);
+                    }
                     for method in &c.methods {
                         let mut params = if method.static_ {
                             vec![]
@@ -1029,6 +1034,11 @@ impl TypeChecker {
                                 let key = format!("{}.{}", c.name, field.name);
                                 self.symbols.variables.insert(key.clone(), (ty, true));
                                 self.field_visibility.insert(key, field.visibility.clone());
+                            }
+                            if c.annotations.iter().any(|a| a.name == "Log") {
+                                let key = format!("{}.log", c.name);
+                                self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string()), false));
+                                self.field_visibility.insert(key, Visibility::Public);
                             }
                             for method in &c.methods {
                                 let mut params = if method.static_ {
@@ -1737,8 +1747,28 @@ impl TypeChecker {
                     // Check if it's a known function (static or instance) AND obj is not a variable
                     let obj_is_variable = self.symbols.variables.contains_key(class_name.as_str());
                     if !obj_is_variable && self.symbols.functions.contains_key(&method_key) {
-                        let func_expr = Spanned::new(ExprKind::Ident(method_key), expr.span);
-                        return self.check_call(&func_expr, args, expr.span);
+                        let sig = self.symbols.functions.get(&method_key).cloned().unwrap();
+                        // Skip 'self' param — ClassName.method(...) never passes self explicitly
+                        let skip = usize::from(sig.params.first().map(|(n, _)| n == "self").unwrap_or(false));
+                        let expected_params = sig.params[skip..].to_vec();
+                        if expected_params.len() != args.len() {
+                            self.errors.push(TypeError::InvalidArgumentCount {
+                                expected: expected_params.len(),
+                                found: args.len(),
+                                span: expr.span,
+                            }.to_error());
+                        }
+                        for (arg, (_, expected_ty)) in args.iter().zip(expected_params.iter()) {
+                            let arg_ty = self.infer_type(arg);
+                            if !self.types_compatible(&expected_ty, &arg_ty) {
+                                self.errors.push(TypeError::TypeMismatch {
+                                    expected: expected_ty.to_string(),
+                                    found: arg_ty.to_string(),
+                                    span: arg.span,
+                                }.to_error());
+                            }
+                        }
+                        return sig.return_type.clone();
                     }
                     // Also handle Time_now, etc. even if obj is not registered as variable
                     let is_static = self.symbols.functions.get(&method_key)

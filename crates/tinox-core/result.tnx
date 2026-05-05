@@ -2,53 +2,83 @@ module tinox.core.result;
 
 namespace tinox.core.result
 {
-    class Result
+    /**
+     * Represents either a success value of type T or an error string.
+     * Uses a List<T> internally to avoid requiring a zero value for T.
+     */
+    class Result<T>
     {
-        fn ok(value: Int64) -> Result
+        var values: List<T>;
+        var error: String;
+
+        fn ok(value: T) -> Result<T>
         {
-            return Result { isOk: true, value: value, error: "" };
+            return Result<T> { values: [value], error: "" };
         }
 
-        fn err(error: String) -> Result
+        fn err(error: String) -> Result<T>
         {
-            return Result { isOk: false, value: 0, error: error };
+            return Result<T> { values: [], error: error };
         }
 
         fn isOk() -> Bool
         {
-            return this.isOk;
+            return this.values.len() > 0;
         }
 
         fn isErr() -> Bool
         {
-            return this.isOk == false;
+            return this.values.len() == 0;
         }
 
-        fn unwrap() -> Int64
+        fn unwrap() -> T
         {
-            if this.isOk == false
+            if this.values.len() == 0
             {
                 throw this.error;
             }
-            return this.value;
+            return this.values[0];
         }
 
-        fn unwrapOr(defaultValue: Int64) -> Int64
+        fn unwrapOr(defaultValue: T) -> T
         {
-            if this.isOk == false
+            if this.values.len() == 0
             {
                 return defaultValue;
             }
-            return this.value;
+            return this.values[0];
         }
 
-        fn map(transform: fnc(Int64) -> Int64) -> Result
+        fn getError() -> String
         {
-            if this.isOk == false
+            return this.error;
+        }
+
+        fn map<U>(transform: fnc(T) -> U) -> Result<U>
+        {
+            if this.values.len() == 0
             {
-                return Result::err(this.error);
+                return Result<U>::err(this.error);
             }
-            return Result::ok(transform(this.value));
+            return Result<U>::ok(transform(this.values[0]));
+        }
+
+        fn andThen<U>(transform: fnc(T) -> Result<U>) -> Result<U>
+        {
+            if this.values.len() == 0
+            {
+                return Result<U>::err(this.error);
+            }
+            return transform(this.values[0]);
+        }
+
+        fn mapErr(transform: fnc(String) -> String) -> Result<T>
+        {
+            if this.values.len() > 0
+            {
+                return this;
+            }
+            return Result<T>::err(transform(this.error));
         }
     }
 }

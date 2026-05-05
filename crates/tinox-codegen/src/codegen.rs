@@ -87,6 +87,8 @@ pub struct CodeGen {
     route_entries: Vec<RouteEntry>,
     /// DI component info from annotation processing
     di_components: Vec<DiComponentInfo>,
+    /// Class names that have @Log — get a synthetic 'log: Logger' field
+    log_classes: HashSet<String>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Set of class names defined in user/imported code
@@ -127,6 +129,7 @@ impl CodeGen {
             inline_methods: HashSet::new(),
             route_entries: Vec::new(),
             di_components: Vec::new(),
+            log_classes: HashSet::new(),
             has_main: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -142,11 +145,13 @@ impl CodeGen {
         inline_meths: HashSet<(String, String)>,
         routes: Vec<RouteEntry>,
         di_components: Vec<DiComponentInfo>,
+        log_classes: HashSet<String>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
         self.route_entries = routes;
         self.di_components = di_components;
+        self.log_classes = log_classes;
     }
 
     /// Provide interface metadata from the type checker.
@@ -490,10 +495,19 @@ impl CodeGen {
                     self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
                 }
                 fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
+                if c.annotations.iter().any(|a| a.name == "Log") {
+                    fields.push("log".to_string());
+                }
                 self.struct_layouts.insert(c.name.clone(), fields);
-                let fct = Self::collect_field_class_types(&c.name, &class_ast_map);
+                let mut fct = Self::collect_field_class_types(&c.name, &class_ast_map);
+                if c.annotations.iter().any(|a| a.name == "Log") {
+                    fct.insert("log".to_string(), "Logger".to_string());
+                }
                 self.struct_field_class_types.insert(c.name.clone(), fct);
-                let fllt = Self::collect_field_llvm_types(&c.name, &class_ast_map);
+                let mut fllt = Self::collect_field_llvm_types(&c.name, &class_ast_map);
+                if c.annotations.iter().any(|a| a.name == "Log") {
+                    fllt.insert("log".to_string(), "i64*".to_string());
+                }
                 self.struct_field_llvm_types.insert(c.name.clone(), fllt);
                 let fn_sigs = Self::collect_fn_field_sigs(&c.name, &class_ast_map);
                 self.fn_field_sigs.insert(c.name.clone(), fn_sigs);
@@ -3393,6 +3407,29 @@ impl CodeGen {
                         val
                     };
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+                }
+                // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
+                if self.log_classes.contains(name) {
+                    if let Some(log_idx) = layout.iter().position(|f| f == "log") {
+                        let str_label = format!("str{}", self.strings.len());
+                        self.strings.insert(str_label.clone(), name.clone());
+                        let str_len = name.len() + 1;
+                        let name_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
+                            name_ptr, str_len, str_len, str_label).unwrap();
+                        let logger_raw = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = call i64* @Logger_new(i8* {})",
+                            logger_raw, name_ptr).unwrap();
+                        let log_as_i64 = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint i64* {} to i64", log_as_i64, logger_raw).unwrap();
+                        let log_field_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr i64, ptr {}, i64 {}",
+                            log_field_ptr, typed_ptr, log_idx).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", log_as_i64, log_field_ptr).unwrap();
+                    }
                 }
                 Ok((typed_ptr, "i64*".to_string()))
             }

@@ -71,6 +71,7 @@ pub struct AnnotationProcessingResult {
     pub deprecated_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
+    pub log_classes: HashSet<String>,
 }
 
 pub struct AnnotationProcessor {
@@ -192,6 +193,18 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks a class as an annotation definition".to_string(),
+            },
+        );
+
+        // Logging annotation
+        registry.insert(
+            "Log".to_string(),
+            AnnotationInfo {
+                name: "Log".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "Injects a 'log: Logger' field initialized with Logger::new(ClassName)".to_string(),
             },
         );
 
@@ -401,6 +414,9 @@ impl AnnotationProcessor {
                 "ApplicationComponent" => di_scope = Some(DiScope::Application),
                 "Startup" => di_scope = Some(DiScope::Startup),
                 "HttpRequestScoped" => di_scope = Some(DiScope::HttpRequest),
+                "Log" => {
+                    result.log_classes.insert(class.name.clone());
+                }
                 _ => {}
             }
         }
