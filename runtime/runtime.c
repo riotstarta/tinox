@@ -1241,6 +1241,72 @@ int64_t jsonIsBool(int64_t* value)   { return (value && ((TinoxJsonValue*)value)
 int64_t jsonIsObject(int64_t* value) { return (value && ((TinoxJsonValue*)value)->type == JSON_OBJECT) ? 1 : 0; }
 int64_t jsonIsArray(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_ARRAY)  ? 1 : 0; }
 
+// ---- Config (@Config annotation) ----
+// Reads key=value pairs from application.properties in the current directory.
+
+#define TINOX_CONFIG_MAX_ENTRIES 256
+#define TINOX_CONFIG_MAX_LINE    1024
+
+typedef struct { char* key; char* value; } TinoxConfigEntry;
+
+static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
+static int              tinox_config_count = -1; // -1 = not loaded
+
+static void tinox_config_load(void) {
+    tinox_config_count = 0;
+    FILE* f = fopen("application.properties", "r");
+    if (!f) return;
+    char line[TINOX_CONFIG_MAX_LINE];
+    while (fgets(line, sizeof(line), f)) {
+        // strip newline
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        // skip empty lines and comments
+        if (len == 0 || line[0] == '#' || line[0] == '!') continue;
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char* key = line;
+        char* val = eq + 1;
+        // trim trailing whitespace from key
+        char* kend = eq - 1;
+        while (kend >= key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        // trim leading whitespace from value
+        while (*val == ' ' || *val == '\t') val++;
+        if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
+            tinox_config_entries[tinox_config_count].key   = strdup(key);
+            tinox_config_entries[tinox_config_count].value = strdup(val);
+            tinox_config_count++;
+        }
+    }
+    fclose(f);
+}
+
+static const char* tinox_config_lookup(const char* key) {
+    if (tinox_config_count < 0) tinox_config_load();
+    for (int i = 0; i < tinox_config_count; i++) {
+        if (strcmp(tinox_config_entries[i].key, key) == 0)
+            return tinox_config_entries[i].value;
+    }
+    return "";
+}
+
+char* tinox_config_get(const char* key) {
+    return (char*)tinox_config_lookup(key);
+}
+
+int64_t tinox_config_get_int(const char* key) {
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (int64_t)atoll(v);
+}
+
+int64_t tinox_config_get_bool(const char* key) {
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);

@@ -63,6 +63,15 @@ pub struct DiComponentInfo {
     pub inject_fields: Vec<DiInjectField>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigFieldInfo {
+    pub class_name: String,
+    pub field_name: String,
+    pub config_key: String,
+    /// LLVM type of the field: "i8*" for String, "i64" for Int*, "i1" for Bool
+    pub field_llvm_type: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
@@ -72,6 +81,7 @@ pub struct AnnotationProcessingResult {
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
+    pub config_fields: Vec<ConfigFieldInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -193,6 +203,18 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks a class as an annotation definition".to_string(),
+            },
+        );
+
+        // Config injection annotation
+        registry.insert(
+            "Config".to_string(),
+            AnnotationInfo {
+                name: "Config".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 1,
+                max_args: 1,
+                description: "Injects a value from application.properties into the field".to_string(),
             },
         );
 
@@ -430,6 +452,9 @@ impl AnnotationProcessor {
             });
         }
 
+        let cfg_fields = collect_config_fields(&class.name, &class.fields);
+        result.config_fields.extend(cfg_fields);
+
         for method in &class.methods {
             let route = self.extract_route_from_method(
                 method,
@@ -590,6 +615,34 @@ pub fn process_annotations(
 ) -> AnnotationProcessingResult {
     let processor = AnnotationProcessor::new();
     processor.process_source(source)
+}
+
+fn field_type_to_llvm(ty: &Type) -> String {
+    match ty {
+        Type::String => "i8*".to_string(),
+        Type::Bool => "i1".to_string(),
+        _ => "i64".to_string(),
+    }
+}
+
+fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFieldInfo> {
+    fields
+        .iter()
+        .filter_map(|f| {
+            let ann = f.annotations.iter().find(|a| a.name == "Config")?;
+            let key = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                s.clone()
+            } else {
+                return None;
+            };
+            Some(ConfigFieldInfo {
+                class_name: class_name.to_string(),
+                field_name: f.name.clone(),
+                config_key: key,
+                field_llvm_type: field_type_to_llvm(&f.field_type),
+            })
+        })
+        .collect()
 }
 
 fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {

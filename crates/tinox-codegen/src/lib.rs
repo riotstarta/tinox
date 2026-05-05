@@ -5,3 +5,4 @@ pub use codegen::DiComponentInfo;
 pub use codegen::DiInjectField;
 pub use codegen::DiScope;
 pub use codegen::RouteEntry;
+pub use codegen::ConfigFieldInfo;

@@ -36,4 +36,9 @@ void  tinox_map_remove(void* map, const char* key);
 int64_t tinox_map_len(void* map);
 void  tinox_map_free(void* map);
 
+// Config functions (@Config annotation)
+char*   tinox_config_get(const char* key);
+int64_t tinox_config_get_int(const char* key);
+int64_t tinox_config_get_bool(const char* key);
+
 #endif // TINOX_RUNTIME_H

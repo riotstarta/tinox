@@ -417,7 +417,16 @@ fn compile_file(input_path: &str, output_name: &str) -> Result<(), String> {
 
     let mut codegen = CodeGen::new();
     codegen.set_interface_info(iface_methods, class_implements);
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes);
+    let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
+        .iter()
+        .map(|f| tinox_codegen::ConfigFieldInfo {
+            class_name: f.class_name.clone(),
+            field_name: f.field_name.clone(),
+            config_key: f.config_key.clone(),
+            field_llvm_type: f.field_llvm_type.clone(),
+        })
+        .collect();
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

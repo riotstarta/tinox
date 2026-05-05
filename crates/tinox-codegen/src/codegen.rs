@@ -27,6 +27,15 @@ pub struct DiComponentInfo {
     pub inject_fields: Vec<DiInjectField>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigFieldInfo {
+    pub class_name: String,
+    pub field_name: String,
+    pub config_key: String,
+    /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
+    pub field_llvm_type: String,
+}
+
 /// Route entry produced by REST annotation processing.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
@@ -89,6 +98,8 @@ pub struct CodeGen {
     di_components: Vec<DiComponentInfo>,
     /// Class names that have @Log — get a synthetic 'log: Logger' field
     log_classes: HashSet<String>,
+    /// Fields annotated with @Config — injected from application.properties at construction
+    config_fields: Vec<ConfigFieldInfo>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Set of class names defined in user/imported code
@@ -130,6 +141,7 @@ impl CodeGen {
             route_entries: Vec::new(),
             di_components: Vec::new(),
             log_classes: HashSet::new(),
+            config_fields: Vec::new(),
             has_main: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -146,12 +158,14 @@ impl CodeGen {
         routes: Vec<RouteEntry>,
         di_components: Vec<DiComponentInfo>,
         log_classes: HashSet<String>,
+        config_fields: Vec<ConfigFieldInfo>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
         self.route_entries = routes;
         self.di_components = di_components;
         self.log_classes = log_classes;
+        self.config_fields = config_fields;
     }
 
     /// Provide interface metadata from the type checker.
@@ -345,6 +359,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.round.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare void @exit(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_config_get(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_config_get_int(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_config_get_bool(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
@@ -3408,6 +3425,52 @@ impl CodeGen {
                     };
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
+                // @Config: inject values from application.properties for annotated fields
+                let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
+                    .filter(|f| &f.class_name == name)
+                    .cloned()
+                    .collect();
+                for cf in &cfg_fields {
+                    if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
+                        let key_label = format!("str{}", self.strings.len());
+                        self.strings.insert(key_label.clone(), cf.config_key.clone());
+                        let key_len = cf.config_key.len() + 1;
+                        let key_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
+                            key_ptr, key_len, key_len, key_label).unwrap();
+                        let field_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr i64, ptr {}, i64 {}",
+                            field_ptr, typed_ptr, field_idx).unwrap();
+                        match cf.field_llvm_type.as_str() {
+                            "i8*" => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i8* @tinox_config_get(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                let as_i64 = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
+                            }
+                            "i1" => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i64 @tinox_config_get_bool(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                            }
+                            _ => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i64 @tinox_config_get_int(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                            }
+                        }
+                    }
+                }
+
                 // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
                 if self.log_classes.contains(name) {
                     if let Some(log_idx) = layout.iter().position(|f| f == "log") {
