@@ -1,6 +1,74 @@
+use std::collections::HashMap;
+
 use tinox_common::{Pos, Span};
 use tinox_parser::ast::*;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Location, Position, Range, Url};
+use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Documentation, Location, MarkupContent, MarkupKind, Position, Range, Url};
+
+// --- Type Registry ---
+
+#[derive(Clone)]
+pub struct FieldInfo {
+    pub name: String,
+    pub type_name: String,
+    pub doc: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct MethodInfo {
+    pub name: String,
+    pub signature: String,
+    pub doc: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ClassInfo {
+    pub fields: Vec<FieldInfo>,
+    pub methods: Vec<MethodInfo>,
+}
+
+pub type TypeRegistry = HashMap<String, ClassInfo>;
+
+pub fn build_registry_from_source(source: &SourceFile) -> TypeRegistry {
+    let mut registry = HashMap::new();
+    for decl in &source.decls {
+        collect_classes_from_decl(decl, &mut registry);
+    }
+    registry
+}
+
+fn collect_classes_from_decl(decl: &Decl, registry: &mut TypeRegistry) {
+    match &decl.node {
+        DeclKind::Class(c) => {
+            registry.insert(c.name.clone(), class_to_info(c));
+        }
+        DeclKind::Namespace(ns) => {
+            for inner in &ns.decls {
+                collect_classes_from_decl(inner, registry);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn class_to_info(c: &Class) -> ClassInfo {
+    ClassInfo {
+        fields: c.fields.iter().map(|f| FieldInfo {
+            name: f.name.clone(),
+            type_name: type_str(&f.field_type),
+            doc: f.doc.clone(),
+        }).collect(),
+        methods: c.methods.iter().map(|m| {
+            let params: Vec<String> = m.params.iter()
+                .map(|p| format!("{}: {}", p.name, type_str(&p.param_type)))
+                .collect();
+            MethodInfo {
+                name: m.name.clone(),
+                signature: format!("fn {}({}) -> {}", m.name, params.join(", "), type_str(&m.ret_type)),
+                doc: m.doc.clone(),
+            }
+        }).collect(),
+    }
+}
 
 pub fn lsp_pos_to_offset(src: &str, pos: Position) -> u32 {
     let mut line = 0u32;
@@ -42,12 +110,60 @@ pub fn span_to_range(span: Span) -> Range {
 // --- Hover ---
 
 pub fn hover_at(source: &SourceFile, offset: u32) -> Option<String> {
+    // Check if cursor is on an annotation — scan all annotations in the AST
+    if let Some(doc) = hover_annotation(source, offset) {
+        return Some(doc);
+    }
     for decl in &source.decls {
         if let Some(s) = hover_decl(decl, offset) {
             return Some(s);
         }
     }
     None
+}
+
+fn hover_annotation(source: &SourceFile, offset: u32) -> Option<String> {
+    for decl in &source.decls {
+        if let Some(doc) = annotation_in_decl(&decl.node, offset) {
+            return Some(doc);
+        }
+    }
+    None
+}
+
+fn annotation_in_decl(decl: &DeclKind, offset: u32) -> Option<String> {
+    let annotations: &[Annotation] = match decl {
+        DeclKind::Class(c) => {
+            for ann in &c.annotations {
+                if let Some(d) = check_annotation(ann, offset) { return Some(d); }
+            }
+            for m in &c.methods {
+                for ann in &m.annotations { if let Some(d) = check_annotation(ann, offset) { return Some(d); } }
+            }
+            for f in &c.fields {
+                for ann in &f.annotations { if let Some(d) = check_annotation(ann, offset) { return Some(d); } }
+            }
+            return None;
+        }
+        DeclKind::Function(f) => &f.annotations,
+        DeclKind::Namespace(ns) => {
+            for inner in &ns.decls { if let Some(d) = annotation_in_decl(&inner.node, offset) { return Some(d); } }
+            return None;
+        }
+        _ => return None,
+    };
+    for ann in annotations {
+        if let Some(d) = check_annotation(ann, offset) { return Some(d); }
+    }
+    None
+}
+
+fn check_annotation(ann: &Annotation, offset: u32) -> Option<String> {
+    if span_contains(ann.span, offset) {
+        annotation_doc(&ann.name)
+    } else {
+        None
+    }
 }
 
 fn hover_decl(decl: &Decl, offset: u32) -> Option<String> {
@@ -526,6 +642,301 @@ pub fn completions(source: &SourceFile) -> Vec<CompletionItem> {
     items
 }
 
+// --- Context-aware Dot Completion ---
+
+pub fn completions_at(
+    source: &SourceFile,
+    text: &str,
+    offset: u32,
+    stdlib: &TypeRegistry,
+) -> Vec<CompletionItem> {
+    let end = offset.min(text.len() as u32) as usize;
+
+    // @-annotation completions
+    if let Some(items) = annotation_completions_at(&text[..end]) {
+        return items;
+    }
+
+    if let Some(chain) = extract_dot_chain(&text[..end]) {
+        // Build a combined registry: stdlib + classes from the current file
+        let mut combined = build_registry_from_source(source);
+        for (k, v) in stdlib {
+            combined.entry(k.clone()).or_insert_with(|| clone_class_info(v));
+        }
+
+        if let Some(type_name) = resolve_chain_type(source, &combined, &chain) {
+            if let Some(info) = combined.get(&type_name) {
+                return member_completions(info);
+            }
+        }
+    }
+
+    completions(source)
+}
+
+/// Returns annotation completions if the cursor is directly after `@`.
+fn annotation_completions_at(text: &str) -> Option<Vec<CompletionItem>> {
+    let t = text.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+    if !t.ends_with('@') {
+        return None;
+    }
+    // Prefix the user has already typed after @
+    let prefix = &text[t.len()..];
+    Some(annotation_items()
+        .into_iter()
+        .filter(|i| i.label.to_lowercase().starts_with(&prefix.to_lowercase()))
+        .collect())
+}
+
+struct AnnotationMeta {
+    name: &'static str,
+    detail: &'static str,
+    doc: &'static str,
+    /// snippet inserted after @Name, e.g. `("$1")` or `("$1", "$2")`
+    insert: &'static str,
+    target: &'static str,
+}
+
+const ANNOTATIONS: &[AnnotationMeta] = &[
+    AnnotationMeta { name: "Command",          detail: "CLI entry point",
+        doc: "Marks a class as a CLI command.  \n**Args:** `name`, `description`[, `version`]",
+        insert: "(\"${1:name}\", \"${2:description}\")", target: "class" },
+    AnnotationMeta { name: "Option",           detail: "CLI option",
+        doc: "Binds a field to a command-line option.  \n**Args:** `\"--long,-s\"`, `\"description\"`[, `required`]",
+        insert: "(\"${1:--name,-n}\", \"${2:description}\")", target: "field" },
+    AnnotationMeta { name: "Argument",         detail: "Positional CLI argument",
+        doc: "Binds a field to a positional argument.  \n**Args:** `index`, `\"description\"`",
+        insert: "(${1:0}, \"${2:description}\")", target: "field" },
+    AnnotationMeta { name: "Test",             detail: "Unit test method",
+        doc: "Marks a method as a test case.  \nReturn `true` to pass, `false` to fail.",
+        insert: "(\"${1:test description}\")", target: "method" },
+    AnnotationMeta { name: "GET",              detail: "HTTP GET route",
+        doc: "Maps the method to a GET endpoint.",
+        insert: "", target: "method" },
+    AnnotationMeta { name: "POST",             detail: "HTTP POST route",
+        doc: "Maps the method to a POST endpoint.",
+        insert: "", target: "method" },
+    AnnotationMeta { name: "PUT",              detail: "HTTP PUT route",  doc: "Maps the method to a PUT endpoint.",
+        insert: "", target: "method" },
+    AnnotationMeta { name: "DELETE",           detail: "HTTP DELETE route", doc: "Maps the method to a DELETE endpoint.",
+        insert: "", target: "method" },
+    AnnotationMeta { name: "Path",             detail: "URL path prefix",
+        doc: "Sets the URL path for a controller class or route method.  \n**Arg:** `\"/path\"`",
+        insert: "(\"${1:/path}\")", target: "class or method" },
+    AnnotationMeta { name: "StatusCode",       detail: "HTTP status code",
+        doc: "Sets the default HTTP status code.  \n**Arg:** integer",
+        insert: "(${1:200})", target: "method" },
+    AnnotationMeta { name: "ApplicationComponent", detail: "Singleton DI component",
+        doc: "One instance per application lifetime (lazy singleton).", insert: "", target: "class" },
+    AnnotationMeta { name: "Startup",          detail: "Eager singleton DI component",
+        doc: "Created immediately at application startup.", insert: "", target: "class" },
+    AnnotationMeta { name: "HttpRequestScoped",detail: "Per-request DI component",
+        doc: "A fresh instance is created for each HTTP request.", insert: "", target: "class" },
+    AnnotationMeta { name: "Inject",           detail: "DI field injection",
+        doc: "Marks a field for compile-time dependency injection.", insert: "", target: "field" },
+    AnnotationMeta { name: "Config",           detail: "application.properties injection",
+        doc: "Injects a value from `application.properties`.  \n**Arg:** `\"key\"`",
+        insert: "(\"${1:config.key}\")", target: "field" },
+    AnnotationMeta { name: "Log",              detail: "Logger injection",
+        doc: "Injects a `log: Logger` field initialized with the class name.", insert: "", target: "class" },
+    AnnotationMeta { name: "inline",           detail: "Inline hint",
+        doc: "Hints to the compiler that this function or method should be inlined.",
+        insert: "", target: "fn or method" },
+    AnnotationMeta { name: "deprecated",       detail: "Deprecation marker",
+        doc: "Marks the declaration as deprecated.  \nOptional **arg:** deprecation message.",
+        insert: "(\"${1:use X instead}\")", target: "class, fn, or method" },
+];
+
+fn annotation_items() -> Vec<CompletionItem> {
+    ANNOTATIONS.iter().map(|a| {
+        let insert_text = if a.insert.is_empty() {
+            a.name.to_string()
+        } else {
+            format!("{}{}", a.name, a.insert)
+        };
+        CompletionItem {
+            label: a.name.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some(format!("@{} — {} [{}]", a.name, a.detail, a.target)),
+            insert_text: Some(insert_text),
+            insert_text_format: Some(tower_lsp::lsp_types::InsertTextFormat::SNIPPET),
+            documentation: Some(mk_doc(&a.doc.to_string())),
+            ..Default::default()
+        }
+    }).collect()
+}
+
+/// Returns the documentation string for an annotation name, or None if unknown.
+pub fn annotation_doc(name: &str) -> Option<String> {
+    ANNOTATIONS.iter().find(|a| a.name == name).map(|a| {
+        format!("**@{}** — {}  \n\nTarget: `{}`  \n\n{}", a.name, a.detail, a.target, a.doc)
+    })
+}
+
+fn clone_class_info(src: &ClassInfo) -> ClassInfo {
+    ClassInfo {
+        fields: src.fields.iter().map(|f| FieldInfo {
+            name: f.name.clone(),
+            type_name: f.type_name.clone(),
+            doc: f.doc.clone(),
+        }).collect(),
+        methods: src.methods.iter().map(|m| MethodInfo {
+            name: m.name.clone(),
+            signature: m.signature.clone(),
+            doc: m.doc.clone(),
+        }).collect(),
+    }
+}
+
+/// Extracts the dot-receiver chain from the text ending with `.` or `.partial_ident`.
+/// e.g. `"ctx."` → `["ctx"]`, `"ctx.re"` → `["ctx"]`, `"ctx.response."` → `["ctx", "response"]`
+fn extract_dot_chain(text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim_end_matches(|c: char| c == ' ' || c == '\t');
+    // strip partial identifier the user may have started typing after the last dot
+    let trimmed = trimmed.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+    if !trimmed.ends_with('.') {
+        return None;
+    }
+
+    let mut chain: Vec<String> = Vec::new();
+    let mut rest = &trimmed[..trimmed.len() - 1]; // strip trailing dot
+
+    loop {
+        let rest_trimmed = rest.trim_end();
+        let end = rest_trimmed.len();
+        let start = rest_trimmed
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let ident = &rest_trimmed[start..end];
+
+        if ident.is_empty()
+            || !ident.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+        {
+            break;
+        }
+        chain.push(ident.to_string());
+
+        let before = rest_trimmed[..start].trim_end();
+        if before.ends_with('.') {
+            rest = &before[..before.len() - 1];
+        } else {
+            break;
+        }
+    }
+
+    if chain.is_empty() {
+        return None;
+    }
+    chain.reverse();
+    Some(chain)
+}
+
+/// Resolves the type of a dot-chain like `["ctx"]` or `["ctx", "response"]`.
+fn resolve_chain_type(source: &SourceFile, registry: &TypeRegistry, chain: &[String]) -> Option<String> {
+    let first_type = resolve_var_type(source, &chain[0])?;
+    let mut current = first_type;
+    for field_name in &chain[1..] {
+        let info = registry.get(&current)?;
+        current = info.fields.iter().find(|f| &f.name == field_name)?.type_name.clone();
+    }
+    Some(current)
+}
+
+/// Finds the declared type of a variable by name across all methods/functions in the AST.
+fn resolve_var_type(source: &SourceFile, name: &str) -> Option<String> {
+    for decl in &source.decls {
+        match &decl.node {
+            DeclKind::Function(f) => {
+                for p in &f.params {
+                    if p.name == name {
+                        return Some(type_str(&p.param_type));
+                    }
+                }
+                if let Some(t) = find_var_in_stmt(&f.body, name) {
+                    return Some(t);
+                }
+            }
+            DeclKind::Class(c) => {
+                if name == "this" {
+                    return Some(c.name.clone());
+                }
+                for m in &c.methods {
+                    for p in &m.params {
+                        if p.name == name {
+                            return Some(type_str(&p.param_type));
+                        }
+                    }
+                    if let Some(t) = find_var_in_stmt(&m.body, name) {
+                        return Some(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_var_in_stmt(stmt: &Stmt, name: &str) -> Option<String> {
+    match &stmt.node {
+        StmtKind::Block(stmts) => stmts.iter().find_map(|s| find_var_in_stmt(s, name)),
+        StmtKind::Let { name: n, ty: Some(t), .. } if n == name => Some(type_str(t)),
+        StmtKind::Var { name: n, ty: Some(t), .. } if n == name => Some(type_str(t)),
+        StmtKind::Let { name: n, ty: None, value: Some(v), .. } if n == name => {
+            infer_type_from_expr(v)
+        }
+        StmtKind::Var { name: n, ty: None, value: Some(v), .. } if n == name => {
+            infer_type_from_expr(v)
+        }
+        StmtKind::If { then_branch, else_branch, .. } => {
+            find_var_in_stmt(then_branch, name)
+                .or_else(|| else_branch.as_ref().and_then(|e| find_var_in_stmt(e, name)))
+        }
+        StmtKind::While { body, .. } | StmtKind::Loop { body } | StmtKind::For { body, .. } => {
+            find_var_in_stmt(body, name)
+        }
+        _ => None,
+    }
+}
+
+fn infer_type_from_expr(expr: &Expr) -> Option<String> {
+    match &expr.node {
+        ExprKind::New { class, .. } => Some(class.clone()),
+        _ => None,
+    }
+}
+
+fn member_completions(info: &ClassInfo) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    for f in &info.fields {
+        items.push(CompletionItem {
+            label: f.name.clone(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some(f.type_name.clone()),
+            documentation: f.doc.as_ref().map(mk_doc),
+            ..Default::default()
+        });
+    }
+    for m in &info.methods {
+        items.push(CompletionItem {
+            label: m.name.clone(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(m.signature.clone()),
+            documentation: m.doc.as_ref().map(mk_doc),
+            ..Default::default()
+        });
+    }
+    items
+}
+
+fn mk_doc(d: &String) -> Documentation {
+    Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: d.clone(),
+    })
+}
+
 // --- Go to Definition ---
 
 pub fn definition_at(source: &SourceFile, uri: &Url, offset: u32) -> Option<Location> {
@@ -776,5 +1187,200 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tinox_lexer::Lexer;
+    use tinox_parser::Parser;
+
+    fn parse_src(src: &str) -> SourceFile {
+        let tokens = Lexer::new(src).tokenize().unwrap();
+        Parser::new(tokens).parse().unwrap()
+    }
+
+    fn make_stdlib() -> TypeRegistry {
+        // CARGO_MANIFEST_DIR = .../crates/tinox-lsp
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = format!("{}/../../crates/tinox-core/http_server.tnx", manifest);
+        let src = std::fs::read_to_string(&path).unwrap_or_default();
+        if src.is_empty() { return HashMap::new(); }
+        let tokens = match Lexer::new(&src).tokenize() {
+            Ok(t) => t,
+            Err(_) => return HashMap::new(),
+        };
+        match Parser::new(tokens).parse() {
+            Ok(ast) => build_registry_from_source(&ast),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_extract_dot_chain_simple() {
+        assert_eq!(extract_dot_chain("ctx."), Some(vec!["ctx".to_string()]));
+        assert_eq!(extract_dot_chain("  ctx."), Some(vec!["ctx".to_string()]));
+        assert_eq!(extract_dot_chain("ctx.response."), Some(vec!["ctx".to_string(), "response".to_string()]));
+        assert_eq!(extract_dot_chain("no_dot"), None);
+        assert_eq!(extract_dot_chain(""), None);
+        // partial identifier after dot should still trigger completion
+        assert_eq!(extract_dot_chain("ctx.re"), Some(vec!["ctx".to_string()]));
+        assert_eq!(extract_dot_chain("ctx.response.bo"), Some(vec!["ctx".to_string(), "response".to_string()]));
+    }
+
+    #[test]
+    fn test_stdlib_loads() {
+        let stdlib = make_stdlib();
+        println!("Loaded {} classes: {:?}", stdlib.len(), stdlib.keys().collect::<Vec<_>>());
+        assert!(stdlib.contains_key("HttpContext"), "HttpContext not in stdlib");
+        assert!(stdlib.contains_key("HttpResponse"), "HttpResponse not in stdlib");
+    }
+
+    #[test]
+    fn test_resolve_param_type() {
+        let src = r#"
+class UserController {
+    fn listUsers(ctx: HttpContext) -> Nothing {
+    }
+}
+"#;
+        let ast = parse_src(src);
+        let result = resolve_var_type(&ast, "ctx");
+        assert_eq!(result, Some("HttpContext".to_string()));
+    }
+
+    #[test]
+    fn test_completions_at_ctx_dot() {
+        let src = r#"
+class UserController {
+    fn listUsers(ctx: HttpContext) -> Nothing {
+    }
+}
+"#;
+        let ast = parse_src(src);
+        let stdlib = make_stdlib();
+        let text = format!("{}\n    ctx.", &src[..src.len()-2]);
+        let offset = text.len() as u32;
+        let items = completions_at(&ast, &text, offset, &stdlib);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        println!("completion items: {:?}", labels);
+        assert!(labels.contains(&"response"), "should suggest 'response'");
+        assert!(labels.contains(&"request"), "should suggest 'request'");
+    }
+
+    #[test]
+    fn test_annotation_completions_at_sign() {
+        let ast = parse_src("class Foo {}");
+        let stdlib = HashMap::new();
+        // Cursor right after @
+        let text = "@".to_string();
+        let items = completions_at(&ast, &text, text.len() as u32, &stdlib);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Command"), "@ should suggest Command");
+        assert!(labels.contains(&"Test"),    "@ should suggest Test");
+        assert!(labels.contains(&"GET"),     "@ should suggest GET");
+    }
+
+    #[test]
+    fn test_annotation_completions_filtered() {
+        let ast = parse_src("class Foo {}");
+        let stdlib = HashMap::new();
+        let text = "@Co".to_string();
+        let items = completions_at(&ast, &text, text.len() as u32, &stdlib);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Command"), "@Co should suggest Command");
+        assert!(!labels.contains(&"GET"),    "@Co should not suggest GET");
+    }
+
+    #[test]
+    fn test_this_dot_completion() {
+        let src = r#"
+class UserService {
+    var repo: UserRepository;
+    fn save() -> Nothing {
+    }
+}
+class UserRepository {
+    fn findAll() -> Nothing {
+    }
+}
+"#;
+        let ast = parse_src(src);
+        let combined = build_registry_from_source(&ast);
+        let text = format!("{}\n    this.", &src[..src.len()-2]);
+        let offset = text.len() as u32;
+        let items = completions_at(&ast, &text, offset, &combined);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"repo"), "this. should suggest 'repo' field");
+        assert!(labels.contains(&"save"), "this. should suggest 'save' method");
+    }
+
+    #[test]
+    fn test_new_type_inference() {
+        let src = r#"
+class Foo {
+    fn bar() -> Nothing {
+        let svc = new UserService();
+    }
+}
+class UserService {
+    fn doThing() -> Nothing {
+    }
+}
+"#;
+        let ast = parse_src(src);
+        let result = resolve_var_type(&ast, "svc");
+        assert_eq!(result, Some("UserService".to_string()));
+    }
+
+    fn parse_for_completion_test(text: &str, offset: usize) -> Option<SourceFile> {
+        let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = text[offset..].find('\n').map(|i| offset + i).unwrap_or(text.len());
+        let blank = " ".repeat(line_end - line_start);
+        let cleaned = format!("{}{}{}", &text[..line_start], blank, &text[line_end..]);
+        let tokens = Lexer::new(&cleaned).tokenize().ok()?;
+        Parser::new(tokens).parse().ok()
+    }
+
+    #[test]
+    fn test_import_dot_completion() {
+        // Exact scenario: import + ctx.re should suggest response
+        let src = r#"import tinox.core.http_server;
+
+class UserController
+{
+    fn listUsers(ctx: HttpContext) -> Nothing
+    {
+        ctx.re
+    }
+}
+"#;
+        let stdlib = make_stdlib();
+        println!("stdlib classes: {:?}", stdlib.keys().collect::<Vec<_>>());
+        assert!(!stdlib.is_empty(), "stdlib must not be empty for this test");
+        assert!(stdlib.contains_key("HttpContext"), "HttpContext must be in stdlib");
+
+        let cursor_line = "        ctx.re";
+        let offset = src.find(cursor_line).unwrap() + cursor_line.len();
+
+        // Use parse_for_completion (blanks the incomplete line) — same as LSP does
+        let ast = parse_for_completion_test(src, offset)
+            .expect("parse_for_completion should succeed");
+        let items = completions_at(&ast, src, offset as u32, &stdlib);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        println!("completion items: {:?}", labels);
+        assert!(labels.contains(&"response"), "ctx.re should suggest 'response'");
+        assert!(labels.contains(&"request"), "ctx.re should suggest 'request'");
+    }
+
+    #[test]
+    fn test_annotation_doc() {
+        let doc = annotation_doc("Test");
+        assert!(doc.is_some());
+        assert!(doc.unwrap().contains("@Test"));
+
+        let doc = annotation_doc("NonExistent");
+        assert!(doc.is_none());
     }
 }

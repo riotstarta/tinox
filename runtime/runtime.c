@@ -1307,12 +1307,71 @@ int64_t tinox_config_get_bool(const char* key) {
     return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
 }
 
+// ---- CLI argument parsing (@Command / @Option / @Argument) ----
+
+static int    _tinox_argc = 0;
+static char** _tinox_argv = NULL;
+
+// Scans argv for --long-name or -s and returns the following value, or NULL.
+char* tinox_cli_get_string(const char* long_name, const char* short_name) {
+    for (int i = 1; i < _tinox_argc - 1; i++) {
+        if ((long_name  && strcmp(_tinox_argv[i], long_name)  == 0) ||
+            (short_name && *short_name && strcmp(_tinox_argv[i], short_name) == 0)) {
+            return _tinox_argv[i + 1];
+        }
+    }
+    return NULL;
+}
+
+// Returns 1 if the flag is present, 0 otherwise.
+int64_t tinox_cli_has_flag(const char* long_name, const char* short_name) {
+    for (int i = 1; i < _tinox_argc; i++) {
+        if ((long_name  && strcmp(_tinox_argv[i], long_name)  == 0) ||
+            (short_name && *short_name && strcmp(_tinox_argv[i], short_name) == 0))
+            return 1;
+    }
+    return 0;
+}
+
+// Returns integer value after --long-name/-s, or default_val if absent.
+int64_t tinox_cli_get_int(const char* long_name, const char* short_name, int64_t default_val) {
+    char* s = tinox_cli_get_string(long_name, short_name);
+    if (!s) return default_val;
+    return (int64_t)atoll(s);
+}
+
+// Returns the positional argument at position `index` (0-based, skipping option tokens).
+char* tinox_cli_get_positional(int32_t index) {
+    int pos = 0;
+    int i = 1;
+    while (i < _tinox_argc) {
+        char* arg = _tinox_argv[i];
+        if (arg[0] == '-') {
+            // skip option token; if next token is not a flag treat it as the value
+            if (i + 1 < _tinox_argc && _tinox_argv[i + 1][0] != '-')
+                i += 2;
+            else
+                i += 1;
+        } else {
+            if (pos == index) return arg;
+            pos++;
+            i++;
+        }
+    }
+    return NULL;
+}
+
+// Prints a single help line "  -s, --long-name   description"
+void tinox_cli_print_option(const char* names, const char* description) {
+    printf("  %-22s  %s\n", names, description ? description : "");
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
+    _tinox_argc = argc;
+    _tinox_argv = argv;
     return (int)tinox_main();
 }

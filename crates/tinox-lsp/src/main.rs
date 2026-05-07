@@ -1,6 +1,12 @@
 mod analysis;
 
-use analysis::{completions, definition_at, document_symbols, hover_at, lsp_pos_to_offset, pos_to_lsp};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use analysis::{
+    build_registry_from_source, completions_at, definition_at, document_symbols,
+    hover_at, lsp_pos_to_offset, pos_to_lsp, TypeRegistry,
+};
 use dashmap::DashMap;
 use tinox_common::Error;
 use tinox_lexer::Lexer;
@@ -10,21 +16,147 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+// Embed all stdlib .tnx files at compile time so the binary works without any install path.
+const EMBEDDED_STDLIB: &[(&str, &str)] = &[
+    ("array",         include_str!("../../tinox-core/array.tnx")),
+    ("collections",   include_str!("../../tinox-core/collections.tnx")),
+    ("env",           include_str!("../../tinox-core/env.tnx")),
+    ("fmt",           include_str!("../../tinox-core/fmt.tnx")),
+    ("fs",            include_str!("../../tinox-core/fs.tnx")),
+    ("hash",          include_str!("../../tinox-core/hash.tnx")),
+    ("http",          include_str!("../../tinox-core/http.tnx")),
+    ("http_server",   include_str!("../../tinox-core/http_server.tnx")),
+    ("io",            include_str!("../../tinox-core/io.tnx")),
+    ("iter",          include_str!("../../tinox-core/iter.tnx")),
+    ("json",          include_str!("../../tinox-core/json.tnx")),
+    ("logger",        include_str!("../../tinox-core/logger.tnx")),
+    ("math",          include_str!("../../tinox-core/math.tnx")),
+    ("mathf",         include_str!("../../tinox-core/mathf.tnx")),
+    ("option",        include_str!("../../tinox-core/option.tnx")),
+    ("process",       include_str!("../../tinox-core/process.tnx")),
+    ("random",        include_str!("../../tinox-core/random.tnx")),
+    ("regex",         include_str!("../../tinox-core/regex.tnx")),
+    ("rest",          include_str!("../../tinox-core/rest.tnx")),
+    ("result",        include_str!("../../tinox-core/result.tnx")),
+    ("set",           include_str!("../../tinox-core/set.tnx")),
+    ("socket",        include_str!("../../tinox-core/socket.tnx")),
+    ("sort",          include_str!("../../tinox-core/sort.tnx")),
+    ("string",        include_str!("../../tinox-core/string.tnx")),
+    ("time",          include_str!("../../tinox-core/time.tnx")),
+    ("uuid",          include_str!("../../tinox-core/uuid.tnx")),
+];
+
+fn build_embedded_stdlib() -> TypeRegistry {
+    let mut registry = TypeRegistry::new();
+    for (_, src) in EMBEDDED_STDLIB {
+        let Ok(tokens) = Lexer::new(src).tokenize() else { continue };
+        let Ok(ast) = Parser::new(tokens).parse() else { continue };
+        for (name, info) in build_registry_from_source(&ast) {
+            registry.entry(name).or_insert(info);
+        }
+    }
+    registry
+}
+
+fn load_embedded_module(module: &str, registry: &mut TypeRegistry) {
+    let Some((_, src)) = EMBEDDED_STDLIB.iter().find(|(name, _)| *name == module) else { return };
+    let Ok(tokens) = Lexer::new(src).tokenize() else { return };
+    let Ok(ast) = Parser::new(tokens).parse() else { return };
+    for (name, info) in build_registry_from_source(&ast) {
+        registry.entry(name).or_insert(info);
+    }
+}
+
 struct Backend {
     client: Client,
     docs: DashMap<Url, String>,
     asts: DashMap<Url, SourceFile>,
+    stdlib_registry: TypeRegistry,
 }
 
 impl Backend {
     fn new(client: Client) -> Self {
+        // Start with embedded stdlib; optionally supplement from filesystem if TINOX_STDLIB is set.
+        let mut stdlib_registry = build_embedded_stdlib();
+        if let Some(path) = find_stdlib_path() {
+            for (name, info) in load_stdlib(&path) {
+                stdlib_registry.entry(name).or_insert(info);
+            }
+        }
         Self {
             client,
             docs: DashMap::new(),
             asts: DashMap::new(),
+            stdlib_registry,
         }
     }
+}
 
+fn find_stdlib_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("TINOX_STDLIB") {
+        let path = PathBuf::from(p);
+        if path.exists() { return Some(path); }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.canonicalize().unwrap_or(exe);
+        let candidates = [
+            exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|p| p.join("crates/tinox-core")),
+            exe.parent().map(|p| p.join("tinox-core")),
+            exe.parent().map(|p| p.join("core")),
+            exe.parent().map(|p| p.join("stdlib")),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            if candidate.exists() { return Some(candidate); }
+        }
+    }
+    None
+}
+
+/// Extracts module file names from import declarations, e.g.
+/// `import tinox.core.http_server` → `"http_server"`
+fn module_names_from_imports(source: &tinox_parser::ast::SourceFile) -> Vec<String> {
+    use tinox_parser::ast::DeclKind;
+    source.decls.iter().filter_map(|d| {
+        if let DeclKind::Import(imp) = &d.node {
+            imp.path.last().map(|s| s.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
+
+
+fn load_stdlib(path: &Path) -> TypeRegistry {
+    let mut registry: TypeRegistry = HashMap::new();
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return registry,
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().map(|e| e == "tnx").unwrap_or(false) {
+            let src = match std::fs::read_to_string(&p) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let tokens = match Lexer::new(&src).tokenize() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let ast = match Parser::new(tokens).parse() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            for (name, info) in build_registry_from_source(&ast) {
+                registry.insert(name, info);
+            }
+        }
+    }
+    registry
+}
+
+impl Backend {
     async fn update(&self, uri: Url, text: String) {
         let diags = compile(&text, |ast| {
             self.asts.insert(uri.clone(), ast);
@@ -160,10 +292,59 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, p: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &p.text_document_position.text_document.uri;
-        let Some(ast) = self.asts.get(uri) else {
+        let pos = p.text_document_position.position;
+
+        let Some(text) = self.docs.get(uri) else {
+            self.client.log_message(MessageType::WARNING, "completion: no text for uri").await;
             return Ok(None);
         };
-        Ok(Some(CompletionResponse::Array(completions(&ast))))
+        let offset = lsp_pos_to_offset(&text, pos);
+        let snippet = {
+            let end = offset.min(text.len() as u32) as usize;
+            let start = end.saturating_sub(20);
+            format!("{:?}", &text[start..end])
+        };
+        let has_ast = self.asts.contains_key(uri);
+        self.client.log_message(
+            MessageType::INFO,
+            format!("completion pos={:?} offset={} has_ast={} snippet={} stdlib_classes={}",
+                pos, offset, has_ast, snippet, self.stdlib_registry.len()),
+        ).await;
+
+        // For completion, try parsing the text with the incomplete current line blanked out.
+        // This gives us a valid AST with parameter/variable types even when the file
+        // doesn't parse (e.g. the user has typed "ctx." which is an incomplete expression).
+        let fresh_ast = parse_for_completion(&text, offset);
+
+        // Build a per-request registry: global stdlib + any imports declared in the file.
+        // Imported modules are guaranteed to be available via the embedded stdlib.
+        let effective_registry = {
+            let mut reg = self.stdlib_registry.clone();
+            let modules = if let Some(ast) = fresh_ast.as_ref() {
+                module_names_from_imports(ast)
+            } else if let Some(ast) = self.asts.get(uri).as_deref() {
+                module_names_from_imports(ast)
+            } else {
+                vec![]
+            };
+            for module in &modules {
+                if !reg.contains_key(module.as_str()) {
+                    load_embedded_module(module, &mut reg);
+                }
+            }
+            reg
+        };
+
+        let items = match (fresh_ast.as_ref(), self.asts.get(uri)) {
+            (Some(ast), _) => completions_at(ast, &text, offset, &effective_registry),
+            (None, Some(ast)) => completions_at(&ast, &text, offset, &effective_registry),
+            (None, None) => completions_generic(),
+        };
+        self.client.log_message(
+            MessageType::INFO,
+            format!("completion: {} items (fresh_ast={})", items.len(), fresh_ast.is_some()),
+        ).await;
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     async fn goto_definition(
@@ -197,10 +378,47 @@ impl LanguageServer for Backend {
     }
 }
 
+/// Parse the text for completion by blanking out the line that contains the cursor.
+/// This handles the common case where the current line is an incomplete expression
+/// (e.g. "ctx.") that prevents the whole file from parsing.
+fn parse_for_completion(text: &str, offset: u32) -> Option<SourceFile> {
+    let offset = offset as usize;
+    let line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = text[offset..].find('\n').map(|i| offset + i).unwrap_or(text.len());
+    // Replace the current line with whitespace so the structure (braces) is preserved
+    let blank = " ".repeat(line_end - line_start);
+    let cleaned = format!("{}{}{}", &text[..line_start], blank, &text[line_end..]);
+    let tokens = Lexer::new(&cleaned).tokenize().ok()?;
+    Parser::new(tokens).parse().ok()
+}
+
+fn completions_generic() -> Vec<tower_lsp::lsp_types::CompletionItem> {
+    use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
+    const KW: &[&str] = &["fn", "let", "var", "return", "if", "else", "while", "for", "class", "import"];
+    KW.iter().map(|k| CompletionItem {
+        label: k.to_string(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        ..Default::default()
+    }).collect()
+}
+
 #[tokio::main]
 async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(|client| Backend::new(client));
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedded_stdlib_has_http_context() {
+        let reg = build_embedded_stdlib();
+        println!("embedded stdlib classes: {:?}", reg.keys().collect::<Vec<_>>());
+        assert!(reg.contains_key("HttpContext"), "HttpContext must be in embedded stdlib");
+        assert!(reg.contains_key("HttpResponse"), "HttpResponse must be in embedded stdlib");
+    }
 }

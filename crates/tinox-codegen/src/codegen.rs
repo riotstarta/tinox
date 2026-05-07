@@ -36,6 +36,34 @@ pub struct ConfigFieldInfo {
     pub field_llvm_type: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CliOptionInfo {
+    pub field_name: String,
+    pub names: Vec<String>,
+    pub description: String,
+    pub required: bool,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliArgumentInfo {
+    pub field_name: String,
+    pub index: usize,
+    pub description: String,
+    pub required: bool,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliCommandInfo {
+    pub class_name: String,
+    pub cmd_name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub options: Vec<CliOptionInfo>,
+    pub arguments: Vec<CliArgumentInfo>,
+}
+
 /// Route entry produced by REST annotation processing.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
@@ -100,6 +128,10 @@ pub struct CodeGen {
     log_classes: HashSet<String>,
     /// Fields annotated with @Config — injected from application.properties at construction
     config_fields: Vec<ConfigFieldInfo>,
+    /// CLI commands collected from @Command annotation processing
+    cli_commands: Vec<CliCommandInfo>,
+    /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
+    test_entry: Option<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Set of class names defined in user/imported code
@@ -142,6 +174,8 @@ impl CodeGen {
             di_components: Vec::new(),
             log_classes: HashSet::new(),
             config_fields: Vec::new(),
+            cli_commands: Vec::new(),
+            test_entry: None,
             has_main: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -159,6 +193,7 @@ impl CodeGen {
         di_components: Vec<DiComponentInfo>,
         log_classes: HashSet<String>,
         config_fields: Vec<ConfigFieldInfo>,
+        cli_commands: Vec<CliCommandInfo>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
@@ -166,6 +201,13 @@ impl CodeGen {
         self.di_components = di_components;
         self.log_classes = log_classes;
         self.config_fields = config_fields;
+        self.cli_commands = cli_commands;
+    }
+
+    /// Configure a single test to run: generates `tinox_main` that calls
+    /// `ClassName_methodName()` and exits 0 (pass) or 1 (fail via panic).
+    pub fn set_test_entry(&mut self, class_name: String, method_name: String) {
+        self.test_entry = Some((class_name, method_name));
     }
 
     /// Provide interface metadata from the type checker.
@@ -401,6 +443,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @httpServerSendRaw(i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerCloseConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerClose(i64)").unwrap();
+        // CLI helpers (@Command / @Option / @Argument)
+        writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cli_has_flag(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cli_get_int(i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_cli_get_positional(i32)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cli_print_option(i8*, i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -644,6 +692,12 @@ impl CodeGen {
 
         // Emit DI globals, getters, factories, and startup initializer
         self.emit_di_code();
+
+        // Emit CLI main (tinox_main) for @Command classes
+        self.emit_cli_code();
+
+        // Emit test-runner main if set_test_entry() was called
+        self.emit_test_code();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -1279,6 +1333,315 @@ impl CodeGen {
         writeln!(&mut self.ir, "  ret i64* %ptr").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
+    }
+
+    /// Emit `tinox_main` for classes annotated with `@Command`.
+    /// Generates: help function, --help/--version handling, arg parsing, and `run()` call.
+    fn emit_cli_code(&mut self) {
+        if self.cli_commands.is_empty() || self.has_main {
+            return;
+        }
+
+        let commands = self.cli_commands.clone();
+
+        // Only the first @Command class acts as the entry point.
+        let cmd = &commands[0];
+        let class = cmd.class_name.clone();
+
+        // ── String constants ────────────────────────────────────────────────
+        let mut str_defs = String::new();
+
+        let emit_str = |buf: &mut String, label: &str, text: &str| {
+            let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+            let len = text.len() + 1;
+            writeln!(buf,
+                "@{label} = private constant [{len} x i8] c\"{escaped}\\00\""
+            ).unwrap();
+        };
+
+        emit_str(&mut str_defs, "__cli_help_long",    "--help");
+        emit_str(&mut str_defs, "__cli_help_short",   "-h");
+        emit_str(&mut str_defs, "__cli_ver_long",     "--version");
+        emit_str(&mut str_defs, "__cli_empty",        "");
+        emit_str(&mut str_defs, "__cli_cmd_name",     &cmd.cmd_name);
+        emit_str(&mut str_defs, "__cli_cmd_desc",     &cmd.description);
+        emit_str(&mut str_defs, "__cli_cmd_ver",      cmd.version.as_deref().unwrap_or(""));
+
+        let mut help_lines: Vec<(String, String)> = Vec::new();
+
+        for (i, opt) in cmd.options.iter().enumerate() {
+            let long_name  = opt.names.iter().find(|n| n.starts_with("--")).cloned().unwrap_or_default();
+            let short_name = opt.names.iter().find(|n| n.starts_with('-') && !n.starts_with("--")).cloned().unwrap_or_default();
+            emit_str(&mut str_defs, &format!("__cli_opt{i}_long"),  &long_name);
+            emit_str(&mut str_defs, &format!("__cli_opt{i}_short"), &short_name);
+            emit_str(&mut str_defs, &format!("__cli_opt{i}_desc"),  &opt.description);
+            let display = if short_name.is_empty() { long_name.clone() }
+                          else { format!("{short_name}, {long_name}") };
+            help_lines.push((display, opt.description.clone()));
+        }
+        for (i, arg) in cmd.arguments.iter().enumerate() {
+            let placeholder = format!("<{}>", arg.field_name);
+            emit_str(&mut str_defs, &format!("__cli_arg{i}_desc"), &arg.description);
+            help_lines.push((placeholder, arg.description.clone()));
+        }
+        for (i, (names, desc)) in help_lines.iter().enumerate() {
+            emit_str(&mut str_defs, &format!("__cli_help_entry{i}_names"), names);
+            emit_str(&mut str_defs, &format!("__cli_help_entry{i}_desc"),  desc);
+        }
+        // --help / --version strings for help output
+        emit_str(&mut str_defs, "__cli_usage_prefix", "Usage: ");
+        emit_str(&mut str_defs, "__cli_usage_suffix", " [options]\n");
+        emit_str(&mut str_defs, "__cli_nl",           "\n");
+        emit_str(&mut str_defs, "__cli_ver_prefix",   "Version: ");
+        emit_str(&mut str_defs, "__cli_help_hdr",     "Options:");
+
+        self.ir.push_str(&str_defs);
+        writeln!(&mut self.ir).unwrap();
+
+        // ── Helper: getelementptr shorthand ─────────────────────────────────
+        let mut body = String::new();
+
+        // Helper macro (Rust closure) to get i8* from a named string constant
+        let gep = |b: &mut String, tmp: &str, label: &str, len: usize| {
+            writeln!(b,
+                "  {tmp} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0"
+            ).unwrap();
+        };
+
+        // ── __tinox_cli_help ─────────────────────────────────────────────────
+        writeln!(&mut body, "define void @__tinox_cli_help() {{").unwrap();
+
+        if !cmd.description.is_empty() {
+            let len = cmd.description.len() + 1;
+            gep(&mut body, "%desc_ptr", "__cli_cmd_desc", len);
+            writeln!(&mut body, "  call void @tinox_print_string(i8* %desc_ptr)").unwrap();
+            writeln!(&mut body, "  call void @tinox_print_newline()").unwrap();
+        }
+
+        let usage_prefix_len = "Usage: ".len() + 1;
+        let usage_suffix_len = " [options]\n".len() + 1;
+        let cmd_name_len = cmd.cmd_name.len() + 1;
+        gep(&mut body, "%usage_pfx", "__cli_usage_prefix", usage_prefix_len);
+        gep(&mut body, "%cmd_name_ptr", "__cli_cmd_name", cmd_name_len);
+        gep(&mut body, "%usage_sfx", "__cli_usage_suffix", usage_suffix_len);
+        writeln!(&mut body, "  call void @tinox_print_string(i8* %usage_pfx)").unwrap();
+        writeln!(&mut body, "  call void @tinox_print_string(i8* %cmd_name_ptr)").unwrap();
+        writeln!(&mut body, "  call void @tinox_print_string(i8* %usage_sfx)").unwrap();
+
+        if !help_lines.is_empty() {
+            let hdr_len = "Options:".len() + 1;
+            let nl_len = "\n".len() + 1;
+            gep(&mut body, "%hdr_ptr", "__cli_help_hdr", hdr_len);
+            gep(&mut body, "%nl_ptr", "__cli_nl", nl_len);
+            writeln!(&mut body, "  call void @tinox_print_string(i8* %hdr_ptr)").unwrap();
+            writeln!(&mut body, "  call void @tinox_print_newline()").unwrap();
+            for (i, (names, desc)) in help_lines.iter().enumerate() {
+                let nlen = names.len() + 1;
+                let dlen = desc.len() + 1;
+                gep(&mut body, &format!("%hn{i}"), &format!("__cli_help_entry{i}_names"), nlen);
+                gep(&mut body, &format!("%hd{i}"), &format!("__cli_help_entry{i}_desc"),  dlen);
+                writeln!(&mut body,
+                    "  call void @tinox_cli_print_option(i8* %hn{i}, i8* %hd{i})"
+                ).unwrap();
+            }
+        }
+
+        if let Some(ref ver) = cmd.version {
+            let vp_len = "Version: ".len() + 1;
+            let ver_len = ver.len() + 1;
+            gep(&mut body, "%vp_ptr", "__cli_ver_prefix", vp_len);
+            gep(&mut body, "%ver_ptr", "__cli_cmd_ver", ver_len);
+            writeln!(&mut body, "  call void @tinox_print_string(i8* %vp_ptr)").unwrap();
+            writeln!(&mut body, "  call void @tinox_print_string(i8* %ver_ptr)").unwrap();
+            writeln!(&mut body, "  call void @tinox_print_newline()").unwrap();
+        }
+
+        writeln!(&mut body, "  ret void").unwrap();
+        writeln!(&mut body, "}}").unwrap();
+        writeln!(&mut body).unwrap();
+
+        // ── tinox_main ───────────────────────────────────────────────────────
+        writeln!(&mut body, "define i64 @tinox_main() {{").unwrap();
+        writeln!(&mut body, "entry:").unwrap();
+
+        // Check --help / -h
+        gep(&mut body, "%help_long",  "__cli_help_long",  7);
+        gep(&mut body, "%help_short", "__cli_help_short", 3);
+        writeln!(&mut body,
+            "  %has_help = call i64 @tinox_cli_has_flag(i8* %help_long, i8* %help_short)"
+        ).unwrap();
+        writeln!(&mut body, "  %help_cond = icmp ne i64 %has_help, 0").unwrap();
+        writeln!(&mut body, "  br i1 %help_cond, label %show_help, label %check_version").unwrap();
+        writeln!(&mut body, "show_help:").unwrap();
+        writeln!(&mut body, "  call void @__tinox_cli_help()").unwrap();
+        writeln!(&mut body, "  ret i64 0").unwrap();
+
+        // Check --version
+        writeln!(&mut body, "check_version:").unwrap();
+        gep(&mut body, "%ver_long", "__cli_ver_long", 10);
+        gep(&mut body, "%empty_str", "__cli_empty", 1);
+        writeln!(&mut body,
+            "  %has_ver = call i64 @tinox_cli_has_flag(i8* %ver_long, i8* %empty_str)"
+        ).unwrap();
+        writeln!(&mut body, "  %ver_cond = icmp ne i64 %has_ver, 0").unwrap();
+        writeln!(&mut body, "  br i1 %ver_cond, label %show_version, label %parse_args").unwrap();
+        writeln!(&mut body, "show_version:").unwrap();
+        let ver_str = cmd.version.as_deref().unwrap_or("");
+        let ver_len = ver_str.len() + 1;
+        gep(&mut body, "%ver_val", "__cli_cmd_ver", ver_len);
+        writeln!(&mut body, "  call void @tinox_print_string(i8* %ver_val)").unwrap();
+        writeln!(&mut body, "  call void @tinox_print_newline()").unwrap();
+        writeln!(&mut body, "  ret i64 0").unwrap();
+
+        let layout = self.struct_layouts.get(&class).cloned().unwrap_or_default();
+
+        // Create command instance — allocate and zero-initialise (no new() needed)
+        writeln!(&mut body, "parse_args:").unwrap();
+        let n_fields = layout.len();
+        let byte_size = (n_fields * 8).max(8);
+        writeln!(&mut body, "  %cmd_raw = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
+        writeln!(&mut body, "  %cmd_obj = bitcast i8* %cmd_raw to i64*").unwrap();
+        for fi in 0..n_fields {
+            writeln!(&mut body, "  %zinit_{fi} = getelementptr i64, i64* %cmd_obj, i64 {fi}").unwrap();
+            writeln!(&mut body, "  store i64 0, i64* %zinit_{fi}").unwrap();
+        }
+
+        // Parse options
+        for (i, opt) in cmd.options.iter().enumerate() {
+            let long_name  = opt.names.iter().find(|n| n.starts_with("--")).cloned().unwrap_or_default();
+            let short_name = opt.names.iter().find(|n| n.starts_with('-') && !n.starts_with("--")).cloned().unwrap_or_default();
+            let long_len   = long_name.len() + 1;
+            let short_len  = short_name.len() + 1;
+            let field_idx  = layout.iter().position(|f| f == &opt.field_name).unwrap_or(usize::MAX);
+            if field_idx == usize::MAX { continue; }
+
+            gep(&mut body, &format!("%olong{i}"),  &format!("__cli_opt{i}_long"),  long_len);
+            gep(&mut body, &format!("%oshort{i}"), &format!("__cli_opt{i}_short"), short_len);
+
+            match opt.field_type.as_str() {
+                "Bool" => {
+                    writeln!(&mut body,
+                        "  %opt_flag{i} = call i64 @tinox_cli_has_flag(i8* %olong{i}, i8* %oshort{i})"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  %opt_fp{i} = getelementptr i64, i64* %cmd_obj, i64 {field_idx}"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  store i64 %opt_flag{i}, i64* %opt_fp{i}"
+                    ).unwrap();
+                }
+                "Int" => {
+                    writeln!(&mut body,
+                        "  %opt_int{i} = call i64 @tinox_cli_get_int(i8* %olong{i}, i8* %oshort{i}, i64 0)"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  %opt_fp{i} = getelementptr i64, i64* %cmd_obj, i64 {field_idx}"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  store i64 %opt_int{i}, i64* %opt_fp{i}"
+                    ).unwrap();
+                }
+                _ => {
+                    // String
+                    writeln!(&mut body,
+                        "  %opt_str{i} = call i8* @tinox_cli_get_string(i8* %olong{i}, i8* %oshort{i})"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  %opt_null{i} = icmp eq i8* %opt_str{i}, null"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  br i1 %opt_null{i}, label %skip_opt{i}, label %set_opt{i}"
+                    ).unwrap();
+                    writeln!(&mut body, "set_opt{i}:").unwrap();
+                    writeln!(&mut body,
+                        "  %opt_i64_{i} = ptrtoint i8* %opt_str{i} to i64"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  %opt_fp{i} = getelementptr i64, i64* %cmd_obj, i64 {field_idx}"
+                    ).unwrap();
+                    writeln!(&mut body,
+                        "  store i64 %opt_i64_{i}, i64* %opt_fp{i}"
+                    ).unwrap();
+                    writeln!(&mut body, "  br label %skip_opt{i}").unwrap();
+                    writeln!(&mut body, "skip_opt{i}:").unwrap();
+                }
+            }
+        }
+
+        // Parse positional arguments
+        for (i, arg) in cmd.arguments.iter().enumerate() {
+            let field_idx = layout.iter().position(|f| f == &arg.field_name).unwrap_or(usize::MAX);
+            if field_idx == usize::MAX { continue; }
+
+            writeln!(&mut body,
+                "  %pos_str{i} = call i8* @tinox_cli_get_positional(i32 {})", arg.index
+            ).unwrap();
+
+            match arg.field_type.as_str() {
+                "Int" => {
+                    writeln!(&mut body, "  %pos_null{i} = icmp eq i8* %pos_str{i}, null").unwrap();
+                    writeln!(&mut body, "  br i1 %pos_null{i}, label %skip_pos{i}, label %set_pos{i}").unwrap();
+                    writeln!(&mut body, "set_pos{i}:").unwrap();
+                    writeln!(&mut body, "  %pos_int{i} = call i64 @tinox_string_to_int(i8* %pos_str{i})").unwrap();
+                    writeln!(&mut body, "  %pos_fp{i} = getelementptr i64, i64* %cmd_obj, i64 {field_idx}").unwrap();
+                    writeln!(&mut body, "  store i64 %pos_int{i}, i64* %pos_fp{i}").unwrap();
+                    writeln!(&mut body, "  br label %skip_pos{i}").unwrap();
+                    writeln!(&mut body, "skip_pos{i}:").unwrap();
+                }
+                _ => {
+                    // String (or Bool treated as string — uncommon but safe)
+                    writeln!(&mut body, "  %pos_null{i} = icmp eq i8* %pos_str{i}, null").unwrap();
+                    writeln!(&mut body, "  br i1 %pos_null{i}, label %skip_pos{i}, label %set_pos{i}").unwrap();
+                    writeln!(&mut body, "set_pos{i}:").unwrap();
+                    writeln!(&mut body, "  %pos_i64_{i} = ptrtoint i8* %pos_str{i} to i64").unwrap();
+                    writeln!(&mut body, "  %pos_fp{i} = getelementptr i64, i64* %cmd_obj, i64 {field_idx}").unwrap();
+                    writeln!(&mut body, "  store i64 %pos_i64_{i}, i64* %pos_fp{i}").unwrap();
+                    writeln!(&mut body, "  br label %skip_pos{i}").unwrap();
+                    writeln!(&mut body, "skip_pos{i}:").unwrap();
+                }
+            }
+        }
+
+        // Call run()
+        writeln!(&mut body, "  %cli_ret = call i64 @{class}_run(i64* %cmd_obj)").unwrap();
+        writeln!(&mut body, "  ret i64 %cli_ret").unwrap();
+        writeln!(&mut body, "}}").unwrap();
+        writeln!(&mut body).unwrap();
+
+        self.lambda_ir.push_str(&body);
+        self.has_main = true;
+    }
+
+    /// Emit `tinox_main` for a single test method: allocate object, call method,
+    /// exit 0 on true/non-zero return, 1 on false/0.
+    fn emit_test_code(&mut self) {
+        let (class, method) = match self.test_entry.clone() {
+            Some(e) if !self.has_main => e,
+            _ => return,
+        };
+
+        let layout = self.struct_layouts.get(&class).cloned().unwrap_or_default();
+        let n_fields = layout.len();
+        let byte_size = (n_fields * 8).max(8);
+
+        let mut b = String::new();
+        writeln!(&mut b, "define i64 @tinox_main() {{").unwrap();
+        writeln!(&mut b, "  %raw = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
+        writeln!(&mut b, "  %obj = bitcast i8* %raw to i64*").unwrap();
+        for fi in 0..n_fields {
+            writeln!(&mut b, "  %zi{fi} = getelementptr i64, i64* %obj, i64 {fi}").unwrap();
+            writeln!(&mut b, "  store i64 0, i64* %zi{fi}").unwrap();
+        }
+        writeln!(&mut b, "  %result = call i64 @{class}_{method}(i64* %obj)").unwrap();
+        // result != 0 → pass (exit 0), result == 0 → fail (exit 1)
+        writeln!(&mut b, "  %pass = icmp ne i64 %result, 0").unwrap();
+        writeln!(&mut b, "  %code = select i1 %pass, i64 0, i64 1").unwrap();
+        writeln!(&mut b, "  ret i64 %code").unwrap();
+        writeln!(&mut b, "}}").unwrap();
+        writeln!(&mut b).unwrap();
+
+        self.lambda_ir.push_str(&b);
+        self.has_main = true;
     }
 
     /// Emit a vtable global for each class that implements at least one interface.

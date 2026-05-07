@@ -72,6 +72,43 @@ pub struct ConfigFieldInfo {
     pub field_llvm_type: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TestInfo {
+    pub class_name: String,
+    pub method_name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliOptionInfo {
+    pub field_name: String,
+    /// All flag names, e.g. `["--name", "-n"]`.
+    pub names: Vec<String>,
+    pub description: String,
+    pub required: bool,
+    /// "String" | "Bool" | "Int"
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliArgumentInfo {
+    pub field_name: String,
+    pub index: usize,
+    pub description: String,
+    pub required: bool,
+    pub field_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliCommandInfo {
+    pub class_name: String,
+    pub cmd_name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub options: Vec<CliOptionInfo>,
+    pub arguments: Vec<CliArgumentInfo>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
@@ -82,6 +119,8 @@ pub struct AnnotationProcessingResult {
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
     pub config_fields: Vec<ConfigFieldInfo>,
+    pub cli_commands: Vec<CliCommandInfo>,
+    pub test_entries: Vec<TestInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -272,6 +311,50 @@ impl AnnotationProcessor {
             },
         );
 
+        // Test framework annotations
+        registry.insert(
+            "Test".to_string(),
+            AnnotationInfo {
+                name: "Test".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 1,
+                description: "@Test[(\"description\")] — marks a method as a test case".to_string(),
+            },
+        );
+
+        // CLI framework annotations (@Command / @Option / @Argument)
+        registry.insert(
+            "Command".to_string(),
+            AnnotationInfo {
+                name: "Command".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 1,
+                max_args: 3,
+                description: "@Command(\"name\", \"description\"[, \"version\"]) — marks a class as a CLI command".to_string(),
+            },
+        );
+        registry.insert(
+            "Option".to_string(),
+            AnnotationInfo {
+                name: "Option".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 1,
+                max_args: 3,
+                description: "@Option(\"--long,-s\", \"description\"[, required]) — CLI option backed by a field".to_string(),
+            },
+        );
+        registry.insert(
+            "Argument".to_string(),
+            AnnotationInfo {
+                name: "Argument".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 1,
+                max_args: 3,
+                description: "@Argument(index, \"description\"[, required]) — positional CLI argument".to_string(),
+            },
+        );
+
         // Compiler annotations
         registry.insert(
             "inline".to_string(),
@@ -439,6 +522,67 @@ impl AnnotationProcessor {
                 "Log" => {
                     result.log_classes.insert(class.name.clone());
                 }
+                "Command" => {
+                    let cmd_name = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                        s.clone()
+                    } else {
+                        class.name.clone()
+                    };
+                    let description = if let Some(tinox_parser::Literal::String(s)) = ann.args.get(1) {
+                        s.clone()
+                    } else {
+                        String::new()
+                    };
+                    let version = if let Some(tinox_parser::Literal::String(s)) = ann.args.get(2) {
+                        Some(s.clone())
+                    } else {
+                        None
+                    };
+
+                    let mut options: Vec<CliOptionInfo> = Vec::new();
+                    let mut arguments: Vec<CliArgumentInfo> = Vec::new();
+                    for field in &class.fields {
+                        for fann in &field.annotations {
+                            match fann.name.as_str() {
+                                "Option" => {
+                                    let names_str = if let Some(tinox_parser::Literal::String(s)) = fann.args.first() { s.clone() } else { String::new() };
+                                    let names: Vec<String> = names_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    let desc = if let Some(tinox_parser::Literal::String(s)) = fann.args.get(1) { s.clone() } else { String::new() };
+                                    let required = if let Some(tinox_parser::Literal::Bool(b)) = fann.args.get(2) { *b } else { false };
+                                    options.push(CliOptionInfo {
+                                        field_name: field.name.clone(),
+                                        names,
+                                        description: desc,
+                                        required,
+                                        field_type: field_type_to_cli_str(&field.field_type),
+                                    });
+                                }
+                                "Argument" => {
+                                    let index = if let Some(tinox_parser::Literal::Integer(i)) = fann.args.first() { *i as usize } else { 0 };
+                                    let desc = if let Some(tinox_parser::Literal::String(s)) = fann.args.get(1) { s.clone() } else { String::new() };
+                                    let required = if let Some(tinox_parser::Literal::Bool(b)) = fann.args.get(2) { *b } else { false };
+                                    arguments.push(CliArgumentInfo {
+                                        field_name: field.name.clone(),
+                                        index,
+                                        description: desc,
+                                        required,
+                                        field_type: field_type_to_cli_str(&field.field_type),
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    result.cli_commands.push(CliCommandInfo {
+                        class_name: class.name.clone(),
+                        cmd_name,
+                        description,
+                        version,
+                        options,
+                        arguments,
+                    });
+                }
                 _ => {}
             }
         }
@@ -480,6 +624,18 @@ impl AnnotationProcessor {
                             format!("method '{}.{}' is deprecated", class.name, method.name)
                         };
                         result.deprecated_warnings.push(msg);
+                    }
+                    "Test" => {
+                        let description = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                            s.clone()
+                        } else {
+                            method.name.clone()
+                        };
+                        result.test_entries.push(TestInfo {
+                            class_name: class.name.clone(),
+                            method_name: method.name.clone(),
+                            description,
+                        });
                     }
                     _ => {}
                 }
@@ -615,6 +771,14 @@ pub fn process_annotations(
 ) -> AnnotationProcessingResult {
     let processor = AnnotationProcessor::new();
     processor.process_source(source)
+}
+
+fn field_type_to_cli_str(ty: &Type) -> String {
+    match ty {
+        Type::Bool => "Bool".to_string(),
+        Type::String => "String".to_string(),
+        _ => "Int".to_string(),
+    }
 }
 
 fn field_type_to_llvm(ty: &Type) -> String {
