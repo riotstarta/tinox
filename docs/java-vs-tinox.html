@@ -212,6 +212,7 @@
   <a href="#memory">Memory & Performance</a>
   <a href="#stdlib">Standardbibliothek</a>
   <a href="#tooling">Tooling</a>
+  <a href="#packages">Paket-Manager</a>
   <a href="#web">Web & REST</a>
   <a href="#errorhandling">Fehlerbehandlung</a>
   <a href="#verdict">Fazit</a>
@@ -301,7 +302,7 @@
 
       <div>Paket-Manager</div>
       <div>Maven / Gradle</div>
-      <div>(noch in Entwicklung)</div>
+      <div>tinox install / add / package (YAML, URL-basiert)</div>
 
       <div>Ökosystem</div>
       <div>Riesig (30 Jahre Bibliotheken)</div>
@@ -957,7 +958,7 @@ fn main() -> Int64
           <li>30 Jahre kleiner als das Java-Ökosystem (Maven Central)</li>
           <li>Keine Datenbank-Treiber (JDBC-Äquivalent fehlt)</li>
           <li>Kein Spring/Quarkus/Micronaut-Ökosystem</li>
-          <li>Kein Paket-Manager für Third-Party-Libraries</li>
+          <li>Kein zentrales Repository für Third-Party-Libraries (URL-basiert)</li>
         </ul>
       </div>
     </div>
@@ -1005,6 +1006,11 @@ tinox check program.tnx
 tinox fmt program.tnx
 tinox fmt --write program.tnx
 
+# Paket-Manager
+tinox install                # Deps aus tinox.yaml laden
+tinox add io.ex mylib 1.0 https://... # Dep hinzufügen
+tinox package                # -> myproject-1.0.0.tar.gz
+
 # LSP
 tinox-lsp  (Eclipse Plugin vorhanden)
 
@@ -1017,8 +1023,9 @@ tinox-lsp  (Eclipse Plugin vorhanden)
       <div class="procon-box pros">
         <h4>Tinox Tooling — Vorteile</h4>
         <ul>
-          <li>Alles in einem CLI (build, run, check, fmt)</li>
+          <li>Alles in einem CLI (build, run, check, fmt, install, package)</li>
           <li>Kein Build-Tool-Konfigurationschaos (Maven XML, Gradle DSL)</li>
+          <li>Paket-Manager integriert: YAML-Manifest, URL-basierte Deps, kein zentrales Repo nötig</li>
           <li>Native Binary = kein JRE-Deployment nötig</li>
           <li>LSP + Eclipse-Plugin vorhanden</li>
           <li>Formatter ist Bestandteil der Sprache</li>
@@ -1027,11 +1034,135 @@ tinox-lsp  (Eclipse Plugin vorhanden)
       <div class="procon-box cons">
         <h4>Tinox Tooling — Nachteile</h4>
         <ul>
-          <li>Kein Paket-Manager / Dependency-Management</li>
-          <li>Kein Test-Framework in Stdlib</li>
+          <li>Kein zentrales Package-Repository (URLs müssen bekannt sein)</li>
           <li>Kein Debugger (GDB-Integration fehlt)</li>
           <li>Kein IntelliJ/VS Code Plugin (nur Eclipse)</li>
           <li>Kein REPL (geplant, noch nicht implementiert)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ PACKAGES -->
+  <section id="packages">
+    <h2><span class="icon">📦</span> Paket-Manager</h2>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Abhängigkeit deklarieren</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (Maven pom.xml)</h3>
+        <pre><code>&lt;project&gt;
+  &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+  &lt;groupId&gt;io.example&lt;/groupId&gt;
+  &lt;artifactId&gt;myapp&lt;/artifactId&gt;
+  &lt;version&gt;1.0.0&lt;/version&gt;
+
+  &lt;dependencies&gt;
+    &lt;dependency&gt;
+      &lt;groupId&gt;com.google.code.gson&lt;/groupId&gt;
+      &lt;artifactId&gt;gson&lt;/artifactId&gt;
+      &lt;version&gt;2.10.1&lt;/version&gt;
+    &lt;/dependency&gt;
+  &lt;/dependencies&gt;
+&lt;/project&gt;
+
+# Installieren
+mvn install</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox (tinox.yaml)</h3>
+        <pre><code>package:
+  name: myapp
+  version: "1.0.0"
+  description: ""
+
+dependencies:
+  - group: io.example
+    artifactId: mylib
+    version: "2.1.0"
+    url: https://example.com/mylib-2.1.0.tar.gz
+
+# Installieren
+tinox install</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Abhängigkeit hinzufügen & paketieren</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (Maven)</h3>
+        <pre><code># Dep via CLI hinzufügen (Maven Wrapper)
+mvn dependency:get \
+  -Dartifact=com.example:mylib:1.0.0
+
+# Projekt als JAR paketieren
+mvn package
+# -> target/myapp-1.0.0.jar
+
+# Deployment zu Maven Central
+mvn deploy  # (GPG-Key + Sonatype-Account nötig)</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code># Dep direkt per CLI hinzufügen + sofort installieren
+tinox add io.example mylib 1.0.0 \
+  https://example.com/mylib-1.0.0.tar.gz
+
+# Projekt als tar.gz paketieren (aus src/)
+tinox package
+# -> myapp-1.0.0.tar.gz
+
+# Dep im Code verwenden (automatisch aufgelöst)
+import mylib.MyClass</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Dep-Speicherort & Struktur</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (Maven)</h3>
+        <pre><code># Zentrales lokales Repository
+~/.m2/repository/
+  com/example/mylib/1.0.0/
+    mylib-1.0.0.jar
+    mylib-1.0.0.pom
+
+# Zentrales Remote-Repository
+https://repo.maven.apache.org/maven2/</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code># Projekt-lokaler Cache (in .gitignore)
+.tinox/deps/
+  io.example/mylib/1.0.0/
+    src/MyClass.tnx
+    src/Utils.tnx
+
+# Kein zentrales Repository — URL direkt in tinox.yaml
+# Import-Resolver findet Deps automatisch</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Paket-Manager — Vorteile</h4>
+        <ul>
+          <li>YAML statt XML — deutlich lesbarer und kompakter</li>
+          <li>Kein zentrales Repository nötig (URL-basiert, self-hosted möglich)</li>
+          <li>Alles im selben CLI (kein separates Tool wie mvn/gradle)</li>
+          <li>tinox package erzeugt direkt ein verteilbares tar.gz</li>
+          <li>Deps landen projekt-lokal (.tinox/deps/) — kein globaler Cache-Konflikt</li>
+          <li>Import-Resolver erkennt installierte Deps automatisch</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Paket-Manager — Nachteile</h4>
+        <ul>
+          <li>Kein zentrales Repository wie Maven Central / npm</li>
+          <li>URLs müssen manuell bekannt sein (kein tinox search)</li>
+          <li>Kein Dependency-Version-Resolution (keine Konflikterkennung)</li>
+          <li>Keine transitive Dependency-Auflösung</li>
+          <li>Keine Checksums / Signaturverifikation (noch)</li>
         </ul>
       </div>
     </div>
@@ -1245,14 +1376,14 @@ fn readFile(path: String) -> String
         </div>
         <div class="verdict-item tinox-win">
           <div class="lang">Tinox gewinnt bei…</div>
-          <p>Startup-Zeit, nativer Performance, Syntax-Klarheit (let/var, String-Interpolation, Ranges), integrierten REST-Annotationen ohne Framework-Dependency, und dem einheitlichen CLI (build/run/check/fmt).</p>
+          <p>Startup-Zeit, nativer Performance, Syntax-Klarheit (let/var, String-Interpolation, Ranges), integrierten REST-Annotationen ohne Framework-Dependency, dem einheitlichen CLI (build/run/check/fmt/install/package) und dem schlanken YAML-basierten Paket-Manager ohne zentrales Repository.</p>
         </div>
       </div>
     </div>
 
     <p style="margin-top:1.5rem;color:var(--muted);font-size:.85rem;text-align:center;">
-      Tinox ist eine moderne Sprache in aktiver Entwicklung — viele der aktuellen Lücken
-      (Paket-Manager, Debugger, REPL) sind geplant und werden in zukünftigen Versionen geschlossen.
+      Tinox ist eine moderne Sprache in aktiver Entwicklung — der Paket-Manager (tinox install/add/package)
+      ist verfügbar, weitere Lücken (Debugger, REPL, zentrales Repository) werden in zukünftigen Versionen geschlossen.
     </p>
   </section>
 
