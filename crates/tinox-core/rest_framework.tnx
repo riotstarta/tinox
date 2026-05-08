@@ -32,7 +32,7 @@
  *       fn createUser(ctx: HttpContext) -> Nothing
  *       {
  *           let req: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
- *           ctx.response.status(201).json(Json::serialize(req));
+ *           ctx.response.status(201).json(req);
  *       }
  *   }
  *

@@ -581,6 +581,23 @@ namespace tinox.core.http_server
         }
 
         /**
+         * Serializes a @JsonSerializable object and sets it as the JSON response body.
+         *
+         * Usage:
+         *   ctx.response.json(user);
+         *   ctx.response.json(userList);
+         *
+         * @param obj any object annotated with @JsonSerializable
+         * @return this response for chaining
+         */
+        fn json<T>(obj: T) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = Json::serialize(obj);
+            return this;
+        }
+
+        /**
          * Sets the response body as HTML with Content-Type: text/html
          *
          * @param html the HTML string
