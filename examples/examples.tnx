@@ -114,8 +114,8 @@ fn example_control_flow(x: Int32) -> Int32
 // ============================================================
 class Point
 {
-    x: Float64;
-    y: Float64;
+    var x: Float64;
+    var y: Float64;
 
     fn new(x: Float64, y: Float64) -> Point
     {

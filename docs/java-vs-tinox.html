@@ -678,8 +678,13 @@ public class Point implements Printable {
 
 class Point implements Printable
 {
-    x: Int64;
-    y: Int64;
+    var x: Int64;
+    var y: Int64;
+
+    fnc new(x: Int64, y: Int64) -> Point
+    {
+        return Point { x: x, y: y };
+    }
 
     fn toString() -> String
     {
@@ -738,8 +743,8 @@ class Point implements Printable {
         <h3>Tinox</h3>
         <pre><code>class Point
 {
-    x: Int64;
-    y: Int64;
+    var x: Int64;
+    var y: Int64;
 
     // fnc = statisch
     fnc new(x: Int64, y: Int64) -> Point
