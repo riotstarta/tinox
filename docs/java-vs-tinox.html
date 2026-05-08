@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Java vs. Tinox — Detaillierter Sprachvergleich</title>
+  <style>
+    :root {
+      --java:   #e86100;
+      --tinox:  #3b82f6;
+      --bg:     #0f1117;
+      --surface:#1a1d27;
+      --border: #2a2d3a;
+      --text:   #e2e8f0;
+      --muted:  #94a3b8;
+      --green:  #22c55e;
+      --red:    #ef4444;
+      --yellow: #eab308;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      line-height: 1.6;
+    }
+
+    /* ── Hero ── */
+    header {
+      background: linear-gradient(135deg, #1a1d27 0%, #0f1117 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 3rem 2rem 2rem;
+      text-align: center;
+    }
+    header h1 { font-size: 2.4rem; letter-spacing: -.5px; }
+    header h1 span.java  { color: var(--java); }
+    header h1 span.tinox { color: var(--tinox); }
+    header p  { color: var(--muted); margin-top: .5rem; font-size: 1rem; }
+
+    /* ── Nav tabs ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: .25rem;
+      padding: .5rem 1rem;
+      overflow-x: auto;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .85rem;
+      padding: .35rem .75rem;
+      border-radius: 6px;
+      white-space: nowrap;
+      transition: background .15s, color .15s;
+    }
+    nav a:hover { background: var(--border); color: var(--text); }
+
+    /* ── Layout ── */
+    main { max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+    section { margin-bottom: 3.5rem; scroll-margin-top: 3.5rem; }
+    section h2 {
+      font-size: 1.4rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: .5rem;
+      border-bottom: 2px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    section h2 .icon { font-size: 1.2rem; }
+
+    /* ── Overview table ── */
+    .overview-grid {
+      display: grid;
+      grid-template-columns: 220px 1fr 1fr;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .overview-grid > div {
+      padding: .65rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: .9rem;
+    }
+    .overview-grid > div:nth-child(3n+1) { background: #1e2130; color: var(--muted); font-weight: 600; }
+    .overview-grid .header {
+      font-weight: 700;
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      padding: .75rem 1rem;
+    }
+    .overview-grid .hj { background: #2a1800; color: var(--java); }
+    .overview-grid .ht { background: #0f1e35; color: var(--tinox); }
+    .badge {
+      display: inline-block;
+      padding: .15rem .5rem;
+      border-radius: 4px;
+      font-size: .75rem;
+      font-weight: 700;
+    }
+    .badge.yes   { background: #14532d; color: var(--green); }
+    .badge.no    { background: #450a0a; color: var(--red); }
+    .badge.part  { background: #422006; color: var(--yellow); }
+
+    /* ── Code compare ── */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .compare-col h3 {
+      font-size: .85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: .5rem;
+      padding: .4rem .75rem;
+      border-radius: 6px 6px 0 0;
+    }
+    .compare-col.java h3  { background: #2a1800; color: var(--java); }
+    .compare-col.tinox h3 { background: #0f1e35; color: var(--tinox); }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      padding: 1rem;
+      font-size: .82rem;
+      overflow-x: auto;
+      line-height: 1.55;
+    }
+    code { font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace; }
+
+    /* ── Pros / Cons ── */
+    .procon {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .procon-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .procon-box h4 {
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      padding: .5rem 1rem;
+    }
+    .procon-box.pros h4 { background: #14532d44; color: var(--green); }
+    .procon-box.cons h4 { background: #450a0a44; color: var(--red); }
+    .procon-box ul { list-style: none; padding: .75rem 1rem; }
+    .procon-box ul li { font-size: .88rem; padding: .25rem 0; color: var(--muted); }
+    .procon-box ul li::before { margin-right: .45rem; }
+    .procon-box.pros ul li::before { content: '+'; color: var(--green); font-weight: 700; }
+    .procon-box.cons ul li::before { content: '−'; color: var(--red); font-weight: 700; }
+
+    /* ── Verdict ── */
+    .verdict {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin-top: 2rem;
+    }
+    .verdict h3 { margin-bottom: 1rem; color: var(--muted); font-size: .9rem; text-transform: uppercase; }
+    .verdict-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .verdict-item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .verdict-item .lang { font-size: .75rem; font-weight: 700; text-transform: uppercase; margin-bottom: .35rem; }
+    .verdict-item.java-win .lang  { color: var(--java); }
+    .verdict-item.tinox-win .lang { color: var(--tinox); }
+    .verdict-item p { font-size: .87rem; color: var(--muted); }
+
+    @media (max-width: 640px) {
+      .compare, .procon, .verdict-grid { grid-template-columns: 1fr; }
+      .overview-grid { grid-template-columns: 1fr 1fr; }
+      .overview-grid > div:nth-child(3n+1) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span class="java">Java</span> vs. <span class="tinox">Tinox</span></h1>
+  <p>Detaillierter Sprachvergleich · Syntax, Performance, Ökosystem, Ergonomie</p>
+</header>
+
+<nav>
+  <a href="#overview">Übersicht</a>
+  <a href="#syntax">Syntax</a>
+  <a href="#types">Typen & Generics</a>
+  <a href="#oop">OOP & Vererbung</a>
+  <a href="#functional">Funktional</a>
+  <a href="#concurrency">Concurrency</a>
+  <a href="#memory">Memory & Performance</a>
+  <a href="#stdlib">Standardbibliothek</a>
+  <a href="#tooling">Tooling</a>
+  <a href="#web">Web & REST</a>
+  <a href="#errorhandling">Fehlerbehandlung</a>
+  <a href="#verdict">Fazit</a>
+</nav>
+
+<main>
+
+  <!-- ══════════════════════════════════════════════════════ OVERVIEW -->
+  <section id="overview">
+    <h2><span class="icon">⚖️</span> Schnellvergleich</h2>
+    <div class="overview-grid">
+      <div class="header">Merkmal</div>
+      <div class="header hj">Java</div>
+      <div class="header ht">Tinox</div>
+
+      <div>Erstveröffentlichung</div>
+      <div>1995 (Sun Microsystems)</div>
+      <div>2025 (Tino, Open Source)</div>
+
+      <div>Paradigma</div>
+      <div>OOP, funktional (seit Java 8)</div>
+      <div>OOP, funktional, systemah</div>
+
+      <div>Typsystem</div>
+      <div>Statisch, nominell</div>
+      <div>Statisch, nominell, Inferenz</div>
+
+      <div>Ausführung</div>
+      <div>JVM (Bytecode → JIT)</div>
+      <div>Nativ (LLVM IR → Maschinencode)</div>
+
+      <div>GC</div>
+      <div><span class="badge yes">JA</span> (G1, ZGC, Shenandoah…)</div>
+      <div><span class="badge yes">JA</span> (eigene Tinox Runtime)</div>
+
+      <div>Immutability per default</div>
+      <div><span class="badge no">NEIN</span> (final explizit)</div>
+      <div><span class="badge yes">JA</span> (let/var)</div>
+
+      <div>Typ-Inferenz</div>
+      <div><span class="badge part">TEIL</span> (var seit Java 10)</div>
+      <div><span class="badge yes">JA</span> (vollständig)</div>
+
+      <div>String-Interpolation</div>
+      <div><span class="badge part">TEIL</span> (Text Blocks, kein ${expr})</div>
+      <div><span class="badge yes">JA</span> ("Hi ${name}!")</div>
+
+      <div>Generics</div>
+      <div><span class="badge yes">JA</span> (Type Erasure)</div>
+      <div><span class="badge yes">JA</span> (Monomorphisierung)</div>
+
+      <div>Lambdas</div>
+      <div><span class="badge yes">JA</span> (seit Java 8)</div>
+      <div><span class="badge yes">JA</span> (n =&gt; n * 2)</div>
+
+      <div>Pattern Matching</div>
+      <div><span class="badge part">TEIL</span> (switch expr., Sealed Classes)</div>
+      <div><span class="badge yes">JA</span> (match statement)</div>
+
+      <div>Async / Concurrency</div>
+      <div><span class="badge yes">JA</span> (CompletableFuture, Threads, Virtual Threads)</div>
+      <div><span class="badge yes">JA</span> (async/await, spawn, channels)</div>
+
+      <div>Defer</div>
+      <div><span class="badge no">NEIN</span> (try-with-resources)</div>
+      <div><span class="badge yes">JA</span> (defer {})</div>
+
+      <div>Annotations</div>
+      <div><span class="badge yes">JA</span> (Laufzeit + Compiler)</div>
+      <div><span class="badge yes">JA</span> (@inline, @deprecated, REST…)</div>
+
+      <div>LSP</div>
+      <div><span class="badge yes">JA</span> (Eclipse JDT, IntelliJ)</div>
+      <div><span class="badge yes">JA</span> (tinox-lsp)</div>
+
+      <div>Formatter</div>
+      <div><span class="badge yes">JA</span> (google-java-format etc.)</div>
+      <div><span class="badge yes">JA</span> (tinox fmt, Allman-Style)</div>
+
+      <div>Null Safety</div>
+      <div><span class="badge no">NEIN</span> (NullPointerException)</div>
+      <div><span class="badge part">TEIL</span> (Option&lt;T&gt; in Stdlib)</div>
+
+      <div>Startup-Zeit</div>
+      <div>Langsam (JVM-Start)</div>
+      <div>Instant (native Binary)</div>
+
+      <div>Paket-Manager</div>
+      <div>Maven / Gradle</div>
+      <div>(noch in Entwicklung)</div>
+
+      <div>Ökosystem</div>
+      <div>Riesig (30 Jahre Bibliotheken)</div>
+      <div>Wächst (50+ Stdlib-Module)</div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ SYNTAX -->
+  <section id="syntax">
+    <h2><span class="icon">📝</span> Syntax & Grundkonstrukte</h2>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Hello World</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>public class HelloWorld {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>fn main() -> Int64
+{
+    println("Hello, World!");
+    return 0;
+}</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Variablen & Inferenz</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>final int x = 42;           // immutable
+int y = 10;                  // mutable
+var name = "Alice";          // Inferenz (Java 10+)
+String msg = "Hi " + name + "!"; // kein Interpolation</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>let x: Int64 = 42;           // immutable
+var y: Int64 = 10;           // mutable
+let name = "Alice";          // Inferenz überall
+let msg = "Hi ${name}!";     // String-Interpolation</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Schleifen & Ranges</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>for (int i = 0; i &lt; 5; i++) {
+    System.out.println(i);
+}
+// for-each
+for (String s : list) {
+    System.out.println(s);
+}
+// IntStream-Range
+IntStream.rangeClosed(0, 5)
+         .forEach(System.out::println);</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>for i in 0..5        // exklusiv: 0,1,2,3,4
+{
+    println(i);
+}
+
+for i in 0...5       // inklusiv: 0,1,2,3,4,5
+{
+    println(i);
+}
+
+for ch in "hello"    // Zeichen-Iteration
+{
+    print(ch);
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox — Syntax-Vorteile</h4>
+        <ul>
+          <li>Deutlich weniger Boilerplate (kein public class Wrapper)</li>
+          <li>let/var macht Mutability sofort sichtbar</li>
+          <li>String-Interpolation direkt in der Sprache</li>
+          <li>Ranges (0..5, 0...5) statt Iterator-APIs</li>
+          <li>Allman-Style Formatter erzwingt einheitlichen Stil</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox — Syntax-Nachteile</h4>
+        <ul>
+          <li>Jüngere Sprache, weniger bekannte Konventionen</li>
+          <li>Allman-Style kann polarisieren</li>
+          <li>Kein REPL (noch in Planung)</li>
+          <li>Kleinere Community, weniger Tutorials</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ TYPES -->
+  <section id="types">
+    <h2><span class="icon">🧬</span> Typen & Generics</h2>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Generics</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// Type Erasure: T wird zur Laufzeit zu Object
+public class Box&lt;T&gt; {
+    private T value;
+
+    public Box(T value) { this.value = value; }
+    public T get() { return value; }
+}
+
+Box&lt;Integer&gt; b = new Box&lt;&gt;(42);
+// Wildcards: Box&lt;? extends Number&gt;
+// Kein Box&lt;int&gt;, nur Box&lt;Integer&gt;</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>// Monomorphisierung: echter Typ bleibt erhalten
+class Box&lt;T&gt;
+{
+    value: T;
+
+    fn get() -> T
+    {
+        return this.value;
+    }
+}
+
+let b = new Box&lt;Int64&gt;(42);
+// Primitive direkt verwendbar (kein Boxing)</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Collections</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>List&lt;String&gt; list = new ArrayList&lt;&gt;();
+list.add("hello");
+list.size();
+list.get(0);
+
+Map&lt;String, Integer&gt; map = new HashMap&lt;&gt;();
+map.put("a", 1);
+map.get("a");
+map.containsKey("a");</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>let arr = ["hello"];
+arr.push("world");
+arr.len();
+arr[0];
+
+let m = @{"a" => 1};
+m.insert("b", 2);
+m.get("a");
+m.contains("a");
+// oder typisiert:
+let m: Map&lt;String, Int64&gt; = Map::new();</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Generics — Vorteile</h4>
+        <ul>
+          <li>Monomorphisierung: kein Overhead durch Type Erasure</li>
+          <li>Primitive direkt als Typparameter (kein Integer vs. int)</li>
+          <li>Map-Literal-Syntax (@{"k" =&gt; v}) kompakter</li>
+          <li>Array-Builtins (first, last, join) ohne Import</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Generics — Nachteile</h4>
+        <ul>
+          <li>Monomorphisierung kann Binärgröße erhöhen</li>
+          <li>Wildcards (? extends T) nicht vorhanden</li>
+          <li>Bounded Type Parameters noch eingeschränkt</li>
+          <li>Kein Reflection-Zugriff auf Typinformation</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ OOP -->
+  <section id="oop">
+    <h2><span class="icon">🏗️</span> OOP, Klassen & Vererbung</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>public abstract class Animal {
+    protected String name;
+
+    public Animal(String name) {
+        this.name = name;
+    }
+
+    public abstract String speak();
+}
+
+public class Dog extends Animal {
+    public Dog(String name) { super(name); }
+
+    @Override
+    public String speak() {
+        return "Woof! I am " + name;
+    }
+}
+
+Animal a = new Dog("Rex");
+System.out.println(a.speak());</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>class Animal
+{
+    name: String;
+
+    fn speak() -> String
+    {
+        return "...";
+    }
+}
+
+class Dog extends Animal
+{
+    fn speak() -> String
+    {
+        return "Woof! I am ${this.name}";
+    }
+}
+
+let a: Animal = new Dog();
+a.name = "Rex";
+println(a.speak());</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Interfaces</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>public interface Printable {
+    String toString();
+    // Default-Methoden möglich:
+    default void print() {
+        System.out.println(toString());
+    }
+}
+
+public class Point implements Printable {
+    int x, y;
+    public Point(int x, int y) { this.x=x; this.y=y; }
+
+    @Override
+    public String toString() {
+        return "(" + x + ", " + y + ")";
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>interface Printable
+{
+    fn toString() -> String;
+}
+
+class Point implements Printable
+{
+    x: Int64;
+    y: Int64;
+
+    fn toString() -> String
+    {
+        return "(${this.x}, ${this.y})";
+    }
+}
+
+// vtable-basierter Dispatch</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Statische Methoden & Konstruktoren</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>public class Point {
+    public final int x, y;
+
+    // Konstruktor
+    public Point(int x, int y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    // Statische Factory-Methode
+    public static Point origin() {
+        return new Point(0, 0);
+    }
+
+    // Statische Methode
+    public static int add(int a, int b) {
+        return a + b;
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>class Point
+{
+    x: Int64;
+    y: Int64;
+
+    // fnc = statisch
+    fnc new(x: Int64, y: Int64) -> Point
+    {
+        return Point { x: x, y: y };
+    }
+
+    fnc origin() -> Point
+    {
+        return Point::new(0, 0);
+    }
+
+    fnc add(a: Int64, b: Int64) -> Int64
+    {
+        return a + b;
+    }
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Java OOP — Vorteile</h4>
+        <ul>
+          <li>Ausgereifte Vererbungshierarchie (abstract, sealed)</li>
+          <li>Default-Methoden in Interfaces</li>
+          <li>Reflection für Frameworks (Spring, Hibernate…)</li>
+          <li>Records (seit Java 16) für kompakte Datenklassen</li>
+          <li>30 Jahre erprobte OOP-Patterns</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Java OOP — Nachteile</h4>
+        <ul>
+          <li>Viel Boilerplate (getter/setter, Konstruktoren)</li>
+          <li>public/private/protected schwer zu überblicken</li>
+          <li>Kein fn vs. fnc — Unterschied statisch/instanz weniger klar</li>
+          <li>String-Konkatenation umständlich</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ FUNCTIONAL -->
+  <section id="functional">
+    <h2><span class="icon">λ</span> Funktionales Programmieren</h2>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Lambdas & Funktionstypen</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// Funktionstypen via java.util.function.*
+Function&lt;Integer, Integer&gt; doubled = n -> n * 2;
+
+// Methoden-Referenz
+Function&lt;String, Integer&gt; len = String::length;
+
+// Higher-Order-Funktion
+static int apply(int x, Function&lt;Integer, Integer&gt; f) {
+    return f.apply(x);
+}
+apply(21, n -> n * 2); // 42
+
+// Stream-API
+List.of(1,2,3).stream()
+    .map(n -> n * 2)
+    .filter(n -> n > 2)
+    .collect(Collectors.toList());</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>// Funktionstyp als Parametertyp
+fn apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
+{
+    return f(x);
+}
+
+// Lambda-Ausdruck
+let doubled = apply(21, n => n * 2); // 42
+
+// Lambda als Wert
+let square: fnc(Int64) -> Int64 = fn(x: Int64) -> Int64
+{
+    return x * x;
+};
+
+// Kurzform
+let add = (a, b) => a + b;</code></pre>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">Pattern Matching</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// Java 21: Pattern Matching mit switch
+Object obj = ...;
+String result = switch (obj) {
+    case Integer i -> "int: " + i;
+    case String s  -> "str: " + s;
+    default        -> "other";
+};
+
+// Enum switch (ohne Exhaustiveness-Garantie)
+Direction d = Direction.NORTH;
+switch (d) {
+    case NORTH -> System.out.println("N");
+    case SOUTH -> System.out.println("S");
+    // default nötig oder Warning
+}</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>enum Direction
+{
+    North; South; East; West;
+}
+
+fnc turn(d: Direction) -> Direction
+{
+    match d
+    {
+        North => return East;
+        East  => return South;
+        South => return West;
+        West  => return North;
+    }
+}
+
+// Exhaustiveness wird geprüft</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Funktional — Vorteile</h4>
+        <ul>
+          <li>Funktionstypen direkt in der Sprache (kein java.util.function Import)</li>
+          <li>Kompakte Lambda-Syntax (n =&gt; n * 2)</li>
+          <li>match ist ein vollständiges Statement</li>
+          <li>Exhaustiveness-Check bei Enums</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Funktional — Nachteile</h4>
+        <ul>
+          <li>Keine Stream-API (filter/map/reduce Pipelines)</li>
+          <li>Closures noch eingeschränkt (kein volles Capture)</li>
+          <li>Kein funktionales Typsystem (Haskell-Niveau)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ CONCURRENCY -->
+  <section id="concurrency">
+    <h2><span class="icon">⚡</span> Concurrency & Async</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// Klassischer Thread
+Thread t = new Thread(() -> {
+    System.out.println("Worker");
+});
+t.start();
+t.join();
+
+// CompletableFuture (Java 8+)
+CompletableFuture&lt;Integer&gt; future =
+    CompletableFuture.supplyAsync(() -> fetchData(21))
+                     .thenApply(n -> n * 2);
+int result = future.get(); // 42
+
+// Virtual Threads (Java 21)
+try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
+    exec.submit(() -> process());
+}
+
+// Channel: kein natives Konzept (BlockingQueue)
+BlockingQueue&lt;Integer&gt; ch = new LinkedBlockingQueue&lt;&gt;();
+ch.put(99);
+int v = ch.take();</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>async fn fetchData(id: Int64) -> Int64
+{
+    return id * 2;
+}
+
+fn main() -> Int64
+{
+    // Spawn + Await
+    let handle = spawn fetchData(21);
+    let result = await handle; // 42
+    println(result);
+
+    // Channels (Go-inspiriert)
+    let ch = channel;
+    send ch -> 99;
+    let v = recv ch;
+    println(v);
+
+    return 0;
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Concurrency — Vorteile</h4>
+        <ul>
+          <li>async/await direkt in der Sprache (kein Framework nötig)</li>
+          <li>Channels als First-Class-Konzept (Go-ähnlich)</li>
+          <li>spawn ist intuitiver als CompletableFuture-Ketten</li>
+          <li>Kein Import aus java.util.concurrent</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Concurrency — Nachteile</h4>
+        <ul>
+          <li>Kein ausgereiftes Thread-Pool-API wie Java Executors</li>
+          <li>Structured Concurrency (Java 21) fehlt noch</li>
+          <li>Weniger kampferprobt auf High-Concurrency-Workloads</li>
+          <li>Kein reaktives Ökosystem (RxJava, Project Reactor)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ MEMORY -->
+  <section id="memory">
+    <h2><span class="icon">🚀</span> Memory Management & Performance</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// JVM-basiert: alles auf dem Heap
+// GC-Pausen je nach Collector (G1, ZGC, Shenandoah)
+// Warmup-Zeit (JIT-Kompilierung)
+
+// Startup: ~100–500ms (JVM-Start)
+// Peak-Performance: sehr hoch (JIT-optimiert)
+// Memory-Overhead: JVM-Heap + MetaSpace
+// Native Image möglich (GraalVM)</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>// LLVM-Backend: AOT-kompiliert zu Maschinencode
+// GC: eigene Tinox Runtime (C, pthread-basiert)
+// Kein JVM-Warmup
+
+// Startup: instant (native Binary)
+// Peak-Performance: vergleichbar mit C
+// Memory: kein JVM-Overhead
+// Kein GraalVM nötig</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox — Performance-Vorteile</h4>
+        <ul>
+          <li>Kein JVM-Start-Overhead (instant startup)</li>
+          <li>LLVM-Optimierungen (O2/O3) direkt anwendbar</li>
+          <li>Kein Boxing/Unboxing bei Primitiven in Generics</li>
+          <li>Kein MetaSpace-Overhead</li>
+          <li>Ideal für CLI-Tools, Microservices, Embedded</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox — Performance-Nachteile</h4>
+        <ul>
+          <li>JVM-JIT erreicht nach Warmup oft sehr hohe Performance</li>
+          <li>Tinox GC noch nicht so ausgereift wie G1/ZGC</li>
+          <li>Kein Profiling-Tooling wie Java Flight Recorder</li>
+          <li>Kein GraalVM-nativer-Image als Fallback</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ STDLIB -->
+  <section id="stdlib">
+    <h2><span class="icon">📦</span> Standardbibliothek</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (JDK)</h3>
+        <pre><code>// Collections: java.util.*
+// I/O: java.io, java.nio
+// Networking: java.net, java.net.http
+// Time: java.time (seit Java 8)
+// Security: java.security
+// Regex: java.util.regex
+// Streams: java.util.stream
+// Math: java.lang.Math
+// JSON: kein Standard (Jackson, Gson)
+// HTTP Client: java.net.http (Java 11+)</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox (tinox-core)</h3>
+        <pre><code>// HTTP:     http_server, rest_framework, mini_http
+// Daten:    json, csv, xml, regex
+// Sicherheit: crypto, jwt, bcrypt
+// Collections: collections, queue, stack, linkedlist
+// System:   fs, io, env, process, os
+// Utils:    math, mathf, string_utils, date, uuid
+// Async:    cron, events, pool, cache, pubsub
+// 50+ Module als .tnx-Dateien</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Stdlib — Vorteile</h4>
+        <ul>
+          <li>JSON, HTTP-Server, JWT, bcrypt ohne externe Dependencies</li>
+          <li>REST-Framework in der Stdlib (Annotationsbasiert)</li>
+          <li>Cron, PubSub, Cache out-of-the-box</li>
+          <li>Stdlib in Tinox selbst geschrieben (kein Paradigmenwechsel)</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Stdlib — Nachteile</h4>
+        <ul>
+          <li>30 Jahre kleiner als das Java-Ökosystem (Maven Central)</li>
+          <li>Keine Datenbank-Treiber (JDBC-Äquivalent fehlt)</li>
+          <li>Kein Spring/Quarkus/Micronaut-Ökosystem</li>
+          <li>Kein Paket-Manager für Third-Party-Libraries</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ TOOLING -->
+  <section id="tooling">
+    <h2><span class="icon">🛠️</span> Tooling & Entwicklungsumgebung</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code># Build
+mvn compile
+gradle build
+
+# Tests
+mvn test
+gradle test
+
+# Format
+google-java-format *.java
+
+# LSP / IDE
+eclipse, IntelliJ IDEA, VS Code + Extension Pack
+JDT Language Server
+
+# Deployment
+java -jar app.jar
+# oder: Docker-Container
+# oder: GraalVM native-image</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code># Build
+tinox build program.tnx      # -> a.out
+
+# Run
+tinox run program.tnx
+
+# Type-Check only
+tinox check program.tnx
+
+# Format
+tinox fmt program.tnx
+tinox fmt --write program.tnx
+
+# LSP
+tinox-lsp  (Eclipse Plugin vorhanden)
+
+# Deployment
+./a.out   (direkte native Binary)</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Tooling — Vorteile</h4>
+        <ul>
+          <li>Alles in einem CLI (build, run, check, fmt)</li>
+          <li>Kein Build-Tool-Konfigurationschaos (Maven XML, Gradle DSL)</li>
+          <li>Native Binary = kein JRE-Deployment nötig</li>
+          <li>LSP + Eclipse-Plugin vorhanden</li>
+          <li>Formatter ist Bestandteil der Sprache</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Tooling — Nachteile</h4>
+        <ul>
+          <li>Kein Paket-Manager / Dependency-Management</li>
+          <li>Kein Test-Framework in Stdlib</li>
+          <li>Kein Debugger (GDB-Integration fehlt)</li>
+          <li>Kein IntelliJ/VS Code Plugin (nur Eclipse)</li>
+          <li>Kein REPL (geplant, noch nicht implementiert)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ WEB -->
+  <section id="web">
+    <h2><span class="icon">🌐</span> Web & REST-APIs</h2>
+
+    <h3 style="margin-bottom:.75rem;color:var(--muted);font-size:.9rem;">REST-Endpunkte definieren</h3>
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (Spring Boot)</h3>
+        <pre><code>@RestController
+@RequestMapping("/users")
+public class UserController {
+
+    @GetMapping
+    public ResponseEntity&lt;List&lt;User&gt;&gt; listUsers() {
+        return ResponseEntity.ok(userService.findAll());
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public User createUser(@RequestBody User user) {
+        return userService.save(user);
+    }
+
+    @GetMapping("/{id}")
+    public User getUser(@PathVariable Long id) {
+        return userService.findById(id);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteUser(@PathVariable Long id) {
+        userService.delete(id);
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>import mini_http;
+
+class UserController
+{
+    @GET
+    @Path("/users")
+    @Produces("application/json")
+    @StatusCode(200)
+    fnc listUsers(ctx: HttpContext) -> Unit
+    {
+        ctx.response.body = "[{\"id\":1}]";
+    }
+
+    @POST
+    @Path("/users")
+    @Consumes("application/json")
+    @StatusCode(201)
+    fnc createUser(ctx: HttpContext) -> Unit
+    {
+        ctx.response.body = "{\"id\":2}";
+    }
+
+    @GET
+    @Path("/users/:id")
+    fnc getUser(ctx: HttpContext) -> Unit
+    {
+        let id = ctx.request.params["id"];
+        ctx.response.body = "{\"id\":${id}}";
+    }
+
+    @DELETE
+    @Path("/users/:id")
+    @Auth("bearer")
+    @StatusCode(204)
+    fnc deleteUser(ctx: HttpContext) -> Unit
+    {
+        ctx.response.statusCode = 204;
+    }
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Web — Vorteile</h4>
+        <ul>
+          <li>Identische Annotation-Syntax wie Spring (leicht erlernbar)</li>
+          <li>HTTP-Server direkt in Stdlib — kein Framework-Download</li>
+          <li>Kein Spring-Kontext-Overhead, kein Application-Start</li>
+          <li>Native Binary startet instant (kein JVM-Warmup)</li>
+          <li>Path-Parameter, Middleware, Routing out-of-the-box</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Web — Nachteile</h4>
+        <ul>
+          <li>Kein Spring Boot-Ökosystem (Security, Data, Actuator…)</li>
+          <li>Kein automatisches JSON-Serialization (ObjectMapper-Äquivalent)</li>
+          <li>Kein ORM / Datenbankanbindung</li>
+          <li>Weniger battle-tested bei Produktions-Workloads</li>
+          <li>Kein API-Dokumentationsgenerator (Swagger/OpenAPI)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ ERROR -->
+  <section id="errorhandling">
+    <h2><span class="icon">🔒</span> Fehlerbehandlung & Null Safety</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java</h3>
+        <pre><code>// Checked vs. Unchecked Exceptions
+public int divide(int a, int b) throws ArithmeticException {
+    if (b == 0) throw new ArithmeticException("Division by zero");
+    return a / b;
+}
+
+try {
+    int r = divide(10, 0);
+} catch (ArithmeticException e) {
+    System.err.println("Fehler: " + e.getMessage());
+} finally {
+    cleanup();
+}
+
+// Null Safety: nicht vorhanden
+String s = null;
+s.length(); // NullPointerException!
+
+// Optional als Workaround (Java 8+)
+Optional&lt;String&gt; opt = Optional.ofNullable(s);
+opt.ifPresent(System.out::println);</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>fn divide(a: Int64, b: Int64) -> Int64
+{
+    if b == 0
+    {
+        throw "Division by zero";
+    }
+    return a / b;
+}
+
+try
+{
+    let r = divide(10, 0);
+}
+catch e: RuntimeError
+{
+    println("Fehler: ${e}");
+}
+finally
+{
+    cleanup();
+}
+
+// Defer für automatisches Cleanup
+fn readFile(path: String) -> String
+{
+    let f = open(path);
+    defer { f.close(); }
+    return f.read();
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Fehlerbehandlung — Vorteile</h4>
+        <ul>
+          <li>defer ist eleganter als try-with-resources</li>
+          <li>Kein Checked-Exception-Chaos (keine throws-Deklarationen)</li>
+          <li>LIFO-Reihenfolge mehrerer defers ist intuitiv</li>
+          <li>Option&lt;T&gt; / Result&lt;T&gt; in Stdlib verfügbar</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Fehlerbehandlung — Nachteile</h4>
+        <ul>
+          <li>Kein echtes Null-Safety-Typsystem (wie Kotlin/Rust)</li>
+          <li>Exception-Hierarchie weniger ausgefeilt als Java</li>
+          <li>Result&lt;T&gt; noch nicht als nativer Sprachkern integriert</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ VERDICT -->
+  <section id="verdict">
+    <h2><span class="icon">🏆</span> Fazit & Empfehlung</h2>
+
+    <div class="verdict">
+      <h3>Wann ist was die bessere Wahl?</h3>
+      <div class="verdict-grid">
+        <div class="verdict-item java-win">
+          <div class="lang">Java verwenden, wenn…</div>
+          <p>du ein großes Team, ein riesiges Ökosystem (Spring, Hibernate, JEE), oder Unternehmens-Software mit langfristigem Support brauchst. Wenn Datenbankanbindung, Microservices-Orchestrierung (Kubernetes, Spring Cloud) oder ein breites Tooling (IntelliJ, Profiler, APM) entscheidend sind.</p>
+        </div>
+        <div class="verdict-item tinox-win">
+          <div class="lang">Tinox verwenden, wenn…</div>
+          <p>du native Performance ohne JVM-Overhead willst, kleine bis mittlere Services oder CLI-Tools baust, oder die Java-ähnliche Syntax mit weniger Boilerplate schätzt. Ideal für Eigenentwicklungen, Lernprojekte, und Szenarien wo instant startup wichtig ist.</p>
+        </div>
+        <div class="verdict-item java-win">
+          <div class="lang">Java gewinnt bei…</div>
+          <p>Ökosystem-Tiefe, Datenbankintegration, Enterprise-Patterns, Tooling-Reife (Debugger, Profiler, APM), Community-Größe, Zertifizierungen, und Langzeit-Support durch Oracle/OpenJDK.</p>
+        </div>
+        <div class="verdict-item tinox-win">
+          <div class="lang">Tinox gewinnt bei…</div>
+          <p>Startup-Zeit, nativer Performance, Syntax-Klarheit (let/var, String-Interpolation, Ranges), integrierten REST-Annotationen ohne Framework-Dependency, und dem einheitlichen CLI (build/run/check/fmt).</p>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:1.5rem;color:var(--muted);font-size:.85rem;text-align:center;">
+      Tinox ist eine moderne Sprache in aktiver Entwicklung — viele der aktuellen Lücken
+      (Paket-Manager, Debugger, REPL) sind geplant und werden in zukünftigen Versionen geschlossen.
+    </p>
+  </section>
+
+</main>
+
+</body>
+</html>
