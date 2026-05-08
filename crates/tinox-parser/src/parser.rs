@@ -1610,6 +1610,29 @@ impl Parser {
         self.parse_postfix_expr()
     }
 
+    /// Returns true if current token starts `<Type>::` — a generic type's static call.
+    /// e.g. `Stack<T>::new()` — after parsing `Stack`, we see `<T>::`.
+    fn is_generic_type_static_call(&self) -> bool {
+        if !matches!(self.peek().kind, TokenKind::Less) {
+            return false;
+        }
+        if !matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        let mut depth = 1i32;
+        let mut i = 2usize;
+        while depth > 0 {
+            match self.peek_ahead(i).map(|t| t.kind) {
+                Some(TokenKind::Less) => { depth += 1; i += 1; }
+                Some(TokenKind::Greater) => { depth -= 1; i += 1; }
+                Some(TokenKind::GreaterGreater) => { depth -= 2; i += 1; }
+                None => return false,
+                _ => { i += 1; }
+            }
+        }
+        matches!(self.peek_ahead(i).map(|t| t.kind), Some(TokenKind::ColonColon))
+    }
+
     /// Returns true if the current token starts a generic method call like `<Type>(`.
     /// Scans forward past the `<...>` to confirm `(` follows.
     fn is_generic_method_call(&self) -> bool {
@@ -1793,6 +1816,20 @@ impl Parser {
                 } else {
                     return Err(self.error("expected enum name before ::"));
                 }
+            } else if self.is_generic_type_static_call() {
+                // Generic type static call: Stack<T>::new() — skip type args, let next
+                // iteration handle `::` with the base Ident expression intact
+                self.bump(); // consume `<`
+                let mut depth = 1i32;
+                while depth > 0 && !self.is_at_end() {
+                    match self.peek().kind {
+                        TokenKind::Less => { self.bump(); depth += 1; }
+                        TokenKind::Greater => { self.bump(); depth -= 1; }
+                        TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
+                        _ => { self.bump(); }
+                    }
+                }
+                // `::` is now current token; continue loop to hit the `::` branch
             } else if self.check(TokenKind::LBracket) {
                 self.bump();
                 let index = self.parse_expr()?;
