@@ -345,19 +345,11 @@ impl Parser {
             self.expect_keyword(Keyword::Fn)?;
         }
         let name = self.parse_method_name()?;
-        // Skip optional generic type params: `fnc foo<T>(...)` — not tracked further
-        if self.check(TokenKind::Less) {
-            self.bump();
-            let mut depth = 1i32;
-            while depth > 0 && !self.is_at_end() {
-                match self.peek().kind {
-                    TokenKind::Less => { self.bump(); depth += 1; }
-                    TokenKind::Greater => { self.bump(); depth -= 1; }
-                    TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
-                    _ => { self.bump(); }
-                }
-            }
-        }
+        let type_params = if self.check(TokenKind::Less) {
+            self.parse_type_params()?
+        } else {
+            vec![]
+        };
         self.expect(TokenKind::LParen)?;
 
         let mut params = Vec::new();
@@ -379,6 +371,7 @@ impl Parser {
 
         Ok(Method {
             name,
+            type_params,
             params,
             ret_type,
             body,
@@ -1617,6 +1610,29 @@ impl Parser {
         self.parse_postfix_expr()
     }
 
+    /// Returns true if the current token starts a generic method call like `<Type>(`.
+    /// Scans forward past the `<...>` to confirm `(` follows.
+    fn is_generic_method_call(&self) -> bool {
+        if !matches!(self.peek().kind, TokenKind::Less) {
+            return false;
+        }
+        if !matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Ident(_))) {
+            return false;
+        }
+        let mut depth = 1i32;
+        let mut i = 2usize;
+        while depth > 0 {
+            match self.peek_ahead(i).map(|t| t.kind) {
+                Some(TokenKind::Less) => { depth += 1; i += 1; }
+                Some(TokenKind::Greater) => { depth -= 1; i += 1; }
+                Some(TokenKind::GreaterGreater) => { depth -= 2; i += 1; }
+                None => return false,
+                _ => { i += 1; }
+            }
+        }
+        matches!(self.peek_ahead(i).map(|t| t.kind), Some(TokenKind::LParen))
+    }
+
     fn parse_postfix_expr(&mut self) -> Result<Expr, Error> {
         let mut expr = self.parse_primary_expr()?;
 
@@ -1678,6 +1694,35 @@ impl Parser {
                         },
                         span,
                     );
+                } else if self.is_generic_method_call() {
+                    // Generic method call: obj.method<T>(args) — skip type args (type erasure)
+                    self.bump(); // consume `<`
+                    let mut depth = 1i32;
+                    while depth > 0 && !self.is_at_end() {
+                        match self.peek().kind {
+                            TokenKind::Less => { self.bump(); depth += 1; }
+                            TokenKind::Greater => { self.bump(); depth -= 1; }
+                            TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
+                            _ => { self.bump(); }
+                        }
+                    }
+                    self.expect(TokenKind::LParen)?;
+                    let mut args = Vec::new();
+                    if !self.check(TokenKind::RParen) {
+                        args.push(self.parse_expr()?);
+                        while self.consume(TokenKind::Comma) {
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    expr = Spanned::new(
+                        ExprKind::MethodCall {
+                            obj: Box::new(expr),
+                            method: name,
+                            args,
+                        },
+                        span,
+                    );
                 } else if self.check(TokenKind::LParen) {
                     self.bump();
                     let mut args = Vec::new();
@@ -1711,6 +1756,19 @@ impl Parser {
                     self.bump(); // consume ::
                     let variant = self.parse_method_name()?;
                     let span = expr.span;
+                    // Skip optional generic type args: `Class::method<T>(args)`
+                    if self.is_generic_method_call() {
+                        self.bump(); // consume `<`
+                        let mut depth = 1i32;
+                        while depth > 0 && !self.is_at_end() {
+                            match self.peek().kind {
+                                TokenKind::Less => { self.bump(); depth += 1; }
+                                TokenKind::Greater => { self.bump(); depth -= 1; }
+                                TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
+                                _ => { self.bump(); }
+                            }
+                        }
+                    }
 
                     let mut args = Vec::new();
                     if self.check(TokenKind::LParen) {

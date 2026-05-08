@@ -363,6 +363,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Method {
     pub name: Ident,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret_type: Type,
     pub body: Stmt,

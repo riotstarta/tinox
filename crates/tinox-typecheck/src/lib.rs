@@ -940,11 +940,11 @@ impl TypeChecker {
                             method
                                 .params
                                 .iter()
-                                .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type))),
+                                .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &method.type_params))),
                         );
                         let sig = FunctionSignature {
                             params,
-                            return_type: Self::type_to_value(&method.ret_type),
+                            return_type: Self::type_to_value_erasing(&method.ret_type, &method.type_params),
                         };
                         let key = format!("{}_{}", c.name, method.name);
                         self.symbols.functions.insert(key.clone(), sig);
@@ -1372,6 +1372,10 @@ impl TypeChecker {
         self.current_class = Some(c.name.clone());
         for method in &c.methods {
             let saved_vars = self.symbols.enter_scope();
+            let saved_type_params = std::mem::take(&mut self.type_param_scope);
+            for tp in &method.type_params {
+                self.type_param_scope.insert(tp.clone());
+            }
             self.symbols.variables.insert(
                 "self".to_string(),
                 (ValueType::Named(c.name.clone()), false),
@@ -1379,15 +1383,16 @@ impl TypeChecker {
             for param in &method.params {
                 self.symbols.variables.insert(
                     param.name.clone(),
-                    (Self::type_to_value(&param.param_type), false),
+                    (Self::type_to_value_erasing(&param.param_type, &method.type_params), false),
                 );
             }
             let has_return = self.check_stmt(&method.body);
-            let expected = Self::type_to_value(&method.ret_type);
+            let expected = Self::type_to_value_erasing(&method.ret_type, &method.type_params);
             if expected != ValueType::Nothing && expected != ValueType::Never && !has_return {
                 self.errors
                     .push(Error::new(method.span, "missing return statement"));
             }
+            self.type_param_scope = saved_type_params;
             self.symbols.exit_scope(saved_vars);
         }
         self.current_class = saved_class;

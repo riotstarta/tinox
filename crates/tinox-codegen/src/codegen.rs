@@ -5608,6 +5608,7 @@ impl CodeGen {
             }).collect(),
             methods: c.methods.iter().map(|m| tinox_parser::Method {
                 name: m.name.clone(),
+                type_params: m.type_params.clone(),
                 params: m.params.iter().map(|p| tinox_parser::Param {
                     name: p.name.clone(),
                     param_type: Self::substitute_type(&p.param_type, &subst),
