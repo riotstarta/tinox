@@ -22,6 +22,12 @@ parking_lot = "0.12"
 unicode-ident = "0.3"
 hashbrown = "0.15"
 rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+ureq = "2"
+flate2 = "1"
+tar = "0.4"
+zip = "2"
 
 [profile.release]
 opt-level = 3

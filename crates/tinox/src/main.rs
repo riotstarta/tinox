@@ -9,6 +9,8 @@ use tinox_common;
 use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
+mod pm;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -24,9 +26,12 @@ fn main() {
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
-        "check" => check(&args[2..]),
-        "fmt"   => fmt(&args[2..]),
-        "repl"  => repl(),
+        "check"   => check(&args[2..]),
+        "fmt"     => fmt(&args[2..]),
+        "repl"    => repl(),
+        "install" => pm::cmd_install(),
+        "add"     => pm::cmd_add(&args[2..]),
+        "package" => pm::cmd_package(),
         "help" | "--help" | "-h" => print_help(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -50,6 +55,9 @@ fn print_help() {
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
+    println!("  tinox install              Download and install all dependencies");
+    println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
+    println!("  tinox package              Pack src/ into <name>-<version>.tar.gz");
     println!("  tinox help                 Show this help message");
 }
 
@@ -97,19 +105,26 @@ fn new_project(args: &[String]) {
     let toml = format!(
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\n"
     );
+    let yaml = format!(
+        "package:\n  name: \"{name}\"\n  version: \"0.1.0\"\n  description: \"\"\n\ndependencies: []\n"
+    );
     let main_tnx = format!(
         "fn main() -> Int64\n{{\n    println(\"Hello from {name}!\");\n    return 0;\n}}\n"
     );
     let test_tnx = format!(
         "class {name}Tests\n{{\n    @Test(\"example test\")\n    fn testExample() -> Bool\n    {{\n        return 1 + 1 == 2;\n    }}\n}}\n"
     );
+    let gitignore = ".tinox/\n";
 
     if !write_file(&root.join("tinox.toml"), &toml) { return; }
+    if !write_file(&root.join("tinox.yaml"), &yaml) { return; }
+    if !write_file(&root.join(".gitignore"), &gitignore) { return; }
     if !write_file(&src_dir.join("main.tnx"), &main_tnx) { return; }
     if !write_file(&tests_dir.join("main_test.tnx"), &test_tnx) { return; }
 
     println!("Created project '{name}'");
     println!("  {name}/tinox.toml");
+    println!("  {name}/tinox.yaml");
     println!("  {name}/src/main.tnx");
     println!("  {name}/tests/main_test.tnx");
     println!();
@@ -705,7 +720,8 @@ fn check(args: &[String]) {
     if let Ok(canonical) = Path::new(&input_file).canonicalize() {
         visited.insert(canonical);
     }
-    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited) {
+    let dep_dirs = load_dep_dirs();
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
@@ -1280,7 +1296,8 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
-    resolve_imports(&mut ast, &base, &mut visited)
+    let dep_dirs = load_dep_dirs();
+    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs)
         .map_err(|e| format!("import error: {e}"))?;
     let result = tinox_typecheck::annotations::process_annotations(&ast);
     Ok(result.test_entries)
@@ -1300,7 +1317,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
-    resolve_imports(&mut ast, &base, &mut visited)?;
+    let dep_dirs = load_dep_dirs();
+    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs)?;
 
     let mut tc = tinox_typecheck::TypeChecker::new();
     tc.check(&ast).map_err(|e| format!("type error:\n{e}"))?;
@@ -1377,10 +1395,18 @@ fn stdlib_dir() -> Option<PathBuf> {
     None
 }
 
+fn load_dep_dirs() -> Vec<PathBuf> {
+    pm::find_project_root()
+        .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
+        .map(|(root, m)| pm::installed_dep_dirs(&root, &m))
+        .unwrap_or_default()
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
     visited: &mut HashSet<PathBuf>,
+    dep_dirs: &[PathBuf],
 ) -> Result<(), String> {
     let imports: Vec<_> = ast
         .decls
@@ -1407,8 +1433,11 @@ fn resolve_imports(
 
         // Resolution order:
         // 1. Relative to source file directory
-        // 2. tinox.core.X  →  <stdlib_dir>/X.tnx
+        // 2. Installed package dependencies (.tinox/deps/...)
+        // 3. tinox.core.X  →  <stdlib_dir>/X.tnx
         let full_path = if let Ok(p) = base_dir.join(&rel).canonicalize() {
+            p
+        } else if let Some(p) = dep_dirs.iter().find_map(|d| d.join(&rel).canonicalize().ok()) {
             p
         } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
             // stdlib import: take the last segment as filename
@@ -1448,7 +1477,7 @@ fn resolve_imports(
             .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
 
         let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        resolve_imports(&mut imported, &imported_dir, visited)?;
+        resolve_imports(&mut imported, &imported_dir, visited, dep_dirs)?;
 
         ast.decls.extend(imported.decls);
     }
@@ -1482,7 +1511,8 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     if let Ok(canonical) = Path::new(input_path).canonicalize() {
         visited.insert(canonical);
     }
-    resolve_imports(&mut ast, &base_dir, &mut visited)
+    let dep_dirs = load_dep_dirs();
+    resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs)
         .map_err(|e| format!("Import error: {}", e))?;
 
     let mut typechecker = tinox_typecheck::TypeChecker::new();
