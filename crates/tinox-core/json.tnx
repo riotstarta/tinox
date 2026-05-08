@@ -2,6 +2,51 @@ module tinox.core.json;
 
 namespace tinox.core.json
 {
+    // ========================================================================
+    // Serialization Annotations
+    // ========================================================================
+
+    /**
+     * Marks a class for automatic JSON serialization and deserialization.
+     * The compiler generates toJson() and fromJson(JsonValue) methods.
+     *
+     * Usage:
+     *   @JsonSerializable
+     *   class User
+     *   {
+     *       var id: Int64;
+     *       var name: String;
+     *   }
+     *
+     *   let json: String = Json::serialize(user);
+     *   let user: User = Json::deserialize<User>(json);
+     */
+    @annotation
+    class JsonSerializable {}
+
+    /**
+     * Overrides the JSON field name for a class field.
+     * Without this annotation, the field's Tinox name is used as-is.
+     *
+     * Usage:
+     *   @JsonField("first_name")
+     *   var firstName: String;
+     */
+    @annotation
+    class JsonField
+    {
+        var name: String;
+
+        fn new(name: String) -> JsonField
+        {
+            return JsonField { name: name };
+        }
+    }
+
+    // ========================================================================
+    // JSON Runtime
+    // ========================================================================
+
     extern fn jsonParse(text: String) -> JsonValue;
     extern fn jsonStringify(value: JsonValue) -> String;
     extern fn jsonGetString(value: JsonValue) -> String;
@@ -26,6 +71,32 @@ namespace tinox.core.json
         fn stringify(value: JsonValue) -> String
         {
             return jsonStringify(value);
+        }
+
+        /**
+         * Serializes a @JsonSerializable object to a JSON string.
+         * Calls the compiler-generated toJson() method on the object.
+         *
+         * Usage:
+         *   let json: String = Json::serialize(user);
+         */
+        fn serialize<T>(obj: T) -> String
+        {
+            return obj.toJson();
+        }
+
+        /**
+         * Deserializes a JSON string into an object of type T.
+         * T must be annotated with @JsonSerializable.
+         * Calls the compiler-generated T::fromJson(JsonValue) method.
+         *
+         * Usage:
+         *   let user: User = Json::deserialize<User>(json);
+         */
+        fn deserialize<T>(text: String) -> T
+        {
+            let value: JsonValue = jsonParse(text);
+            return T::fromJson(value);
         }
     }
 

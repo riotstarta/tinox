@@ -456,6 +456,20 @@ namespace tinox.core.http_server
         }
 
         /**
+         * Deserializes the request body into an object of type T.
+         * T must be annotated with @JsonSerializable.
+         *
+         * Usage:
+         *   let user: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
+         *
+         * @return the deserialized object
+         */
+        fn bodyAs<T>() -> T
+        {
+            return Json::deserialize<T>(this.body);
+        }
+
+        /**
          * Returns the raw request body as a string
          *
          * @return the request body

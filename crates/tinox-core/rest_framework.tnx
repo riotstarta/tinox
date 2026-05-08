@@ -11,14 +11,14 @@
  *   class UserController
  *   {
  *       @GET("/users")
- *       @Produces("application/json")
+ *       @Produces(MediaType::Json)
  *       fn listUsers(ctx: HttpContext) -> Nothing
  *       {
  *           ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
  *       }
  *
  *       @GET("/users/:id")
- *       @Produces("application/json")
+ *       @Produces(MediaType::Json)
  *       fn getUser(ctx: HttpContext) -> Nothing
  *       {
  *           let id: String = ctx.request.getParam("id");
@@ -26,13 +26,13 @@
  *       }
  *
  *       @POST("/users")
- *       @Consumes("application/json")
+ *       @Consumes(MediaType::Json)
  *       @StatusCode(201)
- *       @Produces("application/json")
+ *       @Produces(MediaType::Json)
  *       fn createUser(ctx: HttpContext) -> Nothing
  *       {
- *           let data: JsonValue = ctx.request.json();
- *           ctx.response.status(201).json("{\"created\": true}");
+ *           let req: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
+ *           ctx.response.status(201).json(Json::serialize(req));
  *       }
  *   }
  *
@@ -44,6 +44,50 @@ module tinox.core.rest_framework;
 
 namespace tinox.core.rest_framework
 {
+    // ========================================================================
+    // Media Types
+    // ========================================================================
+
+    /**
+     * Common MIME types for use with @Produces and @Consumes annotations.
+     *
+     * Usage:
+     *   @Produces(MediaType::Json)
+     *   @Consumes(MediaType::Json)
+     */
+    enum MediaType
+    {
+        None;
+        Json;
+        Xml;
+        FormUrlencoded;
+        TextPlain;
+        TextHtml;
+        TextCsv;
+        MultipartFormData;
+    }
+
+    /**
+     * Converts MediaType enum values to their MIME type strings.
+     */
+    class MediaTypeHelper
+    {
+        fn toString(mediaType: MediaType) -> String
+        {
+            match mediaType
+            {
+                None => return "";
+                Json => return "application/json";
+                Xml => return "application/xml";
+                FormUrlencoded => return "application/x-www-form-urlencoded";
+                TextPlain => return "text/plain";
+                TextHtml => return "text/html";
+                TextCsv => return "text/csv";
+                MultipartFormData => return "multipart/form-data";
+            }
+        }
+    }
+
     // ========================================================================
     // Annotations
     // ========================================================================
@@ -165,14 +209,14 @@ namespace tinox.core.rest_framework
 
     /**
      * Specifies the response content type (Content-Type header).
-     * @Produces("application/json")
+     * @Produces(MediaType::Json)
      */
     @annotation
     class Produces
     {
-        var value: String;
+        var value: MediaType;
 
-        fn new(value: String) -> Produces
+        fn new(value: MediaType) -> Produces
         {
             return Produces { value: value };
         }
@@ -180,14 +224,14 @@ namespace tinox.core.rest_framework
 
     /**
      * Specifies the accepted request content type.
-     * @Consumes("application/json")
+     * @Consumes(MediaType::Json)
      */
     @annotation
     class Consumes
     {
-        var value: String;
+        var value: MediaType;
 
-        fn new(value: String) -> Consumes
+        fn new(value: MediaType) -> Consumes
         {
             return Consumes { value: value };
         }
@@ -289,17 +333,17 @@ namespace tinox.core.rest_framework
         var statusCode: Int64;
 
         /** Response content type from @Produces annotation */
-        var produces: String;
+        var produces: MediaType;
 
         /** Request content type from @Consumes annotation */
-        var consumes: String;
+        var consumes: MediaType;
 
         /** Auth type from @Auth annotation ("bearer", "basic", or empty) */
         var authType: String;
 
         fn new(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
-            return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: "", consumes: "", authType: "" };
+            return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: MediaType::None, consumes: MediaType::None, authType: "" };
         }
 
         fn withStatus(code: Int64) -> RouteEntry
@@ -308,15 +352,15 @@ namespace tinox.core.rest_framework
             return this;
         }
 
-        fn withProduces(contentType: String) -> RouteEntry
+        fn withProduces(mediaType: MediaType) -> RouteEntry
         {
-            this.produces = contentType;
+            this.produces = mediaType;
             return this;
         }
 
-        fn withConsumes(contentType: String) -> RouteEntry
+        fn withConsumes(mediaType: MediaType) -> RouteEntry
         {
-            this.consumes = contentType;
+            this.consumes = mediaType;
             return this;
         }
 
@@ -632,18 +676,19 @@ namespace tinox.core.rest_framework
         fn wrapHandler(entry: RouteEntry) -> fnc(HttpContext) -> Nothing
         {
             let statusCode: Int64 = entry.statusCode;
-            let produces: String = entry.produces;
-            let consumes: String = entry.consumes;
+            let produces: MediaType = entry.produces;
+            let consumes: MediaType = entry.consumes;
             let authType: String = entry.authType;
             let originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
 
             return ctx => {
-                if consumes.len() > 0
+                if consumes != MediaType::None
                 {
+                    let expected: String = MediaTypeHelper::toString(consumes);
                     let ct: String = ctx.request.getHeader("Content-Type");
-                    if ct.startsWith(consumes) == false
+                    if ct.startsWith(expected) == false
                     {
-                        ctx.response.status(415).text("Unsupported Media Type. Expected: " + consumes);
+                        ctx.response.status(415).text("Unsupported Media Type. Expected: " + expected);
                         return;
                     }
                 }
@@ -673,9 +718,9 @@ namespace tinox.core.rest_framework
                     ctx.response.status(statusCode);
                 }
 
-                if produces.len() > 0 && ctx.response.headers.contains("Content-Type") == false
+                if produces != MediaType::None && ctx.response.headers.contains("Content-Type") == false
                 {
-                    ctx.response.header("Content-Type", produces);
+                    ctx.response.header("Content-Type", MediaTypeHelper::toString(produces));
                 }
 
                 originalHandler(ctx);
