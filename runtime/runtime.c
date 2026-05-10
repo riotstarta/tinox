@@ -164,6 +164,12 @@ char* tinox_bool_to_string(int val) {
 }
 
 // String utility functions
+int64_t tinox_string_equals(const char* a, const char* b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    return strcmp(a, b) == 0 ? 1 : 0;
+}
+
 int64_t tinox_string_contains(const char* haystack, const char* needle) {
     return strstr(haystack, needle) != NULL ? 1 : 0;
 }
@@ -684,7 +690,7 @@ char* httpServerReadRequest(int64_t client_fd) {
             long header_len = (long)(hdr_end - buf) + 4;
             long total = header_len + body_len;
             while ((long)used < total) {
-                if (used + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+                while (cap < (size_t)total + 1) { cap *= 2; buf = (char*)realloc(buf, cap); }
                 ssize_t m = recv(fd, buf + used, (size_t)(total - (long)used), 0);
                 if (m <= 0) break;
                 used += (size_t)m;
@@ -720,7 +726,7 @@ void httpServerClose(int64_t server_fd) {
 // ---- HttpServer route-based API ----
 
 #define TINOX_MAX_ROUTES 64
-#define TINOX_MAX_BODY   65536
+#define TINOX_MAX_BODY   (4 * 1024 * 1024)  /* 4 MB */
 
 typedef void (*TinoxRouteHandler)(int64_t ctx);
 
@@ -951,8 +957,10 @@ void tinox_HttpServer_listen(int64_t* server) {
                 "Content-Type: application/json\r\n");
             if (n > 0) hdr_off += n;
         }
-        char http_resp[TINOX_MAX_BODY + 1024];
-        snprintf(http_resp, sizeof(http_resp),
+        size_t body_len = strlen(body);
+        size_t resp_cap = body_len + sizeof(hdr_buf) + 256;
+        char* http_resp = (char*)malloc(resp_cap);
+        snprintf(http_resp, resp_cap,
             "HTTP/1.1 %lld %s\r\n"
             "%s"
             "Content-Length: %zu\r\n"
@@ -960,9 +968,10 @@ void tinox_HttpServer_listen(int64_t* server) {
             "\r\n"
             "%s",
             (long long)status, http_status_text(status),
-            hdr_buf, strlen(body), body);
+            hdr_buf, body_len, body);
 
         httpServerSendRaw(client_fd, http_resp);
+        free(http_resp);
         httpServerCloseConn(client_fd);
     }
 

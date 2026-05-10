@@ -413,9 +413,9 @@ namespace tinox.core.rest_framework
          */
         fn route(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
-            let entry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
-            this.routes.push(entry);
-            return entry;
+            let routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
+            this.routes.push(routeEntry);
+            return routeEntry;
         }
     }
 

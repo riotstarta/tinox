@@ -142,6 +142,10 @@ pub struct CodeGen {
     struct_field_llvm_types: HashMap<String, HashMap<String, String>>,
     /// class_name -> field_name -> (ret_llvm_ty, param_llvm_tys) for Type::Fn fields
     fn_field_sigs: HashMap<String, HashMap<String, (String, Vec<String>)>>,
+    /// ClassName_methodName -> list of Tinox param types (excluding self) for lambda param inference
+    method_param_types: HashMap<String, Vec<tinox_parser::Type>>,
+    /// Temporary: expected class names for the next lambda's params (set before gen_expr on lambda)
+    pending_lambda_param_types: Vec<Option<String>>,
 }
 
 impl CodeGen {
@@ -181,6 +185,8 @@ impl CodeGen {
             struct_field_class_types: HashMap::new(),
             struct_field_llvm_types: HashMap::new(),
             fn_field_sigs: HashMap::new(),
+            method_param_types: HashMap::new(),
+            pending_lambda_param_types: Vec::new(),
         }
     }
 
@@ -311,6 +317,7 @@ impl CodeGen {
         match ty {
             Type::Named(n) => Some(n.clone()),
             Type::Generic { name, .. } => Some(name.clone()),
+            Type::Map(_, _) => Some("Map".to_string()),
             Type::Mutable(inner) | Type::Ref(inner) | Type::Array(inner) => {
                 Self::extract_class_type_name(inner)
             }
@@ -404,6 +411,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_config_get(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_bool(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_equals(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
@@ -584,6 +592,9 @@ impl CodeGen {
                         format!("{}_{}", c.name, method.name),
                         Self::type_to_llvm(&method.ret_type),
                     );
+                    let param_tys: Vec<tinox_parser::Type> = method.params.iter()
+                        .map(|p| p.param_type.clone()).collect();
+                    self.method_param_types.insert(format!("{}_{}", c.name, method.name), param_tys);
                 }
                 let own_method_names: HashSet<String> =
                     c.methods.iter().map(|m| m.name.clone()).collect();
@@ -1757,6 +1768,8 @@ impl CodeGen {
                             let to_bits: u32 = to[1..].parse().unwrap_or(64);
                             if from_bits > to_bits { "trunc" } else { "zext" }
                         }
+                        (from, to) if !from.ends_with('*') && to.ends_with('*') => "inttoptr",
+                        (from, to) if from.ends_with('*') && !to.ends_with('*') => "ptrtoint",
                         _ => "",
                     };
                     if !cast_op.is_empty() {
@@ -1865,6 +1878,10 @@ impl CodeGen {
                     };
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
+                    // Generate a unique alloca slot name to avoid duplicate definitions
+                    let slot_name = format!("{}_{}", name, self.temp_count);
+                    self.temp_count += 1;
+                    ctx.local_slots.insert(name.clone(), slot_name.clone());
                     if matches!(&val.node, ExprKind::Range { .. }) {
                         ctx.range_vars.insert(name.clone());
                     }
@@ -1883,29 +1900,33 @@ impl CodeGen {
                         ctx.local_types.insert(name.clone(), sn);
                     }
                     if is_heap_ptr {
-                        writeln!(&mut self.ir, "%{} = alloca {}", name, actual_ty).unwrap();
+                        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
                         writeln!(
                             &mut self.ir,
                             "store {} {}, {}* %{}",
-                            val_ty, v, actual_ty, name
+                            val_ty, v, actual_ty, slot_name
                         )
                         .unwrap();
                     } else {
-                        writeln!(&mut self.ir, "%{} = alloca {}", name, llvm_ty).unwrap();
+                        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
                         writeln!(
                             &mut self.ir,
                             "store {} {}, {}* %{}",
-                            val_ty, v, llvm_ty, name
+                            val_ty, v, llvm_ty, slot_name
                         )
                         .unwrap();
                     }
                 } else {
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (llvm_ty.clone(), slot));
+                    // Generate a unique alloca slot name to avoid duplicate definitions
+                    let slot_name = format!("{}_{}", name, self.temp_count);
+                    self.temp_count += 1;
+                    ctx.local_slots.insert(name.clone(), slot_name.clone());
                     if let Some(sn) = &struct_name {
                         ctx.local_types.insert(name.clone(), sn.clone());
                     }
-                    writeln!(&mut self.ir, "%{} = alloca {}", name, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
                 }
             }
             StmtKind::Var {
@@ -2383,8 +2404,22 @@ impl CodeGen {
                     if let Some((ty, _)) = ctx.locals.get(&name) {
                         let ty = ty.clone();
                         let slot = ctx.local_slots.get(&name).cloned().unwrap_or_else(|| name.clone());
-                        let (val, _) = self.gen_expr(value, ctx)?;
-                        writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, val, ty, slot).unwrap();
+                        let (val, val_ty) = self.gen_expr(value, ctx)?;
+                        // Convert value type to target type if they differ
+                        let store_val = if val_ty == ty || val_ty.is_empty() || ty.is_empty() {
+                            val
+                        } else if val_ty == "i64" && (ty.ends_with('*') || ty == "ptr") {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, val, ty).unwrap();
+                            c
+                        } else if (val_ty.ends_with('*') || val_ty == "ptr") && ty == "i64" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                            c
+                        } else {
+                            val
+                        };
+                        writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, store_val, ty, slot).unwrap();
                     }
                 } else if let ExprKind::FieldAccess { obj, field } = &target.node {
                     let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
@@ -2445,11 +2480,12 @@ impl CodeGen {
                             self.gen_expr(obj, ctx)?
                         } else if ctx.locals.contains_key(name) {
                             let (var_ty, _) = ctx.locals.get(name).unwrap();
+                            let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                             let loaded_ptr = self.temp();
                             writeln!(
                                 &mut self.ir,
                                 "{} = load {}, {}* %{}",
-                                loaded_ptr, var_ty, var_ty, name
+                                loaded_ptr, var_ty, var_ty, slot
                             )
                             .unwrap();
                             (loaded_ptr, var_ty.clone())
@@ -2461,7 +2497,7 @@ impl CodeGen {
                     };
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
 
-                    if is_map {
+                    if is_map || idx_ty == "i8*" {
                         // Map: tinox_map_set(i8* map, i8* key, i64 val)
                         let map_i8 = if base_ty == "i8*" { base_ptr.clone() } else {
                             let c = self.temp();
@@ -2539,13 +2575,23 @@ impl CodeGen {
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (l, lt) = self.gen_expr(lhs, ctx)?;
-                let (r, _rt) = self.gen_expr(rhs, ctx)?;
+                let (r, rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
                 let float = Self::is_float(&lt);
                 match op {
                     tinox_parser::BinaryOp::Add => {
-                        if lt == "i8*" {
-                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, l, r).unwrap()
+                        if lt == "i8*" || rt == "i8*" {
+                            let l_str = if lt == "i8*" { l.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap();
+                                c
+                            };
+                            let r_str = if rt == "i8*" { r.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap();
+                                c
+                            };
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, l_str, r_str).unwrap()
                         } else if float {
                             writeln!(&mut self.ir, "{} = fadd {} {}, {}", result, lt, l, r).unwrap()
                         } else {
@@ -2583,6 +2629,21 @@ impl CodeGen {
                     tinox_parser::BinaryOp::Eq => {
                         if float {
                             writeln!(&mut self.ir, "{} = fcmp oeq {} {}, {}", result, lt, l, r).unwrap()
+                        } else if lt == "i8*" || rt == "i8*" {
+                            // String semantic equality
+                            let l_str = if lt == "i8*" { l.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap(); c };
+                            let r_str = if rt == "i8*" { r.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap(); c };
+                            let cmp = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_equals(i8* {}, i8* {})", cmp, l_str, r_str).unwrap();
+                            writeln!(&mut self.ir, "{} = trunc i64 {} to i1", result, cmp).unwrap()
+                        } else if lt != rt {
+                            // Mixed types: normalize pointer to i64
+                            let (nl, nr) = if lt.ends_with('*') || lt == "ptr" {
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, if lt == "ptr" { "ptr".to_string() } else { lt.clone() }, l).unwrap(); (c, r.clone())
+                            } else if rt.ends_with('*') || rt == "ptr" {
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, if rt == "ptr" { "ptr".to_string() } else { rt.clone() }, r).unwrap(); (l.clone(), c)
+                            } else { (l.clone(), r.clone()) };
+                            writeln!(&mut self.ir, "{} = icmp eq i64 {}, {}", result, nl, nr).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp eq {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -2591,6 +2652,21 @@ impl CodeGen {
                     tinox_parser::BinaryOp::Ne => {
                         if float {
                             writeln!(&mut self.ir, "{} = fcmp one {} {}, {}", result, lt, l, r).unwrap()
+                        } else if lt == "i8*" || rt == "i8*" {
+                            let l_str = if lt == "i8*" { l.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap(); c };
+                            let r_str = if rt == "i8*" { r.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap(); c };
+                            let cmp = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_equals(i8* {}, i8* {})", cmp, l_str, r_str).unwrap();
+                            let eq_bit = self.temp();
+                            writeln!(&mut self.ir, "{} = trunc i64 {} to i1", eq_bit, cmp).unwrap();
+                            writeln!(&mut self.ir, "{} = xor i1 {}, 1", result, eq_bit).unwrap()
+                        } else if lt != rt {
+                            let (nl, nr) = if lt.ends_with('*') || lt == "ptr" {
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, if lt == "ptr" { "ptr".to_string() } else { lt.clone() }, l).unwrap(); (c, r.clone())
+                            } else if rt.ends_with('*') || rt == "ptr" {
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, if rt == "ptr" { "ptr".to_string() } else { rt.clone() }, r).unwrap(); (l.clone(), c)
+                            } else { (l.clone(), r.clone()) };
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, {}", result, nl, nr).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp ne {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -2734,9 +2810,16 @@ impl CodeGen {
                         }
                         "push" => {
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
-                            let (val, _) = self.gen_expr(&args[1], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, arr, val).unwrap();
+                            let push_val = if val_ty.ends_with('*') || val_ty == "ptr" {
+                                let casted = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", casted, val_ty.trim_end_matches('*'), val).unwrap();
+                                casted
+                            } else {
+                                val
+                            };
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, arr, push_val).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
                         "pop" => {
@@ -3064,7 +3147,41 @@ impl CodeGen {
                 } else {
                     false
                 };
-                if is_local_fn {
+                let is_expr_fn_ptr = !is_local_fn && fn_name == "unknown_fn";
+                if is_expr_fn_ptr {
+                    // func is an expression (e.g., array[i]) that evaluates to a fn ptr or closure ptr
+                    let (fn_val, fn_ty) = self.gen_expr(func, ctx)?;
+                    if fn_ty == "i64*" {
+                        // Closure: load fn_ptr from index 0 and env_ptr from index 1
+                        let fp_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64, i64* {}", fp_val, fn_val).unwrap();
+                        let env_ptr = self.temp();
+                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_ptr, fn_val).unwrap();
+                        let env_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
+                        let casted_fn = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
+                        if ret_ty == "void" {
+                            writeln!(&mut self.ir, "call void {}({}, i64* {})", casted_fn, args_str.trim(), env_val).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = call {} {}({}, i64* {})", result, ret_ty, casted_fn, args_str.trim(), env_val).unwrap();
+                        }
+                    } else {
+                        // Raw fn ptr stored as i64: inttoptr and call
+                        let fn_i64 = if fn_ty == "i64" { fn_val.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, fn_ty, fn_val).unwrap();
+                            c
+                        };
+                        let casted_fn = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64)*", casted_fn, fn_i64).unwrap();
+                        if ret_ty == "void" {
+                            writeln!(&mut self.ir, "call void {}({})", casted_fn, args_str).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, args_str).unwrap();
+                        }
+                    }
+                } else if is_local_fn {
                     let (fn_ptr, fn_ty) = self.gen_expr(func, ctx)?;
                     if fn_ty == "i64*" {
                         let fp_val = self.temp();
@@ -3170,9 +3287,13 @@ impl CodeGen {
                     _ => self.infer_struct_type(obj, ctx),
                 };
 
-                // Array method dispatch
+                // Array method dispatch: only trigger for explicit Array types or when declared type is
+                // unknown (None) and obj_ty is i64* — never trigger for known struct instances.
+                let is_known_struct = declared_type.as_deref()
+                    .map(|t| self.struct_layouts.contains_key(t))
+                    .unwrap_or(false);
                 let is_array_type = declared_type.as_deref().map(|t| t == "Array:String" || t == "Array").unwrap_or(false)
-                    || obj_ty == "i64*";
+                    || (obj_ty == "i64*" && !is_known_struct);
                 if is_array_type && obj_ty != "i8*" {
                     let is_str = declared_type.as_deref() == Some("Array:String");
                     match method.as_str() {
@@ -3185,17 +3306,41 @@ impl CodeGen {
                         }
                         "push" => {
                             let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
-                            let store_val = if val_ty == "i8*" {
+                            let store_val = if val_ty.ends_with('*') || val_ty == "ptr" {
                                 let c = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", c, val).unwrap();
+                                let base_ty = val_ty.trim_end_matches('*');
+                                writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", c, base_ty, val).unwrap();
                                 c
                             } else { val };
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, obj_ptr, store_val).unwrap();
-                            // Write the new pointer back to the variable (push may realloc)
+                            // Write the new pointer back to the source (push may realloc)
                             if let ExprKind::Ident(var_name) = &obj.node {
                                 let slot = ctx.local_slots.get(var_name.as_str()).cloned().unwrap_or_else(|| var_name.clone());
                                 writeln!(&mut self.ir, "store i64* {}, i64** %{}", result, slot).unwrap();
+                            } else if let ExprKind::FieldAccess { obj: field_obj, field: field_name } = &obj.node {
+                                // Re-derive the struct field GEP and store the new array ptr as i64
+                                let (parent_raw, parent_ty) = self.gen_expr(field_obj, ctx)?;
+                                let parent_ptr = if parent_ty == "i64" {
+                                    let c = self.temp();
+                                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, parent_raw).unwrap();
+                                    c
+                                } else {
+                                    parent_raw
+                                };
+                                let struct_name = match &field_obj.node {
+                                    ExprKind::This => ctx.current_struct.clone().unwrap_or_default(),
+                                    ExprKind::Ident(n) => ctx.local_types.get(n).cloned().unwrap_or_default(),
+                                    _ => self.infer_struct_type(field_obj, ctx).unwrap_or_default(),
+                                };
+                                let field_offset = self.struct_layouts.get(&struct_name)
+                                    .and_then(|fields| fields.iter().position(|f| f == field_name))
+                                    .unwrap_or(0) as i64;
+                                let field_gep = self.temp();
+                                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_gep, parent_ptr, field_offset).unwrap();
+                                let new_i64 = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint i64* {} to i64", new_i64, result).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", new_i64, field_gep).unwrap();
                             }
                             return Ok((result, "i64*".to_string()));
                         }
@@ -3368,7 +3513,37 @@ impl CodeGen {
                     }
                 }
 
-                // String method dispatch (obj_ty == "i8*")
+                // Int/Float/Bool toString must be dispatched before str_methods conversion
+                // to avoid i64 integer values being misidentified as string pointers.
+                if method == "toString" {
+                    if obj_ty == "i64" || obj_ty == "double" || obj_ty == "i1" {
+                        let result = self.temp();
+                        let (fn_name, arg_ty) = match obj_ty.as_str() {
+                            "double" => ("tinox_float_to_string", "double"),
+                            "i1"     => ("tinox_bool_to_string", "i1"),
+                            _        => ("tinox_int_to_string", "i64"),
+                        };
+                        writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, obj_ptr).unwrap();
+                        return Ok((result, "i8*".to_string()));
+                    }
+                }
+
+                // String method dispatch (obj_ty == "i8*", or i64 stored string pointer)
+                let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
+                    "trim","contains","startsWith","endsWith","split","substring","indexOf",
+                    "replace","toString","toInt","toFloat","toBool","repeat","padLeft","padRight",
+                    "count","charAt","toInt64","toFloat64","toBytes","fromBytes","format","encode",
+                    "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
+                    "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
+                    "truncate","ellipsis","mask","redact","normalize"];
+                let is_str_method = str_methods.contains(&method.as_str());
+                let (obj_ptr, obj_ty) = if obj_ty == "i64" && is_str_method {
+                    let s = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, obj_ptr).unwrap();
+                    (s, "i8*".to_string())
+                } else {
+                    (obj_ptr, obj_ty)
+                };
                 if obj_ty == "i8*" {
                     match method.as_str() {
                         "len" => {
@@ -3489,9 +3664,26 @@ impl CodeGen {
                     .unwrap_or(false);
 
                 // Evaluate extra arguments first (used in both paths).
+                // Before generating lambda args, look up expected param types for type inference.
+                let method_key = if let Some(ref dt) = declared_type {
+                    format!("{}_{}", dt, method)
+                } else {
+                    method.clone()
+                };
+                let method_expected_params = self.method_param_types.get(&method_key).cloned();
                 let mut extra_args: Vec<(String, String)> = Vec::new();
-                for arg in args {
+                for (i, arg) in args.iter().enumerate() {
+                    if matches!(&arg.node, ExprKind::Lambda { .. }) {
+                        if let Some(ref mep) = method_expected_params {
+                            if let Some(tinox_parser::Type::Fn { params: fn_params, .. }) = mep.get(i) {
+                                self.pending_lambda_param_types = fn_params.iter().map(|t| {
+                                    if let tinox_parser::Type::Named(n) = t { Some(n.clone()) } else { None }
+                                }).collect();
+                            }
+                        }
+                    }
                     let (val, ty) = self.gen_expr(arg, ctx)?;
+                    self.pending_lambda_param_types.clear();
                     extra_args.push((val, ty));
                 }
 
@@ -3581,7 +3773,8 @@ impl CodeGen {
                     .and_then(|m| m.get(method.as_str()))
                     .cloned()
                 {
-                    // Fn-type field call: load i64, inttoptr to function pointer, call
+                    // Fn-type field call: stored value is a closure struct address {fn_ptr: i64, env_ptr: i64*}.
+                    // Load fn_ptr and env_ptr, convert args to i64 (ptrtoint), then call fn_ptr(args..., env_ptr).
                     let struct_name = declared_type.as_deref().unwrap();
                     let field_offset = self.struct_layouts.get(struct_name)
                         .and_then(|fields| fields.iter().position(|f| f == method))
@@ -3595,26 +3788,40 @@ impl CodeGen {
                     };
                     let field_gep = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_gep, obj_struct_ptr, field_offset).unwrap();
-                    let fp_i64 = self.temp();
-                    writeln!(&mut self.ir, "{} = load i64, i64* {}", fp_i64, field_gep).unwrap();
-                    let (ret_ty, param_tys) = fn_sig;
-                    let fn_ptr_ty = format!("{} ({})*", ret_ty, param_tys.join(", "));
+                    // The stored i64 is a closure struct address (ptrtoint of i64* closure alloc)
+                    let closure_addr = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", closure_addr, field_gep).unwrap();
+                    let closure_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", closure_ptr, closure_addr).unwrap();
+                    // Load fn_ptr (i64) from closure slot 0
+                    let fn_ptr_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", fn_ptr_i64, closure_ptr).unwrap();
+                    // Load env_ptr from closure slot 1
+                    let env_gep = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_gep, closure_ptr).unwrap();
+                    let env_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_ptr, env_gep).unwrap();
+                    // Tinox lambdas always have LLVM signature i64 (i64, i64*) regardless of declared type
                     let fp = self.temp();
-                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", fp, fp_i64, fn_ptr_ty).unwrap();
-                    let mut call_args_str = String::new();
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { call_args_str.push_str(", "); }
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", fp, fn_ptr_i64).unwrap();
+                    // Generate call args: convert pointer args to i64 via ptrtoint
+                    let mut call_args: Vec<String> = Vec::new();
+                    for arg in args.iter() {
                         let (v, t) = self.gen_expr(arg, ctx)?;
-                        call_args_str.push_str(&format!("{} {}", t, v));
+                        if t == "i64*" || t == "i8*" || t == "ptr" || (t.len() > 1 && t.ends_with('*')) {
+                            let as_i64 = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", as_i64, t, v).unwrap();
+                            call_args.push(format!("i64 {}", as_i64));
+                        } else {
+                            call_args.push(format!("{} {}", t, v));
+                        }
                     }
+                    call_args.push(format!("i64* {}", env_ptr));
                     let result = self.temp();
-                    if ret_ty == "void" {
-                        writeln!(&mut self.ir, "call void {}({})", fp, call_args_str).unwrap();
-                        Ok((result, "void".to_string()))
-                    } else {
-                        writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, fp, call_args_str).unwrap();
-                        Ok((result, ret_ty))
-                    }
+                    let args_str = call_args.join(", ");
+                    // Discard return value (lambdas return i64 but field type may say void)
+                    writeln!(&mut self.ir, "{} = call i64 {}({})", result, fp, args_str).unwrap();
+                    Ok((result, "i64".to_string()))
                 } else {
                     // Direct (static) dispatch — resolve through inheritance chain.
                     let logical_name = if let Some(class) = declared_type {
@@ -3655,8 +3862,9 @@ impl CodeGen {
                         self.gen_expr(obj, ctx)?
                     } else if ctx.locals.contains_key(name) {
                         let (var_ty, _) = ctx.locals.get(name).unwrap();
+                        let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                         let loaded_ptr = self.temp();
-                        writeln!(&mut self.ir, "{} = load {}, {}* %{}", loaded_ptr, var_ty, var_ty, name).unwrap();
+                        writeln!(&mut self.ir, "{} = load {}, {}* %{}", loaded_ptr, var_ty, var_ty, slot).unwrap();
                         (loaded_ptr, var_ty.clone())
                     } else {
                         self.gen_expr(obj, ctx)?
@@ -3665,7 +3873,7 @@ impl CodeGen {
                     self.gen_expr(obj, ctx)?
                 };
 
-                if is_map {
+                if is_map || idx_ty == "i8*" {
                     // Map[key] → tinox_map_get(i8* map, i8* key) -> i64
                     let map_i8 = if base_ty == "i8*" { base_ptr.clone() } else {
                         let c = self.temp();
@@ -3855,7 +4063,13 @@ impl CodeGen {
                         cast
                     } else if val_ty != "i64" && !val_ty.is_empty() {
                         let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        if val_ty == "ptr" {
+                            writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", cast, val).unwrap();
+                        } else if val_ty.ends_with('*') {
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        }
                         cast
                     } else {
                         val
@@ -3986,12 +4200,17 @@ impl CodeGen {
                 // If this is actually a static method call (ClassName::method(args)), dispatch to it
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
-                    let mut args_str = String::new();
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { args_str.push_str(", "); }
-                        let (v, t) = self.gen_expr(arg, ctx)?;
-                        args_str.push_str(&format!("{} {}", t, v));
+                    let mut args_parts: Vec<String> = Vec::new();
+                    // Class methods always have an implicit self param in their LLVM definition.
+                    // Pass null as self since these are static-style calls (constructor / utility).
+                    if self.method_param_types.contains_key(&static_key) {
+                        args_parts.push("i64* null".to_string());
                     }
+                    for arg in args.iter() {
+                        let (v, t) = self.gen_expr(arg, ctx)?;
+                        args_parts.push(format!("{} {}", t, v));
+                    }
+                    let args_str = args_parts.join(", ");
                     let result = self.temp();
                     writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, static_key, args_str).unwrap();
                     return Ok((result, ret_ty));
@@ -4038,7 +4257,26 @@ impl CodeGen {
 
                     // Store arguments starting at index 1
                     for (i, arg) in args.iter().enumerate() {
-                        let (val, _) = self.gen_expr(arg, ctx)?;
+                        let (val, val_ty) = self.gen_expr(arg, ctx)?;
+                        let store_val = if val_ty == "i1" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                            c
+                        } else if val_ty == "double" || val_ty == "float" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                            c
+                        } else if val_ty != "i64" && !val_ty.is_empty() && val_ty != "void" {
+                            let c = self.temp();
+                            if val_ty == "ptr" {
+                                writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", c, val).unwrap();
+                            } else {
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                            }
+                            c
+                        } else {
+                            val
+                        };
                         let arg_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
@@ -4048,7 +4286,7 @@ impl CodeGen {
                             i + 1
                         )
                         .unwrap();
-                        writeln!(&mut self.ir, "store i64 {}, i64* {}", val, arg_ptr).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, arg_ptr).unwrap();
                     }
                     Ok((typed_ptr, "i64*".to_string()))
                 }
@@ -4869,11 +5107,12 @@ impl CodeGen {
                 let (base_ptr, _var_ty) = if let ExprKind::Ident(name) = &obj.node {
                     if ctx.locals.contains_key(name) {
                         let (vty, _) = ctx.locals.get(name).unwrap();
+                        let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                         let loaded_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
                             "{} = load {}, {}* %{}",
-                            loaded_ptr, vty, vty, name
+                            loaded_ptr, vty, vty, slot
                         )
                         .unwrap();
                         (loaded_ptr, vty.clone())
@@ -5018,6 +5257,13 @@ impl CodeGen {
                 .locals
                 .insert(p.name.clone(), (llvm_ty.clone(), lambda_ctx.locals.len()));
             lambda_ctx.params.insert(p.name.clone());
+            if let tinox_parser::Type::Named(struct_name) = &p.param_type {
+                lambda_ctx.local_types.insert(p.name.clone(), struct_name.clone());
+            } else if matches!(p.param_type, tinox_parser::Type::Infer | tinox_parser::Type::Any) {
+                if let Some(Some(inferred)) = self.pending_lambda_param_types.get(i) {
+                    lambda_ctx.local_types.insert(p.name.clone(), inferred.clone());
+                }
+            }
         }
         let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
         let free_vars = collect_free_vars(body, &param_names);
@@ -5054,8 +5300,9 @@ impl CodeGen {
                         field_ptr, env_typed, i
                     )
                     .unwrap();
+                    let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                     let val = self.temp();
-                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, name).unwrap();
+                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
                     writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, field_ptr).unwrap();
                 }
             }
@@ -5096,6 +5343,10 @@ impl CodeGen {
                 lambda_ctx
                     .locals
                     .insert(name.clone(), (ty.clone(), lambda_ctx.locals.len()));
+                // Propagate struct type info so method dispatch works inside the lambda
+                if let Some(struct_type) = ctx.local_types.get(name) {
+                    lambda_ctx.local_types.insert(name.clone(), struct_type.clone());
+                }
             }
         }
         self.gen_stmt_body(
@@ -5799,6 +6050,32 @@ fn expr_kind_name(kind: &ExprKind) -> &'static str {
     }
 }
 
+fn collect_free_vars_stmt(stmt: &tinox_parser::Stmt, param_names: &HashSet<String>, vars: &mut HashSet<String>) {
+    match &stmt.node {
+        StmtKind::Expr(e) => collect_free_vars_inner(e, param_names, vars),
+        StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
+        StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
+        StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
+        StmtKind::Assignment { target, value } => {
+            collect_free_vars_inner(target, param_names, vars);
+            collect_free_vars_inner(value, param_names, vars);
+        }
+        StmtKind::If { cond, then_branch, else_branch } => {
+            collect_free_vars_inner(cond, param_names, vars);
+            collect_free_vars_stmt(then_branch, param_names, vars);
+            if let Some(eb) = else_branch { collect_free_vars_stmt(eb, param_names, vars); }
+        }
+        StmtKind::While { cond, body } => {
+            collect_free_vars_inner(cond, param_names, vars);
+            collect_free_vars_stmt(body, param_names, vars);
+        }
+        StmtKind::Block(stmts) => {
+            for s in stmts { collect_free_vars_stmt(s, param_names, vars); }
+        }
+        _ => {}
+    }
+}
+
 fn collect_free_vars(expr: &Expr, param_names: &HashSet<String>) -> HashSet<String> {
     let mut vars = HashSet::new();
     collect_free_vars_inner(expr, param_names, &mut vars);
@@ -5870,8 +6147,20 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
                     StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
                     StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
                     StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::If { cond, .. } => {
+                    StmtKind::Assignment { target, value } => {
+                        collect_free_vars_inner(target, param_names, vars);
+                        collect_free_vars_inner(value, param_names, vars);
+                    }
+                    StmtKind::If { cond, then_branch, else_branch } => {
                         collect_free_vars_inner(cond, param_names, vars);
+                        collect_free_vars_stmt(then_branch, param_names, vars);
+                        if let Some(eb) = else_branch {
+                            collect_free_vars_stmt(eb, param_names, vars);
+                        }
+                    }
+                    StmtKind::While { cond, body } => {
+                        collect_free_vars_inner(cond, param_names, vars);
+                        collect_free_vars_stmt(body, param_names, vars);
                     }
                     _ => {}
                 }
