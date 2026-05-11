@@ -1,4 +1,12 @@
-import mini_http;
+import tinox.core.http_server;
+import tinox.core.json;
+
+@JsonSerializable
+class User
+{
+    var id: Int64;
+    var name: String;
+}
 
 class UserController
 {
@@ -8,7 +16,8 @@ class UserController
     @StatusCode(200)
     fn listUsers(ctx: HttpContext) -> Nothing
     {
-        ctx.response.body = "[{\"id\":1}]";
+        let users: User[] = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+        ctx.response.body = Json::serialize(users);
     }
 
     @POST
@@ -17,6 +26,7 @@ class UserController
     @StatusCode(201)
     fn createUser(ctx: HttpContext) -> Nothing
     {
-        ctx.response.body = "{\"id\":2}";
+        let user: User = Json::deserialize<User>(ctx.request.body);
+        ctx.response.body = Json::serialize(user);
     }
 }
