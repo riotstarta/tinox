@@ -637,3 +637,422 @@ fn fmt_pattern(pat: &Pattern) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tinox_lexer::Lexer;
+    use crate::Parser;
+
+    fn fmt(src: &str) -> String {
+        let tokens = Lexer::new(src).tokenize().unwrap();
+        let ast = Parser::new(tokens).parse().unwrap();
+        Formatter::new().format(&ast)
+    }
+
+    // --- functions ---
+
+    #[test]
+    fn test_fmt_simple_function() {
+        let out = fmt("fn add(a: Int32, b: Int32) -> Int32 { return a + b; }");
+        assert!(out.contains("fn add(a: Int32, b: Int32) -> Int32"));
+        assert!(out.contains("return a + b;"));
+    }
+
+    #[test]
+    fn test_fmt_function_no_params() {
+        let out = fmt("fn greet() -> Nothing {}");
+        assert!(out.contains("fn greet() -> Nothing"));
+    }
+
+    #[test]
+    fn test_fmt_async_function() {
+        let out = fmt("async fn fetch() -> Nothing {}");
+        assert!(out.contains("async fn fetch()"));
+    }
+
+    #[test]
+    fn test_fmt_function_with_annotation() {
+        let out = fmt("@inline\nfn fast() -> Nothing {}");
+        assert!(out.contains("@inline"));
+        assert!(out.contains("fn fast()"));
+    }
+
+    #[test]
+    fn test_fmt_function_with_annotation_args() {
+        let out = fmt("@deprecated(\"use newFunc\")\nfn old() -> Nothing {}");
+        assert!(out.contains("@deprecated(\"use newFunc\")"));
+    }
+
+    #[test]
+    fn test_fmt_function_with_doc_comment() {
+        let out = fmt("/** Returns x doubled */\nfn double(x: Int32) -> Int32 { return x * 2; }");
+        assert!(out.contains("Returns x doubled"));
+        assert!(out.contains("fn double(x: Int32)"));
+    }
+
+    #[test]
+    fn test_fmt_generic_function() {
+        let out = fmt("fn identity<T>(x: T) -> T { return x; }");
+        assert!(out.contains("fn identity<T>(x: T) -> T"));
+    }
+
+    // --- statements ---
+
+    #[test]
+    fn test_fmt_let_with_type() {
+        let out = fmt("fn f() { let x: Int32 = 5; }");
+        assert!(out.contains("let x: Int32 = 5;"));
+    }
+
+    #[test]
+    fn test_fmt_let_inferred() {
+        let out = fmt("fn f() { let x = 42; }");
+        assert!(out.contains("let x = 42;"));
+    }
+
+    #[test]
+    fn test_fmt_var() {
+        let out = fmt("fn f() { var count: Int32 = 0; }");
+        assert!(out.contains("var count: Int32 = 0;"));
+    }
+
+    #[test]
+    fn test_fmt_return() {
+        let out = fmt("fn f() -> Int32 { return 1; }");
+        assert!(out.contains("return 1;"));
+    }
+
+    #[test]
+    fn test_fmt_return_void() {
+        let out = fmt("fn f() { return; }");
+        assert!(out.contains("return;"));
+    }
+
+    #[test]
+    fn test_fmt_if_else() {
+        let out = fmt("fn f(x: Int32) -> Nothing { if x > 0 { return; } else { return; } }");
+        assert!(out.contains("if x > 0"));
+        assert!(out.contains("else"));
+    }
+
+    #[test]
+    fn test_fmt_while() {
+        let out = fmt("fn f() { while true { break; } }");
+        assert!(out.contains("while true"));
+        assert!(out.contains("break;"));
+    }
+
+    #[test]
+    fn test_fmt_for_in() {
+        let out = fmt("fn f() { for i in 0..10 { continue; } }");
+        assert!(out.contains("for i in"));
+        assert!(out.contains("0..10"));
+    }
+
+    #[test]
+    fn test_fmt_loop() {
+        let out = fmt("fn f() { loop { break; } }");
+        assert!(out.contains("loop"));
+        assert!(out.contains("break;"));
+    }
+
+    #[test]
+    fn test_fmt_assignment() {
+        let out = fmt("fn f() { var x = 1; x = 2; }");
+        assert!(out.contains("x = 2;"));
+    }
+
+    #[test]
+    fn test_fmt_throw() {
+        let out = fmt("fn f() { throw \"error\"; }");
+        assert!(out.contains("throw"));
+        assert!(out.contains("\"error\""));
+    }
+
+    #[test]
+    fn test_fmt_try_catch() {
+        let out = fmt("fn f() { try { throw \"x\"; } catch e: String { return; } }");
+        assert!(out.contains("try"));
+        assert!(out.contains("catch e: String"));
+    }
+
+    #[test]
+    fn test_fmt_break_continue() {
+        let out = fmt("fn f() { while true { break; continue; } }");
+        assert!(out.contains("break;"));
+        assert!(out.contains("continue;"));
+    }
+
+    // --- expressions ---
+
+    #[test]
+    fn test_fmt_binary_ops() {
+        let out = fmt("fn f() -> Int32 { return 1 + 2 * 3; }");
+        assert!(out.contains("1 + 2 * 3"));
+    }
+
+    #[test]
+    fn test_fmt_unary_neg() {
+        let out = fmt("fn f(x: Int32) -> Int32 { return -x; }");
+        assert!(out.contains("-x"));
+    }
+
+    #[test]
+    fn test_fmt_call() {
+        let out = fmt("fn f() { println(\"hi\"); }");
+        assert!(out.contains("println(\"hi\")"));
+    }
+
+    #[test]
+    fn test_fmt_method_call() {
+        let out = fmt("fn f(s: String) { s.length(); }");
+        assert!(out.contains("s.length()"));
+    }
+
+    #[test]
+    fn test_fmt_field_access() {
+        let out = fmt("fn f(p: Point) -> Int32 { return p.x; }");
+        assert!(out.contains("p.x"));
+    }
+
+    #[test]
+    fn test_fmt_index() {
+        let out = fmt("fn f(a: Array<Int32>) -> Int32 { return a[0]; }");
+        assert!(out.contains("a[0]"));
+    }
+
+    #[test]
+    fn test_fmt_new() {
+        let out = fmt("fn f() -> Foo { return new Foo(); }");
+        assert!(out.contains("new Foo()"));
+    }
+
+    #[test]
+    fn test_fmt_array_literal() {
+        let out = fmt("fn f() { let a = [1, 2, 3]; }");
+        assert!(out.contains("[1, 2, 3]"));
+    }
+
+    #[test]
+    fn test_fmt_map_literal() {
+        let out = fmt("fn f() { let m = @{\"a\" => 1}; }");
+        assert!(out.contains("@{"));
+        assert!(out.contains("=>"));
+    }
+
+    #[test]
+    fn test_fmt_cast() {
+        let out = fmt("fn f(x: Int32) -> Int64 { return x as Int64; }");
+        assert!(out.contains("x as Int64"));
+    }
+
+    #[test]
+    fn test_fmt_range_exclusive() {
+        let out = fmt("fn f() { for i in 0..5 {} }");
+        assert!(out.contains("0..5"));
+    }
+
+    #[test]
+    fn test_fmt_range_inclusive() {
+        let out = fmt("fn f() { for i in 0...5 {} }");
+        assert!(out.contains("0...5"));
+    }
+
+    #[test]
+    fn test_fmt_compound_assign() {
+        let out = fmt("fn f() { var x = 1; x += 2; }");
+        assert!(out.contains("+="));
+    }
+
+    #[test]
+    fn test_fmt_match() {
+        let out = fmt("fn f(x: Int32) -> Nothing { match x { 1 => return; _ => return; } }");
+        assert!(out.contains("match x"));
+        assert!(out.contains("=>"));
+        assert!(out.contains("_"));
+    }
+
+    #[test]
+    fn test_fmt_enum_value() {
+        let out = fmt("fn f() -> Color { return Color::Red; }");
+        assert!(out.contains("Color::Red"));
+    }
+
+    // --- types ---
+
+    #[test]
+    fn test_fmt_type_array() {
+        let out = fmt("fn f(a: Array<Int32>) -> Nothing {}");
+        assert!(out.contains("Array<Int32>"));
+    }
+
+    #[test]
+    fn test_fmt_type_map() {
+        let out = fmt("fn f(m: Map<String, Int32>) -> Nothing {}");
+        assert!(out.contains("Map<String, Int32>"));
+    }
+
+    #[test]
+    fn test_fmt_type_fn() {
+        let out = fmt("fn f(cb: fnc(Int32) -> Bool) -> Nothing {}");
+        assert!(out.contains("-> Bool"));
+    }
+
+    #[test]
+    fn test_fmt_type_tuple() {
+        let out = fmt("fn f() -> (Int32, String) { return (1, \"x\"); }");
+        assert!(out.contains("(Int32, String)"));
+    }
+
+    // --- class ---
+
+    #[test]
+    fn test_fmt_class_basic() {
+        let out = fmt("class Dog { var name: String; fn bark() -> Nothing {} }");
+        assert!(out.contains("class Dog"));
+        assert!(out.contains("var name: String;"));
+        assert!(out.contains("fn bark() -> Nothing"));
+    }
+
+    #[test]
+    fn test_fmt_class_extends() {
+        let out = fmt("class Cat extends Animal { fn meow() -> Nothing {} }");
+        assert!(out.contains("extends Animal"));
+    }
+
+    #[test]
+    fn test_fmt_class_implements() {
+        let out = fmt("class Dog implements Runnable { fn run() -> Nothing {} }");
+        assert!(out.contains("implements Runnable"));
+    }
+
+    #[test]
+    fn test_fmt_class_static_method() {
+        let out = fmt("class Util { fnc create() -> Util {} }");
+        assert!(out.contains("fnc create()"));
+    }
+
+    #[test]
+    fn test_fmt_class_with_annotation() {
+        let out = fmt("@ApplicationComponent\nclass Repo { fn find() -> Nothing {} }");
+        assert!(out.contains("@ApplicationComponent"));
+        assert!(out.contains("class Repo"));
+    }
+
+    #[test]
+    fn test_fmt_class_generic() {
+        let out = fmt("class Box<T> { var value: T; }");
+        assert!(out.contains("class Box<T>"));
+        assert!(out.contains("value: T"));
+    }
+
+    // --- interface / enum / trait ---
+
+    #[test]
+    fn test_fmt_interface() {
+        let out = fmt("interface Printable { fn print() -> Nothing; }");
+        assert!(out.contains("interface Printable"));
+        assert!(out.contains("fn print() -> Nothing;"));
+    }
+
+    #[test]
+    fn test_fmt_interface_extends() {
+        let out = fmt("interface ReadWrite extends Read, Write { fn rw() -> Nothing; }");
+        assert!(out.contains("extends Read, Write"));
+    }
+
+    #[test]
+    fn test_fmt_enum_simple() {
+        let out = fmt("enum Color { Red; Green; Blue; }");
+        assert!(out.contains("enum Color"));
+        assert!(out.contains("Red;"));
+        assert!(out.contains("Green;"));
+    }
+
+    #[test]
+    fn test_fmt_enum_with_args() {
+        let out = fmt("enum Shape { Circle(Float64); Rect(Float64, Float64); }");
+        assert!(out.contains("Circle(Float64)"));
+        assert!(out.contains("Rect(Float64, Float64)"));
+    }
+
+    #[test]
+    fn test_fmt_trait() {
+        let out = fmt("trait Serialize { fn serialize() -> String; }");
+        assert!(out.contains("trait Serialize"));
+        assert!(out.contains("fn serialize() -> String;"));
+    }
+
+    // --- import / module / namespace ---
+
+    #[test]
+    fn test_fmt_import() {
+        let out = fmt("import std.io;");
+        assert!(out.contains("import std::io;"));
+    }
+
+    #[test]
+    fn test_fmt_import_alias() {
+        let out = fmt("import std.io as io;");
+        assert!(out.contains("as io;"));
+    }
+
+    #[test]
+    fn test_fmt_module() {
+        let out = fmt("module myapp;");
+        assert!(out.contains("module myapp;"));
+    }
+
+    #[test]
+    fn test_fmt_namespace() {
+        let out = fmt("namespace net { fn connect() -> Nothing {} }");
+        assert!(out.contains("namespace net"));
+        assert!(out.contains("fn connect()"));
+    }
+
+    // --- immutable ---
+
+    #[test]
+    fn test_fmt_immutable() {
+        let out = fmt("immutable Point(x: Int32, y: Int32)");
+        assert!(out.contains("immutable Point(x: Int32, y: Int32)"));
+    }
+
+    // --- multiple declarations ---
+
+    #[test]
+    fn test_fmt_multiple_decls_separated_by_blank_line() {
+        let out = fmt("fn a() -> Nothing {}\nfn b() -> Nothing {}");
+        // Two functions should have a blank line between them
+        assert!(out.contains("fn a()"));
+        assert!(out.contains("fn b()"));
+        // There should be a newline separating them
+        let a_pos = out.find("fn a()").unwrap();
+        let b_pos = out.find("fn b()").unwrap();
+        assert!(b_pos > a_pos);
+    }
+
+    // --- idempotence: format(format(src)) == format(src) ---
+
+    #[test]
+    fn test_fmt_idempotent_function() {
+        let src = "fn add(a: Int32, b: Int32) -> Int32 { return a + b; }";
+        let first = fmt(src);
+        // Parse the formatted output and format again
+        let tokens = tinox_lexer::Lexer::new(&first).tokenize().unwrap();
+        let ast2 = Parser::new(tokens).parse().unwrap();
+        let second = Formatter::new().format(&ast2);
+        assert_eq!(first, second, "formatter should be idempotent");
+    }
+
+    #[test]
+    fn test_fmt_idempotent_class() {
+        let src = "class Foo { var x: Int32; fn bar() -> Nothing {} }";
+        let first = fmt(src);
+        let tokens = tinox_lexer::Lexer::new(&first).tokenize().unwrap();
+        let ast2 = Parser::new(tokens).parse().unwrap();
+        let second = Formatter::new().format(&ast2);
+        assert_eq!(first, second);
+    }
+}

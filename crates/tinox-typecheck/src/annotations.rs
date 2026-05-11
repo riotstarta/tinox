@@ -897,3 +897,442 @@ pub fn validate_annotations(
     }
     errors
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tinox_lexer::Lexer;
+    use tinox_parser::Parser;
+
+    fn parse(src: &str) -> tinox_parser::SourceFile {
+        let tokens = Lexer::new(src).tokenize().unwrap();
+        Parser::new(tokens).parse().unwrap()
+    }
+
+    fn proc(src: &str) -> AnnotationProcessingResult {
+        process_annotations(&parse(src))
+    }
+
+    fn valid(src: &str) -> Vec<Error> {
+        validate_annotations(&parse(src))
+    }
+
+    // --- validate: unknown annotation ---
+
+    #[test]
+    fn test_validate_unknown_annotation_on_fn() {
+        let errors = valid("@unknownThing\nfn f() -> Nothing {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("unknown annotation"));
+    }
+
+    #[test]
+    fn test_validate_known_inline_on_fn_ok() {
+        let errors = valid("@inline\nfn f() -> Nothing {}");
+        assert!(errors.is_empty(), "errors: {:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_validate_inline_on_class_err() {
+        let errors = valid("@inline\nclass Foo {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
+    }
+
+    #[test]
+    fn test_validate_get_on_method_ok() {
+        let errors = valid("class Ctrl { @GET\nfn list(ctx: Ctx) -> Nothing {} }");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_validate_get_on_function_err() {
+        let errors = valid("@GET\nfn list() -> Nothing {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
+    }
+
+    #[test]
+    fn test_validate_path_missing_arg_err() {
+        // @Path requires 1 arg
+        let errors = valid("class Ctrl { @Path\nfn list() -> Nothing {} }");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("requires at least"));
+    }
+
+    #[test]
+    fn test_validate_application_component_on_class_ok() {
+        let errors = valid("@ApplicationComponent\nclass Svc {}");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_inject_on_field_ok() {
+        let errors = valid("class A { @Inject\nvar svc: SomeService; }");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_inject_on_method_err() {
+        let errors = valid("class A { @Inject\nfn doThing() -> Nothing {} }");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
+    }
+
+    #[test]
+    fn test_validate_deprecated_on_fn_ok() {
+        let errors = valid("@deprecated\nfn old() -> Nothing {}");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_deprecated_on_class_ok() {
+        let errors = valid("@deprecated\nclass OldClass {}");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_test_on_method_ok() {
+        let errors = valid("class Suite { @Test(\"should pass\")\nfn myTest() -> Nothing {} }");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_command_on_class_ok() {
+        let errors = valid("@Command(\"build\", \"build the project\")\nclass BuildCmd {}");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_custom_annotation_class_self_valid() {
+        // @annotation marks a class as custom annotation — it should be valid on itself
+        let errors = valid("@annotation\nclass MyAnn {}");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_custom_annotation_usable_after_registration() {
+        // After @annotation class MyAnn, using @MyAnn should not produce "unknown annotation"
+        let errors = valid("@annotation\nclass MyAnn {}\n@MyAnn\nfn f() -> Nothing {}");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    // --- process: routes ---
+
+    #[test]
+    fn test_process_get_route() {
+        let result = proc(r#"
+@Path("/users")
+class UserCtrl {
+    @GET
+    fn list() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries.len(), 1);
+        let r = &result.route_entries[0];
+        assert_eq!(r.method, "GET");
+        assert_eq!(r.path, "/users");
+        assert_eq!(r.class_name, "UserCtrl");
+        assert_eq!(r.method_name, "list");
+    }
+
+    #[test]
+    fn test_process_post_route_with_method_path() {
+        let result = proc(r#"
+@Path("/api")
+class Ctrl {
+    @POST
+    @Path("/items")
+    fn create() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries.len(), 1);
+        assert_eq!(result.route_entries[0].method, "POST");
+        assert_eq!(result.route_entries[0].path, "/api/items");
+    }
+
+    #[test]
+    fn test_process_status_code() {
+        let result = proc(r#"
+class Ctrl {
+    @POST
+    @StatusCode(201)
+    fn create() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries[0].status_code, Some(201));
+    }
+
+    #[test]
+    fn test_process_produces_consumes() {
+        let result = proc(r#"
+class Ctrl {
+    @GET
+    @Produces("application/json")
+    @Consumes("application/json")
+    fn get() -> Nothing {}
+}
+"#);
+        let r = &result.route_entries[0];
+        assert_eq!(r.produces.as_deref(), Some("application/json"));
+        assert_eq!(r.consumes.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn test_process_no_routes_when_no_http_annotation() {
+        let result = proc("class Svc { fn doWork() -> Nothing {} }");
+        assert!(result.route_entries.is_empty());
+    }
+
+    #[test]
+    fn test_process_multiple_routes() {
+        let result = proc(r#"
+class Ctrl {
+    @GET
+    fn list() -> Nothing {}
+    @POST
+    fn create() -> Nothing {}
+    @DELETE
+    fn delete() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries.len(), 3);
+    }
+
+    // --- process: class-level auth propagates to methods ---
+
+    #[test]
+    fn test_process_class_auth_propagates() {
+        let result = proc(r#"
+@Auth("bearer")
+class Ctrl {
+    @GET
+    fn list() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries[0].auth_type.as_deref(), Some("bearer"));
+    }
+
+    #[test]
+    fn test_process_method_auth_overrides_class() {
+        let result = proc(r#"
+@Auth("bearer")
+class Ctrl {
+    @GET
+    @Auth("basic")
+    fn list() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries[0].auth_type.as_deref(), Some("basic"));
+    }
+
+    // --- process: inline ---
+
+    #[test]
+    fn test_process_inline_function() {
+        let result = proc("@inline\nfn fast() -> Nothing {}");
+        assert!(result.inline_functions.contains("fast"));
+    }
+
+    #[test]
+    fn test_process_inline_method() {
+        let result = proc("class Util { @inline\nfn compute() -> Nothing {} }");
+        assert!(result.inline_methods.contains(&("Util".to_string(), "compute".to_string())));
+    }
+
+    // --- process: deprecated ---
+
+    #[test]
+    fn test_process_deprecated_function_warning() {
+        let result = proc("@deprecated\nfn old() -> Nothing {}");
+        assert_eq!(result.deprecated_warnings.len(), 1);
+        assert!(result.deprecated_warnings[0].contains("old"));
+    }
+
+    #[test]
+    fn test_process_deprecated_with_message() {
+        let result = proc("@deprecated(\"use newFn\")\nfn old() -> Nothing {}");
+        assert!(result.deprecated_warnings[0].contains("use newFn"));
+    }
+
+    #[test]
+    fn test_process_deprecated_class() {
+        let result = proc("@deprecated\nclass OldClass {}");
+        assert!(result.deprecated_warnings[0].contains("OldClass"));
+    }
+
+    #[test]
+    fn test_process_deprecated_method() {
+        let result = proc("class Svc { @deprecated\nfn oldMethod() -> Nothing {} }");
+        assert!(result.deprecated_warnings[0].contains("oldMethod"));
+    }
+
+    // --- process: DI components ---
+
+    #[test]
+    fn test_process_application_component() {
+        let result = proc("@ApplicationComponent\nclass Repo {}");
+        assert_eq!(result.di_components.len(), 1);
+        assert_eq!(result.di_components[0].scope, DiScope::Application);
+        assert_eq!(result.di_components[0].class_name, "Repo");
+    }
+
+    #[test]
+    fn test_process_startup_component() {
+        let result = proc("@Startup\nclass Initializer {}");
+        assert_eq!(result.di_components[0].scope, DiScope::Startup);
+    }
+
+    #[test]
+    fn test_process_http_request_scoped() {
+        let result = proc("@HttpRequestScoped\nclass Handler {}");
+        assert_eq!(result.di_components[0].scope, DiScope::HttpRequest);
+    }
+
+    #[test]
+    fn test_process_inject_fields_collected() {
+        let result = proc(r#"
+@ApplicationComponent
+class UserService {
+    @Inject
+    var repo: UserRepository;
+}
+"#);
+        let comp = &result.di_components[0];
+        assert_eq!(comp.inject_fields.len(), 1);
+        assert_eq!(comp.inject_fields[0].field_name, "repo");
+        assert_eq!(comp.inject_fields[0].field_type, "UserRepository");
+    }
+
+    // --- process: @Log ---
+
+    #[test]
+    fn test_process_log_class() {
+        let result = proc("@Log\nclass MyService {}");
+        assert!(result.log_classes.contains("MyService"));
+    }
+
+    // --- process: @Config ---
+
+    #[test]
+    fn test_process_config_field() {
+        let result = proc(r#"
+class App {
+    @Config("server.port")
+    var port: Int64;
+}
+"#);
+        assert_eq!(result.config_fields.len(), 1);
+        assert_eq!(result.config_fields[0].field_name, "port");
+        assert_eq!(result.config_fields[0].config_key, "server.port");
+    }
+
+    // --- process: @Test ---
+
+    #[test]
+    fn test_process_test_entries() {
+        let result = proc(r#"
+class MyTests {
+    @Test("should add correctly")
+    fn testAdd() -> Nothing {}
+    @Test("should subtract")
+    fn testSub() -> Nothing {}
+}
+"#);
+        assert_eq!(result.test_entries.len(), 2);
+        assert_eq!(result.test_entries[0].class_name, "MyTests");
+        assert_eq!(result.test_entries[0].description, "should add correctly");
+        assert_eq!(result.test_entries[1].method_name, "testSub");
+    }
+
+    #[test]
+    fn test_process_test_uses_method_name_when_no_description() {
+        let result = proc("class T { @Test\nfn myTest() -> Nothing {} }");
+        assert_eq!(result.test_entries[0].description, "myTest");
+    }
+
+    // --- process: @Command / @Option / @Argument ---
+
+    #[test]
+    fn test_process_command_basic() {
+        let result = proc("@Command(\"build\", \"build the project\")\nclass BuildCmd {}");
+        assert_eq!(result.cli_commands.len(), 1);
+        let cmd = &result.cli_commands[0];
+        assert_eq!(cmd.cmd_name, "build");
+        assert_eq!(cmd.description, "build the project");
+        assert!(cmd.version.is_none());
+    }
+
+    #[test]
+    fn test_process_command_with_version() {
+        let result = proc("@Command(\"app\", \"desc\", \"1.0.0\")\nclass App {}");
+        assert_eq!(result.cli_commands[0].version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn test_process_command_with_options() {
+        let result = proc(r#"
+@Command("greet", "greet someone")
+class GreetCmd {
+    @Option("--name,-n", "recipient name")
+    var name: String;
+}
+"#);
+        let cmd = &result.cli_commands[0];
+        assert_eq!(cmd.options.len(), 1);
+        assert_eq!(cmd.options[0].field_name, "name");
+        assert!(cmd.options[0].names.contains(&"--name".to_string()));
+        assert!(cmd.options[0].names.contains(&"-n".to_string()));
+    }
+
+    #[test]
+    fn test_process_command_with_required_option() {
+        let result = proc(r#"
+@Command("run", "run it")
+class RunCmd {
+    @Option("--file,-f", "file path", true)
+    var file: String;
+}
+"#);
+        assert!(result.cli_commands[0].options[0].required);
+    }
+
+    #[test]
+    fn test_process_command_with_argument() {
+        let result = proc(r#"
+@Command("convert", "convert file")
+class ConvertCmd {
+    @Argument(0, "input file")
+    var input: String;
+}
+"#);
+        let cmd = &result.cli_commands[0];
+        assert_eq!(cmd.arguments.len(), 1);
+        assert_eq!(cmd.arguments[0].index, 0);
+        assert_eq!(cmd.arguments[0].field_name, "input");
+    }
+
+    // --- process: namespace ---
+
+    #[test]
+    fn test_process_annotations_in_namespace() {
+        let result = proc(r#"
+namespace web {
+    class Ctrl {
+        @GET
+        fn list() -> Nothing {}
+    }
+}
+"#);
+        assert_eq!(result.route_entries.len(), 1);
+        assert_eq!(result.route_entries[0].method, "GET");
+    }
+
+    // --- custom annotation ---
+
+    #[test]
+    fn test_process_custom_annotation_registered() {
+        let result = proc("@annotation\nclass MyAnn {}");
+        assert!(result.custom_annotation_names.contains(&"MyAnn".to_string()));
+    }
+}

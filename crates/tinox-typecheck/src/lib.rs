@@ -2538,6 +2538,23 @@ mod tests {
         checker.check(&ast)
     }
 
+    fn ok(code: &str) {
+        let result = typecheck_code(code);
+        assert!(result.is_ok(), "expected ok but got errors: {:?}", result.unwrap_err().errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    fn err_contains(code: &str, msg: &str) {
+        let result = typecheck_code(code);
+        assert!(result.is_err(), "expected error containing '{}' but typecheck passed", msg);
+        let bag = result.unwrap_err();
+        assert!(
+            bag.errors.iter().any(|e| e.message.contains(msg)),
+            "expected error containing '{}', got: {:?}",
+            msg,
+            bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_simple_function() {
         let result = typecheck_code("fn main() -> Int32 { return 42; }");
@@ -2640,7 +2657,6 @@ class Circle implements IDrawable {
 
     #[test]
     fn test_interface_extends_undefined_parent() {
-        // Extending an interface that doesn't exist should produce an error.
         let code = r#"
 interface IDrawable extends IDoesNotExist {
     fn draw() { }
@@ -2656,5 +2672,1732 @@ interface IDrawable extends IDoesNotExist {
             "expected error about undefined interface, got: {:?}",
             errors.errors
         );
+    }
+
+    // --- Variables ---
+
+    #[test]
+    fn test_let_explicit_type_ok() {
+        ok("fn f() { let x: Int32 = 5; }");
+    }
+
+    #[test]
+    fn test_let_inferred_type_ok() {
+        ok("fn f() { let x = 42; }");
+    }
+
+    #[test]
+    fn test_let_string_ok() {
+        ok(r#"fn f() { let s: String = "hello"; }"#);
+    }
+
+    #[test]
+    fn test_let_bool_ok() {
+        ok("fn f() { let b: Bool = true; }");
+    }
+
+    #[test]
+    fn test_let_type_mismatch_string_as_int() {
+        err_contains(
+            r#"fn f() { let x: Int32 = "oops"; }"#,
+            "expected",
+        );
+    }
+
+    #[test]
+    fn test_let_type_mismatch_bool_as_int() {
+        err_contains("fn f() { let x: Int32 = true; }", "expected");
+    }
+
+    // --- Function calls ---
+
+    #[test]
+    fn test_call_correct_arg_count() {
+        ok("fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1, 2); }");
+    }
+
+    #[test]
+    fn test_call_too_few_args() {
+        err_contains(
+            "fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1); }",
+            "arguments",
+        );
+    }
+
+    #[test]
+    fn test_call_too_many_args() {
+        err_contains(
+            "fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1, 2, 3); }",
+            "arguments",
+        );
+    }
+
+    #[test]
+    fn test_recursive_function_ok() {
+        ok("fn fact(n: Int32) -> Int32 { if n > 0 { return fact(n); } return 1; }");
+    }
+
+    #[test]
+    fn test_mutual_recursion_ok() {
+        ok("fn a() -> Int32 { return b(); } fn b() -> Int32 { return a(); }");
+    }
+
+    // --- Return type ---
+
+    #[test]
+    fn test_return_type_not_checked() {
+        // The typecheck currently only verifies that a return statement exists,
+        // not that the returned value matches the declared return type.
+        ok(r#"fn f() -> Int32 { return "hello"; }"#);
+    }
+
+    #[test]
+    fn test_return_nothing_ok() {
+        ok("fn f() { return; }");
+    }
+
+    #[test]
+    fn test_return_correct_type_ok() {
+        ok("fn f() -> Bool { return true; }");
+    }
+
+    // --- Binary operators ---
+
+    #[test]
+    fn test_add_ints_ok() {
+        ok("fn f() { let x = 1 + 2; }");
+    }
+
+    #[test]
+    fn test_add_floats_ok() {
+        ok("fn f() { let x = 1.0 + 2.0; }");
+    }
+
+    #[test]
+    fn test_add_bool_int_err() {
+        err_contains("fn f() { let x = true + 1; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_compare_ints_ok() {
+        ok("fn f() { let x = 1 < 2; }");
+    }
+
+    #[test]
+    fn test_logical_and_bools_ok() {
+        ok("fn f() { let x = true && false; }");
+    }
+
+    #[test]
+    fn test_logical_and_int_err() {
+        err_contains("fn f() { let x = 1 && 2; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_equality_ok() {
+        ok("fn f() { let x = 1 == 1; }");
+    }
+
+    // --- Unary operators ---
+
+    #[test]
+    fn test_unary_neg_int_ok() {
+        ok("fn f() { let x = -5; }");
+    }
+
+    #[test]
+    fn test_unary_not_bool_ok() {
+        ok("fn f() { let x = !true; }");
+    }
+
+    #[test]
+    fn test_unary_not_int_err() {
+        err_contains("fn f() { let x = !5; }", "cannot be applied");
+    }
+
+    // --- Control flow ---
+
+    #[test]
+    fn test_if_bool_cond_ok() {
+        ok("fn f() { if true { } }");
+    }
+
+    #[test]
+    fn test_while_bool_cond_ok() {
+        ok("fn f() { while true { } }");
+    }
+
+    #[test]
+    fn test_for_range_ok() {
+        ok("fn f() { for i in 0..10 { } }");
+    }
+
+    #[test]
+    fn test_break_in_loop_ok() {
+        ok("fn f() { while true { break; } }");
+    }
+
+    #[test]
+    fn test_continue_in_loop_ok() {
+        ok("fn f() { while true { continue; } }");
+    }
+
+    #[test]
+    fn test_break_outside_loop_err() {
+        err_contains("fn f() { break; }", "loop");
+    }
+
+    #[test]
+    fn test_continue_outside_loop_err() {
+        err_contains("fn f() { continue; }", "loop");
+    }
+
+    // --- Classes ---
+
+    #[test]
+    fn test_class_instantiation_ok() {
+        ok("class Point { x: Int64; y: Int64; } fn f() { let p = new Point(0, 0); }");
+    }
+
+    #[test]
+    fn test_class_field_access_ok() {
+        ok("class Point { x: Int64; } fn f() { let p = new Point(0); let n = p.x; }");
+    }
+
+    #[test]
+    fn test_class_method_call_ok() {
+        ok(r#"
+class Greeter {
+    fn greet() -> String { return "hi"; }
+}
+fn f() { let g = new Greeter(); g.greet(); }
+"#);
+    }
+
+    #[test]
+    fn test_class_undefined_field_err() {
+        err_contains(
+            "class Point { x: Int64; } fn f() { let p = new Point(0); let n = p.z; }",
+            "no field",
+        );
+    }
+
+    #[test]
+    fn test_class_with_this() {
+        ok(r#"
+class Counter {
+    count: Int64;
+    fn increment() { this.count = 1; }
+}
+"#);
+    }
+
+    // --- Inheritance ---
+
+    #[test]
+    fn test_class_extends_ok() {
+        ok(r#"
+class Animal { fn speak() { } }
+class Dog extends Animal { fn bark() { } }
+"#);
+    }
+
+    // --- Interfaces ---
+
+    #[test]
+    fn test_class_implements_ok() {
+        ok(r#"
+interface Runnable { fn run() { } }
+class Runner implements Runnable { fn run() { } }
+"#);
+    }
+
+    #[test]
+    fn test_class_missing_interface_method_err() {
+        err_contains(
+            r#"
+interface Runnable { fn run() { } }
+class Runner implements Runnable { }
+"#,
+            "run",
+        );
+    }
+
+    #[test]
+    fn test_class_implements_multiple_ok() {
+        ok(r#"
+interface A { fn a() { } }
+interface B { fn b() { } }
+class C implements A, B { fn a() { } fn b() { } }
+"#);
+    }
+
+    #[test]
+    fn test_class_missing_one_of_two_interfaces_err() {
+        err_contains(
+            r#"
+interface A { fn a() { } }
+interface B { fn b() { } }
+class C implements A, B { fn a() { } }
+"#,
+            "b",
+        );
+    }
+
+    // --- Enums ---
+
+    #[test]
+    fn test_enum_ok() {
+        ok("enum Color { Red, Green, Blue }");
+    }
+
+    #[test]
+    fn test_enum_in_match_ok() {
+        ok(r#"
+enum Dir { Left, Right }
+fn f(d: Dir) {
+    match d {
+        Dir::Left => { }
+        Dir::Right => { }
+        _ => { }
+    }
+}
+"#);
+    }
+
+    // --- Generics ---
+
+    #[test]
+    fn test_generic_function_ok() {
+        ok("fn identity<T>(x: T) -> T { return x; }");
+    }
+
+    #[test]
+    fn test_generic_class_ok() {
+        ok("class Box<T> { value: T; } fn f() { let b = new Box(42); }");
+    }
+
+    // --- Array ---
+
+    #[test]
+    fn test_array_index_ok() {
+        ok("fn f() { let arr = [1, 2, 3]; let x = arr[0]; }");
+    }
+
+    #[test]
+    fn test_array_index_non_int_err() {
+        err_contains("fn f() { let arr = [1, 2, 3]; let x = arr[true]; }", "index");
+    }
+
+    // --- Match ---
+
+    #[test]
+    fn test_match_integer_ok() {
+        ok("fn f(x: Int64) { match x { 1 => { } _ => { } } }");
+    }
+
+    #[test]
+    fn test_match_bool_ok() {
+        ok("fn f(b: Bool) { match b { true => { } false => { } } }");
+    }
+
+    // --- Try/catch ---
+
+    #[test]
+    fn test_try_catch_ok() {
+        ok(r#"fn f() { try { let x = 1; } catch e: String { } }"#);
+    }
+
+    // --- Visibility ---
+
+    #[test]
+    fn test_private_field_inside_class_ok() {
+        ok(r#"
+class Foo {
+    private x: Int64;
+    fn getX() -> Int64 { return this.x; }
+}
+"#);
+    }
+
+    #[test]
+    fn test_private_field_outside_class_err() {
+        err_contains(
+            r#"
+class Foo { private x: Int64; }
+fn f() { let foo = new Foo(0); let n = foo.x; }
+"#,
+            "private",
+        );
+    }
+
+    // --- Duplicate definitions ---
+
+    #[test]
+    fn test_duplicate_function_not_detected() {
+        // Duplicate function detection is not yet implemented in the typecheck pass.
+        ok("fn f() { } fn f() { }");
+    }
+
+    // --- Import / module (smoke tests) ---
+
+    #[test]
+    fn test_module_decl_ok() {
+        ok("module myapp;");
+    }
+
+    // --- Nested let / shadowing ---
+
+    #[test]
+    fn test_variable_shadowing_err() {
+        // Tinox typecheck does not allow variable shadowing in the same scope
+        err_contains("fn f() { let x = 1; let x = 2; }", "duplicate definition");
+    }
+
+    #[test]
+    fn test_variable_used_after_declaration() {
+        ok("fn f() { let x = 5; let y = x; }");
+    }
+
+    // --- Nested function calls ---
+
+    #[test]
+    fn test_nested_function_call_ok() {
+        ok("fn double(x: Int32) -> Int32 { return x; } fn f() { let y = double(double(1)); }");
+    }
+
+    // --- Chained method calls ---
+
+    #[test]
+    fn test_chained_method_calls_ok() {
+        ok(r#"
+class Builder {
+    fn step() -> Builder { return this; }
+    fn build() { }
+}
+fn f() { new Builder().step().build(); }
+"#);
+    }
+
+    // --- Multiple return paths ---
+
+    #[test]
+    fn test_multiple_return_paths_ok() {
+        ok("fn f(x: Int32) -> Int32 { if x > 0 { return x; } return 0; }");
+    }
+
+    // --- Undefined variable in different scopes ---
+
+    #[test]
+    fn test_undefined_variable_in_if_branch_err() {
+        err_contains("fn f() { if true { return z; } }", "undefined variable");
+    }
+
+    #[test]
+    fn test_var_defined_in_outer_scope_accessible_in_inner() {
+        ok("fn f() { let x = 5; if true { let y = x; } }");
+    }
+
+    // --- Float operations ---
+
+    #[test]
+    fn test_float_comparison_ok() {
+        ok("fn f() { let x = 1.0 < 2.0; }");
+    }
+
+    #[test]
+    fn test_float_arithmetic_chain_ok() {
+        ok("fn f() { let x = 1.0 + 2.0 * 3.0 - 0.5; }");
+    }
+
+    // --- String operations ---
+
+    #[test]
+    fn test_string_concat_ok() {
+        ok(r#"fn f() { let s = "hello" + " world"; }"#);
+    }
+
+    // --- Nested class usage ---
+
+    #[test]
+    fn test_class_field_assigned_via_this() {
+        ok(r#"
+class Tracker {
+    count: Int64;
+    fn reset() { this.count = 0; }
+}
+"#);
+    }
+
+    #[test]
+    fn test_nested_class_instances_ok() {
+        ok(r#"
+class Engine { fn start() { } }
+class Car { engine: Engine; fn drive() { this.engine.start(); } }
+"#);
+    }
+
+    // --- Interface with multiple methods ---
+
+    #[test]
+    fn test_interface_multiple_methods_fully_impl() {
+        ok(r#"
+interface Shape {
+    fn area() -> Int64 { return 0; }
+    fn perimeter() -> Int64 { return 0; }
+}
+class Square implements Shape {
+    fn area() -> Int64 { return 1; }
+    fn perimeter() -> Int64 { return 4; }
+}
+"#);
+    }
+
+    #[test]
+    fn test_interface_partial_impl_err() {
+        err_contains(r#"
+interface Shape {
+    fn area() -> Int64 { return 0; }
+    fn perimeter() -> Int64 { return 0; }
+}
+class Square implements Shape {
+    fn area() -> Int64 { return 1; }
+}
+"#, "perimeter");
+    }
+
+    // --- Enum match exhaustiveness ---
+
+    #[test]
+    fn test_enum_match_with_wildcard_ok() {
+        ok(r#"
+enum Status { Active, Inactive, Pending }
+fn f(s: Status) {
+    match s {
+        Status::Active => { }
+        _ => { }
+    }
+}
+"#);
+    }
+
+    // --- Immutable / readonly ---
+
+    #[test]
+    fn test_immutable_decl_ok() {
+        ok("immutable Point(x: Int64, y: Int64);");
+    }
+
+    // --- Namespace / imports ---
+
+    #[test]
+    fn test_import_ok() {
+        ok("import std.io;");
+    }
+
+    #[test]
+    fn test_namespace_with_class_ok() {
+        ok(r#"
+namespace geometry {
+    class Circle {
+        radius: Float64;
+        fn area() -> Float64 { return this.radius; }
+    }
+}
+"#);
+    }
+
+    // --- Generic function with multiple type params ---
+
+    #[test]
+    fn test_generic_two_type_params_ok() {
+        ok("fn swap<A, B>(a: A, b: B) -> A { return a; }");
+    }
+
+    // --- Stdlib builtins ---
+
+    #[test]
+    fn test_builtin_print_ok() {
+        ok(r#"fn f() { print("hello"); }"#);
+    }
+
+    #[test]
+    fn test_builtin_println_ok() {
+        ok(r#"fn f() { println(42); }"#);
+    }
+
+    #[test]
+    fn test_builtin_len_ok() {
+        ok("fn f() { let arr = [1, 2, 3]; let n = len(arr); }");
+    }
+
+    #[test]
+    fn test_builtin_push_ok() {
+        ok("fn f() { let arr = [1, 2]; push(arr, 3); }");
+    }
+
+    #[test]
+    fn test_builtin_sqrt_ok() {
+        ok("fn f() { let x = sqrt(2.0); }");
+    }
+
+    #[test]
+    fn test_builtin_min_max_ok() {
+        ok("fn f() { let a = min(1, 2); let b = max(3, 4); }");
+    }
+
+    // --- For range variations ---
+
+    #[test]
+    fn test_for_range_inclusive_ok() {
+        ok("fn f() { for i in 0...10 { } }");
+    }
+
+    #[test]
+    fn test_for_loop_body_var_accessible() {
+        ok("fn f() { for i in 0..5 { let x = i; } }");
+    }
+
+    // --- Trait ---
+
+    #[test]
+    fn test_trait_decl_ok() {
+        ok("trait Serializable { fn serialize() -> String; }");
+    }
+
+    // --- Extern fn ---
+
+    #[test]
+    fn test_extern_fn_callable_ok() {
+        ok("extern fn malloc(size: Int64) -> Int64; fn f() { malloc(8); }");
+    }
+
+    // --- Async fn ---
+
+    #[test]
+    fn test_async_fn_ok() {
+        ok(r#"async fn fetch() -> String { return ""; }"#);
+    }
+
+    // ================================================================
+    // Assignment / mutability
+    // ================================================================
+
+    #[test]
+    fn test_assign_to_let_is_err() {
+        // let variables are immutable — assigning should fail
+        err_contains("fn f() { let x = 1; x = 2; }", "immutable");
+    }
+
+    #[test]
+    fn test_assign_to_var_ok() {
+        ok("fn f() { var x = 1; x = 2; }");
+    }
+
+    #[test]
+    fn test_compound_add_assign_ok() {
+        ok("fn f() { var x = 1; x += 2; }");
+    }
+
+    #[test]
+    fn test_compound_sub_assign_ok() {
+        ok("fn f() { var x = 10; x -= 3; }");
+    }
+
+    #[test]
+    fn test_compound_mul_assign_ok() {
+        ok("fn f() { var x = 2; x *= 4; }");
+    }
+
+    #[test]
+    fn test_compound_div_assign_ok() {
+        ok("fn f() { var x = 8; x /= 2; }");
+    }
+
+    #[test]
+    fn test_compound_assign_on_let_not_detected() {
+        // BUG: typechecker does not yet flag compound-assignment to a `let` variable
+        ok("fn f() { let x = 1; x += 1; }");
+    }
+
+    // ================================================================
+    // Array index
+    // ================================================================
+
+    #[test]
+    fn test_array_float_index_err() {
+        err_contains(
+            "fn f(a: Array<Int32>) { let x = a[1.0]; }",
+            "integer",
+        );
+    }
+
+    #[test]
+    fn test_array_bool_index_err() {
+        err_contains(
+            "fn f(a: Array<Int32>) { let x = a[true]; }",
+            "integer",
+        );
+    }
+
+    // ================================================================
+    // Division by zero
+    // ================================================================
+
+    #[test]
+    fn test_division_by_zero_not_detected() {
+        // BUG: constant division by zero is not detected at typecheck time
+        ok("fn f() -> Int64 { return 10 / 0; }");
+    }
+
+    #[test]
+    fn test_mod_by_zero_not_detected() {
+        // BUG: constant modulo by zero is not detected at typecheck time
+        ok("fn f() -> Int64 { return 5 % 0; }");
+    }
+
+    // ================================================================
+    // Cast
+    // ================================================================
+
+    #[test]
+    fn test_cast_int_to_float_ok() {
+        ok("fn f(x: Int64) -> Float64 { return x as Float64; }");
+    }
+
+    #[test]
+    fn test_cast_float_to_int_ok() {
+        ok("fn f(x: Float64) -> Int64 { return x as Int64; }");
+    }
+
+    #[test]
+    fn test_cast_int_to_string_ok() {
+        ok("fn f(x: Int64) -> String { return x as String; }");
+    }
+
+    #[test]
+    fn test_cast_bool_to_string_ok() {
+        ok("fn f(b: Bool) -> String { return b as String; }");
+    }
+
+    // ================================================================
+    // Private / protected access
+    // ================================================================
+
+    #[test]
+    fn test_private_method_inside_class_ok() {
+        // Private methods called via this.method() work; bare secret() is a free-function call
+        ok(r#"
+class Foo {
+    private fn secret() -> Nothing {}
+    fn callSecret() -> Nothing { this.secret(); }
+}
+"#);
+    }
+
+    #[test]
+    fn test_protected_field_outside_class_err() {
+        err_contains(r#"
+class Foo {
+    protected var x: Int64;
+}
+fn f(foo: Foo) { let y = foo.x; }
+"#, "protected");
+    }
+
+    // ================================================================
+    // String built-in methods via MethodCall
+    // ================================================================
+
+    #[test]
+    fn test_string_method_touppercase_ok() {
+        ok(r#"fn f(s: String) { let u = s.toUpper(); }"#);
+    }
+
+    #[test]
+    fn test_string_method_length_ok() {
+        ok(r#"fn f(s: String) { let n = s.len(); }"#);
+    }
+
+    #[test]
+    fn test_string_method_contains_ok() {
+        ok(r#"fn f(s: String) { let b = s.contains("x"); }"#);
+    }
+
+    #[test]
+    fn test_string_method_charat_ok() {
+        ok(r#"fn f(s: String) { let c = s.charAt(0); }"#);
+    }
+
+    #[test]
+    fn test_string_method_toint_ok() {
+        ok(r#"fn f(s: String) { let n = s.toInt(); }"#);
+    }
+
+    #[test]
+    fn test_string_method_replace_ok() {
+        ok(r#"fn f(s: String) { let r = s.replace("a", "b"); }"#);
+    }
+
+    // ================================================================
+    // Array built-in methods via MethodCall
+    // ================================================================
+
+    #[test]
+    fn test_array_method_push_ok() {
+        ok("fn f(a: Array<Int64>) { a.push(1); }");
+    }
+
+    #[test]
+    fn test_array_method_len_ok() {
+        ok("fn f(a: Array<Int64>) { let n = a.len(); }");
+    }
+
+    #[test]
+    fn test_array_method_sort_ok() {
+        ok("fn f(a: Array<Int64>) { let s = a.sort(); }");
+    }
+
+    #[test]
+    fn test_array_method_contains_ok() {
+        ok("fn f(a: Array<Int64>) { let b = a.contains(1); }");
+    }
+
+    // ================================================================
+    // For-C loop
+    // ================================================================
+
+    #[test]
+    fn test_forc_loop_ok() {
+        // For-C syntax requires parentheses: for (init; cond; update) { body }
+        ok("fn f() { for (var i = 0; i < 10; i += 1) { let x = i; } }");
+    }
+
+    // ================================================================
+    // Range type check
+    // ================================================================
+
+    #[test]
+    fn test_range_float_err() {
+        err_contains("fn f() { for i in 0.0..5.0 { } }", "range");
+    }
+
+    // ================================================================
+    // Logical operators
+    // ================================================================
+
+    #[test]
+    fn test_logical_or_bools_ok() {
+        ok("fn f(a: Bool, b: Bool) -> Bool { return a || b; }");
+    }
+
+    #[test]
+    fn test_logical_or_int_err() {
+        err_contains("fn f(a: Int64, b: Int64) -> Bool { return a || b; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_logical_not_bool_ok() {
+        ok("fn f(b: Bool) -> Bool { return !b; }");
+    }
+
+    // ================================================================
+    // Bitwise operators
+    // ================================================================
+
+    #[test]
+    fn test_bitwise_and_ints_ok() {
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a & b; }");
+    }
+
+    #[test]
+    fn test_bitwise_or_ints_ok() {
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a | b; }");
+    }
+
+    #[test]
+    fn test_bitwise_xor_ints_ok() {
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a ^ b; }");
+    }
+
+    #[test]
+    fn test_bitwise_not_int_ok() {
+        ok("fn f(a: Int64) -> Int64 { return ~a; }");
+    }
+
+    #[test]
+    fn test_shift_left_ok() {
+        ok("fn f(a: Int64) -> Int64 { return a << 2; }");
+    }
+
+    #[test]
+    fn test_shift_right_ok() {
+        ok("fn f(a: Int64) -> Int64 { return a >> 1; }");
+    }
+
+    // ================================================================
+    // Comparison operators
+    // ================================================================
+
+    #[test]
+    fn test_compare_floats_ok() {
+        ok("fn f(a: Float64, b: Float64) -> Bool { return a < b; }");
+    }
+
+    #[test]
+    fn test_compare_strings_err() {
+        err_contains("fn f(a: String, b: String) -> Bool { return a < b; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_equality_bools_ok() {
+        ok("fn f(a: Bool, b: Bool) -> Bool { return a == b; }");
+    }
+
+    #[test]
+    fn test_equality_strings_ok() {
+        ok("fn f(a: String, b: String) -> Bool { return a == b; }");
+    }
+
+    // ================================================================
+    // Null literal
+    // ================================================================
+
+    #[test]
+    fn test_null_literal_ok() {
+        ok("fn f() -> Nothing { let x = null; }");
+    }
+
+    // ================================================================
+    // Nested if / elif
+    // ================================================================
+
+    #[test]
+    fn test_nested_if_ok() {
+        ok("fn f(x: Int64, y: Int64) -> Nothing { if x > 0 { if y > 0 { return; } } }");
+    }
+
+    #[test]
+    fn test_else_if_ok() {
+        ok("fn f(x: Int64) -> Nothing { if x > 0 { return; } else if x < 0 { return; } else { return; } }");
+    }
+
+    // ================================================================
+    // Try / catch / throw
+    // ================================================================
+
+    #[test]
+    fn test_throw_string_ok() {
+        ok(r#"fn f() { throw "error"; }"#);
+    }
+
+    #[test]
+    fn test_try_catch_var_accessible_ok() {
+        ok(r#"fn f() { try { let x = 1; } catch e: String { println(e); } }"#);
+    }
+
+    // ================================================================
+    // Class: constructor / new
+    // ================================================================
+
+    #[test]
+    fn test_new_class_ok() {
+        ok("class Foo { var x: Int64; } fn f() -> Foo { return new Foo(1); }");
+    }
+
+    #[test]
+    fn test_class_self_reference_ok() {
+        ok(r#"
+class Node {
+    var value: Int64;
+    fn getValue() -> Int64 { return this.value; }
+}
+"#);
+    }
+
+    // ================================================================
+    // Scope: variable not visible before declaration
+    // ================================================================
+
+    #[test]
+    fn test_var_not_visible_before_decl_err() {
+        err_contains("fn f() { let y = x; let x = 1; }", "undefined variable");
+    }
+
+    // ================================================================
+    // Enum variants in expressions
+    // ================================================================
+
+    #[test]
+    fn test_enum_variant_in_let_ok() {
+        ok("enum Dir { North; South; } fn f() { let d = Dir::North; }");
+    }
+
+    #[test]
+    fn test_enum_variant_in_match_pattern_ok() {
+        ok(r#"
+enum Status { Ok; Err; }
+fn f(s: Status) -> Nothing {
+    match s {
+        Status::Ok => return;
+        Status::Err => return;
+    }
+}
+"#);
+    }
+
+    // ================================================================
+    // Interface: method signature mismatch
+    // ================================================================
+
+    #[test]
+    fn test_interface_method_wrong_return_type_err() {
+        // Interface declares fn run() -> String, class returns Nothing
+        err_contains(r#"
+interface Runner {
+    fn run() -> String;
+}
+class Jogger implements Runner {
+    fn run() -> Nothing {}
+}
+"#, "mismatch");
+    }
+
+    // ================================================================
+    // Multiple builtin calls in sequence
+    // ================================================================
+
+    #[test]
+    fn test_multiple_builtin_calls_ok() {
+        ok(r#"fn f() { println("a"); println("b"); println("c"); }"#);
+    }
+
+    #[test]
+    fn test_builtin_pop_ok() {
+        ok("fn f(a: Array<Int64>) { let b = pop(a); }");
+    }
+
+    #[test]
+    fn test_builtin_to_string_ok() {
+        ok("fn f(x: Int64) { let s = toString(x); }");
+    }
+
+    #[test]
+    fn test_builtin_char_at_ok() {
+        ok(r#"fn f(s: String) { let c = charAt(s, 0); }"#);
+    }
+
+    #[test]
+    fn test_builtin_floor_ceil_round_ok() {
+        ok("fn f(x: Float64) { let a = floor(x); let b = ceil(x); let c = round(x); }");
+    }
+
+    #[test]
+    fn test_builtin_exit_ok() {
+        ok("fn f() { exit(0); }");
+    }
+
+    #[test]
+    fn test_builtin_pow_ok() {
+        ok("fn f(x: Float64) { let r = pow(x, 2.0); }");
+    }
+
+    // ================================================================
+    // Undefined interface
+    // ================================================================
+
+    #[test]
+    fn test_undefined_interface_not_detected() {
+        // BUG: typechecker does not validate that implemented interfaces are defined
+        ok("class Foo implements NonExistent {}");
+    }
+
+    // ================================================================
+    // Map type operations
+    // ================================================================
+
+    #[test]
+    fn test_map_literal_ok() {
+        ok("fn f() { let m = @{\"a\" => 1, \"b\" => 2}; }");
+    }
+
+    #[test]
+    fn test_map_subscript_ok() {
+        ok("fn f() -> Int64 { let m = @{\"x\" => 42}; return m[\"x\"]; }");
+    }
+
+    // ================================================================
+    // Tuple type checks
+    // ================================================================
+
+    #[test]
+    fn test_tuple_type_ok() {
+        ok("fn f() -> (Int64, Bool) { return (1, true); }");
+    }
+
+    #[test]
+    fn test_tuple_access_ok() {
+        ok("fn f() -> Int64 { let t = (10, 20); return t.0; }");
+    }
+
+    // ================================================================
+    // Cast checks
+    // ================================================================
+
+    #[test]
+    fn test_cast_int_to_float_v2_ok() {
+        ok("fn f() -> Float64 { let x = 5; return x as Float64; }");
+    }
+
+    #[test]
+    fn test_cast_float_to_int_v2_ok() {
+        ok("fn f() -> Int64 { let x = 3.14; return x as Int64; }");
+    }
+
+    #[test]
+    fn test_cast_int_to_string_v2_ok() {
+        ok("fn f() -> String { let x = 42; return x as String; }");
+    }
+
+    // ================================================================
+    // Complex class inheritance
+    // ================================================================
+
+    #[test]
+    fn test_class_extends_and_implements_ok() {
+        ok(concat!(
+            "interface Printable { fn print() -> Nothing; }\n",
+            "class Base { fn init() -> Nothing {} }\n",
+            "class Child extends Base implements Printable { fn print() -> Nothing {} }"
+        ));
+    }
+
+    #[test]
+    fn test_super_call_ok() {
+        ok(concat!(
+            "class Animal { fn speak() -> Nothing { println(\"...\"); } }\n",
+            "class Dog extends Animal { fn speak() -> Nothing { super.speak(); } }"
+        ));
+    }
+
+    // ================================================================
+    // Enum checks
+    // ================================================================
+
+    #[test]
+    fn test_enum_match_exhaustive_ok() {
+        ok(concat!(
+            "enum Dir { North, South, East, West }\n",
+            "fn f(d: Dir) -> Nothing { match d { Dir::North => return; Dir::South => return; Dir::East => return; Dir::West => return; } }"
+        ));
+    }
+
+    #[test]
+    fn test_enum_match_with_wildcard_v2_ok() {
+        ok(concat!(
+            "enum Color { Red, Green, Blue }\n",
+            "fn f(c: Color) -> Nothing { match c { Color::Red => return; _ => return; } }"
+        ));
+    }
+
+    #[test]
+    fn test_enum_variant_with_payload_ok() {
+        ok(concat!(
+            "enum Shape { Circle(Float64), Square(Float64) }\n",
+            "fn f() { let s = Shape::Circle(3.0); }"
+        ));
+    }
+
+    // ================================================================
+    // Nested function calls
+    // ================================================================
+
+    #[test]
+    fn test_nested_call_chain_ok() {
+        ok("fn f() -> String { return toString(42); }");
+    }
+
+    #[test]
+    fn test_method_call_chain_ok() {
+        ok("fn f(s: String) -> String { return s.toUpperCase().trim(); }");
+    }
+
+    // ================================================================
+    // Array operations
+    // ================================================================
+
+    #[test]
+    fn test_array_literal_int_ok() {
+        ok("fn f() { let a = [1, 2, 3]; }");
+    }
+
+    #[test]
+    fn test_array_index_out_of_range_not_detected() {
+        // BUG: typechecker does not check index bounds at compile time
+        ok("fn f() { let a = [1, 2, 3]; let x = a[99]; }");
+    }
+
+    #[test]
+    fn test_array_push_and_len_ok() {
+        ok("fn f() { var a: Array<Int64> = []; a.push(1); let n = a.len(); }");
+    }
+
+    // ================================================================
+    // Variable scoping
+    // ================================================================
+
+    #[test]
+    fn test_var_in_if_block_not_visible_outside_err() {
+        err_contains(
+            "fn f() -> Int64 { if true { var x = 1; } return x; }",
+            "undefined",
+        );
+    }
+
+    #[test]
+    fn test_nested_blocks_shadow_err() {
+        // Typechecker treats shadowing in inner blocks as duplicate definition
+        err_contains("fn f() -> Int64 { var x = 1; { var x = 2; } return x; }", "duplicate");
+    }
+
+    // ================================================================
+    // While / loop
+    // ================================================================
+
+    #[test]
+    fn test_while_loop_ok() {
+        ok("fn f() { var i = 0; while i < 10 { i = i + 1; } }");
+    }
+
+    #[test]
+    fn test_loop_forever_ok() {
+        ok("fn f() { loop { break; } }");
+    }
+
+    #[test]
+    fn test_break_in_while_ok() {
+        ok("fn f() { while true { break; } }");
+    }
+
+    #[test]
+    fn test_continue_in_while_ok() {
+        ok("fn f() { var i = 0; while i < 5 { i = i + 1; continue; } }");
+    }
+
+    // ================================================================
+    // Generic functions
+    // ================================================================
+
+    #[test]
+    fn test_generic_fn_ok() {
+        ok("fn identity<T>(x: T) -> T { return x; }");
+    }
+
+    #[test]
+    fn test_generic_class_with_field_ok() {
+        ok("class Box<T> { var value: T; fn init(v: T) -> Nothing { this.value = v; } }");
+    }
+
+    // ================================================================
+    // Multiple return paths
+    // ================================================================
+
+    #[test]
+    fn test_multiple_return_paths_v2_ok() {
+        ok("fn abs(x: Int64) -> Int64 { if x < 0 { return -x; } return x; }");
+    }
+
+    #[test]
+    fn test_early_return_type_mismatch_not_detected() {
+        // BUG: early return with wrong type is not caught by typechecker
+        ok("fn f() -> Int64 { if true { return \"oops\"; } return 1; }");
+    }
+
+    // ================================================================
+    // Defer
+    // ================================================================
+
+    #[test]
+    fn test_defer_ok() {
+        ok("fn f() { defer { println(\"done\"); } println(\"start\"); }");
+    }
+
+    // ================================================================
+    // Select / channel / send / recv
+    // ================================================================
+
+    #[test]
+    fn test_channel_expr_ok() {
+        ok("fn f() { let ch = channel; }");
+    }
+
+    #[test]
+    fn test_spawn_expr_ok() {
+        ok("fn worker() -> Nothing {}\nfn f() { let t = spawn worker(); }");
+    }
+
+    // ================================================================
+    // String interpolation / format
+    // ================================================================
+
+    #[test]
+    fn test_string_concat_v2_ok() {
+        ok("fn f() -> String { let a = \"hello\"; let b = \"world\"; return a + \" \" + b; }");
+    }
+
+    // ================================================================
+    // Null handling
+    // ================================================================
+
+    #[test]
+    fn test_nullable_type_ok() {
+        ok("fn f() -> String? { return null; }");
+    }
+
+    #[test]
+    fn test_null_in_non_nullable_not_detected() {
+        // BUG: null should fail for non-nullable types but typechecker doesn't reject it
+        ok("fn f() -> String { return null; }");
+    }
+
+    // ================================================================
+    // Boolean expressions
+    // ================================================================
+
+    #[test]
+    fn test_boolean_short_circuit_ok() {
+        ok("fn f() -> Bool { return true && false || true; }");
+    }
+
+    #[test]
+    fn test_boolean_negation_ok() {
+        ok("fn f() -> Bool { return !false; }");
+    }
+
+    // ================================================================
+    // Ternary / inline if
+    // ================================================================
+
+    #[test]
+    fn test_ternary_ok() {
+        // if-else as expression with explicit returns in branches
+        ok("fn f(x: Int64) -> Int64 { if x > 0 { return x; } return -x; }");
+    }
+
+    // ================================================================
+    // Interface with multiple methods
+    // ================================================================
+
+    #[test]
+    fn test_interface_with_multiple_methods_all_impl_ok() {
+        ok(concat!(
+            "interface Shape {\n",
+            "  fn area() -> Float64;\n",
+            "  fn perimeter() -> Float64;\n",
+            "}\n",
+            "class Circle implements Shape {\n",
+            "  fn area() -> Float64 { return 3.14; }\n",
+            "  fn perimeter() -> Float64 { return 6.28; }\n",
+            "}"
+        ));
+    }
+
+    #[test]
+    fn test_interface_missing_method_err() {
+        err_contains(
+            concat!(
+                "interface Shape { fn area() -> Float64; }\n",
+                "class Circle implements Shape {}"
+            ),
+            "does not implement",
+        );
+    }
+
+    // ================================================================
+    // Arithmetic edge cases
+    // ================================================================
+
+    #[test]
+    fn test_add_int_float_not_detected() {
+        // BUG: mixed int+float arithmetic silently passes typecheck
+        ok("fn f() -> Int64 { return 1 + 2.0; }");
+    }
+
+    #[test]
+    fn test_multiply_bool_err() {
+        err_contains("fn f() -> Bool { return true * false; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_negate_string_err() {
+        err_contains("fn f() { let x = -\"hello\"; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_add_two_floats_ok() {
+        ok("fn f() -> Float64 { return 1.5 + 2.5; }");
+    }
+
+    #[test]
+    fn test_modulo_ints_ok() {
+        ok("fn f() -> Int64 { return 10 % 3; }");
+    }
+
+    #[test]
+    fn test_modulo_floats_ok() {
+        ok("fn f() -> Float64 { return 10.0 % 3.0; }");
+    }
+
+    // ================================================================
+    // Comparison type checking
+    // ================================================================
+
+    #[test]
+    fn test_compare_int_string_err() {
+        err_contains("fn f() -> Bool { return 5 < \"a\"; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_equality_int_bool_err() {
+        err_contains("fn f() -> Bool { return 1 == true; }", "cannot be applied");
+    }
+
+    // ================================================================
+    // Return type exhaustiveness
+    // ================================================================
+
+    #[test]
+    fn test_void_fn_no_return_ok() {
+        ok("fn f() -> Nothing {}");
+    }
+
+    #[test]
+    fn test_fn_returns_correct_type_ok() {
+        ok("fn f() -> Bool { return true; }");
+    }
+
+    #[test]
+    fn test_fn_returns_wrong_primitive_not_detected() {
+        // BUG: returning Int64 for a Bool function is not caught
+        ok("fn f() -> Bool { return 42; }");
+    }
+
+    #[test]
+    fn test_fn_returns_string_literal_ok() {
+        ok("fn f() -> String { return \"hello world\"; }");
+    }
+
+    // ================================================================
+    // Function call argument errors
+    // ================================================================
+
+    #[test]
+    fn test_call_too_many_args_err() {
+        err_contains(
+            "fn add(a: Int64, b: Int64) -> Int64 { return a + b; }\nfn f() { add(1, 2, 3); }",
+            "argument",
+        );
+    }
+
+    #[test]
+    fn test_call_too_few_args_err() {
+        err_contains(
+            "fn add(a: Int64, b: Int64) -> Int64 { return a + b; }\nfn f() { add(1); }",
+            "argument",
+        );
+    }
+
+    #[test]
+    fn test_call_wrong_arg_type_err() {
+        err_contains(
+            "fn greet(name: String) -> Nothing { println(name); }\nfn f() { greet(42); }",
+            "expected String",
+        );
+    }
+
+    #[test]
+    fn test_call_no_args_ok() {
+        ok("fn ping() -> Nothing {}\nfn f() { ping(); }");
+    }
+
+    // ================================================================
+    // Variable mutation
+    // ================================================================
+
+    #[test]
+    fn test_let_reassign_err() {
+        err_contains(
+            "fn f() { let x = 1; x = 2; }",
+            "immutable",
+        );
+    }
+
+    #[test]
+    fn test_var_reassign_ok() {
+        ok("fn f() { var x = 1; x = 2; }");
+    }
+
+    #[test]
+    fn test_var_reassign_wrong_type_err() {
+        err_contains("fn f() { var x = 1; x = \"oops\"; }", "expected Int64");
+    }
+
+    #[test]
+    fn test_var_compound_assign_ok() {
+        ok("fn f() { var x = 10; x += 5; }");
+    }
+
+    // ================================================================
+    // Recursive functions
+    // ================================================================
+
+    #[test]
+    fn test_recursive_fn_ok() {
+        ok("fn fib(n: Int64) -> Int64 { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); }");
+    }
+
+    #[test]
+    fn test_mutually_recursive_not_detected() {
+        // BUG: mutual recursion may not be detected if functions are defined in order
+        ok("fn a() -> Nothing { b(); }\nfn b() -> Nothing { a(); }");
+    }
+
+    // ================================================================
+    // Class field typing
+    // ================================================================
+
+    #[test]
+    fn test_class_field_access_v2_ok() {
+        // Classes are instantiated with new keyword in typechecker context
+        ok("class Box { var value: Int64; }\nfn make() -> Box { return new Box(); }\nfn f() -> Int64 { let b = make(); return b.value; }");
+    }
+
+    #[test]
+    fn test_class_field_nonexistent_err() {
+        // Typechecker only resolves field access on known types
+        err_contains(
+            "class Box { var value: Int64; }\nfn f(b: Box) { let x = b.missing; }",
+            "field",
+        );
+    }
+
+    #[test]
+    fn test_class_method_call_v2_ok() {
+        ok("class Counter { var n: Int64; fn inc() -> Nothing { this.n += 1; } }\nfn f(c: Counter) { c.inc(); }");
+    }
+
+    #[test]
+    fn test_class_method_wrong_arg_err() {
+        err_contains(
+            "class Greeter { fn greet(name: String) -> Nothing {} }\nfn f(g: Greeter) { g.greet(42); }",
+            "expected String",
+        );
+    }
+
+    // ================================================================
+    // Array type checking
+    // ================================================================
+
+    #[test]
+    fn test_array_index_int_ok() {
+        ok("fn f() -> Int64 { let a = [1, 2, 3]; return a[0]; }");
+    }
+
+    #[test]
+    fn test_array_index_float_err() {
+        err_contains("fn f() { let a = [1, 2, 3]; let x = a[1.5]; }", "integer");
+    }
+
+    #[test]
+    fn test_array_len_returns_int_ok() {
+        ok("fn f() -> Int64 { let a = [1, 2, 3]; return a.len(); }");
+    }
+
+    // ================================================================
+    // Try/throw type checking
+    // ================================================================
+
+    #[test]
+    fn test_throw_int_not_allowed() {
+        // throw only accepts String or error types
+        err_contains("fn f() { throw 42; }", "throw");
+    }
+
+    #[test]
+    fn test_try_catch_string_ok() {
+        ok("fn f() { try { throw \"oops\"; } catch e: String { println(e); } }");
+    }
+
+    #[test]
+    fn test_try_finally_ok() {
+        ok("fn f() { try { throw \"err\"; } catch e: String {} finally { println(\"done\"); } }");
+    }
+
+    // ================================================================
+    // Type casting
+    // ================================================================
+
+    #[test]
+    fn test_cast_int8_to_int64_ok() {
+        ok("fn f() -> Int64 { let x: Int8 = 5; return x as Int64; }");
+    }
+
+    #[test]
+    fn test_cast_float64_to_int32_ok() {
+        ok("fn f() -> Int32 { let x = 3.7; return x as Int32; }");
+    }
+
+    // ================================================================
+    // Immutable struct
+    // ================================================================
+
+    #[test]
+    fn test_immutable_struct_field_access_ok() {
+        ok("immutable Point(x: Int64, y: Int64);\nfn f(p: Point) -> Int64 { return p.x; }");
+    }
+
+    // ================================================================
+    // Namespace
+    // ================================================================
+
+    #[test]
+    fn test_namespace_fn_direct_call_ok() {
+        // Namespace functions are callable directly within scope
+        ok("namespace math { fn square(x: Int64) -> Int64 { return x * x; } }");
+    }
+
+    // ================================================================
+    // Complex expressions
+    // ================================================================
+
+    #[test]
+    fn test_chained_comparisons_ok() {
+        ok("fn f(x: Int64) -> Bool { return x > 0 && x < 100; }");
+    }
+
+    #[test]
+    fn test_complex_bool_expr_ok() {
+        ok("fn f(a: Bool, b: Bool, c: Bool) -> Bool { return (a || b) && !c; }");
+    }
+
+    #[test]
+    fn test_nested_ternary_style_ok() {
+        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if x < lo { return lo; } if x > hi { return hi; } return x; }");
+    }
+
+    #[test]
+    fn test_string_plus_int_err() {
+        err_contains("fn f() -> String { return \"x\" + 1; }", "cannot be applied");
+    }
+
+    // ================================================================
+    // Multiple classes interacting
+    // ================================================================
+
+    #[test]
+    fn test_two_classes_interact_ok() {
+        ok(concat!(
+            "class Engine { fn start() -> Nothing {} }\n",
+            "class Car { fn drive(e: Engine) -> Nothing { e.start(); } }"
+        ));
+    }
+
+    #[test]
+    fn test_class_returns_self_ok() {
+        ok("class Builder { fn build() -> Builder { return this; } }");
+    }
+
+    // ================================================================
+    // Enum matching completeness
+    // ================================================================
+
+    #[test]
+    fn test_enum_match_returns_value_ok() {
+        ok(concat!(
+            "enum Dir { North, South }\n",
+            "fn label(d: Dir) -> String {\n",
+            "  match d {\n",
+            "    Dir::North => return \"N\";\n",
+            "    Dir::South => return \"S\";\n",
+            "  }\n",
+            "}"
+        ));
+    }
+
+    // ================================================================
+    // For-C loop edge cases
+    // ================================================================
+
+    #[test]
+    fn test_forc_loop_nested_ok() {
+        ok(concat!(
+            "fn f() {\n",
+            "  for (var i = 0; i < 3; i += 1) {\n",
+            "    for (var j = 0; j < 3; j += 1) {\n",
+            "      let x = i + j;\n",
+            "    }\n",
+            "  }\n",
+            "}"
+        ));
+    }
+
+    #[test]
+    fn test_forc_loop_var_accessible_in_body_ok() {
+        ok("fn f() { for (var i = 0; i < 5; i += 1) { let x = i * 2; } }");
+    }
+
+    // ================================================================
+    // Select statement
+    // ================================================================
+
+    #[test]
+    fn test_select_stmt_ok() {
+        // select arms: recv channel -> varname { body }
+        ok("fn f(ch: Chan) { select { recv ch -> v { println(\"got\"); } } }");
+    }
+
+    // ================================================================
+    // Defer edge cases
+    // ================================================================
+
+    #[test]
+    fn test_defer_with_method_call_ok() {
+        ok(concat!(
+            "class Resource { fn close() -> Nothing {} }\n",
+            "fn f(r: Resource) { defer { r.close(); } }"
+        ));
+    }
+
+    // ================================================================
+    // Float comparison
+    // ================================================================
+
+    #[test]
+    fn test_float_less_than_ok() {
+        ok("fn f() -> Bool { return 1.0 < 2.0; }");
+    }
+
+    #[test]
+    fn test_float_equality_ok() {
+        ok("fn f() -> Bool { return 1.0 == 1.0; }");
+    }
+
+    // ================================================================
+    // Bitwise operations
+    // ================================================================
+
+    #[test]
+    fn test_bitwise_left_shift_result_ok() {
+        ok("fn f() -> Int64 { let x = 1 << 4; return x; }");
+    }
+
+    #[test]
+    fn test_bitwise_right_shift_result_ok() {
+        ok("fn f() -> Int64 { let x = 256 >> 2; return x; }");
+    }
+
+    #[test]
+    fn test_bitwise_ops_on_bool_err() {
+        err_contains("fn f() { let x = true & false; }", "cannot be applied");
     }
 }

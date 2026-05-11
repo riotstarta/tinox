@@ -300,7 +300,7 @@
       <div>Null Safety</div>
       <div><span class="badge no">NEIN</span> (NullPointerException)</div>
       <div><span class="badge yes">JA</span> (T? im Typsystem)</div>
-      <div><span class="badge part">TEIL</span> (Option&lt;T&gt; in Stdlib)</div>
+      <div><span class="badge no">NEIN</span> (null passiert Typechecker; Option&lt;T&gt; in Stdlib)</div>
       <div><span class="badge yes">JA</span> (strictNullChecks)</div>
 
       <div>String-Interpolation</div>
@@ -758,11 +758,11 @@ val p2 = p.copy(y = 10)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>// unmodifiable: immutable Wertobjekt
+        <pre><code>// immutable: unveränderliches Wertobjekt
 // new() wird auto-generiert
-unmodifiable Point(x: Int64, y: Int64)
+immutable Point(x: Int64, y: Int64)
 
-let p = Point.new(3, 4);
+let p = new Point(3, 4);
 println(p.x); // 3
 
 // Felder via FieldAccess (read-only)</code></pre>
@@ -876,7 +876,7 @@ class Point implements Printable {
         <h4>Tinox OOP — Vorteile</h4>
         <ul>
           <li>fn (Instanz) vs. fnc (statisch) sofort sichtbar</li>
-          <li>unmodifiable für immutable Wertobjekte</li>
+          <li>immutable für unveränderliche Wertobjekte</li>
           <li>Vtable-basierter Interface-Dispatch</li>
           <li>Weniger Boilerplate als Java</li>
         </ul>
@@ -1362,6 +1362,7 @@ tinox build program.tnx   # → a.out
 tinox run   program.tnx
 tinox check program.tnx
 tinox fmt   program.tnx
+tinox test                # Unit-Tests (Rust-basiert)
 
 # Paket-Manager
 tinox install             # aus tinox.yaml
@@ -1836,6 +1837,7 @@ type Result&lt;T, E&gt; = Ok&lt;T&gt; | Err&lt;E&gt;;</code></pre>
 
     <p style="margin-top:1.5rem;color:var(--muted);font-size:.85rem;text-align:center;">
       Tinox ist eine moderne Sprache in aktiver Entwicklung — Paket-Manager, LSP, REST-Framework und 50+ Stdlib-Module sind verfügbar.
+      Der Compiler (Lexer, Parser, Typechecker, Codegen) ist durch ~980 Unit-Tests abgedeckt.
       Weitere Features (Debugger, REPL, zentrales Repository) werden in zukünftigen Versionen ergänzt.
     </p>
   </section>

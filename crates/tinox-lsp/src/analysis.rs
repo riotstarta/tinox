@@ -1383,4 +1383,373 @@ class UserController
         let doc = annotation_doc("NonExistent");
         assert!(doc.is_none());
     }
+
+    // --- lsp_pos_to_offset ---
+
+    #[test]
+    fn test_lsp_pos_to_offset_start() {
+        let src = "hello\nworld";
+        assert_eq!(lsp_pos_to_offset(src, Position { line: 0, character: 0 }), 0);
+    }
+
+    #[test]
+    fn test_lsp_pos_to_offset_midline() {
+        let src = "hello\nworld";
+        assert_eq!(lsp_pos_to_offset(src, Position { line: 0, character: 3 }), 3);
+    }
+
+    #[test]
+    fn test_lsp_pos_to_offset_second_line() {
+        let src = "hello\nworld";
+        // line 1, character 0 → offset 6 (after 'h','e','l','l','o','\n')
+        assert_eq!(lsp_pos_to_offset(src, Position { line: 1, character: 0 }), 6);
+    }
+
+    #[test]
+    fn test_lsp_pos_to_offset_second_line_mid() {
+        let src = "hello\nworld";
+        assert_eq!(lsp_pos_to_offset(src, Position { line: 1, character: 3 }), 9);
+    }
+
+    // --- type_str ---
+
+    #[test]
+    fn test_type_str_primitives() {
+        assert_eq!(type_str(&Type::Int32), "Int32");
+        assert_eq!(type_str(&Type::Int64), "Int64");
+        assert_eq!(type_str(&Type::Float64), "Float64");
+        assert_eq!(type_str(&Type::Bool), "Bool");
+        assert_eq!(type_str(&Type::String), "String");
+        assert_eq!(type_str(&Type::Nothing), "Nothing");
+        assert_eq!(type_str(&Type::Never), "Never");
+        assert_eq!(type_str(&Type::Any), "Any");
+        assert_eq!(type_str(&Type::Infer), "_");
+    }
+
+    #[test]
+    fn test_type_str_array() {
+        assert_eq!(type_str(&Type::Array(Box::new(Type::Int32))), "Array<Int32>");
+    }
+
+    #[test]
+    fn test_type_str_tuple() {
+        let t = Type::Tuple(vec![Type::Int32, Type::String]);
+        assert_eq!(type_str(&t), "(Int32, String)");
+    }
+
+    #[test]
+    fn test_type_str_fn() {
+        let t = Type::Fn {
+            params: vec![Type::Int32],
+            ret: Box::new(Type::Bool),
+        };
+        assert_eq!(type_str(&t), "fn(Int32) -> Bool");
+    }
+
+    #[test]
+    fn test_type_str_generic() {
+        let t = Type::Generic { name: "List".into(), args: vec![Type::String] };
+        assert_eq!(type_str(&t), "List<String>");
+    }
+
+    #[test]
+    fn test_type_str_map() {
+        let t = Type::Map(Box::new(Type::String), Box::new(Type::Int64));
+        assert_eq!(type_str(&t), "Map<String, Int64>");
+    }
+
+    #[test]
+    fn test_type_str_mutable() {
+        assert_eq!(type_str(&Type::Mutable(Box::new(Type::Int32))), "mut Int32");
+    }
+
+    #[test]
+    fn test_type_str_ref() {
+        assert_eq!(type_str(&Type::Ref(Box::new(Type::String))), "&String");
+    }
+
+    // --- fn_signature ---
+
+    #[test]
+    fn test_fn_signature_no_params() {
+        let ast = parse_src("fn greet() -> Nothing {}");
+        let DeclKind::Function(f) = &ast.decls[0].node else { panic!() };
+        assert_eq!(fn_signature(f), "fn greet() -> Nothing");
+    }
+
+    #[test]
+    fn test_fn_signature_with_params() {
+        let ast = parse_src("fn add(a: Int32, b: Int32) -> Int32 { return a + b; }");
+        let DeclKind::Function(f) = &ast.decls[0].node else { panic!() };
+        let sig = fn_signature(f);
+        assert!(sig.contains("fn add("));
+        assert!(sig.contains("a: Int32"));
+        assert!(sig.contains("b: Int32"));
+        assert!(sig.contains("-> Int32"));
+    }
+
+    #[test]
+    fn test_fn_signature_async() {
+        let ast = parse_src("async fn fetch() -> Nothing {}");
+        let DeclKind::Function(f) = &ast.decls[0].node else { panic!() };
+        assert!(fn_signature(f).starts_with("async fn fetch"));
+    }
+
+    // --- completions ---
+
+    #[test]
+    fn test_completions_includes_keywords() {
+        let ast = parse_src("fn main() {}");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"fn"));
+        assert!(labels.contains(&"let"));
+        assert!(labels.contains(&"class"));
+        assert!(labels.contains(&"while"));
+        assert!(labels.contains(&"true"));
+        assert!(labels.contains(&"null"));
+    }
+
+    #[test]
+    fn test_completions_includes_builtins() {
+        let ast = parse_src("fn main() {}");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"println"));
+        assert!(labels.contains(&"print"));
+        assert!(labels.contains(&"sqrt"));
+    }
+
+    #[test]
+    fn test_completions_includes_user_functions() {
+        let ast = parse_src("fn myFunc(x: Int32) -> Int32 { return x; }");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"myFunc"));
+    }
+
+    #[test]
+    fn test_completions_includes_user_class() {
+        let ast = parse_src("class Dog { fn bark() -> Nothing {} }");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Dog"));
+    }
+
+    #[test]
+    fn test_completions_includes_enum_and_variants() {
+        let ast = parse_src("enum Color { Red, Green, Blue }");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Color"));
+        assert!(labels.contains(&"Color.Red"));
+        assert!(labels.contains(&"Color.Green"));
+    }
+
+    #[test]
+    fn test_completions_includes_interface() {
+        let ast = parse_src("interface Runnable { fn run() -> Nothing; }");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Runnable"));
+    }
+
+    #[test]
+    fn test_completions_includes_immutable() {
+        let ast = parse_src("immutable Point(x: Int32, y: Int32)");
+        let items = completions(&ast);
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Point"));
+    }
+
+    // --- build_registry_from_source ---
+
+    #[test]
+    fn test_registry_class_with_fields_and_methods() {
+        let ast = parse_src(r#"
+class Person {
+    var name: String;
+    var age: Int32;
+    fn greet() -> Nothing {}
+}
+"#);
+        let reg = build_registry_from_source(&ast);
+        assert!(reg.contains_key("Person"));
+        let info = &reg["Person"];
+        let field_names: Vec<_> = info.fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(field_names.contains(&"name"));
+        assert!(field_names.contains(&"age"));
+        let method_names: Vec<_> = info.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(method_names.contains(&"greet"));
+    }
+
+    #[test]
+    fn test_registry_empty_for_no_classes() {
+        let ast = parse_src("fn main() {}");
+        let reg = build_registry_from_source(&ast);
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn test_registry_namespace_classes_collected() {
+        let ast = parse_src(r#"
+namespace net {
+    class Socket {
+        var port: Int32;
+    }
+}
+"#);
+        let reg = build_registry_from_source(&ast);
+        assert!(reg.contains_key("Socket"), "class inside namespace should be collected");
+    }
+
+    // --- document_symbols ---
+
+    #[test]
+    fn test_document_symbols_function() {
+        let ast = parse_src("fn doWork() -> Nothing {}");
+        let syms = document_symbols(&ast);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "doWork");
+    }
+
+    #[test]
+    fn test_document_symbols_class_has_children() {
+        let ast = parse_src(r#"
+class Animal {
+    fn speak() -> Nothing {}
+    fn eat() -> Nothing {}
+}
+"#);
+        let syms = document_symbols(&ast);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "Animal");
+        let children = syms[0].children.as_ref().unwrap();
+        assert_eq!(children.len(), 2);
+        let names: Vec<_> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"speak"));
+        assert!(names.contains(&"eat"));
+    }
+
+    #[test]
+    fn test_document_symbols_enum_has_variant_children() {
+        let ast = parse_src("enum Dir { North, South, East, West }");
+        let syms = document_symbols(&ast);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "Dir");
+        let children = syms[0].children.as_ref().unwrap();
+        assert_eq!(children.len(), 4);
+    }
+
+    #[test]
+    fn test_document_symbols_multiple_decls() {
+        let ast = parse_src(r#"
+fn helper() -> Nothing {}
+class Main {}
+enum Status { Ok, Err }
+"#);
+        let syms = document_symbols(&ast);
+        assert_eq!(syms.len(), 3);
+    }
+
+    #[test]
+    fn test_document_symbols_immutable() {
+        let ast = parse_src("immutable Vec2(x: Float32, y: Float32)");
+        let syms = document_symbols(&ast);
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "Vec2");
+        let children = syms[0].children.as_ref().unwrap();
+        assert_eq!(children.len(), 2);
+    }
+
+    // --- annotation completions ---
+
+    #[test]
+    fn test_annotation_completions_all_annotations_present() {
+        let ast = parse_src("class Foo {}");
+        let items = completions_at(&ast, "@", 1, &HashMap::new());
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        // check a selection of known annotations
+        for name in &["Command", "Option", "Test", "GET", "POST", "Inject", "Log", "inline", "deprecated"] {
+            assert!(labels.contains(name), "missing annotation: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_annotation_doc_all_known() {
+        for ann in &["Command", "Option", "Argument", "Test", "GET", "POST", "PUT", "DELETE",
+                     "Path", "StatusCode", "ApplicationComponent", "Startup",
+                     "HttpRequestScoped", "Inject", "Config", "Log", "inline", "deprecated"] {
+            let doc = annotation_doc(ann);
+            assert!(doc.is_some(), "annotation_doc should return Some for @{}", ann);
+            assert!(doc.unwrap().contains(*ann));
+        }
+    }
+
+    #[test]
+    fn test_annotation_completions_case_insensitive_filter() {
+        let ast = parse_src("class Foo {}");
+        let text = "@get";
+        let items = completions_at(&ast, text, text.len() as u32, &HashMap::new());
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"GET"), "@get (lowercase) should match @GET");
+    }
+
+    // --- extract_dot_chain edge cases ---
+
+    #[test]
+    fn test_extract_dot_chain_no_dot() {
+        assert_eq!(extract_dot_chain("hello"), None);
+        assert_eq!(extract_dot_chain(""), None);
+    }
+
+    #[test]
+    fn test_extract_dot_chain_three_levels() {
+        let result = extract_dot_chain("a.b.c.");
+        assert_eq!(result, Some(vec!["a".into(), "b".into(), "c".into()]));
+    }
+
+    #[test]
+    fn test_extract_dot_chain_with_spaces() {
+        assert_eq!(extract_dot_chain("  foo."), Some(vec!["foo".into()]));
+    }
+
+    #[test]
+    fn test_extract_dot_chain_leading_dot_is_none() {
+        assert_eq!(extract_dot_chain("."), None);
+    }
+
+    // --- hover ---
+
+    #[test]
+    fn test_hover_returns_none_for_empty_source() {
+        let ast = parse_src("fn main() {}");
+        // offset way past any token
+        let result = hover_at(&ast, 99999);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hover_function_before_body() {
+        let src = "fn add(a: Int32) -> Int32 { return a; }";
+        let ast = parse_src(src);
+        // offset 0 = start of `fn` keyword, definitely before the body `{`
+        let result = hover_at(&ast, 0);
+        // should get the signature
+        assert!(result.is_some(), "hover at fn keyword should return something");
+        let text = result.unwrap();
+        assert!(text.contains("add"), "hover should show function name");
+    }
+
+    // --- completions_at falls back to full list when no dot ---
+
+    #[test]
+    fn test_completions_at_no_dot_returns_general() {
+        let ast = parse_src("fn myHelper() -> Nothing {}");
+        let text = "my";
+        let items = completions_at(&ast, text, text.len() as u32, &HashMap::new());
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"myHelper"), "should include user function");
+        assert!(labels.contains(&"let"), "should include keywords");
+    }
 }

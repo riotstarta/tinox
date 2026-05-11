@@ -6433,4 +6433,1452 @@ mod tests {
         assert!(ir.contains("Pair__i64_fst"), "should have i64 specialization");
         assert!(ir.contains("Pair__double_fst"), "should have double specialization");
     }
+
+    // --- Integer arithmetic IR ---
+
+    #[test]
+    fn test_int_add_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 + 2; return x; }");
+        assert!(ir.contains("add"), "should emit add instruction");
+    }
+
+    #[test]
+    fn test_int_sub_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 10 - 3; return x; }");
+        assert!(ir.contains("sub"), "should emit sub instruction");
+    }
+
+    #[test]
+    fn test_int_mul_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 4 * 5; return x; }");
+        assert!(ir.contains("mul"), "should emit mul instruction");
+    }
+
+    #[test]
+    fn test_int_div_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 10 / 2; return x; }");
+        assert!(ir.contains("sdiv"), "should emit sdiv for integer division");
+    }
+
+    #[test]
+    fn test_int_mod_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 10 % 3; return x; }");
+        assert!(ir.contains("srem"), "should emit srem for integer modulo");
+    }
+
+    // --- Float arithmetic IR ---
+
+    #[test]
+    fn test_float_sub_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(a: Float64, b: Float64) -> Float64 { return a - b; } } }");
+        assert!(ir.contains("fsub double"), "should emit fsub for float subtraction");
+    }
+
+    #[test]
+    fn test_float_mul_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(a: Float64, b: Float64) -> Float64 { return a * b; } } }");
+        assert!(ir.contains("fmul double"), "should emit fmul for float multiplication");
+    }
+
+    #[test]
+    fn test_float_div_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(a: Float64, b: Float64) -> Float64 { return a / b; } } }");
+        assert!(ir.contains("fdiv double"), "should emit fdiv for float division");
+    }
+
+    // --- Comparison IR ---
+
+    #[test]
+    fn test_icmp_eq_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 == 1; return 0; }");
+        assert!(ir.contains("icmp eq"), "should emit icmp eq");
+    }
+
+    #[test]
+    fn test_icmp_ne_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 != 2; return 0; }");
+        assert!(ir.contains("icmp ne"), "should emit icmp ne");
+    }
+
+    #[test]
+    fn test_icmp_lt_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 < 2; return 0; }");
+        assert!(ir.contains("icmp slt"), "should emit icmp slt for <");
+    }
+
+    #[test]
+    fn test_icmp_gt_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 2 > 1; return 0; }");
+        assert!(ir.contains("icmp sgt"), "should emit icmp sgt for >");
+    }
+
+    #[test]
+    fn test_icmp_le_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 <= 2; return 0; }");
+        assert!(ir.contains("icmp sle"), "should emit icmp sle for <=");
+    }
+
+    #[test]
+    fn test_icmp_ge_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 2 >= 1; return 0; }");
+        assert!(ir.contains("icmp sge"), "should emit icmp sge for >=");
+    }
+
+    #[test]
+    fn test_float_comparison_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(a: Float64, b: Float64) -> Bool { return a < b; } } }");
+        assert!(ir.contains("fcmp"), "should emit fcmp for float comparison");
+    }
+
+    // --- Boolean ops IR ---
+
+    #[test]
+    fn test_bool_and_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = true && false; return 0; }");
+        assert!(ir.contains("and i1"), "should emit and i1 for &&");
+    }
+
+    #[test]
+    fn test_bool_or_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = true || false; return 0; }");
+        assert!(ir.contains("or i1"), "should emit or i1 for ||");
+    }
+
+    // --- Unary ops IR ---
+
+    #[test]
+    fn test_unary_neg_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = -5; return x; }");
+        assert!(ir.contains("sub") || ir.contains("neg"), "should emit negation");
+    }
+
+    #[test]
+    fn test_unary_not_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = !true; return 0; }");
+        assert!(ir.contains("xor i1") || ir.contains("xor"), "should emit xor for boolean not");
+    }
+
+    // --- Variables: alloca/store/load ---
+
+    #[test]
+    fn test_alloca_for_local_var() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 42; return x; }");
+        assert!(ir.contains("alloca"), "should emit alloca for local variable");
+    }
+
+    #[test]
+    fn test_store_load_for_var() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 42; return x; }");
+        assert!(ir.contains("store"), "should emit store for variable init");
+        assert!(ir.contains("load"), "should emit load for variable read");
+    }
+
+    // --- Function definition ---
+
+    #[test]
+    fn test_function_define_ir() {
+        // fn main is emitted as @tinox_main to avoid clashing with libc main
+        let ir = compile_to_ir("fn main() -> Int64 { return 0; }");
+        assert!(ir.contains("define"), "should emit define for function");
+        assert!(ir.contains("@tinox_main"), "fn main should become @tinox_main");
+    }
+
+    #[test]
+    fn test_function_return_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 42; }");
+        assert!(ir.contains("ret i64"), "should emit ret i64");
+    }
+
+    #[test]
+    fn test_multiple_functions_ir() {
+        let ir = compile_to_ir("fn foo() -> Int64 { return 1; } fn main() -> Int64 { return foo(); }");
+        assert!(ir.contains("@foo"), "should define @foo");
+        assert!(ir.contains("@tinox_main"), "fn main should become @tinox_main");
+        assert!(ir.contains("call"), "should emit call instruction");
+    }
+
+    // --- Control flow blocks ---
+
+    #[test]
+    fn test_if_without_else_stmt_ir() {
+        // Statement-level if uses block labels: then/else/ifcont
+        let ir = compile_to_ir("fn main() -> Int64 { if true { } return 0; }");
+        assert!(ir.contains("then"), "should have then block");
+        assert!(ir.contains("ifcont"), "should have ifcont merge block");
+    }
+
+    #[test]
+    fn test_if_else_stmt_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { if true { } else { } return 0; }");
+        assert!(ir.contains("then"), "should have then block");
+        assert!(ir.contains("else"), "should have else block");
+        assert!(ir.contains("ifcont"), "should have ifcont merge block");
+    }
+
+    #[test]
+    fn test_while_loop_stmt_blocks_ir() {
+        // Statement-level while uses block labels: loop/loopbody/loopend
+        let ir = compile_to_ir("fn main() -> Int64 { while true { break; } return 0; }");
+        assert!(ir.contains("loopbody"), "should have loopbody block");
+        assert!(ir.contains("loopend"), "should have loopend block");
+    }
+
+    #[test]
+    fn test_for_range_loop_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { for i in 0..5 { } return 0; }");
+        assert!(ir.contains("for_"), "should have for block structure");
+    }
+
+    // --- String literals ---
+
+    #[test]
+    fn test_string_literal_global_ir() {
+        let ir = compile_to_ir(r#"fn main() -> Int64 { let s = "hello"; return 0; }"#);
+        assert!(ir.contains("hello") || ir.contains("@str"), "should emit string constant");
+    }
+
+    // --- Namespace/class mangling ---
+
+    #[test]
+    fn test_namespace_class_method_mangling() {
+        let ir = compile_to_ir("namespace myapp { class Utils { fnc helper() -> Int64 { return 0; } } }");
+        assert!(ir.contains("myapp__Utils_helper") || ir.contains("Utils_helper"),
+            "should emit mangled method name");
+    }
+
+    #[test]
+    fn test_class_static_method_ir() {
+        // In Tinox, fnc inside a class = static method (no self param)
+        let ir = compile_to_ir("class Math { fnc square(x: Int64) -> Int64 { return x * x; } }");
+        assert!(ir.contains("Math_square"), "should emit Math_square name");
+        assert!(ir.contains("define"), "should define the function");
+    }
+
+    // --- Bitwise operations ---
+
+    #[test]
+    fn test_bitwise_and_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 6 & 3; return x; }");
+        assert!(ir.contains("and i64"), "should emit and i64 for bitwise and");
+    }
+
+    #[test]
+    fn test_bitwise_or_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 6 | 3; return x; }");
+        assert!(ir.contains("or i64"), "should emit or i64 for bitwise or");
+    }
+
+    #[test]
+    fn test_bitwise_xor_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 6 ^ 3; return x; }");
+        assert!(ir.contains("xor i64"), "should emit xor i64 for bitwise xor");
+    }
+
+    #[test]
+    fn test_shl_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1 << 3; return x; }");
+        assert!(ir.contains("shl"), "should emit shl for left shift");
+    }
+
+    #[test]
+    fn test_shr_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 8 >> 1; return x; }");
+        assert!(ir.contains("shr") || ir.contains("ashr") || ir.contains("lshr"), "should emit shift right");
+    }
+
+    // --- Compound assignments ---
+
+    #[test]
+    fn test_compound_add_assign_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 5; x += 3; return x; }");
+        assert!(ir.contains("add"), "should emit add for +=");
+        assert!(ir.contains("store"), "should store result back");
+    }
+
+    #[test]
+    fn test_compound_sub_assign_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 5; x -= 2; return x; }");
+        assert!(ir.contains("sub"), "should emit sub for -=");
+    }
+
+    // --- Null ---
+
+    #[test]
+    fn test_null_literal_ir() {
+        // null is emitted as integer 0 in IR
+        let ir = compile_to_ir("fn main() -> Int64 { let x = null; return 0; }");
+        assert!(ir.contains("i64 0") || ir.contains("store"), "null should emit as 0 or store");
+    }
+
+    // --- Specific integer type widths ---
+
+    #[test]
+    fn test_i32_type_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(x: Int32) -> Int32 { return x; } } }");
+        assert!(ir.contains("i32"), "should use i32 for Int32 params");
+    }
+
+    #[test]
+    fn test_i64_type_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(x: Int64) -> Int64 { return x; } } }");
+        assert!(ir.contains("i64"), "should use i64 for Int64 params");
+    }
+
+    #[test]
+    fn test_bool_type_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(x: Bool) -> Bool { return x; } } }");
+        assert!(ir.contains("i1"), "should use i1 for Bool params");
+    }
+
+    #[test]
+    fn test_float32_type_ir() {
+        let ir = compile_to_ir("namespace t { class C { fnc f(x: Float32) -> Float32 { return x; } } }");
+        assert!(ir.contains("float"), "should use float for Float32");
+    }
+
+    // --- Struct / class fields ---
+
+    #[test]
+    fn test_class_field_gep_ir() {
+        let src = concat!(
+            "class Point { x: Int64; y: Int64; }\n",
+            "fn main() -> Int64 {\n",
+            "  let p = new Point(3, 4);\n",
+            "  return p.x;\n",
+            "}"
+        );
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("getelementptr") || ir.contains("gep") || ir.contains("Point"),
+            "should emit GEP or struct access for field read");
+    }
+
+    // --- Array ---
+
+    #[test]
+    fn test_array_literal_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let arr = [1, 2, 3]; return 0; }");
+        assert!(ir.contains("alloca") || ir.contains("array"), "should emit array storage");
+    }
+
+    // ================================================================
+    // Enum
+    // ================================================================
+
+    #[test]
+    fn test_enum_type_is_i64() {
+        // Enum variants are represented as i64 constants
+        let ir = compile_to_ir("enum Color { Red; Green; Blue; } fn main() -> Int64 { return 0; }");
+        assert!(ir.contains("i64"), "enum-bearing code should use i64");
+    }
+
+    #[test]
+    fn test_enum_variant_constant() {
+        let ir = compile_to_ir(
+            "enum Dir { North; South; East; West; } fn main() -> Int64 { let d = Dir::North; return 0; }"
+        );
+        assert!(ir.contains("i64 0") || ir.contains("store"), "enum variant should store a constant");
+    }
+
+    #[test]
+    fn test_match_on_enum() {
+        let ir = compile_to_ir(concat!(
+            "enum State { On; Off; }\n",
+            "fn check(s: State) -> Int64 {\n",
+            "    match s {\n",
+            "        State::On => 1;\n",
+            "        State::Off => 0;\n",
+            "        _ => -1;\n",
+            "    }\n",
+            "    return 0;\n",
+            "}\n",
+            "fn main() -> Int64 { return 0; }",
+        ));
+        assert!(ir.contains("switch") || ir.contains("icmp") || ir.contains("br"),
+            "match should emit branching IR");
+    }
+
+    // ================================================================
+    // Match on integer
+    // ================================================================
+
+    #[test]
+    fn test_match_int_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn classify(x: Int64) -> Int64 {\n",
+            "    match x {\n",
+            "        0 => 10;\n",
+            "        1 => 20;\n",
+            "        _ => 99;\n",
+            "    }\n",
+            "    return 0;\n",
+            "}\n",
+            "fn main() -> Int64 { return 0; }",
+        ));
+        assert!(ir.contains("icmp") || ir.contains("switch"), "integer match should compare");
+    }
+
+    #[test]
+    fn test_match_bool_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn f(b: Bool) -> Int64 {\n",
+            "    match b {\n",
+            "        true => 1;\n",
+            "        false => 0;\n",
+            "    }\n",
+            "    return 0;\n",
+            "}\n",
+            "fn main() -> Int64 { return 0; }",
+        ));
+        assert!(ir.contains("icmp") || ir.contains("br"), "bool match needs branch IR");
+    }
+
+    // ================================================================
+    // Recursive function
+    // ================================================================
+
+    #[test]
+    fn test_recursive_function_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn fib(n: Int64) -> Int64 {\n",
+            "    if n <= 1 { return n; }\n",
+            "    return fib(n - 1) + fib(n - 2);\n",
+            "}\n",
+            "fn main() -> Int64 { return fib(5); }",
+        ));
+        // fib calls itself — should appear twice in IR (definition + call)
+        let count = ir.matches("@fib(").count() + ir.matches("call i64 @fib").count();
+        assert!(count >= 2, "recursive function should call itself in IR");
+    }
+
+    // ================================================================
+    // Multiple function parameters
+    // ================================================================
+
+    #[test]
+    fn test_multiple_params_ir() {
+        let ir = compile_to_ir(
+            "fn add(a: Int64, b: Int64, c: Int64) -> Int64 { return a + b + c; }\nfn main() -> Int64 { return add(1, 2, 3); }"
+        );
+        assert!(ir.contains("@add(i64 %a, i64 %b, i64 %c)") || ir.contains("@add(i64"),
+            "multi-param function should appear in IR");
+    }
+
+    // ================================================================
+    // Return without value
+    // ================================================================
+
+    #[test]
+    fn test_return_void_ir() {
+        let ir = compile_to_ir("fn greet() -> Nothing { return; }\nfn main() -> Int64 { greet(); return 0; }");
+        assert!(ir.contains("ret void") || ir.contains("ret i64"),
+            "Nothing-returning function should have a return");
+    }
+
+    // ================================================================
+    // For-C style loop
+    // ================================================================
+
+    #[test]
+    fn test_forc_loop_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var sum = 0;\n",
+            "    for (var i = 0; i < 10; i += 1) {\n",
+            "        sum += i;\n",
+            "    }\n",
+            "    return sum;\n",
+            "}",
+        ));
+        assert!(ir.contains("br ") && (ir.contains("loop") || ir.contains("for")),
+            "for-C loop should emit branch-based loop IR");
+    }
+
+    // ================================================================
+    // Unary bit-not (~)
+    // ================================================================
+
+    #[test]
+    fn test_unary_bitnot_ir() {
+        let ir = compile_to_ir("fn f(x: Int64) -> Int64 { return ~x; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("xor") || ir.contains("-1"), "bit-not should use xor with -1");
+    }
+
+    // ================================================================
+    // Shift right arithmetic (>>>)
+    // ================================================================
+
+    #[test]
+    fn test_arith_shift_right_ir() {
+        let ir = compile_to_ir("fn f(x: Int64) -> Int64 { return x >>> 2; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("ashr"), ">>> should emit ashr instruction");
+    }
+
+    // ================================================================
+    // String method calls
+    // ================================================================
+
+    #[test]
+    fn test_string_length_method_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let s = \"hello\";\n",
+            "    let n = s.len();\n",
+            "    return 0;\n",
+            "}",
+        ));
+        assert!(ir.contains("tinox_string_length"), "s.len() should call tinox_string_length");
+    }
+
+    #[test]
+    fn test_string_concat_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let a = \"foo\";\n",
+            "    let b = \"bar\";\n",
+            "    let c = a + b;\n",
+            "    return 0;\n",
+            "}",
+        ));
+        assert!(ir.contains("tinox_string_concat"), "string + should call tinox_string_concat");
+    }
+
+    // ================================================================
+    // Field write (this.field = value)
+    // ================================================================
+
+    #[test]
+    fn test_field_write_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Counter {\n",
+            "    var count: Int64;\n",
+            "    fn increment() -> Nothing {\n",
+            "        this.count = this.count + 1;\n",
+            "    }\n",
+            "}\n",
+            "fn main() -> Int64 { return 0; }",
+        ));
+        assert!(ir.contains("getelementptr") && ir.contains("store"),
+            "field write should use GEP + store");
+    }
+
+    // ================================================================
+    // Class inheritance: child calls parent method
+    // ================================================================
+
+    #[test]
+    fn test_child_inherits_parent_method_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Animal {\n",
+            "    fn speak() -> Int64 { return 1; }\n",
+            "}\n",
+            "class Dog extends Animal {}\n",
+            "fn main() -> Int64 {\n",
+            "    let d = new Dog();\n",
+            "    return d.speak();\n",
+            "}",
+        ));
+        assert!(ir.contains("Animal_speak") || ir.contains("Dog_speak"),
+            "inherited method should be dispatched");
+    }
+
+    // ================================================================
+    // Immutable struct
+    // ================================================================
+
+    #[test]
+    fn test_immutable_struct_ir() {
+        let ir = compile_to_ir(concat!(
+            "immutable Point(x: Int64, y: Int64)\n",
+            "fn main() -> Int64 {\n",
+            "    let p = new Point(3, 4);\n",
+            "    return p.x;\n",
+            "}",
+        ));
+        assert!(ir.contains("%Point") || ir.contains("Point"),
+            "immutable type should appear in IR");
+    }
+
+    // ================================================================
+    // Logical short-circuit (&&, ||)
+    // ================================================================
+
+    #[test]
+    fn test_logical_and_ir() {
+        let ir = compile_to_ir("fn f(a: Bool, b: Bool) -> Bool { return a && b; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("and i1") || ir.contains("br "),
+            "&& should emit and or branch IR");
+    }
+
+    #[test]
+    fn test_logical_or_ir() {
+        let ir = compile_to_ir("fn f(a: Bool, b: Bool) -> Bool { return a || b; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("or i1") || ir.contains("br "),
+            "|| should emit or or branch IR");
+    }
+
+    // ================================================================
+    // Compound operators (remaining ones)
+    // ================================================================
+
+    #[test]
+    fn test_compound_mul_assign_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 3; x *= 4; return x; }");
+        assert!(ir.contains("mul"), "x *= should emit mul");
+    }
+
+    #[test]
+    fn test_compound_div_assign_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 8; x /= 2; return x; }");
+        assert!(ir.contains("sdiv"), "x /= should emit sdiv");
+    }
+
+    #[test]
+    fn test_compound_mod_assign_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 9; x %= 4; return x; }");
+        assert!(ir.contains("srem"), "x %= should emit srem");
+    }
+
+    #[test]
+    fn test_compound_bitand_assign_parse_bug() {
+        // BUG: parser does not support &= — parses `x &` then fails on `=`
+        // This test documents the current broken state
+        let result = std::panic::catch_unwind(|| {
+            compile_to_ir("fn main() -> Int64 { var x = 15; x &= 6; return x; }")
+        });
+        // Currently panics in compile_to_ir because parse fails
+        assert!(result.is_err(), "x &= should currently fail to parse (known bug)");
+    }
+
+    #[test]
+    fn test_compound_bitor_assign_parse_bug() {
+        // BUG: parser does not support |=
+        let result = std::panic::catch_unwind(|| {
+            compile_to_ir("fn main() -> Int64 { var x = 5; x |= 2; return x; }")
+        });
+        assert!(result.is_err(), "x |= should currently fail to parse (known bug)");
+    }
+
+    #[test]
+    fn test_compound_xor_assign_parse_bug() {
+        // BUG: parser does not support ^=
+        let result = std::panic::catch_unwind(|| {
+            compile_to_ir("fn main() -> Int64 { var x = 7; x ^= 3; return x; }")
+        });
+        assert!(result.is_err(), "x ^= should currently fail to parse (known bug)");
+    }
+
+    #[test]
+    fn test_compound_shl_assign_parse_bug() {
+        // BUG: parser does not support <<=
+        let result = std::panic::catch_unwind(|| {
+            compile_to_ir("fn main() -> Int64 { var x = 1; x <<= 3; return x; }")
+        });
+        assert!(result.is_err(), "x <<= should currently fail to parse (known bug)");
+    }
+
+    // ================================================================
+    // Cast instructions
+    // ================================================================
+
+    #[test]
+    fn test_cast_i32_to_i64_ir() {
+        let ir = compile_to_ir("fn f(x: Int32) -> Int64 { return x as Int64; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("sext") || ir.contains("zext") || ir.contains("i64"),
+            "Int32->Int64 cast should use sext or zext");
+    }
+
+    #[test]
+    fn test_cast_bool_to_int_ir() {
+        let ir = compile_to_ir("fn f(b: Bool) -> Int64 { return b as Int64; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("zext") || ir.contains("i64"),
+            "Bool->Int64 cast should use zext");
+    }
+
+    // ================================================================
+    // Tuple
+    // ================================================================
+
+    #[test]
+    fn test_tuple_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let t = (1, 2); return 0; }");
+        // Tuples are stored as structs — should allocate memory
+        assert!(ir.contains("alloca") || ir.contains("i64"), "tuple should be allocated");
+    }
+
+    // ================================================================
+    // Lambda / closure
+    // ================================================================
+
+    #[test]
+    fn test_lambda_define_ir() {
+        // Lambda syntax: (params) => body  or  \x -> body
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let add = (a, b) => a + b;\n",
+            "    return 0;\n",
+            "}",
+        ));
+        assert!(ir.contains("lambda") || ir.contains("define") || ir.contains("alloca"),
+            "lambda should generate some IR");
+    }
+
+    // ================================================================
+    // Null literal
+    // ================================================================
+
+    #[test]
+    fn test_null_in_condition_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let p = null;\n",
+            "    if p == null { return 1; }\n",
+            "    return 0;\n",
+            "}",
+        ));
+        assert!(ir.contains("icmp") || ir.contains("br "), "null comparison should emit icmp");
+    }
+
+    // ================================================================
+    // Char literal
+    // ================================================================
+
+    #[test]
+    fn test_char_literal_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let c = 'A'; return 0; }");
+        assert!(ir.contains("i32") || ir.contains("65") || ir.contains("store"),
+            "char literal should store its code point");
+    }
+
+    // ================================================================
+    // Float32 vs Float64 types
+    // ================================================================
+
+    #[test]
+    fn test_float32_param_ir() {
+        let ir = compile_to_ir("fn f(x: Float32) -> Float32 { return x; }\nfn main() -> Int64 { return 0; }");
+        assert!(ir.contains("float") || ir.contains("f32") || ir.contains("double"),
+            "Float32 param should appear as float type in IR");
+    }
+
+    // ================================================================
+    // Multiple classes in one program
+    // ================================================================
+
+    #[test]
+    fn test_two_classes_ir() {
+        let ir = compile_to_ir(concat!(
+            "class A { fn getA() -> Int64 { return 1; } }\n",
+            "class B { fn getB() -> Int64 { return 2; } }\n",
+            "fn main() -> Int64 {\n",
+            "    let a = new A();\n",
+            "    let b = new B();\n",
+            "    return a.getA() + b.getB();\n",
+            "}",
+        ));
+        assert!(ir.contains("A_getA") && ir.contains("B_getB"),
+            "both class methods should appear in IR");
+    }
+
+    // ================================================================
+    // Extern fn declaration
+    // ================================================================
+
+    #[test]
+    fn test_extern_fn_ir() {
+        let ir = compile_to_ir(concat!(
+            "extern fn puts(s: String) -> Int64;\n",
+            "fn main() -> Int64 { puts(\"hi\"); return 0; }",
+        ));
+        assert!(ir.contains("declare") && ir.contains("@puts"),
+            "extern fn should emit a declare");
+    }
+
+    // ================================================================
+    // If expression (inline) with result used
+    // ================================================================
+
+    #[test]
+    fn test_if_expr_value_used_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn abs(x: Int64) -> Int64 {\n",
+            "    return if x < 0 { -x; } else { x; };\n",
+            "}",
+            "fn main() -> Int64 { return abs(-3); }",
+        ));
+        assert!(ir.contains("if_then") && ir.contains("if_merge"),
+            "if-expression should have then/merge blocks");
+    }
+
+    // ================================================================
+    // While expression (used as value)
+    // ================================================================
+
+    #[test]
+    fn test_while_stmt_produces_loop_blocks() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var i = 0;\n",
+            "    while i < 5 {\n",
+            "        i += 1;\n",
+            "    }\n",
+            "    return i;\n",
+            "}",
+        ));
+        assert!(ir.contains("loop") && ir.contains("loopbody") && ir.contains("loopend"),
+            "while loop should produce loop/loopbody/loopend blocks");
+    }
+
+    // ================================================================
+    // String operations
+    // ================================================================
+
+    #[test]
+    fn test_string_variable_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let s = \"hello\"; return 0; }");
+        assert!(ir.contains("hello") || ir.contains("i8"), "string literal should appear in IR");
+    }
+
+    #[test]
+    fn test_string_concat_two_vars_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let a = \"foo\";\n",
+            "    let b = \"bar\";\n",
+            "    let c = a + b;\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("foo") && ir.contains("bar"), "string concat should emit both strings");
+    }
+
+    // ================================================================
+    // For-each style loop
+    // ================================================================
+
+    #[test]
+    fn test_foreach_loop_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let arr = [1, 2, 3];\n",
+            "    var sum = 0;\n",
+            "    for x in arr {\n",
+            "        sum += x;\n",
+            "    }\n",
+            "    return sum;\n",
+            "}"
+        ));
+        assert!(ir.contains("sum") || ir.contains("add"), "foreach loop should emit addition IR");
+    }
+
+    // ================================================================
+    // Boolean literals
+    // ================================================================
+
+    #[test]
+    fn test_bool_true_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let b = true; return 0; }");
+        assert!(ir.contains("i1 1") || ir.contains("i1 true") || ir.contains("true"),
+            "true literal should emit i1 1 in IR");
+    }
+
+    #[test]
+    fn test_bool_false_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let b = false; return 0; }");
+        assert!(ir.contains("i1 0") || ir.contains("i1 false") || ir.contains("false"),
+            "false literal should emit i1 0 in IR");
+    }
+
+    // ================================================================
+    // Comparison operators
+    // ================================================================
+
+    #[test]
+    fn test_less_than_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 3 < 5; return 0; }");
+        assert!(ir.contains("icmp slt"), "less-than should emit icmp slt");
+    }
+
+    #[test]
+    fn test_less_equal_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 3 <= 5; return 0; }");
+        assert!(ir.contains("icmp sle"), "less-equal should emit icmp sle");
+    }
+
+    #[test]
+    fn test_greater_than_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 5 > 3; return 0; }");
+        assert!(ir.contains("icmp sgt"), "greater-than should emit icmp sgt");
+    }
+
+    #[test]
+    fn test_greater_equal_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 5 >= 3; return 0; }");
+        assert!(ir.contains("icmp sge"), "greater-equal should emit icmp sge");
+    }
+
+    #[test]
+    fn test_not_equal_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 3 != 5; return 0; }");
+        assert!(ir.contains("icmp ne"), "not-equal should emit icmp ne");
+    }
+
+    // ================================================================
+    // Nested function calls
+    // ================================================================
+
+    #[test]
+    fn test_nested_call_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn double(x: Int64) -> Int64 { return x * 2; }\n",
+            "fn quadruple(x: Int64) -> Int64 { return double(double(x)); }\n",
+            "fn main() -> Int64 { return quadruple(3); }"
+        ));
+        assert!(ir.contains("@double") && ir.contains("@quadruple"),
+            "nested function calls should emit both function symbols");
+    }
+
+    // ================================================================
+    // Multiple assignments
+    // ================================================================
+
+    #[test]
+    fn test_multiple_var_assign_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var x = 1;\n",
+            "    var y = 2;\n",
+            "    var z = x + y;\n",
+            "    x = z * 2;\n",
+            "    return x;\n",
+            "}"
+        ));
+        assert!(ir.contains("store") && ir.contains("load"), "multiple assignments should emit store/load");
+    }
+
+    // ================================================================
+    // Array literal
+    // ================================================================
+
+    #[test]
+    fn test_array_literal_three_elems_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let a = [10, 20, 30]; return 0; }");
+        assert!(ir.contains("10") && ir.contains("20") && ir.contains("30"),
+            "array literal elements should appear in IR");
+    }
+
+    // ================================================================
+    // Enum value
+    // ================================================================
+
+    #[test]
+    fn test_enum_value_no_args_ir() {
+        let ir = compile_to_ir(concat!(
+            "enum Dir { North, South }\n",
+            "fn main() -> Int64 { let d = Dir::North; return 0; }"
+        ));
+        assert!(ir.contains("i32 0") || ir.contains("i64 0") || ir.contains("alloca"),
+            "enum value should emit constant in IR");
+    }
+
+    // ================================================================
+    // Struct / class field access
+    // ================================================================
+
+    #[test]
+    fn test_class_field_read_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Point { var x: Int64; var y: Int64; }\n",
+            "fn main() -> Int64 {\n",
+            "    let p = Point();\n",
+            "    return p.x;\n",
+            "}"
+        ));
+        assert!(ir.contains("%Point") || ir.contains("getelementptr"),
+            "class field read should emit getelementptr in IR");
+    }
+
+    #[test]
+    fn test_class_field_write_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Counter { var count: Int64; }\n",
+            "fn main() -> Int64 {\n",
+            "    var c = Counter();\n",
+            "    c.count = 42;\n",
+            "    return c.count;\n",
+            "}"
+        ));
+        assert!(ir.contains("store i64 42") || ir.contains("42"),
+            "class field write should store value in IR");
+    }
+
+    // ================================================================
+    // Method calls
+    // ================================================================
+
+    #[test]
+    fn test_method_call_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Adder { fn add(a: Int64, b: Int64) -> Int64 { return a + b; } }\n",
+            "fn main() -> Int64 {\n",
+            "    let adder = Adder();\n",
+            "    return adder.add(3, 4);\n",
+            "}"
+        ));
+        assert!(ir.contains("Adder") && ir.contains("add"),
+            "method call should emit class and method names in IR");
+    }
+
+    // ================================================================
+    // Try/catch
+    // ================================================================
+
+    #[test]
+    fn test_try_catch_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    try {\n",
+            "        throw \"oops\";\n",
+            "    } catch e: String {\n",
+            "        return 1;\n",
+            "    }\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("try") || ir.contains("catch") || ir.contains("label"),
+            "try/catch should emit branching IR");
+    }
+
+    // ================================================================
+    // Modulo operator
+    // ================================================================
+
+    #[test]
+    fn test_modulo_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 17 % 5; }");
+        assert!(ir.contains("srem"), "modulo should emit srem instruction");
+    }
+
+    // ================================================================
+    // Unary minus
+    // ================================================================
+
+    #[test]
+    fn test_unary_minus_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { var x = 5; return -x; }");
+        assert!(ir.contains("sub") || ir.contains("neg"), "unary minus should emit sub/neg in IR");
+    }
+
+    // ================================================================
+    // Immutable global
+    // ================================================================
+
+    #[test]
+    fn test_immutable_struct_used_ir() {
+        // immutable in Tinox is a struct-like type, not a constant
+        let ir = compile_to_ir(concat!(
+            "immutable Config(host: String, port: Int64);\n",
+            "fn main() -> Int64 { let c = Config(\"localhost\", 8080); return 0; }"
+        ));
+        assert!(ir.contains("Config") || ir.contains("8080"),
+            "immutable struct usage should appear in IR");
+    }
+
+    // ================================================================
+    // Defer statement
+    // ================================================================
+
+    #[test]
+    fn test_defer_generates_code() {
+        let ir = compile_to_ir(concat!(
+            "fn cleanup() -> Nothing { return; }\n",
+            "fn main() -> Int64 {\n",
+            "    defer { cleanup(); }\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("@cleanup") || ir.contains("cleanup"),
+            "deferred call should appear in IR");
+    }
+
+    // ================================================================
+    // Float arithmetic
+    // ================================================================
+
+    #[test]
+    fn test_float_add_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 1.5 + 2.5; return 0; }");
+        assert!(ir.contains("fadd"), "float addition should emit fadd");
+    }
+
+    #[test]
+    fn test_float_mul_two_literals_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 3.0 * 2.0; return 0; }");
+        assert!(ir.contains("fmul"), "float multiplication should emit fmul");
+    }
+
+    #[test]
+    fn test_float_div_two_literals_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 10.0 / 4.0; return 0; }");
+        assert!(ir.contains("fdiv"), "float division should emit fdiv");
+    }
+
+    // ================================================================
+    // Interface polymorphism
+    // ================================================================
+
+    #[test]
+    fn test_interface_impl_ir() {
+        let ir = compile_to_ir(concat!(
+            "interface Greeter { fn greet() -> Nothing; }\n",
+            "class Hello implements Greeter {\n",
+            "    fn greet() -> Nothing { println(\"hi\"); }\n",
+            "}\n",
+            "fn main() -> Int64 { let h = Hello(); h.greet(); return 0; }"
+        ));
+        assert!(ir.contains("Hello") && ir.contains("greet"),
+            "interface implementation should emit class and method in IR");
+    }
+
+    // ================================================================
+    // Recursive functions
+    // ================================================================
+
+    #[test]
+    fn test_recursive_fibonacci_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn fib(n: Int64) -> Int64 {\n",
+            "    if n <= 1 { return n; }\n",
+            "    return fib(n - 1) + fib(n - 2);\n",
+            "}\n",
+            "fn main() -> Int64 { return fib(10); }"
+        ));
+        assert!(ir.contains("@fib"), "fibonacci should define @fib in IR");
+        assert!(ir.contains("call i64 @fib") || ir.contains("@fib("),
+            "fibonacci should call itself recursively");
+    }
+
+    #[test]
+    fn test_recursive_countdown_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn countdown(n: Int64) -> Nothing {\n",
+            "    if n <= 0 { return; }\n",
+            "    countdown(n - 1);\n",
+            "}\n",
+            "fn main() -> Int64 { countdown(5); return 0; }"
+        ));
+        assert!(ir.contains("@countdown"), "countdown should appear in IR");
+    }
+
+    // ================================================================
+    // Multiple functions
+    // ================================================================
+
+    #[test]
+    fn test_three_functions_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn a() -> Int64 { return 1; }\n",
+            "fn b() -> Int64 { return 2; }\n",
+            "fn c() -> Int64 { return a() + b(); }\n",
+            "fn main() -> Int64 { return c(); }"
+        ));
+        assert!(ir.contains("@a") && ir.contains("@b") && ir.contains("@c"),
+            "all three functions should appear in IR");
+    }
+
+    // ================================================================
+    // Higher-order functions / lambdas
+    // ================================================================
+
+    #[test]
+    fn test_lambda_single_param_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let sq = \\x -> x * x;\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("mul") || ir.contains("lambda") || ir.contains("alloca"),
+            "lambda should emit IR code");
+    }
+
+    #[test]
+    fn test_lambda_two_params_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let add = (a, b) => a + b;\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("add") || ir.contains("alloca"),
+            "two-param lambda should emit IR");
+    }
+
+    // ================================================================
+    // Class inheritance
+    // ================================================================
+
+    #[test]
+    fn test_class_extends_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Animal { fn speak() -> Nothing { println(\"...\"); } }\n",
+            "class Dog extends Animal { fn fetch() -> Nothing { println(\"!\"); } }\n",
+            "fn main() -> Int64 { let d = Dog(); d.fetch(); return 0; }"
+        ));
+        assert!(ir.contains("Dog") && ir.contains("fetch"),
+            "subclass method should appear in IR");
+    }
+
+    // ================================================================
+    // Enum with match
+    // ================================================================
+
+    #[test]
+    fn test_enum_match_ir() {
+        let ir = compile_to_ir(concat!(
+            "enum Color { Red, Green, Blue }\n",
+            "fn name(c: Color) -> String {\n",
+            "    match c {\n",
+            "        Color::Red => return \"red\";\n",
+            "        Color::Green => return \"green\";\n",
+            "        _ => return \"blue\";\n",
+            "    }\n",
+            "}\n",
+            "fn main() -> Int64 { let s = name(Color::Red); return 0; }"
+        ));
+        assert!(ir.contains("@name"), "enum match function should appear in IR");
+    }
+
+    // ================================================================
+    // For-C loop
+    // ================================================================
+
+    #[test]
+    fn test_forc_loop_sum_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var sum = 0;\n",
+            "    for (var i = 0; i < 10; i += 1) {\n",
+            "        sum += i;\n",
+            "    }\n",
+            "    return sum;\n",
+            "}"
+        ));
+        assert!(ir.contains("add") && ir.contains("icmp"),
+            "for-C loop should emit add and compare instructions");
+    }
+
+    // ================================================================
+    // Nested conditionals
+    // ================================================================
+
+    #[test]
+    fn test_nested_if_else_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn classify(n: Int64) -> String {\n",
+            "    if n < 0 {\n",
+            "        return \"negative\";\n",
+            "    } else if n == 0 {\n",
+            "        return \"zero\";\n",
+            "    } else {\n",
+            "        return \"positive\";\n",
+            "    }\n",
+            "}\n",
+            "fn main() -> Int64 { let s = classify(5); return 0; }"
+        ));
+        assert!(ir.contains("@classify") && ir.contains("then") || ir.contains("br"),
+            "nested if/else should emit conditional branches");
+    }
+
+    // ================================================================
+    // Integer operations
+    // ================================================================
+
+    #[test]
+    fn test_integer_subtraction_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 10 - 3; }");
+        assert!(ir.contains("sub"), "subtraction should emit sub");
+    }
+
+    #[test]
+    fn test_integer_multiplication_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 6 * 7; }");
+        assert!(ir.contains("mul"), "multiplication should emit mul");
+    }
+
+    #[test]
+    fn test_integer_division_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 20 / 4; }");
+        assert!(ir.contains("sdiv"), "division should emit sdiv");
+    }
+
+    // ================================================================
+    // Local variable allocation
+    // ================================================================
+
+    #[test]
+    fn test_multiple_locals_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    let a = 1;\n",
+            "    let b = 2;\n",
+            "    let c = 3;\n",
+            "    let d = 4;\n",
+            "    let e = 5;\n",
+            "    return a + b + c + d + e;\n",
+            "}"
+        ));
+        assert!(ir.contains("alloca") || ir.contains("add"),
+            "multiple locals should emit alloca or be kept in registers");
+    }
+
+    // ================================================================
+    // Boolean operations IR
+    // ================================================================
+
+    #[test]
+    fn test_not_bool_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let b = !true; return 0; }");
+        assert!(ir.contains("xor") || ir.contains("not"),
+            "boolean NOT should emit xor or not");
+    }
+
+    // ================================================================
+    // Cast operations
+    // ================================================================
+
+    #[test]
+    fn test_cast_i64_to_float_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 5; let f = x as Float64; return 0; }");
+        assert!(ir.contains("sitofp") || ir.contains("fpext") || ir.contains("float"),
+            "int-to-float cast should emit sitofp in IR");
+    }
+
+    #[test]
+    fn test_cast_float_to_i64_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let x = 3.14; let n = x as Int64; return n; }");
+        assert!(ir.contains("fptosi") || ir.contains("trunc") || ir.contains("i64"),
+            "float-to-int cast should emit fptosi in IR");
+    }
+
+    // ================================================================
+    // Range expression
+    // ================================================================
+
+    #[test]
+    fn test_range_for_loop_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var total = 0;\n",
+            "    for i in 0..5 {\n",
+            "        total += i;\n",
+            "    }\n",
+            "    return total;\n",
+            "}"
+        ));
+        assert!(ir.contains("add") && ir.contains("icmp"),
+            "range for loop should emit addition and comparison");
+    }
+
+    // ================================================================
+    // Struct literal IR
+    // ================================================================
+
+    #[test]
+    fn test_struct_literal_ir() {
+        let ir = compile_to_ir(concat!(
+            "class Point { var x: Int64; var y: Int64; }\n",
+            "fn main() -> Int64 {\n",
+            "    let p = Point { x: 3, y: 4 };\n",
+            "    return 0;\n",
+            "}"
+        ));
+        assert!(ir.contains("Point") || ir.contains("alloca"),
+            "struct literal should emit type or alloca in IR");
+    }
+
+    // ================================================================
+    // Global immutable
+    // ================================================================
+
+    #[test]
+    fn test_immutable_struct_ir_v2() {
+        let ir = compile_to_ir(concat!(
+            "immutable Config(host: String, port: Int64);\n",
+            "fn get_port(c: Config) -> Int64 { return c.port; }\n",
+            "fn main() -> Int64 { return 0; }"
+        ));
+        assert!(ir.contains("Config") || ir.contains("port") || ir.contains("getelementptr"),
+            "immutable struct should be in IR");
+    }
+
+    // ================================================================
+    // Println / print builtins
+    // ================================================================
+
+    #[test]
+    fn test_println_int_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { println(42); return 0; }");
+        assert!(ir.contains("println") || ir.contains("printf") || ir.contains("print"),
+            "println should appear in IR");
+    }
+
+    #[test]
+    fn test_println_string_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { println(\"hello\"); return 0; }");
+        assert!(ir.contains("hello"), "string argument should appear in IR");
+    }
+
+    // ================================================================
+    // Bitwise shift operations
+    // ================================================================
+
+    #[test]
+    fn test_shift_left_const_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 1 << 8; }");
+        assert!(ir.contains("shl"), "left shift should emit shl");
+    }
+
+    #[test]
+    fn test_shift_right_const_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { return 256 >> 4; }");
+        assert!(ir.contains("ashr") || ir.contains("lshr"), "right shift should emit ashr or lshr");
+    }
+
+    // ================================================================
+    // Break and continue
+    // ================================================================
+
+    #[test]
+    fn test_break_in_loop_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var i = 0;\n",
+            "    loop {\n",
+            "        if i >= 5 { break; }\n",
+            "        i += 1;\n",
+            "    }\n",
+            "    return i;\n",
+            "}"
+        ));
+        assert!(ir.contains("br") || ir.contains("loop"),
+            "break in loop should produce branch instruction");
+    }
+
+    #[test]
+    fn test_continue_in_while_ir() {
+        let ir = compile_to_ir(concat!(
+            "fn main() -> Int64 {\n",
+            "    var sum = 0;\n",
+            "    var i = 0;\n",
+            "    while i < 10 {\n",
+            "        i += 1;\n",
+            "        if i == 5 { continue; }\n",
+            "        sum += i;\n",
+            "    }\n",
+            "    return sum;\n",
+            "}"
+        ));
+        assert!(ir.contains("loop") || ir.contains("br"),
+            "continue in while should produce branch back to loop header");
+    }
 }

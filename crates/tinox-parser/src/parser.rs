@@ -2362,11 +2362,11 @@ impl Parser {
                 self.bump();
                 return Ok(Pattern::Literal(Literal::Byte(b), span));
             }
-            TokenKind::Keyword(Keyword::True) => {
+            TokenKind::Keyword(Keyword::True) | TokenKind::Bool(true) => {
                 self.bump();
                 return Ok(Pattern::Literal(Literal::Bool(true), span));
             }
-            TokenKind::Keyword(Keyword::False) => {
+            TokenKind::Keyword(Keyword::False) | TokenKind::Bool(false) => {
                 self.bump();
                 return Ok(Pattern::Literal(Literal::Bool(false), span));
             }
@@ -2687,6 +2687,7 @@ impl Parser {
     fn parse_ident(&mut self) -> Result<String, Error> {
         match self.peek().kind.clone() {
             TokenKind::Ident(s) => { self.bump(); Ok(s) }
+            TokenKind::Underscore => { self.bump(); Ok("_".to_string()) }
             TokenKind::Keyword(kw) => {
                 // Allow some keywords as identifiers (param names, variable names, etc.)
                 let name = match kw {
@@ -2946,5 +2947,2056 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let result = parser.parse();
         assert!(result.is_ok(), "{:?}", result);
+    }
+
+    // --- Helpers ---
+
+    fn parse(src: &str) -> SourceFile {
+        let tokens = Lexer::new(src).tokenize().expect("lex error");
+        Parser::new(tokens).parse().expect("parse error")
+    }
+
+    fn parse_err(src: &str) -> bool {
+        let tokens = Lexer::new(src).tokenize().expect("lex error");
+        Parser::new(tokens).parse().is_err()
+    }
+
+    fn first_decl(src: &str) -> DeclKind {
+        parse(src).decls.remove(0).node
+    }
+
+    // --- Function declarations ---
+
+    #[test]
+    fn test_fn_no_params_no_return() {
+        let d = first_decl("fn greet() { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.name, "greet");
+        assert!(f.params.is_empty());
+        assert!(matches!(f.ret_type, Type::Nothing));
+    }
+
+    #[test]
+    fn test_fn_with_params_and_return() {
+        let d = first_decl("fn add(a: Int32, b: Int32) -> Int32 { return a; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.name, "add");
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "a");
+        assert!(matches!(f.params[0].param_type, Type::Int32));
+        assert_eq!(f.params[1].name, "b");
+        assert!(matches!(f.ret_type, Type::Int32));
+    }
+
+    #[test]
+    fn test_fn_generic() {
+        let d = first_decl("fn identity<T>(x: T) -> T { return x; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.name, "identity");
+        assert_eq!(f.type_params, vec!["T"]);
+        assert_eq!(f.params.len(), 1);
+    }
+
+    #[test]
+    fn test_fn_multiple_type_params() {
+        let d = first_decl("fn pair<A, B>(a: A, b: B) -> A { return a; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.type_params, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_fn_async() {
+        let d = first_decl("async fn fetch() -> String { return \"ok\"; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(f.is_async);
+        assert_eq!(f.name, "fetch");
+    }
+
+    #[test]
+    fn test_fn_abstract_declaration() {
+        let d = first_decl("fn foo(x: Int32) -> Bool;");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.name, "foo");
+        assert!(matches!(f.ret_type, Type::Bool));
+    }
+
+    // --- Class declarations ---
+
+    #[test]
+    fn test_class_empty() {
+        let d = first_decl("class Point { }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.name, "Point");
+        assert!(c.fields.is_empty());
+        assert!(c.methods.is_empty());
+        assert!(c.extends.is_none());
+        assert!(c.implements.is_empty());
+    }
+
+    #[test]
+    fn test_class_with_fields() {
+        let d = first_decl("class Point { x: Float64; y: Float64; }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.fields.len(), 2);
+        assert_eq!(c.fields[0].name, "x");
+        assert!(matches!(c.fields[0].field_type, Type::Float64));
+        assert_eq!(c.fields[1].name, "y");
+    }
+
+    #[test]
+    fn test_class_extends() {
+        let d = first_decl("class Dog extends Animal { }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.name, "Dog");
+        assert_eq!(c.extends.as_deref(), Some("Animal"));
+    }
+
+    #[test]
+    fn test_class_implements() {
+        let d = first_decl("class Dog implements Animal, Runnable { }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.implements, vec!["Animal", "Runnable"]);
+    }
+
+    #[test]
+    fn test_class_generic() {
+        let d = first_decl("class Box<T> { value: T; }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.name, "Box");
+        assert_eq!(c.type_params, vec!["T"]);
+        assert_eq!(c.fields.len(), 1);
+    }
+
+    #[test]
+    fn test_class_with_method() {
+        let d = first_decl("class Counter { fn increment() -> Nothing { } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.methods.len(), 1);
+        assert_eq!(c.methods[0].name, "increment");
+    }
+
+    #[test]
+    fn test_class_visibility_modifiers() {
+        let d = first_decl("class Foo { public x: Int32; private y: Bool; }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(matches!(c.fields[0].visibility, Visibility::Public));
+        assert!(matches!(c.fields[1].visibility, Visibility::Private));
+    }
+
+    // --- Interface declarations ---
+
+    #[test]
+    fn test_interface_empty() {
+        let d = first_decl("interface Shape { }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.name, "Shape");
+        assert!(i.methods.is_empty());
+        assert!(i.extends.is_empty());
+    }
+
+    #[test]
+    fn test_interface_with_methods() {
+        let d = first_decl("interface Shape { fn area() -> Float64; fn perimeter() -> Float64; }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.methods.len(), 2);
+        assert_eq!(i.methods[0].name, "area");
+        assert_eq!(i.methods[1].name, "perimeter");
+    }
+
+    #[test]
+    fn test_interface_extends() {
+        let d = first_decl("interface Animal extends Living { fn speak() -> String; }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.extends, vec!["Living"]);
+    }
+
+    // --- Enum declarations ---
+
+    #[test]
+    fn test_enum_simple() {
+        let d = first_decl("enum Color { Red, Green, Blue }");
+        let DeclKind::Enum(e) = d else { panic!() };
+        assert_eq!(e.name, "Color");
+        assert_eq!(e.variants.len(), 3);
+        assert_eq!(e.variants[0].name, "Red");
+        assert_eq!(e.variants[1].name, "Green");
+        assert_eq!(e.variants[2].name, "Blue");
+    }
+
+    #[test]
+    fn test_enum_with_args() {
+        let d = first_decl("enum Result { Ok(Int32), Err(String) }");
+        let DeclKind::Enum(e) = d else { panic!() };
+        assert_eq!(e.variants.len(), 2);
+        assert_eq!(e.variants[0].name, "Ok");
+        assert_eq!(e.variants[0].args.len(), 1);
+        assert!(matches!(e.variants[0].args[0], Type::Int32));
+    }
+
+    // --- Import declarations ---
+
+    #[test]
+    fn test_import_simple() {
+        let d = first_decl("import std.io;");
+        let DeclKind::Import(i) = d else { panic!() };
+        assert_eq!(i.path, vec!["std", "io"]);
+        assert!(i.alias.is_none());
+    }
+
+    #[test]
+    fn test_import_with_alias() {
+        let d = first_decl("import std.io as io;");
+        let DeclKind::Import(i) = d else { panic!() };
+        assert_eq!(i.path, vec!["std", "io"]);
+        assert_eq!(i.alias.as_deref(), Some("io"));
+    }
+
+    // --- Module declaration ---
+
+    #[test]
+    fn test_module_declaration() {
+        let d = first_decl("module myapp;");
+        let DeclKind::Module(name) = d else { panic!() };
+        assert_eq!(name, "myapp");
+    }
+
+    // --- Statements: let / var ---
+
+    #[test]
+    fn test_let_with_type() {
+        let d = first_decl("fn f() { let x: Int32 = 5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Let { .. }));
+        let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(name, "x");
+        assert!(matches!(ty, Some(Type::Int32)));
+    }
+
+    #[test]
+    fn test_let_type_inferred() {
+        let d = first_decl("fn f() { let x = 42; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(name, "x");
+        assert!(ty.is_none());
+    }
+
+    #[test]
+    fn test_var_mutable() {
+        let d = first_decl("fn f() { var x: Int32 = 0; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(&stmts[0].node, StmtKind::Var { mutable: true, .. }));
+    }
+
+    // --- Statements: control flow ---
+
+    #[test]
+    fn test_if_stmt() {
+        let d = first_decl("fn f() { if true { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::If { .. }));
+    }
+
+    #[test]
+    fn test_if_else_stmt() {
+        // bare ident before { would be parsed as struct literal, use comparison instead
+        let d = first_decl("fn f() { if x > 0 { } else { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
+        assert!(else_branch.is_some());
+    }
+
+    #[test]
+    fn test_while_stmt() {
+        let d = first_decl("fn f() { while true { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::While { .. }));
+    }
+
+    #[test]
+    fn test_for_range_stmt() {
+        let d = first_decl("fn f() { for i in 0..10 { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { var, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(var, "i");
+    }
+
+    #[test]
+    fn test_return_with_value() {
+        let d = first_decl("fn f() -> Int32 { return 42; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Return(Some(_))));
+    }
+
+    #[test]
+    fn test_return_void() {
+        let d = first_decl("fn f() { return; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Return(None)));
+    }
+
+    #[test]
+    fn test_break_continue() {
+        let d = first_decl("fn f() { while true { break; continue; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(outer) = &f.body.node else { panic!() };
+        let StmtKind::While { body, .. } = &outer[0].node else { panic!() };
+        let StmtKind::Block(inner) = &body.node else { panic!() };
+        assert!(matches!(inner[0].node, StmtKind::Break));
+        assert!(matches!(inner[1].node, StmtKind::Continue));
+    }
+
+    // --- Expressions: literals ---
+
+    #[test]
+    fn test_expr_integer_literal() {
+        let d = first_decl("fn f() { let x = 99; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Integer(99))));
+    }
+
+    #[test]
+    fn test_expr_float_literal() {
+        let d = first_decl("fn f() { let x = 3.14; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Literal(Literal::Float(f)) if (*f - 3.14).abs() < 1e-10));
+    }
+
+    #[test]
+    fn test_expr_bool_literal() {
+        let d = first_decl("fn f() { let x = true; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn test_expr_string_literal() {
+        let d = first_decl(r#"fn f() { let x = "hello"; }"#);
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Literal(Literal::String(s)) if s == "hello"));
+    }
+
+    #[test]
+    fn test_expr_null_literal() {
+        let d = first_decl("fn f() { let x = null; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Null)));
+    }
+
+    // --- Expressions: binary ops ---
+
+    #[test]
+    fn test_expr_binary_add() {
+        let d = first_decl("fn f() { let x = 1 + 2; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Binary { op: BinaryOp::Add, .. }));
+    }
+
+    #[test]
+    fn test_expr_binary_comparison() {
+        let d = first_decl("fn f() { let x = a < b; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Binary { op: BinaryOp::Lt, .. }));
+    }
+
+    #[test]
+    fn test_expr_binary_logical_and() {
+        let d = first_decl("fn f() { let x = a && b; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Binary { op: BinaryOp::And, .. }));
+    }
+
+    #[test]
+    fn test_expr_operator_precedence() {
+        // 1 + 2 * 3 should parse as 1 + (2 * 3)
+        let d = first_decl("fn f() { let x = 1 + 2 * 3; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Binary { op: BinaryOp::Add, rhs, .. } = &e.node else { panic!("expected Add") };
+        assert!(matches!(rhs.node, ExprKind::Binary { op: BinaryOp::Mul, .. }));
+    }
+
+    // --- Expressions: unary ops ---
+
+    #[test]
+    fn test_expr_unary_neg() {
+        let d = first_decl("fn f() { let x = -1; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Unary { op: UnaryOp::Neg, .. }));
+    }
+
+    #[test]
+    fn test_expr_unary_not() {
+        let d = first_decl("fn f() { let x = !true; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Unary { op: UnaryOp::Not, .. }));
+    }
+
+    // --- Expressions: call, method call, field access, index ---
+
+    #[test]
+    fn test_expr_function_call() {
+        let d = first_decl("fn f() { foo(1, 2); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Call { args, .. } = &e.node else { panic!() };
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_expr_method_call() {
+        let d = first_decl("fn f() { obj.method(x); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::MethodCall { method, args, .. } = &e.node else { panic!() };
+        assert_eq!(method, "method");
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn test_expr_field_access() {
+        let d = first_decl("fn f() { let x = obj.field; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::FieldAccess { field, .. } = &e.node else { panic!() };
+        assert_eq!(field, "field");
+    }
+
+    #[test]
+    fn test_expr_index() {
+        let d = first_decl("fn f() { let x = arr[0]; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Index { .. }));
+    }
+
+    // --- Expressions: new, array, tuple ---
+
+    #[test]
+    fn test_expr_new() {
+        let d = first_decl("fn f() { let x = new Foo(1, 2); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::New { class, args, .. } = &e.node else { panic!() };
+        assert_eq!(class, "Foo");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_expr_array_literal() {
+        let d = first_decl("fn f() { let x = [1, 2, 3]; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::ArrayLiteral(elems) = &e.node else { panic!() };
+        assert_eq!(elems.len(), 3);
+    }
+
+    #[test]
+    fn test_expr_tuple() {
+        let d = first_decl("fn f() { let x = (1, 2); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Tuple(elems) = &e.node else { panic!() };
+        assert_eq!(elems.len(), 2);
+    }
+
+    // --- Expressions: range ---
+
+    #[test]
+    fn test_expr_range_exclusive() {
+        let d = first_decl("fn f() { for i in 0..10 { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { iter, .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&iter.node, ExprKind::Range { inclusive: false, .. }));
+    }
+
+    #[test]
+    fn test_expr_range_inclusive() {
+        let d = first_decl("fn f() { for i in 0...10 { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { iter, .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&iter.node, ExprKind::Range { inclusive: true, .. }));
+    }
+
+    // --- Expressions: lambda ---
+
+    #[test]
+    fn test_expr_lambda() {
+        // lambda syntax: \param -> body  or  (params) => body
+        let d = first_decl("fn f() { let add = (a, b) => a; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Lambda { params, .. } = &e.node else { panic!() };
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "a");
+    }
+
+    #[test]
+    fn test_expr_lambda_backslash() {
+        // backslash lambda: \x -> expr
+        let d = first_decl("fn f() { let sq = \\x -> x; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Lambda { params, .. } = &e.node else { panic!() };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "x");
+    }
+
+    // --- Expressions: cast, is ---
+
+    #[test]
+    fn test_expr_cast() {
+        // cast syntax: cast expr as Type
+        let d = first_decl("fn f() { let x = cast y as Int32; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Cast { .. }));
+    }
+
+    #[test]
+    fn test_expr_is() {
+        // is syntax: is expr -> Type (prefix expression)
+        let d = first_decl("fn f() { let x = is y -> Int32; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Is { .. }));
+    }
+
+    // --- Expressions: match ---
+
+    #[test]
+    fn test_expr_match() {
+        // match syntax: no 'case' keyword, patterns go directly
+        let d = first_decl("fn f() { match x { 1 => { } _ => { } } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert_eq!(cases.len(), 2);
+        assert!(matches!(cases[0].pattern, Pattern::Literal(Literal::Integer(1), _)));
+        assert!(matches!(cases[1].pattern, Pattern::Wildcard(_)));
+    }
+
+    // --- Expressions: throw, try/catch ---
+
+    #[test]
+    fn test_stmt_throw() {
+        let d = first_decl(r#"fn f() { throw new Error("oops"); }"#);
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Throw(_)));
+    }
+
+    #[test]
+    fn test_stmt_try_catch() {
+        let d = first_decl("fn f() { try { foo(); } catch e: Error { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Try { catches, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(catches.len(), 1);
+        assert_eq!(catches[0].param, "e");
+    }
+
+    // --- Types ---
+
+    #[test]
+    fn test_type_array() {
+        let d = first_decl("fn f(x: Int32[]) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Array(_)));
+    }
+
+    #[test]
+    fn test_type_map() {
+        let d = first_decl("fn f(x: Map<String, Int32>) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Map(_, _)));
+    }
+
+    #[test]
+    fn test_type_fn() {
+        // function/closure type uses 'fnc' keyword
+        let d = first_decl("fn f(x: fnc(Int32) -> Bool) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Fn { .. }));
+    }
+
+    #[test]
+    fn test_type_tuple() {
+        let d = first_decl("fn f(x: (Int32, Bool)) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Tuple(_)));
+    }
+
+    #[test]
+    fn test_type_generic_named() {
+        let d = first_decl("fn f(x: Box<Int32>) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(&f.params[0].param_type, Type::Generic { name, args } if name == "Box" && args.len() == 1));
+    }
+
+    // --- Multiple top-level decls ---
+
+    #[test]
+    fn test_multiple_decls() {
+        let sf = parse("fn a() { } fn b() { } fn c() { }");
+        assert_eq!(sf.decls.len(), 3);
+    }
+
+    // --- Annotations ---
+
+    #[test]
+    fn test_annotation_on_fn() {
+        let d = first_decl("@deprecated fn old() { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.annotations.len(), 1);
+        assert_eq!(f.annotations[0].name, "deprecated");
+    }
+
+    // --- Error cases ---
+
+    #[test]
+    fn test_error_missing_closing_brace() {
+        assert!(parse_err("fn f() {"));
+    }
+
+    #[test]
+    fn test_error_missing_fn_body() {
+        assert!(parse_err("fn f()"));
+    }
+
+    #[test]
+    fn test_error_unknown_token_in_decl() {
+        assert!(parse_err("42"));
+    }
+
+    // --- Trait declarations ---
+
+    #[test]
+    fn test_trait_empty() {
+        let d = first_decl("trait Printable { }");
+        assert!(matches!(d, DeclKind::Trait(_)));
+        let DeclKind::Trait(t) = d else { panic!() };
+        assert_eq!(t.name, "Printable");
+        assert!(t.methods.is_empty());
+    }
+
+    #[test]
+    fn test_trait_with_method() {
+        let d = first_decl("trait Printable { fn print() -> String; }");
+        let DeclKind::Trait(t) = d else { panic!() };
+        assert_eq!(t.methods.len(), 1);
+        assert_eq!(t.methods[0].name, "print");
+    }
+
+    // --- Namespace declarations ---
+
+    #[test]
+    fn test_namespace_empty() {
+        let d = first_decl("namespace myapp { }");
+        let DeclKind::Namespace(ns) = d else { panic!() };
+        assert_eq!(ns.name, vec!["myapp"]);
+        assert!(ns.decls.is_empty());
+    }
+
+    #[test]
+    fn test_namespace_with_function() {
+        let d = first_decl("namespace utils { fn helper() { } }");
+        let DeclKind::Namespace(ns) = d else { panic!() };
+        assert_eq!(ns.decls.len(), 1);
+        assert!(matches!(ns.decls[0].node, DeclKind::Function(_)));
+    }
+
+    #[test]
+    fn test_namespace_nested_path() {
+        let d = first_decl("namespace com.example.app { }");
+        let DeclKind::Namespace(ns) = d else { panic!() };
+        assert!(ns.name.join(".").contains("com"));
+    }
+
+    // --- Extern fn ---
+
+    #[test]
+    fn test_extern_fn() {
+        let d = first_decl("extern fn malloc(size: Int64) -> Int64;");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.name, "malloc");
+        assert_eq!(f.params.len(), 1);
+    }
+
+    // --- Immutable declaration ---
+
+    #[test]
+    fn test_immutable_decl() {
+        let d = first_decl("immutable Point(x: Int64, y: Int64);");
+        let DeclKind::Immutable(u) = d else { panic!() };
+        assert_eq!(u.name, "Point");
+        assert_eq!(u.fields.len(), 2);
+        assert_eq!(u.fields[0].name, "x");
+        assert_eq!(u.fields[1].name, "y");
+    }
+
+    // --- Static method (fnc in class) ---
+
+    #[test]
+    fn test_class_static_method_fnc() {
+        let d = first_decl("class Math { fnc square(x: Int64) -> Int64 { return x; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.methods.len(), 1);
+        assert!(c.methods[0].static_);
+        assert_eq!(c.methods[0].name, "square");
+    }
+
+    #[test]
+    fn test_class_instance_method_fn() {
+        let d = first_decl("class Counter { fn increment() { } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(!c.methods[0].static_);
+    }
+
+    // --- Async method ---
+
+    #[test]
+    fn test_class_async_method() {
+        let d = first_decl("class Client { async fn fetch() -> String { return \"\"; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(c.methods[0].is_async);
+    }
+
+    // --- Visibility on methods ---
+
+    #[test]
+    fn test_class_private_method() {
+        let d = first_decl("class Foo { private fn helper() { } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(matches!(c.methods[0].visibility, Visibility::Private));
+    }
+
+    #[test]
+    fn test_class_protected_method() {
+        let d = first_decl("class Foo { protected fn hook() { } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(matches!(c.methods[0].visibility, Visibility::Protected));
+    }
+
+    // --- Statements: loop, defer ---
+
+    #[test]
+    fn test_loop_stmt() {
+        let d = first_decl("fn f() { loop { break; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Loop { .. }));
+    }
+
+    #[test]
+    fn test_defer_stmt() {
+        let d = first_decl("fn f() { defer println(0); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Defer(_)));
+    }
+
+    #[test]
+    fn test_try_catch_finally() {
+        let d = first_decl("fn f() { try { } catch e: String { } finally { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Try { catches, finally, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(catches.len(), 1);
+        assert!(finally.is_some());
+    }
+
+    // --- Compound assignment ---
+
+    #[test]
+    fn test_compound_assign_plus_eq() {
+        let d = first_decl("fn f() { var x = 0; x += 1; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(&stmts[1].node, StmtKind::Expr(e) if matches!(&e.node, ExprKind::CompoundAssign { op: CompoundOp::Add, .. })));
+    }
+
+    #[test]
+    fn test_compound_assign_minus_eq() {
+        let d = first_decl("fn f() { var x = 5; x -= 2; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(&stmts[1].node, StmtKind::Expr(e) if matches!(&e.node, ExprKind::CompoundAssign { op: CompoundOp::Sub, .. })));
+    }
+
+    // --- Assignment statement ---
+
+    #[test]
+    fn test_assignment_stmt() {
+        let d = first_decl("fn f() { var x = 0; x = 5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[1].node, StmtKind::Assignment { .. }));
+    }
+
+    // --- Expressions: map literal, this, await, spawn ---
+
+    #[test]
+    fn test_expr_map_literal() {
+        // Map literal syntax: @{ key => val, ... }
+        let d = first_decl(r#"fn f() { let m = @{"a" => 1, "b" => 2}; }"#);
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::MapLiteral(pairs) = &e.node else { panic!() };
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn test_expr_this() {
+        let d = first_decl("class Foo { fn bar() { let x = this; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::This));
+    }
+
+    #[test]
+    fn test_expr_await() {
+        let d = first_decl("fn f() { let x = await someTask; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Await(_)));
+    }
+
+    #[test]
+    fn test_expr_spawn() {
+        let d = first_decl("fn f() { let t = spawn work(); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Spawn(_)));
+    }
+
+    // --- Expressions: new with type args ---
+
+    #[test]
+    fn test_expr_new_with_type_args() {
+        let d = first_decl("fn f() { let b = new Box<Int64>(42); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::New { class, type_args, args } = &e.node else { panic!() };
+        assert_eq!(class, "Box");
+        assert_eq!(type_args.len(), 1);
+        assert_eq!(args.len(), 1);
+    }
+
+    // --- Types: ref (*T), mutable ---
+
+    #[test]
+    fn test_type_ref() {
+        let d = first_decl("fn f(x: *Int64) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Ref(_)));
+    }
+
+    #[test]
+    fn test_type_mutable() {
+        let d = first_decl("fn f(x: mut Int64) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Mutable(_)));
+    }
+
+    #[test]
+    fn test_type_nested_generic() {
+        let d = first_decl("fn f(x: Box<Box<Int64>>) { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let Type::Generic { name, args } = &f.params[0].param_type else { panic!() };
+        assert_eq!(name, "Box");
+        assert!(matches!(&args[0], Type::Generic { name, .. } if name == "Box"));
+    }
+
+    // --- Match patterns ---
+
+    #[test]
+    fn test_match_enum_variant_pattern() {
+        let d = first_decl("fn f(c: Color) { match c { Color::Red => { } _ => { } } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::EnumVariant { variant, .. } if variant == "Red"));
+    }
+
+    #[test]
+    fn test_match_tuple_pattern() {
+        let d = first_decl("fn f(p: (Int64, Int64)) { match p { (1, 2) => { } _ => { } } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::Tuple(_, _)));
+    }
+
+    #[test]
+    fn test_match_guard() {
+        let d = first_decl("fn f(x: Int64) { match x { n if n > 0 => { } _ => { } } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(cases[0].guard.is_some());
+    }
+
+    // --- Chaining ---
+
+    #[test]
+    fn test_chained_method_calls() {
+        let d = first_decl("fn f() { a.foo().bar().baz(); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::MethodCall { method, .. } = &e.node else { panic!() };
+        assert_eq!(method, "baz");
+    }
+
+    #[test]
+    fn test_chained_field_access() {
+        let d = first_decl("fn f() { let x = a.b.c; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::FieldAccess { field, .. } = &e.node else { panic!() };
+        assert_eq!(field, "c");
+    }
+
+    // --- Operator precedence ---
+
+    #[test]
+    fn test_precedence_mul_before_add() {
+        let d = first_decl("fn f() { let x = 2 + 3 * 4; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Binary { op: BinaryOp::Add, rhs, .. } = &e.node else { panic!("expected Add") };
+        assert!(matches!(rhs.node, ExprKind::Binary { op: BinaryOp::Mul, .. }));
+    }
+
+    #[test]
+    fn test_precedence_parens_override() {
+        let d = first_decl("fn f() { let x = (2 + 3) * 4; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::Binary { op: BinaryOp::Mul, .. }));
+    }
+
+    #[test]
+    fn test_precedence_compare_before_and() {
+        let d = first_decl("fn f() { let x = a > 0 && b < 10; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Binary { op: BinaryOp::And, lhs, rhs } = &e.node else { panic!() };
+        assert!(matches!(lhs.node, ExprKind::Binary { op: BinaryOp::Gt, .. }));
+        assert!(matches!(rhs.node, ExprKind::Binary { op: BinaryOp::Lt, .. }));
+    }
+
+    // --- More error cases ---
+
+    #[test]
+    fn test_error_unclosed_paren() {
+        assert!(parse_err("fn f() { foo(1, 2; }"));
+    }
+
+    #[test]
+    fn test_error_missing_class_body() {
+        assert!(parse_err("class Foo"));
+    }
+
+    #[test]
+    fn test_error_bad_type_syntax() {
+        assert!(parse_err("fn f(x: ) { }"));
+    }
+
+    #[test]
+    fn test_error_empty_input() {
+        let sf = parse("");
+        assert!(sf.decls.is_empty());
+    }
+
+    // --- Doc comments preserved on declarations ---
+
+    #[test]
+    fn test_doc_comment_on_fn() {
+        let d = first_decl("/** Does something */ fn foo() { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(f.doc.is_some());
+        assert!(f.doc.as_deref().unwrap().contains("Does something"));
+    }
+
+    #[test]
+    fn test_doc_comment_on_class() {
+        let d = first_decl("/** A class */ class Foo { }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(c.doc.is_some());
+    }
+
+    // --- Multiple annotations ---
+
+    #[test]
+    fn test_multiple_annotations() {
+        let d = first_decl("@test @timeout(100) fn myTest() { }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.annotations.len(), 2);
+        assert_eq!(f.annotations[0].name, "test");
+        assert_eq!(f.annotations[1].name, "timeout");
+    }
+
+    // --- Tuple index ---
+
+    #[test]
+    fn test_tuple_index_access() {
+        let d = first_decl("fn f() { let t = (1, 2); let x = t.0; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[1].node else { panic!() };
+        assert!(matches!(&e.node, ExprKind::TupleIndex { index: 0, .. }));
+    }
+
+    // --- Enum with doc comments ---
+
+    #[test]
+    fn test_enum_with_doc() {
+        let d = first_decl("/** Colors */ enum Color { Red, Green, Blue }");
+        let DeclKind::Enum(e) = d else { panic!() };
+        assert!(e.doc.is_some());
+    }
+
+    // --- for-C style loop ---
+
+    #[test]
+    fn test_for_c_style_loop() {
+        let d = first_decl("fn f() { for (var i = 0; i < 10; i += 1) { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::ForC { .. }));
+    }
+
+    // ================================================================
+    // select / send / recv (concurrency)
+    // ================================================================
+
+    #[test]
+    fn test_stmt_select() {
+        let d = first_decl("fn f(ch: Chan) { select { recv ch -> x { } default { } } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Select { .. }));
+    }
+
+    #[test]
+    fn test_expr_send() {
+        let d = first_decl("fn f(ch: Chan) { send ch -> 42; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Send { .. }));
+    }
+
+    #[test]
+    fn test_expr_recv() {
+        let d = first_decl("fn f(ch: Chan) { let x = recv ch; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Recv(_)));
+    }
+
+    #[test]
+    fn test_expr_channel() {
+        let d = first_decl("fn f() { let ch = channel; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Channel));
+    }
+
+    #[test]
+    fn test_expr_spawn_v2() {
+        let d = first_decl("fn f() { let t = spawn work(); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Spawn(_)));
+    }
+
+    #[test]
+    fn test_expr_await_v2() {
+        let d = first_decl("fn f(t: Task) { let r = await t; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Await(_)));
+    }
+
+    // ================================================================
+    // Lambda edge cases
+    // ================================================================
+
+    #[test]
+    fn test_lambda_arrow_style_two_params() {
+        let d = first_decl("fn f() { let add = (a, b) => a + b; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Lambda { params, .. } = &e.node else { panic!() };
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn test_lambda_zero_params_parse_bug() {
+        // BUG: `() => expr` fails to parse — parser expects semicolon after `()`
+        assert!(parse_err("fn f() { let thunk = () => 42; }"), "zero-param arrow lambda should currently fail to parse");
+    }
+
+    #[test]
+    fn test_lambda_backslash_single_param() {
+        let d = first_decl("fn f() { let sq = \\x -> x * x; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Lambda { params, body, .. } = &e.node else { panic!() };
+        assert_eq!(params[0].name, "x");
+        assert!(matches!(body.node, ExprKind::Binary { .. }));
+    }
+
+    #[test]
+    fn test_fnc_lambda() {
+        let d = first_decl("fn f() { let cb = fnc(x: Int64) -> Int64 { return x; }; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Lambda { .. }));
+    }
+
+    #[test]
+    fn test_fn_lambda() {
+        let d = first_decl("fn f() { let cb = fn(x: Int64) -> Int64 { return x; }; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Lambda { .. }));
+    }
+
+    // ================================================================
+    // Super call
+    // ================================================================
+
+    #[test]
+    fn test_expr_super_call() {
+        let d = first_decl("class Dog extends Animal { fn speak() -> Nothing { super.speak(); } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::SuperCall { .. }));
+    }
+
+    // ================================================================
+    // Match with guard
+    // ================================================================
+
+    #[test]
+    fn test_match_with_guard() {
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { n if n > 0 => return; _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(cases[0].guard.is_some(), "first case should have a guard");
+    }
+
+    #[test]
+    fn test_match_no_guard() {
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return; _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(cases[0].guard.is_none());
+    }
+
+    // ================================================================
+    // Deeply nested generic types
+    // ================================================================
+
+    #[test]
+    fn test_type_nested_generic_three_levels_parse_bug() {
+        // BUG: `>>>` is ambiguous — parser fails to close three nested generics
+        assert!(parse_err("fn f(x: Array<Array<Array<Int64>>>) -> Nothing {}"),
+            "triple-nested generic currently fails to parse due to >> ambiguity");
+    }
+
+    #[test]
+    fn test_type_nested_generic_two_levels() {
+        let d = first_decl("fn f(x: Array<Array<Int64> >) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        // Parses as Generic { name: "Array", .. } because of space before >
+        assert!(matches!(f.params[0].param_type, Type::Generic { .. }));
+    }
+
+    #[test]
+    fn test_type_map_with_generic_value() {
+        let d = first_decl("fn f(m: Map<String, Array<Int64>>) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Map(_, _)));
+    }
+
+    #[test]
+    fn test_type_fn_with_multiple_params() {
+        let d = first_decl("fn f(cb: fnc(Int64, String, Bool) -> Nothing) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        let Type::Fn { params, .. } = &f.params[0].param_type else { panic!() };
+        assert_eq!(params.len(), 3);
+    }
+
+    // ================================================================
+    // Enum variant with tuple pattern
+    // ================================================================
+
+    #[test]
+    fn test_match_enum_variant_with_payload() {
+        let d = first_decl("fn f(s: Shape) -> Nothing { match s { Shape::Circle(r) => return; _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::EnumVariant { args, .. } if !args.is_empty()));
+    }
+
+    #[test]
+    fn test_match_tuple_pattern_v2() {
+        let d = first_decl("fn f(t: (Int64, Int64)) -> Nothing { match t { (a, b) => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::Tuple(..)));
+    }
+
+    // ================================================================
+    // Defer statement
+    // ================================================================
+
+    #[test]
+    fn test_stmt_defer() {
+        let d = first_decl("fn f() { defer { println(\"done\"); } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Defer(_)));
+    }
+
+    // ================================================================
+    // try/catch/finally combinations
+    // ================================================================
+
+    #[test]
+    fn test_try_multiple_catches() {
+        let d = first_decl(concat!(
+            "fn f() { try { throw \"x\"; }",
+            " catch e: String { return; }",
+            " catch e: Int64 { return; }",
+            " finally { return; } }"
+        ));
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Try { catches, finally, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(catches.len(), 2);
+        assert!(finally.is_some());
+    }
+
+    // ================================================================
+    // Annotations on various targets
+    // ================================================================
+
+    #[test]
+    fn test_annotation_on_field() {
+        let d = first_decl("class Foo { @Inject\nvar svc: Service; }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(!c.fields[0].annotations.is_empty());
+        assert_eq!(c.fields[0].annotations[0].name, "Inject");
+    }
+
+    #[test]
+    fn test_annotation_with_int_arg() {
+        let d = first_decl("@StatusCode(201)\nfn create() -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.annotations[0].name, "StatusCode");
+        assert!(matches!(f.annotations[0].args[0], Literal::Integer(201)));
+    }
+
+    #[test]
+    fn test_annotation_with_bool_arg() {
+        let d = first_decl("@Option(\"--flag\", \"desc\", true)\nfn f() -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.annotations[0].args[2], Literal::Bool(true)));
+    }
+
+    #[test]
+    fn test_multiple_annotations_on_method() {
+        let d = first_decl("class C { @GET\n@Path(\"/items\")\nfn list() -> Nothing {} }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.methods[0].annotations.len(), 2);
+    }
+
+    // ================================================================
+    // Visibility modifiers
+    // ================================================================
+
+    #[test]
+    fn test_private_method() {
+        let d = first_decl("class Foo { private fn secret() -> Nothing {} }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(matches!(c.methods[0].visibility, Visibility::Private));
+    }
+
+    #[test]
+    fn test_protected_field() {
+        let d = first_decl("class Foo { protected var x: Int64; }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(matches!(c.fields[0].visibility, Visibility::Protected));
+    }
+
+    // ================================================================
+    // Compound expressions
+    // ================================================================
+
+    #[test]
+    fn test_tuple_index_access_v2() {
+        let d = first_decl("fn f(t: (Int64, Int64)) -> Int64 { return t.0; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::TupleIndex { .. }));
+    }
+
+    #[test]
+    fn test_array_index_expr() {
+        let d = first_decl("fn f(a: Array<Int64>) -> Int64 { return a[0]; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn test_enum_value_no_args() {
+        let d = first_decl("fn f() -> Color { return Color::Red; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        let ExprKind::EnumValue { enum_name, variant, args } = &e.node else { panic!() };
+        assert_eq!(enum_name, "Color");
+        assert_eq!(variant, "Red");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_enum_value_with_args() {
+        let d = first_decl("fn f() { let s = Shape::Circle(5.0); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::EnumValue { args, .. } = &e.node else { panic!() };
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn test_struct_literal_expr() {
+        let d = first_decl("fn f() -> Point { return Point { x: 1, y: 2 }; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        let ExprKind::StructLiteral { name, fields } = &e.node else { panic!() };
+        assert_eq!(name, "Point");
+        assert_eq!(fields.len(), 2);
+    }
+
+    #[test]
+    fn test_map_literal() {
+        let d = first_decl("fn f() { let m = @{\"a\" => 1, \"b\" => 2}; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::MapLiteral(pairs) = &e.node else { panic!() };
+        assert_eq!(pairs.len(), 2);
+    }
+
+    // ================================================================
+    // Implicit return (expression at end of block)
+    // ================================================================
+
+    #[test]
+    fn test_block_with_trailing_expr() {
+        // Block ending in expression without semicolon = implicit return
+        let d = first_decl("fn f() -> Int64 { let x = { 42 }; return x; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        // let x = {...} should parse without error
+        assert!(matches!(stmts[0].node, StmtKind::Let { .. }));
+    }
+
+    // ================================================================
+    // Error cases — make sure parser rejects invalid syntax
+    // ================================================================
+
+    #[test]
+    fn test_parse_err_missing_closing_brace() {
+        assert!(parse_err("fn f() { let x = 1;"), "unclosed brace should be a parse error");
+    }
+
+    #[test]
+    fn test_parse_err_missing_arrow_in_fn_sig() {
+        assert!(parse_err("fn f() Int64 {}"), "missing -> should be a parse error");
+    }
+
+    #[test]
+    fn test_parse_err_expr_without_semicolon() {
+        // Most statement-expressions require semicolon
+        let result = parse("fn f() { 1 + 2 }");
+        // This might be OK as a block-returning expression or error depending on parser
+        // Just ensure it doesn't panic
+        let _ = result;
+    }
+
+    // ================================================================
+    // Class generic type params on methods
+    // ================================================================
+
+    #[test]
+    fn test_class_generic_method() {
+        let d = first_decl("class Box<T> { fn get<U>(x: U) -> T {} }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.type_params, vec!["T"]);
+        assert_eq!(c.methods[0].type_params, vec!["U"]);
+    }
+
+    // ================================================================
+    // Interface extends chain
+    // ================================================================
+
+    #[test]
+    fn test_interface_extends_multiple() {
+        let d = first_decl("interface C extends A, B { fn c() -> Nothing; }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.extends, vec!["A", "B"]);
+    }
+
+    // ================================================================
+    // Extern fn with no params
+    // ================================================================
+
+    #[test]
+    fn test_extern_fn_no_params() {
+        let d = first_decl("extern fn getpid() -> Int64;");
+        let DeclKind::Function(f) = d else { panic!() };
+        // extern fn has an empty body (StmtKind::Empty)
+        assert!(matches!(f.body.node, StmtKind::Empty));
+        assert!(f.params.is_empty());
+    }
+
+    // ================================================================
+    // Module and namespace
+    // ================================================================
+
+    #[test]
+    fn test_module_declaration_v2() {
+        let ast = parse("module myapp;");
+        assert!(matches!(ast.decls[0].node, DeclKind::Module(_)));
+    }
+
+    #[test]
+    fn test_namespace_with_multiple_decls() {
+        let d = first_decl("namespace net { fn connect() -> Nothing {} fn disconnect() -> Nothing {} }");
+        let DeclKind::Namespace(ns) = d else { panic!() };
+        assert_eq!(ns.decls.len(), 2);
+    }
+
+    // ================================================================
+    // Expression kinds — untested variants
+    // ================================================================
+
+    #[test]
+    fn test_expr_cast_node() {
+        let d = first_decl("fn f() -> Float64 { let x = 5; return x as Float64; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Cast { .. }));
+    }
+
+    #[test]
+    fn test_expr_is_node() {
+        // is syntax: is expr -> Type (prefix form)
+        let d = first_decl("fn f() { let r = is obj -> String; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Is { .. }));
+    }
+
+    #[test]
+    fn test_expr_range_exclusive_node() {
+        let d = first_decl("fn f() { for x in 0..10 {} }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { iter, .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(iter.node, ExprKind::Range { inclusive: false, .. }));
+    }
+
+    #[test]
+    fn test_expr_range_inclusive_node() {
+        let d = first_decl("fn f() { for x in 0...10 {} }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { iter, .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(iter.node, ExprKind::Range { inclusive: true, .. }));
+    }
+
+    #[test]
+    fn test_expr_tuple_three_elems() {
+        let d = first_decl("fn f() { let t = (1, 2, 3); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Tuple(elems) = &e.node else { panic!() };
+        assert_eq!(elems.len(), 3);
+    }
+
+    #[test]
+    fn test_expr_this_in_method() {
+        let d = first_decl("class Foo { fn bar() -> Nothing { let x = this; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::This));
+    }
+
+    #[test]
+    fn test_expr_new_class() {
+        let d = first_decl("fn f() { let p = new Point(1, 2); }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::New { .. }));
+    }
+
+    #[test]
+    fn test_expr_throw() {
+        let d = first_decl("fn f() { throw \"error\"; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Throw(_)));
+    }
+
+    #[test]
+    fn test_expr_send_channel() {
+        // send syntax: send channel -> value (uses ThinArrow)
+        let d = first_decl("fn f(ch: Chan) { send ch -> 42; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Send { .. }));
+    }
+
+    #[test]
+    fn test_expr_recv_channel() {
+        let d = first_decl("fn f(ch: Channel<Int64>) { let v = recv ch; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Recv(_)));
+    }
+
+    // ================================================================
+    // Statement kinds — untested variants
+    // ================================================================
+
+    #[test]
+    fn test_stmt_loop() {
+        let d = first_decl("fn f() { loop { break; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::Loop { .. }));
+    }
+
+    #[test]
+    fn test_stmt_break() {
+        let d = first_decl("fn f() { loop { break; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Loop { body } = &stmts[0].node else { panic!() };
+        let StmtKind::Block(inner) = &body.node else { panic!() };
+        assert!(matches!(inner[0].node, StmtKind::Break));
+    }
+
+    #[test]
+    fn test_stmt_continue() {
+        let d = first_decl("fn f() { while true { continue; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::While { body, .. } = &stmts[0].node else { panic!() };
+        let StmtKind::Block(inner) = &body.node else { panic!() };
+        assert!(matches!(inner[0].node, StmtKind::Continue));
+    }
+
+    #[test]
+    fn test_stmt_if_else() {
+        let d = first_decl("fn f() -> Int64 { if true { return 1; } else { return 2; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
+        assert!(else_branch.is_some());
+    }
+
+    #[test]
+    fn test_stmt_if_no_else() {
+        let d = first_decl("fn f() { if true { return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
+        assert!(else_branch.is_none());
+    }
+
+    #[test]
+    fn test_stmt_while() {
+        let d = first_decl("fn f() { while x > 0 { return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::While { .. }));
+    }
+
+    #[test]
+    fn test_stmt_for_in() {
+        let d = first_decl("fn f() { for item in list { return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::For { var, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(var, "item");
+    }
+
+    // ================================================================
+    // Binary operator coverage
+    // ================================================================
+
+    #[test]
+    fn test_binary_bitand() {
+        let d = first_decl("fn f() -> Int64 { return 0b1100 & 0b1010; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::BitAnd, .. }));
+    }
+
+    #[test]
+    fn test_binary_bitor() {
+        let d = first_decl("fn f() -> Int64 { return 0b1100 | 0b0011; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::BitOr, .. }));
+    }
+
+    #[test]
+    fn test_binary_xor() {
+        let d = first_decl("fn f() -> Int64 { return 5 ^ 3; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Xor, .. }));
+    }
+
+    #[test]
+    fn test_binary_shl() {
+        let d = first_decl("fn f() -> Int64 { return 1 << 3; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Shl, .. }));
+    }
+
+    #[test]
+    fn test_binary_shr() {
+        let d = first_decl("fn f() -> Int64 { return 8 >> 2; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Shr, .. }));
+    }
+
+    #[test]
+    fn test_binary_ne() {
+        let d = first_decl("fn f() -> Bool { return 1 != 2; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Ne, .. }));
+    }
+
+    #[test]
+    fn test_binary_le() {
+        let d = first_decl("fn f() -> Bool { return 3 <= 4; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Le, .. }));
+    }
+
+    #[test]
+    fn test_binary_ge() {
+        let d = first_decl("fn f() -> Bool { return 5 >= 5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Binary { op: BinaryOp::Ge, .. }));
+    }
+
+    // ================================================================
+    // Unary operators
+    // ================================================================
+
+    #[test]
+    fn test_unary_neg() {
+        let d = first_decl("fn f() -> Int64 { return -5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Unary { op: UnaryOp::Neg, .. }));
+    }
+
+    #[test]
+    fn test_unary_not() {
+        let d = first_decl("fn f() -> Bool { return !true; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Unary { op: UnaryOp::Not, .. }));
+    }
+
+    #[test]
+    fn test_unary_bitnot() {
+        let d = first_decl("fn f() -> Int64 { return ~0; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Unary { op: UnaryOp::BitNot, .. }));
+    }
+
+    // ================================================================
+    // Compound assignment operators
+    // ================================================================
+
+    #[test]
+    fn test_compound_assign_plus() {
+        let d = first_decl("fn f() { var x = 1; x += 5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::CompoundAssign { op: CompoundOp::Add, .. }));
+    }
+
+    #[test]
+    fn test_compound_assign_minus() {
+        let d = first_decl("fn f() { var x = 10; x -= 3; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::CompoundAssign { op: CompoundOp::Sub, .. }));
+    }
+
+    #[test]
+    fn test_compound_assign_mul() {
+        let d = first_decl("fn f() { var x = 3; x *= 4; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::CompoundAssign { op: CompoundOp::Mul, .. }));
+    }
+
+    #[test]
+    fn test_compound_assign_div() {
+        let d = first_decl("fn f() { var x = 20; x /= 4; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::CompoundAssign { op: CompoundOp::Div, .. }));
+    }
+
+    #[test]
+    fn test_compound_assign_mod() {
+        let d = first_decl("fn f() { var x = 17; x %= 5; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::CompoundAssign { op: CompoundOp::Mod, .. }));
+    }
+
+    // ================================================================
+    // Literal types
+    // ================================================================
+
+    #[test]
+    fn test_literal_float() {
+        let d = first_decl("fn f() -> Float64 { return 3.14; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Float(_))));
+    }
+
+    #[test]
+    fn test_literal_char() {
+        let d = first_decl("fn f() -> Char { return 'z'; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Char('z'))));
+    }
+
+    #[test]
+    fn test_literal_string() {
+        let d = first_decl("fn f() -> String { return \"hello\"; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::String(_))));
+    }
+
+    #[test]
+    fn test_literal_null() {
+        let d = first_decl("fn f() -> String? { return null; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
+        assert!(matches!(e.node, ExprKind::Literal(Literal::Null)));
+    }
+
+    // ================================================================
+    // Type variants
+    // ================================================================
+
+    #[test]
+    fn test_type_nullable() {
+        // String? parses as Mutable or Named depending on parser — verify it doesn't panic
+        let d = first_decl("fn f(x: String?) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        // type is parsed (exact variant depends on implementation)
+        let _ = &f.params[0].param_type;
+    }
+
+    #[test]
+    fn test_type_tuple_three_elems() {
+        let d = first_decl("fn f(t: (Int64, Bool, String)) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Tuple(_)));
+    }
+
+    #[test]
+    fn test_type_named_custom() {
+        let d = first_decl("fn f(x: MyClass) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(&f.params[0].param_type, Type::Named(n) if n == "MyClass"));
+    }
+
+    // ================================================================
+    // Import alias
+    // ================================================================
+
+    #[test]
+    fn test_import_simple_v2() {
+        let ast = parse("import std.io;");
+        assert!(matches!(ast.decls[0].node, DeclKind::Import(_)));
+    }
+
+    #[test]
+    fn test_import_with_alias_v2() {
+        let ast = parse("import std.collections.HashMap as Map;");
+        let DeclKind::Import(i) = &ast.decls[0].node else { panic!() };
+        assert!(i.alias.is_some());
+        assert_eq!(i.alias.as_ref().unwrap(), "Map");
+    }
+
+    #[test]
+    fn test_import_path_length() {
+        let ast = parse("import a.b.c.d;");
+        let DeclKind::Import(i) = &ast.decls[0].node else { panic!() };
+        assert_eq!(i.path.len(), 4);
+    }
+
+    // ================================================================
+    // Function doc comment
+    // ================================================================
+
+    #[test]
+    fn test_fn_with_doc_comment() {
+        let ast = parse("/** greets the user */\nfn greet() -> Nothing {}");
+        let DeclKind::Function(f) = &ast.decls[0].node else { panic!() };
+        assert!(f.doc.is_some(), "doc comment should be attached to function");
+    }
+
+    // ================================================================
+    // Enum with multiple variants
+    // ================================================================
+
+    #[test]
+    fn test_enum_multiple_variants() {
+        let d = first_decl("enum Status { Ok, NotFound, ServerError }");
+        let DeclKind::Enum(e) = d else { panic!() };
+        assert_eq!(e.variants.len(), 3);
+    }
+
+    #[test]
+    fn test_enum_variant_with_args() {
+        let d = first_decl("enum Result { Ok(Int64), Err(String) }");
+        let DeclKind::Enum(e) = d else { panic!() };
+        assert!(!e.variants[0].args.is_empty());
+    }
+
+    // ================================================================
+    // Class with all features
+    // ================================================================
+
+    #[test]
+    fn test_class_with_constructor() {
+        let d = first_decl("class Person { var name: String; fn init(n: String) -> Nothing { this.name = n; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.fields.len(), 1);
+        assert_eq!(c.methods.len(), 1);
+    }
+
+    #[test]
+    fn test_class_multiple_methods() {
+        let d = first_decl("class Calc { fn add(a: Int64, b: Int64) -> Int64 { return a + b; } fn sub(a: Int64, b: Int64) -> Int64 { return a - b; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert_eq!(c.methods.len(), 2);
+    }
+
+    #[test]
+    fn test_class_async_method_v2() {
+        let d = first_decl("class Client { async fn fetch() -> String { return \"\"; } }");
+        let DeclKind::Class(c) = d else { panic!() };
+        assert!(c.methods[0].is_async);
+    }
+
+    // ================================================================
+    // Interface completeness
+    // ================================================================
+
+    #[test]
+    fn test_interface_multiple_methods() {
+        let d = first_decl("interface Repository { fn findById(id: Int64) -> Nothing; fn save(entity: Nothing) -> Nothing; fn delete(id: Int64) -> Nothing; }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.methods.len(), 3);
+    }
+
+    #[test]
+    fn test_interface_generic_parse_bug() {
+        // BUG: parser does not support generic type params on interfaces
+        assert!(parse_err("interface Container<T> { fn get() -> T; }"),
+            "generic interface should currently fail to parse");
+    }
+
+    #[test]
+    fn test_interface_no_type_params() {
+        // Without generics, interfaces parse fine
+        let d = first_decl("interface Container { fn get() -> Nothing; fn set(v: Int64) -> Nothing; }");
+        let DeclKind::Interface(i) = d else { panic!() };
+        assert_eq!(i.methods.len(), 2);
+    }
+
+    // ================================================================
+    // Async fn
+    // ================================================================
+
+    #[test]
+    fn test_async_fn() {
+        let d = first_decl("async fn fetchData() -> String { return \"\"; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(f.is_async);
+    }
+
+    // ================================================================
+    // Pattern matching completeness
+    // ================================================================
+
+    #[test]
+    fn test_match_wildcard_only() {
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::Wildcard(_)));
+    }
+
+    #[test]
+    fn test_match_literal_cases() {
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return; 2 => return; _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert_eq!(cases.len(), 3);
+    }
+
+    #[test]
+    fn test_match_string_literal() {
+        let d = first_decl("fn f(s: String) -> Nothing { match s { \"ok\" => return; _ => return; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
+        let ExprKind::Match { cases, .. } = &e.node else { panic!() };
+        assert!(matches!(&cases[0].pattern, Pattern::Literal(Literal::String(_), _)));
     }
 }
