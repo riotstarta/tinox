@@ -1372,8 +1372,16 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
 
     let mut cg = CodeGen::new();
     cg.set_interface_info(iface, impls);
+    let do_not_serialize_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann.do_not_serialize_fields
+        .iter()
+        .map(|f| tinox_codegen::LogMaskFieldInfo {
+            class_name: f.class_name.clone(),
+            field_name: f.field_name.clone(),
+        })
+        .collect();
     cg.set_annotation_info(ann.inline_functions, ann.inline_methods, route_entries,
-        di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields);
+        di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields,
+        do_not_serialize_fields, ann.json_serializable_classes);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -1618,7 +1626,14 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             field_name: f.field_name.clone(),
         })
         .collect();
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields);
+    let do_not_serialize_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann_result.do_not_serialize_fields
+        .iter()
+        .map(|f| tinox_codegen::LogMaskFieldInfo {
+            class_name: f.class_name.clone(),
+            field_name: f.field_name.clone(),
+        })
+        .collect();
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields, do_not_serialize_fields, ann_result.json_serializable_classes);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

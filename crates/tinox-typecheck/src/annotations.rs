@@ -127,6 +127,8 @@ pub struct AnnotationProcessingResult {
     pub config_fields: Vec<ConfigFieldInfo>,
     pub sensitive_fields: Vec<LogMaskFieldInfo>,
     pub masked_fields: Vec<LogMaskFieldInfo>,
+    pub do_not_serialize_fields: Vec<LogMaskFieldInfo>,
+    pub json_serializable_classes: Vec<String>,
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
 }
@@ -385,6 +387,18 @@ impl AnnotationProcessor {
             },
         );
 
+        // Serialization annotations
+        registry.insert(
+            "DoNotSerialize".to_string(),
+            AnnotationInfo {
+                name: "DoNotSerialize".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Excludes a field from all serialization (JSON, XML, etc.)".to_string(),
+            },
+        );
+
         // Compiler annotations
         registry.insert(
             "inline".to_string(),
@@ -631,6 +645,10 @@ impl AnnotationProcessor {
 
         result.sensitive_fields.extend(collect_log_mask_fields("Sensitive", &class.name, &class.fields));
         result.masked_fields.extend(collect_log_mask_fields("Masked", &class.name, &class.fields));
+        result.do_not_serialize_fields.extend(collect_log_mask_fields("DoNotSerialize", &class.name, &class.fields));
+        if class.annotations.iter().any(|a| a.name == "JsonSerializable") {
+            result.json_serializable_classes.push(class.name.clone());
+        }
 
         for method in &class.methods {
             let route = self.extract_route_from_method(
@@ -1321,6 +1339,147 @@ class Bad {}
 class Bad {}
 "#);
         assert!(!errors.is_empty(), "@Masked should not be valid on a class");
+    }
+
+    // --- process: @DoNotSerialize ---
+
+    #[test]
+    fn test_process_do_not_serialize_field() {
+        let result = proc(r#"
+class User {
+    var name: String;
+    @DoNotSerialize
+    var internalToken: String;
+}
+"#);
+        assert_eq!(result.do_not_serialize_fields.len(), 1);
+        assert_eq!(result.do_not_serialize_fields[0].class_name, "User");
+        assert_eq!(result.do_not_serialize_fields[0].field_name, "internalToken");
+        assert!(result.sensitive_fields.is_empty());
+        assert!(result.masked_fields.is_empty());
+    }
+
+    #[test]
+    fn test_process_multiple_do_not_serialize_fields() {
+        let result = proc(r#"
+class Order {
+    var id: Int64;
+    @DoNotSerialize
+    var internalRef: String;
+    @DoNotSerialize
+    var debugInfo: String;
+}
+"#);
+        assert_eq!(result.do_not_serialize_fields.len(), 2);
+        let names: Vec<&str> = result.do_not_serialize_fields.iter().map(|f| f.field_name.as_str()).collect();
+        assert!(names.contains(&"internalRef"));
+        assert!(names.contains(&"debugInfo"));
+    }
+
+    #[test]
+    fn test_do_not_serialize_only_on_fields() {
+        let errors = valid(r#"
+@DoNotSerialize
+class Bad {}
+"#);
+        assert!(!errors.is_empty(), "@DoNotSerialize should not be valid on a class");
+    }
+
+    #[test]
+    fn test_do_not_serialize_not_valid_on_method() {
+        let errors = valid(r#"
+class Foo {
+    @DoNotSerialize
+    fn bar() -> Nothing {}
+}
+"#);
+        assert!(!errors.is_empty(), "@DoNotSerialize should not be valid on a method");
+    }
+
+    #[test]
+    fn test_do_not_serialize_combined_with_sensitive() {
+        let result = proc(r#"
+class Payment {
+    var amount: Int64;
+    @Sensitive
+    var cardNumber: String;
+    @DoNotSerialize
+    var internalId: String;
+}
+"#);
+        assert_eq!(result.sensitive_fields.len(), 1);
+        assert_eq!(result.sensitive_fields[0].field_name, "cardNumber");
+        assert_eq!(result.do_not_serialize_fields.len(), 1);
+        assert_eq!(result.do_not_serialize_fields[0].field_name, "internalId");
+    }
+
+    #[test]
+    fn test_do_not_serialize_multiple_classes() {
+        let result = proc(r#"
+class User {
+    var name: String;
+    @DoNotSerialize
+    var sessionToken: String;
+}
+class Product {
+    var title: String;
+    @DoNotSerialize
+    var warehouseCode: String;
+}
+"#);
+        assert_eq!(result.do_not_serialize_fields.len(), 2);
+        let user_fields: Vec<&str> = result.do_not_serialize_fields.iter()
+            .filter(|f| f.class_name == "User")
+            .map(|f| f.field_name.as_str())
+            .collect();
+        assert_eq!(user_fields, vec!["sessionToken"]);
+        let product_fields: Vec<&str> = result.do_not_serialize_fields.iter()
+            .filter(|f| f.class_name == "Product")
+            .map(|f| f.field_name.as_str())
+            .collect();
+        assert_eq!(product_fields, vec!["warehouseCode"]);
+    }
+
+    #[test]
+    fn test_json_serializable_class_collected() {
+        let result = proc(r#"
+@annotation
+class JsonSerializable {}
+@JsonSerializable
+class User {
+    var id: Int64;
+    var name: String;
+}
+"#);
+        assert!(result.json_serializable_classes.contains(&"User".to_string()));
+    }
+
+    #[test]
+    fn test_json_serializable_with_do_not_serialize() {
+        let result = proc(r#"
+@annotation
+class JsonSerializable {}
+@JsonSerializable
+class Product {
+    var id: Int64;
+    var name: String;
+    @DoNotSerialize
+    var internalCode: String;
+}
+"#);
+        assert!(result.json_serializable_classes.contains(&"Product".to_string()));
+        assert_eq!(result.do_not_serialize_fields.len(), 1);
+        assert_eq!(result.do_not_serialize_fields[0].field_name, "internalCode");
+    }
+
+    #[test]
+    fn test_non_json_serializable_class_not_collected() {
+        let result = proc(r#"
+class Plain {
+    var x: Int64;
+}
+"#);
+        assert!(result.json_serializable_classes.is_empty());
     }
 
     // --- process: @Config ---

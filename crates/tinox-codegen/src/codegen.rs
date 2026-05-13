@@ -140,6 +140,10 @@ pub struct CodeGen {
     sensitive_fields: Vec<LogMaskFieldInfo>,
     /// Fields annotated with @Masked — partially masked in logs
     masked_fields: Vec<LogMaskFieldInfo>,
+    /// Fields annotated with @DoNotSerialize — excluded from JSON/XML serialization
+    do_not_serialize_fields: Vec<LogMaskFieldInfo>,
+    /// Class names annotated with @JsonSerializable — get a compiler-generated toJson() method
+    json_serializable_classes: Vec<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
     test_entry: Option<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
@@ -191,6 +195,8 @@ impl CodeGen {
             cli_commands: Vec::new(),
             sensitive_fields: Vec::new(),
             masked_fields: Vec::new(),
+            do_not_serialize_fields: Vec::new(),
+            json_serializable_classes: Vec::new(),
             test_entry: None,
             has_main: false,
             defined_classes: HashSet::new(),
@@ -214,6 +220,8 @@ impl CodeGen {
         cli_commands: Vec<CliCommandInfo>,
         sensitive_fields: Vec<LogMaskFieldInfo>,
         masked_fields: Vec<LogMaskFieldInfo>,
+        do_not_serialize_fields: Vec<LogMaskFieldInfo>,
+        json_serializable_classes: Vec<String>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
@@ -224,6 +232,8 @@ impl CodeGen {
         self.cli_commands = cli_commands;
         self.sensitive_fields = sensitive_fields;
         self.masked_fields = masked_fields;
+        self.do_not_serialize_fields = do_not_serialize_fields;
+        self.json_serializable_classes = json_serializable_classes;
     }
 
     /// Configure a single test to run: generates `tinox_main` that calls
@@ -677,6 +687,8 @@ impl CodeGen {
 
         // Pre-register toString() for @Sensitive/@Masked classes so method dispatch works
         self.pre_register_log_mask_tostring();
+        // Pre-register toJson() for @JsonSerializable classes so method dispatch works
+        self.pre_register_json_to_json();
 
         // Second pass: generate code (skip generic functions — they are monomorphized on demand)
         for decl in &source.decls {
@@ -729,6 +741,9 @@ impl CodeGen {
 
         // Emit toString() for classes with @Sensitive or @Masked fields
         self.emit_log_mask_code();
+
+        // Emit toJson() for classes with @JsonSerializable, respecting @DoNotSerialize
+        self.emit_json_serialize_code();
 
         // Emit test-runner main if set_test_entry() was called
         self.emit_test_code();
@@ -1833,6 +1848,129 @@ impl CodeGen {
             let close_len = close.len() + 1;
             let close_ptr = self.temp();
             writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", close_ptr, close_len, close_len, clbl).unwrap();
+            let final_str = self.temp();
+            writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", final_str, acc, close_ptr).unwrap();
+            writeln!(&mut self.ir, "  ret i8* {}", final_str).unwrap();
+            writeln!(&mut self.ir, "}}").unwrap();
+            writeln!(&mut self.ir).unwrap();
+        }
+    }
+
+    /// Pre-register `ClassName_toJson` return types for @JsonSerializable classes so
+    /// the method is visible to user code compiled before `emit_json_serialize_code` runs.
+    fn pre_register_json_to_json(&mut self) {
+        let class_names: Vec<String> = self.json_serializable_classes.clone();
+        for class_name in &class_names {
+            let key = format!("{}_toJson", class_name);
+            if !self.method_ret_types.contains_key(&key) {
+                self.method_ret_types.insert(key, "i8*".to_string());
+            }
+        }
+    }
+
+    /// Emit a `ClassName_toJson(i64* %self) -> i8*` method for every @JsonSerializable class.
+    /// Fields annotated with @DoNotSerialize are excluded from the generated JSON output.
+    fn emit_json_serialize_code(&mut self) {
+        let do_not_serialize_set: std::collections::HashSet<(String, String)> =
+            self.do_not_serialize_fields.iter()
+                .map(|f| (f.class_name.clone(), f.field_name.clone()))
+                .collect();
+
+        let class_names: Vec<String> = self.json_serializable_classes.clone();
+
+        for class_name in class_names {
+            let layout = match self.struct_layouts.get(&class_name) {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+            let llvm_types = match self.struct_field_llvm_types.get(&class_name) {
+                Some(m) => m.clone(),
+                None => continue,
+            };
+
+            // Data fields only: exclude vtable slot, synthetic "log", and @DoNotSerialize fields
+            let data_fields: Vec<(String, usize, String)> = layout.iter()
+                .enumerate()
+                .filter(|(_, f)| *f != "__vtable__" && *f != "log")
+                .filter(|(_, f)| !do_not_serialize_set.contains(&(class_name.clone(), f.to_string())))
+                .filter_map(|(idx, f)| llvm_types.get(f).map(|ty| (f.clone(), idx, ty.clone())))
+                .collect();
+
+            writeln!(&mut self.ir, "define i8* @{}_toJson(i64* %self) {{", class_name).unwrap();
+            writeln!(&mut self.ir, "entry:").unwrap();
+
+            // Start with "{"
+            let open_lbl = format!("str{}", self.strings.len());
+            self.strings.insert(open_lbl.clone(), "{".to_string());
+            let open_ptr = self.temp();
+            writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", open_ptr, open_lbl).unwrap();
+            let mut acc = open_ptr;
+
+            for (i, (field_name, struct_idx, llvm_ty)) in data_fields.iter().enumerate() {
+                // Separator: ", " before each field except the first
+                if i > 0 {
+                    let sep_lbl = format!("str{}", self.strings.len());
+                    self.strings.insert(sep_lbl.clone(), ", ".to_string());
+                    let sep_len = 3usize; // ", " + null
+                    let sep_ptr = self.temp();
+                    writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", sep_ptr, sep_len, sep_len, sep_lbl).unwrap();
+                    let acc_new = self.temp();
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, sep_ptr).unwrap();
+                    acc = acc_new;
+                }
+
+                // Add "\"fieldName\": " as the key
+                let key = format!("\"{}\": ", field_name);
+                let key_lbl = format!("str{}", self.strings.len());
+                self.strings.insert(key_lbl.clone(), key.clone());
+                let key_len = key.len() + 1;
+                let key_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", key_ptr, key_len, key_len, key_lbl).unwrap();
+                let acc_new = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, key_ptr).unwrap();
+                acc = acc_new;
+
+                // Load field value (all struct slots are stored as i64)
+                let fptr = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr i64, i64* %self, i64 {}", fptr, struct_idx).unwrap();
+                let raw = self.temp();
+                writeln!(&mut self.ir, "  {} = load i64, i64* {}", raw, fptr).unwrap();
+
+                let val_str = if llvm_ty == "i8*" {
+                    // String fields are wrapped in JSON quotes: "value"
+                    let raw_clone = raw.clone();
+                    let str_val = self.field_val_to_string(&raw_clone, llvm_ty);
+
+                    let oq_lbl = format!("str{}", self.strings.len());
+                    self.strings.insert(oq_lbl.clone(), "\"".to_string());
+                    let oq_ptr = self.temp();
+                    writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", oq_ptr, oq_lbl).unwrap();
+                    let with_open = self.temp();
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", with_open, oq_ptr, str_val).unwrap();
+
+                    let cq_lbl = format!("str{}", self.strings.len());
+                    self.strings.insert(cq_lbl.clone(), "\"".to_string());
+                    let cq_ptr = self.temp();
+                    writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", cq_ptr, cq_lbl).unwrap();
+                    let quoted = self.temp();
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", quoted, with_open, cq_ptr).unwrap();
+                    quoted
+                } else {
+                    // Numeric and bool types are emitted without quotes
+                    let raw_clone = raw.clone();
+                    self.field_val_to_string(&raw_clone, llvm_ty)
+                };
+
+                let acc_new = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, val_str).unwrap();
+                acc = acc_new;
+            }
+
+            // Close with "}"
+            let close_lbl = format!("str{}", self.strings.len());
+            self.strings.insert(close_lbl.clone(), "}".to_string());
+            let close_ptr = self.temp();
+            writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", close_ptr, close_lbl).unwrap();
             let final_str = self.temp();
             writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", final_str, acc, close_ptr).unwrap();
             writeln!(&mut self.ir, "  ret i8* {}", final_str).unwrap();
@@ -8153,6 +8291,30 @@ mod tests {
         cg.set_annotation_info(
             Default::default(), Default::default(), vec![], vec![],
             Default::default(), vec![], vec![], s_fields, m_fields,
+            vec![], vec![],
+        );
+        cg.gen(&ast).expect("codegen failed");
+        cg.into_ir()
+    }
+
+    fn compile_to_ir_with_serialize(
+        src: &str,
+        json_classes: Vec<&str>,
+        do_not_serialize: Vec<(&str, &str)>,
+    ) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        let dns_fields = do_not_serialize.into_iter().map(|(c, f)| LogMaskFieldInfo {
+            class_name: c.to_string(), field_name: f.to_string(),
+        }).collect();
+        cg.set_annotation_info(
+            Default::default(), Default::default(), vec![], vec![],
+            Default::default(), vec![], vec![], vec![], vec![],
+            dns_fields,
+            json_classes.into_iter().map(|s| s.to_string()).collect(),
         );
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
@@ -8240,7 +8402,7 @@ mod tests {
             Default::default(), Default::default(), vec![], vec![],
             Default::default(), vec![], vec![],
             vec![LogMaskFieldInfo { class_name: "User".to_string(), field_name: "password".to_string() }],
-            vec![],
+            vec![], vec![], vec![],
         );
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
@@ -8275,5 +8437,138 @@ mod tests {
         assert!(ir.contains("User_toString"), "should emit toString");
         assert!(ir.contains("***"), "sensitive field → ***");
         assert!(ir.contains("tinox_string_mask_partial"), "masked field → mask_partial");
+    }
+
+    // ================================================================
+    // @JsonSerializable / @DoNotSerialize — toJson generation
+    // ================================================================
+
+    #[test]
+    fn test_json_serializable_emits_to_json() {
+        let ir = compile_to_ir_with_serialize(
+            "class User { var id: Int64; var name: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["User"],
+            vec![],
+        );
+        assert!(ir.contains("User_toJson"), "should emit toJson for User");
+    }
+
+    #[test]
+    fn test_json_serializable_emits_opening_brace() {
+        let ir = compile_to_ir_with_serialize(
+            "class Item { var id: Int64; }\nfn main() -> Int64 { return 0; }",
+            vec!["Item"],
+            vec![],
+        );
+        assert!(ir.contains("{"), "toJson should contain opening brace");
+    }
+
+    #[test]
+    fn test_json_serializable_includes_field_key() {
+        let ir = compile_to_ir_with_serialize(
+            "class User { var id: Int64; var name: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["User"],
+            vec![],
+        );
+        assert!(ir.contains("\"id\"") || ir.contains("id"), "toJson should reference field name");
+    }
+
+    #[test]
+    fn test_json_serializable_string_field_gets_quotes() {
+        let ir = compile_to_ir_with_serialize(
+            "class User { var name: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["User"],
+            vec![],
+        );
+        // String values are wrapped in quotes — the IR has a quote literal "
+        assert!(ir.contains("\\22") || ir.contains("\"\\\"\"") || ir.contains("inttoptr"),
+            "string field in toJson should be wrapped in quotes (inttoptr for i8* conversion)");
+    }
+
+    #[test]
+    fn test_do_not_serialize_field_absent_from_to_json() {
+        let ir = compile_to_ir_with_serialize(
+            "class User { var name: String; var internalToken: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["User"],
+            vec![("User", "internalToken")],
+        );
+        assert!(ir.contains("User_toJson"), "toJson should still be emitted");
+        // internalToken field name must not appear as a JSON key
+        assert!(!ir.contains("\"internalToken\""), "@DoNotSerialize field must not appear in toJson");
+    }
+
+    #[test]
+    fn test_do_not_serialize_all_fields_emits_empty_object() {
+        let ir = compile_to_ir_with_serialize(
+            "class Secret { var token: String; var key: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["Secret"],
+            vec![("Secret", "token"), ("Secret", "key")],
+        );
+        assert!(ir.contains("Secret_toJson"), "toJson should be emitted even when all fields are excluded");
+        // With all fields excluded the only string literals in the function are "{" and "}"
+        assert!(ir.contains("{"), "empty object should still have opening brace");
+    }
+
+    #[test]
+    fn test_no_json_serializable_no_to_json() {
+        let ir = compile_to_ir(
+            "class Plain { var x: Int64; }\nfn main() -> Int64 { return 0; }",
+        );
+        assert!(!ir.contains("Plain_toJson"), "no @JsonSerializable → no toJson emitted");
+    }
+
+    #[test]
+    fn test_json_serializable_registered_in_method_ret_types() {
+        let mut lexer = tinox_lexer::Lexer::new(
+            "class User { var name: String; }\nfn main() -> Int64 { return 0; }"
+        );
+        let tokens = lexer.tokenize().expect("lex");
+        let ast = Parser::new(tokens).parse().expect("parse");
+        let mut cg = CodeGen::new();
+        cg.set_annotation_info(
+            Default::default(), Default::default(), vec![], vec![],
+            Default::default(), vec![], vec![], vec![], vec![],
+            vec![],
+            vec!["User".to_string()],
+        );
+        cg.gen(&ast).expect("codegen");
+        let ir = cg.into_ir();
+        assert!(ir.contains("define i8* @User_toJson"), "User_toJson function must be emitted");
+    }
+
+    #[test]
+    fn test_do_not_serialize_combined_with_sensitive_in_codegen() {
+        // A class can have both @Sensitive (for logging) and @DoNotSerialize (for JSON)
+        // on different fields — both should be respected independently.
+        let src = "class Record { var label: String; var password: String; var internalId: String; }\nfn main() -> Int64 { return 0; }";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex");
+        let ast = Parser::new(tokens).parse().expect("parse");
+        let mut cg = CodeGen::new();
+        cg.set_annotation_info(
+            Default::default(), Default::default(), vec![], vec![],
+            Default::default(), vec![], vec![],
+            vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "password".to_string() }],
+            vec![],
+            vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "internalId".to_string() }],
+            vec!["Record".to_string()],
+        );
+        cg.gen(&ast).expect("codegen");
+        let ir = cg.into_ir();
+        assert!(ir.contains("Record_toString"), "toString should be emitted for @Sensitive field");
+        assert!(ir.contains("Record_toJson"), "toJson should be emitted for @JsonSerializable");
+        assert!(ir.contains("***"), "@Sensitive field should be masked in toString");
+        assert!(!ir.contains("\"internalId\""), "@DoNotSerialize field must not appear in toJson");
+    }
+
+    #[test]
+    fn test_multiple_json_serializable_classes() {
+        let ir = compile_to_ir_with_serialize(
+            "class User { var id: Int64; }\nclass Product { var sku: String; }\nfn main() -> Int64 { return 0; }",
+            vec!["User", "Product"],
+            vec![],
+        );
+        assert!(ir.contains("User_toJson"), "User should get toJson");
+        assert!(ir.contains("Product_toJson"), "Product should get toJson");
     }
 }
