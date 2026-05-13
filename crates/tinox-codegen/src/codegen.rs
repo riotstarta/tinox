@@ -4158,7 +4158,7 @@ impl CodeGen {
                     )
                     .unwrap();
                     Ok((result, ret_ty))
-                } else if let Some(fn_sig) = declared_type.as_deref()
+                } else if let Some(_fn_sig) = declared_type.as_deref()
                     .and_then(|dt| self.fn_field_sigs.get(dt))
                     .and_then(|m| m.get(method.as_str()))
                     .cloned()
@@ -5840,6 +5840,7 @@ impl CodeGen {
             Type::Array(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Map(_, _) => "i8*".to_string(),
             Type::Tuple(_) => "i64*".to_string(),
+            Type::Nullable(inner) => Self::type_to_llvm(inner),
             _ => "i64".to_string(),
         }
     }

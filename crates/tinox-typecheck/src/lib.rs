@@ -216,6 +216,8 @@ pub enum ValueType {
     Named(String),
     Tuple,
     Range,
+    Nullable(Box<ValueType>),
+    Null,
 }
 
 impl ValueType {
@@ -248,6 +250,7 @@ impl ValueType {
             Type::Mutable(_) => ValueType::Ref,
             Type::Ref(_) => ValueType::Ref,
             Type::Fn { .. } => ValueType::Fn,
+            Type::Nullable(inner) => ValueType::Nullable(Box::new(ValueType::from_parser_type(inner))),
         }
     }
 
@@ -268,6 +271,8 @@ impl ValueType {
             ValueType::Named(name) => name.clone(),
             ValueType::Tuple => "Tuple".to_string(),
             ValueType::Range => "Range".to_string(),
+            ValueType::Nullable(inner) => format!("{}?", inner.to_string()),
+            ValueType::Null => "null".to_string(),
         }
     }
 }
@@ -315,6 +320,8 @@ pub struct TypeChecker {
     field_visibility: HashMap<String, Visibility>,  // ClassName.fieldName -> visibility
     /// Type parameter names in scope for the function currently being checked.
     type_param_scope: HashSet<String>,
+    /// Expected return type of the function currently being checked.
+    current_return_type: Option<ValueType>,
 }
 
 impl TypeChecker {
@@ -870,6 +877,7 @@ impl TypeChecker {
             method_visibility: HashMap::new(),
             field_visibility: HashMap::new(),
             type_param_scope: HashSet::new(),
+            current_return_type: None,
         }
     }
 
@@ -1357,8 +1365,10 @@ impl TypeChecker {
             );
         }
         let is_extern = matches!(f.body.node, StmtKind::Empty);
-        let has_return = self.check_stmt(&f.body);
         let expected = self.resolve_type(&f.ret_type);
+        let saved_return_type = self.current_return_type.replace(expected.clone());
+        let has_return = self.check_stmt(&f.body);
+        self.current_return_type = saved_return_type;
         if !is_extern && expected != ValueType::Nothing && expected != ValueType::Never && !has_return {
             self.errors
                 .push(Error::new(f.span, "missing return statement"));
@@ -1386,8 +1396,10 @@ impl TypeChecker {
                     (Self::type_to_value_erasing(&param.param_type, &method.type_params), false),
                 );
             }
-            let has_return = self.check_stmt(&method.body);
             let expected = Self::type_to_value_erasing(&method.ret_type, &method.type_params);
+            let saved_return_type = self.current_return_type.replace(expected.clone());
+            let has_return = self.check_stmt(&method.body);
+            self.current_return_type = saved_return_type;
             if expected != ValueType::Nothing && expected != ValueType::Never && !has_return {
                 self.errors
                     .push(Error::new(method.span, "missing return statement"));
@@ -1610,7 +1622,16 @@ impl TypeChecker {
             }
             StmtKind::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
-                    self.infer_type(expr);
+                    let val_ty = self.infer_type(expr);
+                    if let Some(expected) = self.current_return_type.clone() {
+                        if !self.types_compatible(&expected, &val_ty) {
+                            self.errors.push(TypeError::TypeMismatch {
+                                expected: expected.to_string(),
+                                found: val_ty.to_string(),
+                                span: expr.span,
+                            }.to_error());
+                        }
+                    }
                 }
                 true
             }
@@ -2392,7 +2413,7 @@ impl TypeChecker {
             Literal::Char(_) => ValueType::Char,
             Literal::Byte(_) => ValueType::Int,
             Literal::Bool(_) => ValueType::Bool,
-            Literal::Null => ValueType::Any,
+            Literal::Null => ValueType::Null,
         }
     }
 
@@ -2488,6 +2509,11 @@ impl TypeChecker {
             (ValueType::Any, _) | (_, ValueType::Any) => true,
             // All Maps are compatible (Tinox has no generic Map type checking)
             (ValueType::Map, ValueType::Map) => true,
+            // Null safety: null can only go into nullable types
+            (ValueType::Nullable(_), ValueType::Null) => true,
+            (_, ValueType::Null) => false,
+            // A non-null value is compatible with its nullable counterpart
+            (ValueType::Nullable(inner), _) => self.types_compatible(inner, b),
             // Allow passing a class where an interface it implements is expected
             (ValueType::Named(iface), ValueType::Named(class)) => {
                 self.interface_implementations
@@ -2746,9 +2772,7 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_return_type_not_checked() {
-        // The typecheck currently only verifies that a return statement exists,
-        // not that the returned value matches the declared return type.
-        ok(r#"fn f() -> Int32 { return "hello"; }"#);
+        err_contains(r#"fn f() -> Int32 { return "hello"; }"#, "expected Int");
     }
 
     #[test]
@@ -3908,9 +3932,8 @@ class Jogger implements Runner {
     }
 
     #[test]
-    fn test_early_return_type_mismatch_not_detected() {
-        // BUG: early return with wrong type is not caught by typechecker
-        ok("fn f() -> Int64 { if true { return \"oops\"; } return 1; }");
+    fn test_early_return_type_mismatch() {
+        err_contains("fn f() -> Int64 { if true { return \"oops\"; } return 1; }", "expected Int64");
     }
 
     // ================================================================
@@ -3955,9 +3978,23 @@ class Jogger implements Runner {
     }
 
     #[test]
-    fn test_null_in_non_nullable_not_detected() {
-        // BUG: null should fail for non-nullable types but typechecker doesn't reject it
-        ok("fn f() -> String { return null; }");
+    fn test_null_in_non_nullable_rejected() {
+        err_contains("fn f() -> String { return null; }", "found null");
+    }
+
+    #[test]
+    fn test_nullable_accepts_non_null() {
+        ok("fn f() -> String? { return \"hello\"; }");
+    }
+
+    #[test]
+    fn test_nullable_var_accepts_null() {
+        ok("fn f() { let x: String? = null; }");
+    }
+
+    #[test]
+    fn test_non_nullable_var_rejects_null() {
+        err_contains("fn f() { let x: String = null; }", "found null");
     }
 
     // ================================================================
@@ -4077,9 +4114,8 @@ class Jogger implements Runner {
     }
 
     #[test]
-    fn test_fn_returns_wrong_primitive_not_detected() {
-        // BUG: returning Int64 for a Bool function is not caught
-        ok("fn f() -> Bool { return 42; }");
+    fn test_fn_returns_wrong_primitive() {
+        err_contains("fn f() -> Bool { return 42; }", "expected Bool");
     }
 
     #[test]

@@ -555,6 +555,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
                 let ts: Vec<String> = types.iter().map(|t| self.fmt_type(t)).collect();
                 format!("({})", ts.join(", "))
             }
+            Type::Nullable(inner) => format!("{}?", self.fmt_type(inner)),
         }
     }
 }

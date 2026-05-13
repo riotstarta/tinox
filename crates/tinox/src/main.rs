@@ -1119,6 +1119,7 @@ fn type_str_simple(ty: &tinox_parser::Type) -> String {
         Type::Infer => "_".into(),
         Type::Mutable(t) => format!("mut {}", type_str_simple(t)),
         Type::Ref(t) => format!("&{}", type_str_simple(t)),
+        Type::Nullable(t) => format!("{}?", type_str_simple(t)),
     }
 }
 

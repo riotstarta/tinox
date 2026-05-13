@@ -679,8 +679,9 @@ impl Parser {
             base = Type::Ref(Box::new(base));
         }
 
-        // `T?` nullable type — treat as the base type (no nullable tracking yet)
-        self.consume(TokenKind::Question);
+        if self.consume(TokenKind::Question) {
+            base = Type::Nullable(Box::new(base));
+        }
 
         if self.check(TokenKind::LParen) {
             self.bump();
@@ -4828,11 +4829,23 @@ mod tests {
 
     #[test]
     fn test_type_nullable() {
-        // String? parses as Mutable or Named depending on parser — verify it doesn't panic
         let d = first_decl("fn f(x: String?) -> Nothing {}");
         let DeclKind::Function(f) = d else { panic!() };
-        // type is parsed (exact variant depends on implementation)
-        let _ = &f.params[0].param_type;
+        assert!(matches!(f.params[0].param_type, Type::Nullable(ref inner) if matches!(inner.as_ref(), Type::String)));
+    }
+
+    #[test]
+    fn test_type_nullable_return() {
+        let d = first_decl("fn f() -> Int64? {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.ret_type, Type::Nullable(ref inner) if matches!(inner.as_ref(), Type::Int64)));
+    }
+
+    #[test]
+    fn test_type_nullable_named() {
+        let d = first_decl("fn f(x: Foo?) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(f.params[0].param_type, Type::Nullable(ref inner) if matches!(inner.as_ref(), Type::Named(n) if n == "Foo")));
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub enum Type {
     Ref(Box<Type>),
     Fn { params: Vec<Type>, ret: Box<Type> },
     Tuple(Vec<Type>),
+    Nullable(Box<Type>),
 }
 
 impl Type {

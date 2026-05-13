@@ -461,6 +461,7 @@ pub fn type_str(ty: &Type) -> String {
         Type::Map(k, v) => format!("Map<{}, {}>", type_str(k), type_str(v)),
         Type::Mutable(inner) => format!("mut {}", type_str(inner)),
         Type::Ref(inner) => format!("&{}", type_str(inner)),
+        Type::Nullable(inner) => format!("{}?", type_str(inner)),
     }
 }
 
@@ -739,6 +740,33 @@ const ANNOTATIONS: &[AnnotationMeta] = &[
         insert: "(\"${1:config.key}\")", target: "field" },
     AnnotationMeta { name: "Log",              detail: "Logger injection",
         doc: "Injects a `log: Logger` field initialized with the class name.", insert: "", target: "class" },
+    AnnotationMeta { name: "PATCH",            detail: "HTTP PATCH route",
+        doc: "Maps the method to a PATCH endpoint.",
+        insert: "", target: "method" },
+    AnnotationMeta { name: "Auth",             detail: "HTTP authentication",
+        doc: "Requires authentication on this route or controller.  \n**Arg:** `\"bearer\"` or `\"basic\"`",
+        insert: "(\"${1:bearer}\")", target: "class or method" },
+    AnnotationMeta { name: "Produces",         detail: "Response Content-Type",
+        doc: "Sets the `Content-Type` header of the response.  \n**Arg:** MIME type string, e.g. `\"application/json\"`",
+        insert: "(\"${1:application/json}\")", target: "method" },
+    AnnotationMeta { name: "Consumes",         detail: "Accepted request Content-Type",
+        doc: "Declares the expected `Content-Type` of the request body.  \n**Arg:** MIME type string, e.g. `\"application/json\"`",
+        insert: "(\"${1:application/json}\")", target: "method" },
+    AnnotationMeta { name: "Sensitive",        detail: "Fully mask field in logs",
+        doc: "Marks a field as sensitive.  \nThe value is replaced with `***` in all log output.",
+        insert: "", target: "field" },
+    AnnotationMeta { name: "Masked",           detail: "Partially mask field in logs",
+        doc: "Marks a field for partial masking in log output.  \nOptional **args:** `visibleStart`, `visibleEnd` (default 2, 2).",
+        insert: "", target: "field" },
+    AnnotationMeta { name: "DoNotSerialize",   detail: "Exclude field from serialization",
+        doc: "Excludes the field from JSON/XML serialization.  \nThe field is omitted when `toJson()` or `toXml()` is called.",
+        insert: "", target: "field" },
+    AnnotationMeta { name: "JsonSerializable", detail: "Generate toJson() method",
+        doc: "Generates a `toJson(): String` method for the class.  \nRespects `@DoNotSerialize` on individual fields.",
+        insert: "", target: "class" },
+    AnnotationMeta { name: "annotation",       detail: "Define a custom annotation",
+        doc: "Marks a class as a custom annotation definition.  \nInstances of this class can then be used as `@ClassName` on other declarations.",
+        insert: "", target: "class" },
     AnnotationMeta { name: "inline",           detail: "Inline hint",
         doc: "Hints to the compiler that this function or method should be inlined.",
         insert: "", target: "fn or method" },
@@ -1751,5 +1779,21 @@ enum Status { Ok, Err }
         let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"myHelper"), "should include user function");
         assert!(labels.contains(&"let"), "should include keywords");
+    }
+
+    #[test]
+    fn test_type_str_nullable() {
+        assert_eq!(type_str(&Type::Nullable(Box::new(Type::String))), "String?");
+        assert_eq!(type_str(&Type::Nullable(Box::new(Type::Int64))), "Int64?");
+        assert_eq!(type_str(&Type::Nullable(Box::new(Type::Named("Foo".into())))), "Foo?");
+    }
+
+    #[test]
+    fn test_hover_shows_nullable_type() {
+        let ast = parse_src("fn f(x: String?) -> Nothing {}");
+        let result = hover_at(&ast, 3);
+        if let Some(text) = result {
+            assert!(text.contains("String?"), "hover should display nullable type as 'String?', got: {}", text);
+        }
     }
 }
