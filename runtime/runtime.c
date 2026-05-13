@@ -484,6 +484,25 @@ void tinox_map_free(void* map) {
     free(m);
 }
 
+// Returns a partially masked version of a string:
+// keeps up to 2 leading and 2 trailing chars, replaces the middle with "***".
+// Short strings (len <= 4) are fully replaced with "***".
+char* tinox_string_mask_partial(const char* s) {
+    size_t len = strlen(s);
+    if (len <= 4) {
+        char* r = malloc(4); memcpy(r, "***", 4); return r;
+    }
+    size_t prefix = 2, suffix = 2;
+    // result: prefix chars + "***" + suffix chars
+    size_t rlen = prefix + 3 + suffix;
+    char* result = malloc(rlen + 1);
+    memcpy(result, s, prefix);
+    memcpy(result + prefix, "***", 3);
+    memcpy(result + prefix + 3, s + len - suffix, suffix);
+    result[rlen] = '\0';
+    return result;
+}
+
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
     if (from < 0) from = 0;

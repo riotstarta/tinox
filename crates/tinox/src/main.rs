@@ -1363,10 +1363,17 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         }).collect(),
     }).collect();
 
+    let sensitive_fields = ann.sensitive_fields.iter().map(|f| tinox_codegen::LogMaskFieldInfo {
+        class_name: f.class_name.clone(), field_name: f.field_name.clone(),
+    }).collect();
+    let masked_fields = ann.masked_fields.iter().map(|f| tinox_codegen::LogMaskFieldInfo {
+        class_name: f.class_name.clone(), field_name: f.field_name.clone(),
+    }).collect();
+
     let mut cg = CodeGen::new();
     cg.set_interface_info(iface, impls);
     cg.set_annotation_info(ann.inline_functions, ann.inline_methods, route_entries,
-        di_components, ann.log_classes, config_fields, cli_commands);
+        di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -1597,7 +1604,21 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             }).collect(),
         })
         .collect();
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands);
+    let sensitive_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann_result.sensitive_fields
+        .iter()
+        .map(|f| tinox_codegen::LogMaskFieldInfo {
+            class_name: f.class_name.clone(),
+            field_name: f.field_name.clone(),
+        })
+        .collect();
+    let masked_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann_result.masked_fields
+        .iter()
+        .map(|f| tinox_codegen::LogMaskFieldInfo {
+            class_name: f.class_name.clone(),
+            field_name: f.field_name.clone(),
+        })
+        .collect();
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

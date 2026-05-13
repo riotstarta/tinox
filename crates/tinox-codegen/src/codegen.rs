@@ -37,6 +37,12 @@ pub struct ConfigFieldInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct LogMaskFieldInfo {
+    pub class_name: String,
+    pub field_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct CliOptionInfo {
     pub field_name: String,
     pub names: Vec<String>,
@@ -130,6 +136,10 @@ pub struct CodeGen {
     config_fields: Vec<ConfigFieldInfo>,
     /// CLI commands collected from @Command annotation processing
     cli_commands: Vec<CliCommandInfo>,
+    /// Fields annotated with @Sensitive — logged as '***'
+    sensitive_fields: Vec<LogMaskFieldInfo>,
+    /// Fields annotated with @Masked — partially masked in logs
+    masked_fields: Vec<LogMaskFieldInfo>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
     test_entry: Option<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
@@ -179,6 +189,8 @@ impl CodeGen {
             log_classes: HashSet::new(),
             config_fields: Vec::new(),
             cli_commands: Vec::new(),
+            sensitive_fields: Vec::new(),
+            masked_fields: Vec::new(),
             test_entry: None,
             has_main: false,
             defined_classes: HashSet::new(),
@@ -200,6 +212,8 @@ impl CodeGen {
         log_classes: HashSet<String>,
         config_fields: Vec<ConfigFieldInfo>,
         cli_commands: Vec<CliCommandInfo>,
+        sensitive_fields: Vec<LogMaskFieldInfo>,
+        masked_fields: Vec<LogMaskFieldInfo>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
@@ -208,6 +222,8 @@ impl CodeGen {
         self.log_classes = log_classes;
         self.config_fields = config_fields;
         self.cli_commands = cli_commands;
+        self.sensitive_fields = sensitive_fields;
+        self.masked_fields = masked_fields;
     }
 
     /// Configure a single test to run: generates `tinox_main` that calls
@@ -391,6 +407,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i32 @sched_yield()").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_length(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_concat(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_mask_partial(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_int_to_string(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_float_to_string(double)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
@@ -658,6 +675,9 @@ impl CodeGen {
             }
         }
 
+        // Pre-register toString() for @Sensitive/@Masked classes so method dispatch works
+        self.pre_register_log_mask_tostring();
+
         // Second pass: generate code (skip generic functions — they are monomorphized on demand)
         for decl in &source.decls {
             match &decl.node {
@@ -706,6 +726,9 @@ impl CodeGen {
 
         // Emit CLI main (tinox_main) for @Command classes
         self.emit_cli_code();
+
+        // Emit toString() for classes with @Sensitive or @Masked fields
+        self.emit_log_mask_code();
 
         // Emit test-runner main if set_test_entry() was called
         self.emit_test_code();
@@ -1627,6 +1650,195 @@ impl CodeGen {
 
         self.lambda_ir.push_str(&body);
         self.has_main = true;
+    }
+
+    /// Return the declared class name of a simple expression (Ident or FieldAccess),
+    /// or None for complex expressions. Used for implicit toString() coercion.
+    fn expr_class_name(expr: &ExprKind, ctx: &GenCtx) -> Option<String> {
+        match expr {
+            ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+            ExprKind::FieldAccess { obj, field } => {
+                let obj_class = if let ExprKind::Ident(n) = &obj.node {
+                    ctx.local_types.get(n.as_str()).cloned()
+                } else {
+                    None
+                };
+                obj_class.and_then(|cn| {
+                    ctx.local_types.get(&format!("{}.{}", cn, field)).cloned()
+                        .or_else(|| None)
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Convert a raw i64 struct slot to an i8* string, based on LLVM type.
+    fn field_val_to_string(&mut self, raw: &str, llvm_ty: &str) -> String {
+        match llvm_ty {
+            "i8*" => {
+                let ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ptr, raw).unwrap();
+                ptr
+            }
+            "i1" => {
+                let b = self.temp();
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {} = trunc i64 {} to i1", b, raw).unwrap();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_bool_to_string(i1 {})", s, b).unwrap();
+                s
+            }
+            "double" | "float" => {
+                let f = self.temp();
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {} = bitcast i64 {} to double", f, raw).unwrap();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_float_to_string(double {})", s, f).unwrap();
+                s
+            }
+            "i64" | "i32" | "i16" | "i8" => {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_int_to_string(i64 {})", s, raw).unwrap();
+                s
+            }
+            _ => {
+                // Object or unknown type
+                let content = "<object>";
+                let lbl = format!("str{}", self.strings.len());
+                self.strings.insert(lbl.clone(), content.to_string());
+                let len = content.len() + 1;
+                let p = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", p, len, len, lbl).unwrap();
+                p
+            }
+        }
+    }
+
+    /// Pre-register `ClassName_toString` return types for classes with masked fields so
+    /// the method is visible to user code compiled before `emit_log_mask_code` runs.
+    fn pre_register_log_mask_tostring(&mut self) {
+        let mut affected: HashSet<String> = HashSet::new();
+        for f in &self.sensitive_fields { affected.insert(f.class_name.clone()); }
+        for f in &self.masked_fields { affected.insert(f.class_name.clone()); }
+        for class_name in &affected {
+            let key = format!("{}_toString", class_name);
+            // Only register if the user hasn't already defined toString()
+            if !self.method_ret_types.contains_key(&key) {
+                self.method_ret_types.insert(key, "i8*".to_string());
+            }
+        }
+    }
+
+    /// Emit a `ClassName_toString(i64* %self) -> i8*` method for every class
+    /// that has at least one @Sensitive or @Masked field.
+    fn emit_log_mask_code(&mut self) {
+        let sensitive_set: HashSet<(String, String)> = self.sensitive_fields.iter()
+            .map(|f| (f.class_name.clone(), f.field_name.clone()))
+            .collect();
+        let masked_set: HashSet<(String, String)> = self.masked_fields.iter()
+            .map(|f| (f.class_name.clone(), f.field_name.clone()))
+            .collect();
+
+        let affected: Vec<String> = {
+            let mut s: HashSet<String> = HashSet::new();
+            for f in &self.sensitive_fields { s.insert(f.class_name.clone()); }
+            for f in &self.masked_fields { s.insert(f.class_name.clone()); }
+            let mut v: Vec<String> = s.into_iter().collect();
+            v.sort();
+            v
+        };
+
+        for class_name in affected {
+            let layout = match self.struct_layouts.get(&class_name) {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+            let llvm_types = match self.struct_field_llvm_types.get(&class_name) {
+                Some(m) => m.clone(),
+                None => continue,
+            };
+
+            // Data fields only (exclude vtable slot and synthetic "log")
+            let data_fields: Vec<(String, usize, String)> = layout.iter()
+                .enumerate()
+                .filter(|(_, f)| *f != "__vtable__" && *f != "log")
+                .filter_map(|(idx, f)| llvm_types.get(f).map(|ty| (f.clone(), idx, ty.clone())))
+                .collect();
+
+            if data_fields.is_empty() { continue; }
+
+            let fn_key = format!("{}_toString", class_name);
+            // Skip if user has already defined toString() — their version takes precedence
+            if self.method_ret_types.get(&fn_key).map(|v| v != "i8*").unwrap_or(false) {
+                continue;
+            }
+            writeln!(&mut self.ir, "define i8* @{}_toString(i64* %self) {{", class_name).unwrap();
+            writeln!(&mut self.ir, "entry:").unwrap();
+
+            // Start with "ClassName{"
+            let prefix = format!("{}{{", class_name);
+            let lbl = format!("str{}", self.strings.len());
+            self.strings.insert(lbl.clone(), prefix.clone());
+            let plen = prefix.len() + 1;
+            let prefix_ptr = self.temp();
+            writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", prefix_ptr, plen, plen, lbl).unwrap();
+            let mut acc = prefix_ptr;
+
+            for (i, (field_name, struct_idx, llvm_ty)) in data_fields.iter().enumerate() {
+                // Separator: "field=" for first, ", field=" for rest
+                let sep = if i == 0 { format!("{}=", field_name) } else { format!(", {}=", field_name) };
+                let sep_lbl = format!("str{}", self.strings.len());
+                self.strings.insert(sep_lbl.clone(), sep.clone());
+                let slen = sep.len() + 1;
+                let sep_ptr = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", sep_ptr, slen, slen, sep_lbl).unwrap();
+                let acc1 = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc1, acc, sep_ptr).unwrap();
+                acc = acc1;
+
+                // Load field value (all fields stored as i64)
+                let fptr = self.temp();
+                writeln!(&mut self.ir, "  {} = getelementptr i64, i64* %self, i64 {}", fptr, struct_idx).unwrap();
+                let raw = self.temp();
+                writeln!(&mut self.ir, "  {} = load i64, i64* {}", raw, fptr).unwrap();
+
+                let is_sensitive = sensitive_set.contains(&(class_name.clone(), field_name.clone()));
+                let is_masked = masked_set.contains(&(class_name.clone(), field_name.clone()));
+
+                let val_str = if is_sensitive {
+                    let stars = "***";
+                    let slbl = format!("str{}", self.strings.len());
+                    self.strings.insert(slbl.clone(), stars.to_string());
+                    let slen2 = stars.len() + 1;
+                    let p = self.temp();
+                    writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", p, slen2, slen2, slbl).unwrap();
+                    p
+                } else if is_masked {
+                    let raw_str = self.field_val_to_string(&raw.clone(), llvm_ty);
+                    let masked = self.temp();
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_mask_partial(i8* {})", masked, raw_str).unwrap();
+                    masked
+                } else {
+                    let raw_clone = raw.clone();
+                    self.field_val_to_string(&raw_clone, llvm_ty)
+                };
+
+                let acc2 = self.temp();
+                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc2, acc, val_str).unwrap();
+                acc = acc2;
+            }
+
+            // Close with "}"
+            let close = "}";
+            let clbl = format!("str{}", self.strings.len());
+            self.strings.insert(clbl.clone(), close.to_string());
+            let close_len = close.len() + 1;
+            let close_ptr = self.temp();
+            writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", close_ptr, close_len, close_len, clbl).unwrap();
+            let final_str = self.temp();
+            writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", final_str, acc, close_ptr).unwrap();
+            writeln!(&mut self.ir, "  ret i8* {}", final_str).unwrap();
+            writeln!(&mut self.ir, "}}").unwrap();
+            writeln!(&mut self.ir).unwrap();
+        }
     }
 
     /// Emit `tinox_main` for a single test method: allocate object, call method,
@@ -2578,6 +2790,28 @@ impl CodeGen {
                 let (r, rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
                 let float = Self::is_float(&lt);
+                // Coerce object (i64*) → String if one side is already a String.
+                // This calls ClassName_toString() if it exists, enabling "text" + obj syntax.
+                let (l, lt) = if (lt == "i64*" && (rt == "i8*" || rt == "i64*")) || (lt == "i8*" && rt == "i64*") {
+                    if lt == "i64*" {
+                        let cn = Self::expr_class_name(&lhs.node, ctx);
+                        let key = cn.as_deref().map(|c| format!("{}_toString", c));
+                        if key.as_deref().map(|k| self.method_ret_types.contains_key(k)).unwrap_or(false) {
+                            let s = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @{}(i64* {})", s, key.unwrap(), l).unwrap();
+                            (s, "i8*".to_string())
+                        } else { (l, lt) }
+                    } else { (l, lt) }
+                } else { (l, lt) };
+                let (r, rt) = if rt == "i64*" && (lt == "i8*" || lt == "i64*") {
+                    let cn = Self::expr_class_name(&rhs.node, ctx);
+                    let key = cn.as_deref().map(|c| format!("{}_toString", c));
+                    if key.as_deref().map(|k| self.method_ret_types.contains_key(k)).unwrap_or(false) {
+                        let s = self.temp();
+                        writeln!(&mut self.ir, "{} = call i8* @{}(i64* {})", s, key.unwrap(), r).unwrap();
+                        (s, "i8*".to_string())
+                    } else { (r, rt) }
+                } else { (r, rt) };
                 match op {
                     tinox_parser::BinaryOp::Add => {
                         if lt == "i8*" || rt == "i8*" {
@@ -3525,6 +3759,24 @@ impl CodeGen {
                         };
                         writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, obj_ptr).unwrap();
                         return Ok((result, "i8*".to_string()));
+                    }
+                    // Class object toString() — dispatch to generated ClassName_toString
+                    if obj_ty == "i64*" {
+                        if let Some(cn) = declared_type.as_deref() {
+                            let key = format!("{}_toString", cn);
+                            if self.method_ret_types.contains_key(&key) {
+                                let obj_ptr_typed = if obj_ty == "i64*" {
+                                    obj_ptr.clone()
+                                } else {
+                                    let c = self.temp();
+                                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                                    c
+                                };
+                                let result = self.temp();
+                                writeln!(&mut self.ir, "{} = call i8* @{}(i64* {})", result, key, obj_ptr_typed).unwrap();
+                                return Ok((result, "i8*".to_string()));
+                            }
+                        }
                     }
                 }
 
@@ -7880,5 +8132,148 @@ mod tests {
         ));
         assert!(ir.contains("loop") || ir.contains("br"),
             "continue in while should produce branch back to loop header");
+    }
+
+    // ================================================================
+    // @Sensitive / @Masked — toString generation
+    // ================================================================
+
+    fn compile_to_ir_with_masks(src: &str, sensitive: Vec<(&str, &str)>, masked: Vec<(&str, &str)>) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        let s_fields = sensitive.into_iter().map(|(c, f)| LogMaskFieldInfo {
+            class_name: c.to_string(), field_name: f.to_string(),
+        }).collect();
+        let m_fields = masked.into_iter().map(|(c, f)| LogMaskFieldInfo {
+            class_name: c.to_string(), field_name: f.to_string(),
+        }).collect();
+        cg.set_annotation_info(
+            Default::default(), Default::default(), vec![], vec![],
+            Default::default(), vec![], vec![], s_fields, m_fields,
+        );
+        cg.gen(&ast).expect("codegen failed");
+        cg.into_ir()
+    }
+
+    #[test]
+    fn test_sensitive_field_emits_tostring() {
+        let ir = compile_to_ir_with_masks(
+            "class User { var name: String; var password: String; }\nfn main() -> Int64 { return 0; }",
+            vec![("User", "password")],
+            vec![],
+        );
+        assert!(ir.contains("User_toString"), "should emit toString for User");
+    }
+
+    #[test]
+    fn test_sensitive_field_uses_stars() {
+        let ir = compile_to_ir_with_masks(
+            "class User { var name: String; var password: String; }\nfn main() -> Int64 { return 0; }",
+            vec![("User", "password")],
+            vec![],
+        );
+        assert!(ir.contains("***"), "sensitive field should emit *** literal");
+    }
+
+    #[test]
+    fn test_masked_field_calls_mask_partial() {
+        let ir = compile_to_ir_with_masks(
+            "class User { var name: String; var email: String; }\nfn main() -> Int64 { return 0; }",
+            vec![],
+            vec![("User", "email")],
+        );
+        assert!(ir.contains("tinox_string_mask_partial"), "masked field should call mask_partial");
+    }
+
+    #[test]
+    fn test_no_annotation_no_masked_tostring() {
+        let ir = compile_to_ir(
+            "class User { var name: String; }\nfn main() -> Int64 { return 0; }",
+        );
+        assert!(!ir.contains("User_toString"), "no @Sensitive/@Masked → no User_toString generated");
+    }
+
+    #[test]
+    fn test_string_concat_coerces_object_to_string() {
+        let ir = compile_to_ir_with_masks(
+            concat!(
+                "class User { var name: String; var password: String; }\n",
+                "fn log(msg: String) -> Nothing { println(msg); }\n",
+                "fn main() -> Int64 {\n",
+                "    var u = User { name: \"Alice\", password: \"secret\" };\n",
+                "    let s = \"prefix: \" + u;\n",
+                "    return 0;\n",
+                "}"
+            ),
+            vec![("User", "password")],
+            vec![],
+        );
+        assert!(ir.contains("User_toString"), "toString should be generated");
+        assert!(ir.contains("tinox_string_concat"), "concat should be emitted");
+    }
+
+    #[test]
+    fn test_tostring_contains_class_name_prefix() {
+        let ir = compile_to_ir_with_masks(
+            "class Payment { var amount: Int64; var card: String; }\nfn main() -> Int64 { return 0; }",
+            vec![("Payment", "card")],
+            vec![],
+        );
+        // The class name prefix "Payment{" is stored as a string literal in the IR
+        assert!(ir.contains("Payment{"), "toString should start with ClassName{{");
+    }
+
+    #[test]
+    fn test_tostring_registered_in_method_ret_types() {
+        // pre_register_log_mask_tostring must put ClassName_toString into method_ret_types
+        // BEFORE user code is compiled so that explicit user.toString() calls resolve.
+        let mut lexer = tinox_lexer::Lexer::new(
+            "class User { var name: String; var password: String; }\nfn main() -> Int64 { return 0; }"
+        );
+        let tokens = lexer.tokenize().expect("lex");
+        let ast = Parser::new(tokens).parse().expect("parse");
+        let mut cg = CodeGen::new();
+        cg.set_annotation_info(
+            Default::default(), Default::default(), vec![], vec![],
+            Default::default(), vec![], vec![],
+            vec![LogMaskFieldInfo { class_name: "User".to_string(), field_name: "password".to_string() }],
+            vec![],
+        );
+        cg.gen(&ast).expect("codegen");
+        let ir = cg.into_ir();
+        assert!(ir.contains("define i8* @User_toString"), "User_toString function must be emitted");
+    }
+
+    #[test]
+    fn test_explicit_tostring_call_on_object() {
+        // user.toString() on a @Sensitive-annotated class should call User_toString
+        let src = concat!(
+            "class User { var name: String; var secret: String; }\n",
+            "fn show(s: String) -> Nothing { println(s); }\n",
+            "fn main() -> Int64 {\n",
+            "    var u = User { name: \"Alice\", secret: \"pw\" };\n",
+            "    let s = u.toString();\n",
+            "    show(s);\n",
+            "    return 0;\n",
+            "}"
+        );
+        let ir = compile_to_ir_with_masks(src, vec![("User", "secret")], vec![]);
+        assert!(ir.contains("User_toString"), "explicit u.toString() should dispatch to User_toString");
+        assert!(ir.contains("***"), "sensitive field must be masked");
+    }
+
+    #[test]
+    fn test_both_annotations_in_same_class() {
+        let ir = compile_to_ir_with_masks(
+            "class User { var name: String; var password: String; var email: String; }\nfn main() -> Int64 { return 0; }",
+            vec![("User", "password")],
+            vec![("User", "email")],
+        );
+        assert!(ir.contains("User_toString"), "should emit toString");
+        assert!(ir.contains("***"), "sensitive field → ***");
+        assert!(ir.contains("tinox_string_mask_partial"), "masked field → mask_partial");
     }
 }

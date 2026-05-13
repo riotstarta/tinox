@@ -73,6 +73,12 @@ pub struct ConfigFieldInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct LogMaskFieldInfo {
+    pub class_name: String,
+    pub field_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TestInfo {
     pub class_name: String,
     pub method_name: String,
@@ -119,6 +125,8 @@ pub struct AnnotationProcessingResult {
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
     pub config_fields: Vec<ConfigFieldInfo>,
+    pub sensitive_fields: Vec<LogMaskFieldInfo>,
+    pub masked_fields: Vec<LogMaskFieldInfo>,
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
 }
@@ -352,6 +360,28 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 3,
                 description: "@Argument(index, \"description\"[, required]) — positional CLI argument".to_string(),
+            },
+        );
+
+        // Log masking annotations
+        registry.insert(
+            "Sensitive".to_string(),
+            AnnotationInfo {
+                name: "Sensitive".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks a field as fully sensitive — logged as '***'".to_string(),
+            },
+        );
+        registry.insert(
+            "Masked".to_string(),
+            AnnotationInfo {
+                name: "Masked".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks a field for partial masking in logs (shows first/last chars)".to_string(),
             },
         );
 
@@ -599,6 +629,9 @@ impl AnnotationProcessor {
         let cfg_fields = collect_config_fields(&class.name, &class.fields);
         result.config_fields.extend(cfg_fields);
 
+        result.sensitive_fields.extend(collect_log_mask_fields("Sensitive", &class.name, &class.fields));
+        result.masked_fields.extend(collect_log_mask_fields("Masked", &class.name, &class.fields));
+
         for method in &class.methods {
             let route = self.extract_route_from_method(
                 method,
@@ -822,6 +855,17 @@ fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
             } else {
                 None
             }
+        })
+        .collect()
+}
+
+fn collect_log_mask_fields(ann_name: &str, class_name: &str, fields: &[FieldDef]) -> Vec<LogMaskFieldInfo> {
+    fields
+        .iter()
+        .filter(|f| f.annotations.iter().any(|a| a.name == ann_name))
+        .map(|f| LogMaskFieldInfo {
+            class_name: class_name.to_string(),
+            field_name: f.name.clone(),
         })
         .collect()
 }
@@ -1210,6 +1254,73 @@ class UserService {
     fn test_process_log_class() {
         let result = proc("@Log\nclass MyService {}");
         assert!(result.log_classes.contains("MyService"));
+    }
+
+    // --- process: @Sensitive / @Masked ---
+
+    #[test]
+    fn test_process_sensitive_field() {
+        let result = proc(r#"
+class User {
+    var name: String;
+    @Sensitive
+    var password: String;
+}
+"#);
+        assert_eq!(result.sensitive_fields.len(), 1);
+        assert_eq!(result.sensitive_fields[0].class_name, "User");
+        assert_eq!(result.sensitive_fields[0].field_name, "password");
+        assert!(result.masked_fields.is_empty());
+    }
+
+    #[test]
+    fn test_process_masked_field() {
+        let result = proc(r#"
+class User {
+    var name: String;
+    @Masked
+    var email: String;
+}
+"#);
+        assert_eq!(result.masked_fields.len(), 1);
+        assert_eq!(result.masked_fields[0].class_name, "User");
+        assert_eq!(result.masked_fields[0].field_name, "email");
+        assert!(result.sensitive_fields.is_empty());
+    }
+
+    #[test]
+    fn test_process_sensitive_and_masked_fields() {
+        let result = proc(r#"
+class Payment {
+    var amount: Int64;
+    @Sensitive
+    var cardNumber: String;
+    @Masked
+    var email: String;
+}
+"#);
+        assert_eq!(result.sensitive_fields.len(), 1);
+        assert_eq!(result.sensitive_fields[0].field_name, "cardNumber");
+        assert_eq!(result.masked_fields.len(), 1);
+        assert_eq!(result.masked_fields[0].field_name, "email");
+    }
+
+    #[test]
+    fn test_sensitive_only_on_fields() {
+        let errors = valid(r#"
+@Sensitive
+class Bad {}
+"#);
+        assert!(!errors.is_empty(), "@Sensitive should not be valid on a class");
+    }
+
+    #[test]
+    fn test_masked_only_on_fields() {
+        let errors = valid(r#"
+@Masked
+class Bad {}
+"#);
+        assert!(!errors.is_empty(), "@Masked should not be valid on a class");
     }
 
     // --- process: @Config ---

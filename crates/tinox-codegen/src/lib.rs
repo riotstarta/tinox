@@ -9,3 +9,4 @@ pub use codegen::ConfigFieldInfo;
 pub use codegen::CliCommandInfo;
 pub use codegen::CliOptionInfo;
 pub use codegen::CliArgumentInfo;
+pub use codegen::LogMaskFieldInfo;

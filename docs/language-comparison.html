@@ -239,6 +239,7 @@
   <a href="#tooling">Tooling</a>
   <a href="#packages">Paket-Manager</a>
   <a href="#web">Web &amp; REST</a>
+  <a href="#logging">Logging &amp; Datenschutz</a>
   <a href="#errorhandling">Fehlerbehandlung</a>
   <a href="#verdict">Fazit</a>
 </nav>
@@ -1699,6 +1700,147 @@ router.get("/users/:id", (req, res) => {
           <li>Kein ORM / Datenbankanbindung</li>
           <li>Kein API-Dokumentationsgenerator (Swagger/OpenAPI)</li>
           <li>Weniger battle-tested bei Produktions-Workloads</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════ LOGGING -->
+  <section id="logging">
+    <h2><span class="icon">🔐</span> Logging &amp; Datenschutz</h2>
+
+    <div class="compare">
+      <div class="compare-col java">
+        <h3>Java (SLF4J + Logback)</h3>
+        <pre><code>import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+// Logback PatternLayout mit Masking-Filter
+// oder manuelle toString()-Überschreibung
+
+public class User {
+    private static final Logger log =
+        LoggerFactory.getLogger(User.class);
+
+    private String name;
+    // Sensibles Feld: manuell maskieren
+    private String password;
+
+    @Override
+    public String toString() {
+        return "User{name=" + name
+            + ", password=***}";
+    }
+
+    public void doSomething() {
+        // Explizites toString() nötig oder
+        // eigene Masking-Logik implementieren
+        log.info("User: {}", this);
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col kotlin">
+        <h3>Kotlin</h3>
+        <pre><code>import org.slf4j.LoggerFactory
+
+class User(
+    val name: String,
+    val password: String  // Kein Sprachsupport
+) {
+    private val log = LoggerFactory
+        .getLogger(User::class.java)
+
+    // Manuell: toString überschreiben
+    override fun toString() =
+        "User(name=$name, password=***)"
+
+    fun doSomething() {
+        log.info("User: $this")
+    }
+}
+
+// Oder: data class mit custom toString
+// Kein Annotation-Support in der Sprache
+// → externe Libs (Jackson @JsonIgnore etc.)</code></pre>
+      </div>
+      <div class="compare-col tinox">
+        <h3>Tinox</h3>
+        <pre><code>import tinox.core.logger;
+
+@Log
+class User
+{
+    var name: String;
+
+    @Sensitive
+    var password: String;   // → immer "***"
+
+    @Masked
+    var email: String;      // → "al***ce" (2+2)
+
+    fn doSomething() -> Nothing
+    {
+        // toString() wird automatisch generiert
+        // und berücksichtigt @Sensitive/@Masked
+        Logger::info(this.log, "User: " + this);
+        // gibt aus: User{name=Alice, password=***, email=al***ce}
+
+        // Auch bei direktem String-Ausdruck:
+        let s: String = this.email;
+        Logger::info(this.log, s); // unveränderter Wert
+        // Nur toString()-Konvertierung ist maskiert
+    }
+}</code></pre>
+      </div>
+      <div class="compare-col typescript">
+        <h3>TypeScript</h3>
+        <pre><code>// Kein nativer Logger in Node.js
+// Manuelle Maskierung oder externe Libs
+import pino from "pino";
+
+class User {
+    name: string;
+    password: string;
+    email: string;
+
+    constructor(name: string,
+                password: string,
+                email: string) {
+        this.name = name;
+        this.password = password;
+        this.email = email;
+    }
+
+    toString() {
+        const masked = this.email.slice(0, 2)
+            + "***"
+            + this.email.slice(-2);
+        return `User{name=${this.name},`
+            + ` password=***, email=${masked}}`;
+    }
+}
+// Keine Annotation-Unterstützung in JS/TS
+// Decorators (@) sind experimentell / Stage 3</code></pre>
+      </div>
+    </div>
+
+    <div class="procon">
+      <div class="procon-box pros">
+        <h4>Tinox Logging — Vorteile</h4>
+        <ul>
+          <li><code>@Log</code> injiziert automatisch ein <code>log: Logger</code>-Feld — kein Boilerplate</li>
+          <li><code>@Sensitive</code> und <code>@Masked</code> maskieren Felder automatisch bei <code>toString()</code></li>
+          <li>Masking greift bei String-Konkatenation (<code>"User: " + this</code>) ohne expliziten Aufruf</li>
+          <li>Datenschutz ist Teil der Sprache — kein externes Framework nötig</li>
+          <li>Kein manuelles Überschreiben von <code>toString()</code> erforderlich</li>
+        </ul>
+      </div>
+      <div class="procon-box cons">
+        <h4>Tinox Logging — Nachteile</h4>
+        <ul>
+          <li>Kein konfigurierbares Masking-Pattern (Länge, Zeichen)</li>
+          <li>Kein strukturiertes Logging (JSON-Format) out-of-the-box</li>
+          <li>Kein Log-Level-Filter zur Laufzeit</li>
         </ul>
       </div>
     </div>
