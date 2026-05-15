@@ -431,6 +431,20 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @sqrt(double)").unwrap();
         writeln!(&mut self.ir, "declare double @pow(double, double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.fabs.f64(double)").unwrap();
+        // JsonBuilder — used by @JsonSerializable toJson()
+        writeln!(&mut self.ir, "declare i8* @jsonBuilderCreate()").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddInt(i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddFloat(i8*, i8*, double)").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddBool(i8*, i8*, i32)").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddString(i8*, i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddIntList(i8*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @jsonBuilderFinish(i8*)").unwrap();
+        // fromJson field helpers
+        writeln!(&mut self.ir, "declare i64 @jsonGetIntField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare double @jsonGetFloatField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i32 @jsonGetBoolField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @jsonGetStringField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @jsonGetIntListField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.round.f64(double)").unwrap();
@@ -678,6 +692,16 @@ impl CodeGen {
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
                             }
+                        } else if let DeclKind::Function(f) = &inner.node {
+                            // Register namespace-level functions (incl. extern) in fn_sigs
+                            if !f.type_params.is_empty() {
+                                self.generic_fns.insert(f.name.clone(), f.clone());
+                            } else {
+                                let fn_name = f.name.clone();
+                                let ret_ty = self.type_to_llvm_inst(&f.ret_type);
+                                let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
+                                self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+                            }
                         }
                     }
                 }
@@ -687,8 +711,9 @@ impl CodeGen {
 
         // Pre-register toString() for @Sensitive/@Masked classes so method dispatch works
         self.pre_register_log_mask_tostring();
-        // Pre-register toJson() for @JsonSerializable classes so method dispatch works
+        // Pre-register toJson() / fromJson() for @JsonSerializable classes
         self.pre_register_json_to_json();
+        self.pre_register_json_from_json();
 
         // Second pass: generate code (skip generic functions — they are monomorphized on demand)
         for decl in &source.decls {
@@ -700,7 +725,9 @@ impl CodeGen {
                 }
                 DeclKind::Class(c) if c.type_params.is_empty() => {
                     for method in &c.methods {
-                        self.gen_class_method(&c.name, method)?;
+                        if method.type_params.is_empty() {
+                            self.gen_class_method(&c.name, method)?;
+                        }
                     }
                 }
                 DeclKind::Immutable(u) => {
@@ -709,10 +736,15 @@ impl CodeGen {
                 DeclKind::Namespace(ns) => {
                     for inner in &ns.decls {
                         match &inner.node {
+                            DeclKind::Function(f) if f.type_params.is_empty() => {
+                                self.gen_fn(f)?;
+                            }
                             DeclKind::Class(c) => {
                                 if c.type_params.is_empty() {
                                     for method in &c.methods {
-                                        self.gen_class_method(&c.name, method)?;
+                                        if method.type_params.is_empty() {
+                                            self.gen_class_method(&c.name, method)?;
+                                        }
                                     }
                                 }
                             }
@@ -742,8 +774,9 @@ impl CodeGen {
         // Emit toString() for classes with @Sensitive or @Masked fields
         self.emit_log_mask_code();
 
-        // Emit toJson() for classes with @JsonSerializable, respecting @DoNotSerialize
+        // Emit toJson() / fromJson() for classes with @JsonSerializable
         self.emit_json_serialize_code();
+        self.emit_json_deserialize_code();
 
         // Emit test-runner main if set_test_entry() was called
         self.emit_test_code();
@@ -1868,8 +1901,23 @@ impl CodeGen {
         }
     }
 
-    /// Emit a `ClassName_toJson(i64* %self) -> i8*` method for every @JsonSerializable class.
-    /// Fields annotated with @DoNotSerialize are excluded from the generated JSON output.
+    fn pre_register_json_from_json(&mut self) {
+        let class_names: Vec<String> = self.json_serializable_classes.clone();
+        for class_name in &class_names {
+            let key = format!("{}_fromJson", class_name);
+            if !self.fn_sigs.contains_key(&key) {
+                self.fn_sigs.insert(key, ("i64*".to_string(), vec!["i64*".to_string()]));
+            }
+            let ret_key = format!("{}_fromJson", class_name);
+            if !self.method_ret_types.contains_key(&ret_key) {
+                self.method_ret_types.insert(ret_key, "i64*".to_string());
+            }
+        }
+    }
+
+    /// Emit `ClassName_toJson(i64* %self) -> i8*` for every @JsonSerializable class.
+    /// Uses JsonBuilder for a single-pass, single-allocation approach instead of
+    /// the old chain of tinox_string_concat calls (which did O(N) mallocs).
     fn emit_json_serialize_code(&mut self) {
         let do_not_serialize_set: std::collections::HashSet<(String, String)> =
             self.do_not_serialize_fields.iter()
@@ -1888,7 +1936,6 @@ impl CodeGen {
                 None => continue,
             };
 
-            // Data fields only: exclude vtable slot, synthetic "log", and @DoNotSerialize fields
             let data_fields: Vec<(String, usize, String)> = layout.iter()
                 .enumerate()
                 .filter(|(_, f)| *f != "__vtable__" && *f != "log")
@@ -1898,82 +1945,162 @@ impl CodeGen {
 
             writeln!(&mut self.ir, "define i8* @{}_toJson(i64* %self) {{", class_name).unwrap();
             writeln!(&mut self.ir, "entry:").unwrap();
+            let builder = self.temp();
+            writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
 
-            // Start with "{"
-            let open_lbl = format!("str{}", self.strings.len());
-            self.strings.insert(open_lbl.clone(), "{".to_string());
-            let open_ptr = self.temp();
-            writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", open_ptr, open_lbl).unwrap();
-            let mut acc = open_ptr;
-
-            for (i, (field_name, struct_idx, llvm_ty)) in data_fields.iter().enumerate() {
-                // Separator: ", " before each field except the first
-                if i > 0 {
-                    let sep_lbl = format!("str{}", self.strings.len());
-                    self.strings.insert(sep_lbl.clone(), ", ".to_string());
-                    let sep_len = 3usize; // ", " + null
-                    let sep_ptr = self.temp();
-                    writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", sep_ptr, sep_len, sep_len, sep_lbl).unwrap();
-                    let acc_new = self.temp();
-                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, sep_ptr).unwrap();
-                    acc = acc_new;
-                }
-
-                // Add "\"fieldName\": " as the key
-                let key = format!("\"{}\": ", field_name);
+            for (field_name, struct_idx, llvm_ty) in &data_fields {
+                // Intern field name as a string constant
                 let key_lbl = format!("str{}", self.strings.len());
-                self.strings.insert(key_lbl.clone(), key.clone());
-                let key_len = key.len() + 1;
+                self.strings.insert(key_lbl.clone(), field_name.clone());
+                let key_len = field_name.len() + 1;
                 let key_ptr = self.temp();
-                writeln!(&mut self.ir, "  {} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0", key_ptr, key_len, key_len, key_lbl).unwrap();
-                let acc_new = self.temp();
-                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, key_ptr).unwrap();
-                acc = acc_new;
+                writeln!(&mut self.ir,
+                    "  {key_ptr} = getelementptr [{key_len} x i8], [{key_len} x i8]* @{key_lbl}, i64 0, i64 0").unwrap();
 
-                // Load field value (all struct slots are stored as i64)
+                // Load the raw i64 slot
                 let fptr = self.temp();
-                writeln!(&mut self.ir, "  {} = getelementptr i64, i64* %self, i64 {}", fptr, struct_idx).unwrap();
-                let raw = self.temp();
-                writeln!(&mut self.ir, "  {} = load i64, i64* {}", raw, fptr).unwrap();
+                let raw  = self.temp();
+                writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %self, i64 {struct_idx}").unwrap();
+                writeln!(&mut self.ir, "  {raw}  = load i64, i64* {fptr}").unwrap();
 
-                let val_str = if llvm_ty == "i8*" {
-                    // String fields are wrapped in JSON quotes: "value"
-                    let raw_clone = raw.clone();
-                    let str_val = self.field_val_to_string(&raw_clone, llvm_ty);
-
-                    let oq_lbl = format!("str{}", self.strings.len());
-                    self.strings.insert(oq_lbl.clone(), "\"".to_string());
-                    let oq_ptr = self.temp();
-                    writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", oq_ptr, oq_lbl).unwrap();
-                    let with_open = self.temp();
-                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", with_open, oq_ptr, str_val).unwrap();
-
-                    let cq_lbl = format!("str{}", self.strings.len());
-                    self.strings.insert(cq_lbl.clone(), "\"".to_string());
-                    let cq_ptr = self.temp();
-                    writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", cq_ptr, cq_lbl).unwrap();
-                    let quoted = self.temp();
-                    writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", quoted, with_open, cq_ptr).unwrap();
-                    quoted
-                } else {
-                    // Numeric and bool types are emitted without quotes
-                    let raw_clone = raw.clone();
-                    self.field_val_to_string(&raw_clone, llvm_ty)
-                };
-
-                let acc_new = self.temp();
-                writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", acc_new, acc, val_str).unwrap();
-                acc = acc_new;
+                match llvm_ty.as_str() {
+                    "i8*" => {
+                        let str_val = self.temp();
+                        writeln!(&mut self.ir, "  {str_val} = inttoptr i64 {raw} to i8*").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {str_val})").unwrap();
+                    }
+                    "double" | "float" => {
+                        let dbl = self.temp();
+                        writeln!(&mut self.ir, "  {dbl} = bitcast i64 {raw} to double").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddFloat(i8* {builder}, i8* {key_ptr}, double {dbl})").unwrap();
+                    }
+                    "i1" => {
+                        let truncated = self.temp();
+                        let extended  = self.temp();
+                        writeln!(&mut self.ir, "  {truncated} = trunc i64 {raw} to i1").unwrap();
+                        writeln!(&mut self.ir, "  {extended}  = zext i1 {truncated} to i32").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddBool(i8* {builder}, i8* {key_ptr}, i32 {extended})").unwrap();
+                    }
+                    "i64*" => {
+                        let arr_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddIntList(i8* {builder}, i8* {key_ptr}, i64* {arr_ptr})").unwrap();
+                    }
+                    _ => {
+                        // i64, i32, etc.
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddInt(i8* {builder}, i8* {key_ptr}, i64 {raw})").unwrap();
+                    }
+                }
             }
 
-            // Close with "}"
-            let close_lbl = format!("str{}", self.strings.len());
-            self.strings.insert(close_lbl.clone(), "}".to_string());
-            let close_ptr = self.temp();
-            writeln!(&mut self.ir, "  {} = getelementptr [2 x i8], [2 x i8]* @{}, i64 0, i64 0", close_ptr, close_lbl).unwrap();
-            let final_str = self.temp();
-            writeln!(&mut self.ir, "  {} = call i8* @tinox_string_concat(i8* {}, i8* {})", final_str, acc, close_ptr).unwrap();
-            writeln!(&mut self.ir, "  ret i8* {}", final_str).unwrap();
+            let result = self.temp();
+            writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+            writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            writeln!(&mut self.ir, "}}").unwrap();
+            writeln!(&mut self.ir).unwrap();
+        }
+    }
+
+    /// Emit `ClassName_fromJson(i64* %json_val) -> i64*` for every @JsonSerializable class.
+    fn emit_json_deserialize_code(&mut self) {
+        let class_names: Vec<String> = self.json_serializable_classes.clone();
+
+        for class_name in class_names {
+            let layout = match self.struct_layouts.get(&class_name) {
+                Some(l) => l.clone(),
+                None => continue,
+            };
+            let llvm_types = match self.struct_field_llvm_types.get(&class_name) {
+                Some(m) => m.clone(),
+                None => continue,
+            };
+
+            let n_slots  = layout.len().max(1);
+            let byte_size = n_slots * 8;
+            let has_vtable = layout.first().map(|f| f == "__vtable__").unwrap_or(false);
+
+            writeln!(&mut self.ir, "define i64* @{}_fromJson(i64* %json_val) {{", class_name).unwrap();
+            writeln!(&mut self.ir, "entry:").unwrap();
+            let raw  = self.temp();
+            let self_ = self.temp();
+            writeln!(&mut self.ir, "  {raw}   = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
+            writeln!(&mut self.ir, "  {self_} = bitcast i8* {raw} to i64*").unwrap();
+
+            // Zero all slots first so unhandled fields are safe
+            for fi in 0..n_slots {
+                let zp = self.temp();
+                writeln!(&mut self.ir, "  {zp} = getelementptr i64, i64* {self_}, i64 {fi}").unwrap();
+                writeln!(&mut self.ir, "  store i64 0, i64* {zp}").unwrap();
+            }
+
+            // Set vtable pointer if present
+            if has_vtable {
+                let vt_i64 = self.temp();
+                let vt_ptr = self.temp();
+                writeln!(&mut self.ir, "  {vt_i64} = ptrtoint i64* getelementptr ([1 x i64], [1 x i64]* @{class_name}_vtable, i64 0, i64 0) to i64").unwrap();
+                writeln!(&mut self.ir, "  {vt_ptr} = getelementptr i64, i64* {self_}, i64 0").unwrap();
+                writeln!(&mut self.ir, "  store i64 {vt_i64}, i64* {vt_ptr}").unwrap();
+            }
+
+            // Fill data fields from JSON
+            for (struct_idx, field_name) in layout.iter().enumerate() {
+                if field_name == "__vtable__" || field_name == "log" { continue; }
+                let llvm_ty = match llvm_types.get(field_name) {
+                    Some(t) => t.clone(),
+                    None => continue,
+                };
+
+                let key_lbl = format!("str{}", self.strings.len());
+                self.strings.insert(key_lbl.clone(), field_name.clone());
+                let key_len = field_name.len() + 1;
+                let key_ptr = self.temp();
+                writeln!(&mut self.ir,
+                    "  {key_ptr} = getelementptr [{key_len} x i8], [{key_len} x i8]* @{key_lbl}, i64 0, i64 0").unwrap();
+
+                let fptr = self.temp();
+                writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {self_}, i64 {struct_idx}").unwrap();
+
+                let store_val = match llvm_ty.as_str() {
+                    "i8*" => {
+                        let str_val = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {str_val} = call i8* @jsonGetStringField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {str_val} to i64").unwrap();
+                        as_i64
+                    }
+                    "double" | "float" => {
+                        let dbl    = self.temp();
+                        let as_i64 = self.temp();
+                        writeln!(&mut self.ir, "  {dbl}    = call double @jsonGetFloatField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64} = bitcast double {dbl} to i64").unwrap();
+                        as_i64
+                    }
+                    "i1" => {
+                        let b32    = self.temp();
+                        let as_i64 = self.temp();
+                        writeln!(&mut self.ir, "  {b32}    = call i32 @jsonGetBoolField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64} = zext i32 {b32} to i64").unwrap();
+                        as_i64
+                    }
+                    "i64*" => {
+                        let arr_ptr = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = call i64* @jsonGetIntListField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i64* {arr_ptr} to i64").unwrap();
+                        as_i64
+                    }
+                    _ => {
+                        // i64, i32, etc.
+                        let val = self.temp();
+                        writeln!(&mut self.ir, "  {val} = call i64 @jsonGetIntField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        val
+                    }
+                };
+
+                writeln!(&mut self.ir, "  store i64 {store_val}, i64* {fptr}").unwrap();
+            }
+
+            writeln!(&mut self.ir, "  ret i64* {self_}").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
@@ -2952,13 +3079,25 @@ impl CodeGen {
                 } else { (r, rt) };
                 match op {
                     tinox_parser::BinaryOp::Add => {
-                        if lt == "i8*" || rt == "i8*" {
-                            let l_str = if lt == "i8*" { l.clone() } else {
+                        if lt == "i8*" || rt == "i8*" || lt == "i64*" || rt == "i64*" {
+                            let l_str = if lt == "i8*" {
+                                l.clone()
+                            } else if lt.ends_with('*') {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i8*", c, lt, l).unwrap();
+                                c
+                            } else {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap();
                                 c
                             };
-                            let r_str = if rt == "i8*" { r.clone() } else {
+                            let r_str = if rt == "i8*" {
+                                r.clone()
+                            } else if rt.ends_with('*') {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i8*", c, rt, r).unwrap();
+                                c
+                            } else {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap();
                                 c

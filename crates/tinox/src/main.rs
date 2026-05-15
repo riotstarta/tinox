@@ -189,10 +189,8 @@ fn fmt(args: &[String]) {
 /// Returns the entry `.tnx` file for the current project.
 /// If `args` has a file, use that. Otherwise read tinox.toml → src/main.tnx.
 fn resolve_entry_file(args: &[String]) -> Option<String> {
-    if let Some(f) = args.first() {
-        if !f.starts_with('-') {
-            return Some(f.clone());
-        }
+    if let Some(f) = args.iter().find(|a| !a.starts_with('-')) {
+        return Some(f.clone());
     }
     // Project mode: look for tinox.toml in current dir or parents
     let mut dir = std::env::current_dir().ok()?;
@@ -545,7 +543,7 @@ fn find_runtime_object() -> Option<String> {
         if Path::new(c).exists() {
             let obj = "/tmp/.tinox_runtime.o";
             let status = Command::new("clang")
-                .args(["-c", c, "-o", obj, "-O0"])
+                .args(["-c", c, "-o", obj, "-O3"])
                 .status().ok()?;
             if status.success() { return Some(obj.to_string()); }
         }
@@ -1708,7 +1706,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let runtime_obj = format!("{}_runtime.o", output_name);
 
     let cc_status = Command::new("cc")
-        .args(&["-c", &runtime_src, "-o", &runtime_obj])
+        .args(&["-c", &runtime_src, "-o", &runtime_obj, "-O3"])
         .status()
         .map_err(|e| format!("Failed to compile runtime: {}", e))?;
 

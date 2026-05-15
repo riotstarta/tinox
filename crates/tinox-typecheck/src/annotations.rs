@@ -1,6 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, Span};
-use tinox_parser::{Annotation, Class, DeclKind, FieldDef, Function, Method, Namespace, Type};
+use tinox_parser::{Annotation, AnnotationArg, Class, DeclKind, FieldDef, Function, Method, Namespace, Type};
+
+fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
+    match arg {
+        AnnotationArg::EnumValue(type_name, variant) if type_name == "MediaType" => {
+            match variant.as_str() {
+                "APPLICATION_JSON" => Some("application/json".to_string()),
+                "PLAIN_TEXT"       => Some("text/plain".to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AnnotationTarget {
@@ -540,17 +553,17 @@ impl AnnotationProcessor {
         for ann in &class.annotations {
             match ann.name.as_str() {
                 "Path" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         class_base_path = Some(s.clone());
                     }
                 }
                 "Auth" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         class_auth = Some(s.clone());
                     }
                 }
                 "deprecated" => {
-                    let msg = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         format!("class '{}' is deprecated: {}", class.name, s)
                     } else {
                         format!("class '{}' is deprecated", class.name)
@@ -567,17 +580,17 @@ impl AnnotationProcessor {
                     result.log_classes.insert(class.name.clone());
                 }
                 "Command" => {
-                    let cmd_name = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    let cmd_name = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         s.clone()
                     } else {
                         class.name.clone()
                     };
-                    let description = if let Some(tinox_parser::Literal::String(s)) = ann.args.get(1) {
+                    let description = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(1) {
                         s.clone()
                     } else {
                         String::new()
                     };
-                    let version = if let Some(tinox_parser::Literal::String(s)) = ann.args.get(2) {
+                    let version = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(2) {
                         Some(s.clone())
                     } else {
                         None
@@ -589,10 +602,10 @@ impl AnnotationProcessor {
                         for fann in &field.annotations {
                             match fann.name.as_str() {
                                 "Option" => {
-                                    let names_str = if let Some(tinox_parser::Literal::String(s)) = fann.args.first() { s.clone() } else { String::new() };
+                                    let names_str = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = fann.args.first() { s.clone() } else { String::new() };
                                     let names: Vec<String> = names_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                                    let desc = if let Some(tinox_parser::Literal::String(s)) = fann.args.get(1) { s.clone() } else { String::new() };
-                                    let required = if let Some(tinox_parser::Literal::Bool(b)) = fann.args.get(2) { *b } else { false };
+                                    let desc = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = fann.args.get(1) { s.clone() } else { String::new() };
+                                    let required = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Bool(b))) = fann.args.get(2) { *b } else { false };
                                     options.push(CliOptionInfo {
                                         field_name: field.name.clone(),
                                         names,
@@ -602,9 +615,9 @@ impl AnnotationProcessor {
                                     });
                                 }
                                 "Argument" => {
-                                    let index = if let Some(tinox_parser::Literal::Integer(i)) = fann.args.first() { *i as usize } else { 0 };
-                                    let desc = if let Some(tinox_parser::Literal::String(s)) = fann.args.get(1) { s.clone() } else { String::new() };
-                                    let required = if let Some(tinox_parser::Literal::Bool(b)) = fann.args.get(2) { *b } else { false };
+                                    let index = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(i))) = fann.args.first() { *i as usize } else { 0 };
+                                    let desc = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = fann.args.get(1) { s.clone() } else { String::new() };
+                                    let required = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Bool(b))) = fann.args.get(2) { *b } else { false };
                                     arguments.push(CliArgumentInfo {
                                         field_name: field.name.clone(),
                                         index,
@@ -669,7 +682,7 @@ impl AnnotationProcessor {
                             .insert((class.name.clone(), method.name.clone()));
                     }
                     "deprecated" => {
-                        let msg = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                        let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                             format!("method '{}.{}' is deprecated: {}", class.name, method.name, s)
                         } else {
                             format!("method '{}.{}' is deprecated", class.name, method.name)
@@ -677,7 +690,7 @@ impl AnnotationProcessor {
                         result.deprecated_warnings.push(msg);
                     }
                     "Test" => {
-                        let description = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                        let description = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                             s.clone()
                         } else {
                             method.name.clone()
@@ -704,7 +717,7 @@ impl AnnotationProcessor {
                 result.inline_functions.insert(f.name.clone());
             }
             if ann.name == "deprecated" {
-                let msg = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                     format!("function '{}' is deprecated: {}", f.name, s)
                 } else {
                     format!("function '{}' is deprecated", f.name)
@@ -747,32 +760,28 @@ impl AnnotationProcessor {
             match ann.name.as_str() {
                 "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
                     http_method = Some(ann.name.clone());
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         method_path = Some(s.clone());
                     }
                 }
                 "Path" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         method_path = Some(s.clone());
                     }
                 }
                 "StatusCode" => {
-                    if let Some(tinox_parser::Literal::Integer(n)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(n))) = ann.args.first() {
                         status_code = Some(*n);
                     }
                 }
                 "Produces" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
-                        produces = Some(s.clone());
-                    }
+                    produces = ann.args.first().and_then(media_type_arg_to_mime);
                 }
                 "Consumes" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
-                        consumes = Some(s.clone());
-                    }
+                    consumes = ann.args.first().and_then(media_type_arg_to_mime);
                 }
                 "Auth" => {
-                    if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         auth = Some(s.clone());
                     }
                 }
@@ -845,7 +854,7 @@ fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFie
         .iter()
         .filter_map(|f| {
             let ann = f.annotations.iter().find(|a| a.name == "Config")?;
-            let key = if let Some(tinox_parser::Literal::String(s)) = ann.args.first() {
+            let key = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                 s.clone()
             } else {
                 return None;

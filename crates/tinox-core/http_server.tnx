@@ -366,14 +366,14 @@ namespace tinox.core.http_server
         /** The request path (e.g., "/users/42") */
         var path: String;
 
-        /** The raw query string (e.g., "page=1&limit=10") */
-        var queryString: String;
+        /** The raw request body */
+        var body: String;
 
         /** Request headers as key-value pairs */
         var headers: Map<String, String>;
 
-        /** The raw request body */
-        var body: String;
+        /** The raw query string (e.g., "page=1&limit=10") */
+        var queryString: String;
 
         /** Path parameters extracted from route patterns */
         var params: Map<String, String>;
@@ -967,5 +967,18 @@ namespace tinox.core.http_server
             }
             return "";
         }
+    }
+
+    /**
+     * MIME type constants for use with @Produces and @Consumes annotations.
+     *
+     * Usage:
+     *   @Produces(MediaType.APPLICATION_JSON)
+     *   @Consumes(MediaType.PLAIN_TEXT)
+     */
+    enum MediaType
+    {
+        APPLICATION_JSON;
+        PLAIN_TEXT;
     }
 }

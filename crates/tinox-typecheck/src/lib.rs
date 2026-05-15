@@ -909,7 +909,7 @@ impl TypeChecker {
         (iface_methods, self.interface_implementations.clone())
     }
 
-    fn check_source_file(&mut self, source: &SourceFile) {
+    fn register_declarations(&mut self, source: &SourceFile) {
         for decl in &source.decls {
             match &decl.node {
                 DeclKind::Function(f) => {
@@ -957,6 +957,23 @@ impl TypeChecker {
                         let key = format!("{}_{}", c.name, method.name);
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
+                    }
+                    // @JsonSerializable: register compiler-generated toJson() and fromJson()
+                    if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
+                        self.symbols.functions.insert(
+                            format!("{}_toJson", c.name),
+                            FunctionSignature {
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone()))],
+                                return_type: ValueType::String,
+                            },
+                        );
+                        self.symbols.functions.insert(
+                            format!("{}_fromJson", c.name),
+                            FunctionSignature {
+                                params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string()))],
+                                return_type: ValueType::Named(c.name.clone()),
+                            },
+                        );
                     }
                 }
                 DeclKind::Enum(e) => {
@@ -1065,6 +1082,22 @@ impl TypeChecker {
                                 let key = format!("{}_{}", c.name, method.name);
                                 self.symbols.functions.insert(key.clone(), sig);
                                 self.method_visibility.insert(key, method.visibility.clone());
+                            }
+                            if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
+                                self.symbols.functions.insert(
+                                    format!("{}_toJson", c.name),
+                                    FunctionSignature {
+                                        params: vec![("self".to_string(), ValueType::Named(c.name.clone()))],
+                                        return_type: ValueType::String,
+                                    },
+                                );
+                                self.symbols.functions.insert(
+                                    format!("{}_fromJson", c.name),
+                                    FunctionSignature {
+                                        params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string()))],
+                                        return_type: ValueType::Named(c.name.clone()),
+                                    },
+                                );
                             }
                         }
                         DeclKind::Immutable(u) => {
@@ -1325,6 +1358,10 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    fn check_source_file(&mut self, source: &SourceFile) {
+        self.register_declarations(source);
 
         for decl in &source.decls {
             match &decl.node {
@@ -2546,6 +2583,17 @@ impl Default for TypeChecker {
 
 pub fn typecheck(source: &SourceFile) -> Result<SourceFile, ErrorBag> {
     let mut checker = TypeChecker::new();
+    checker.check(source)
+}
+
+/// Like `typecheck`, but first registers declarations from `preludes` (e.g. resolved stdlib
+/// imports) so that extern functions and types declared there are known to the checker.
+pub fn typecheck_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> Result<SourceFile, ErrorBag> {
+    let mut checker = TypeChecker::new();
+    for prelude in preludes {
+        checker.register_declarations(prelude);
+        checker.errors.clear();
+    }
     checker.check(source)
 }
 

@@ -572,23 +572,27 @@ impl Parser {
         let mut decls = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             let doc = self.take_doc();
-            let _annotations = self.parse_annotations();
+            let annotations = self.parse_annotations();
             let decl_start = self.mk_span();
             let inner = if self.check_keyword(Keyword::Class) {
                 let mut c = self.parse_class()?;
                 c.doc = doc;
+                c.annotations = annotations;
                 DeclKind::Class(c)
             } else if self.check_keyword(Keyword::Interface) {
                 let mut i = self.parse_interface()?;
                 i.doc = doc;
+                i.annotations = annotations;
                 DeclKind::Interface(i)
             } else if self.check_keyword(Keyword::Enum) {
                 let mut e = self.parse_enum()?;
                 e.doc = doc;
+                e.annotations = annotations;
                 DeclKind::Enum(e)
             } else if self.check_keyword(Keyword::Trait) {
                 let mut t = self.parse_trait()?;
                 t.doc = doc;
+                t.annotations = annotations;
                 DeclKind::Trait(t)
             } else if self.check_keyword(Keyword::Immutable) {
                 let u = self.parse_immutable()?;
@@ -596,7 +600,8 @@ impl Parser {
             } else if self.check_keyword(Keyword::Extern) {
                 self.parse_extern_fn()?
             } else if self.check_keyword(Keyword::Fn) || self.check_keyword(Keyword::Async) {
-                let f = self.parse_fn()?;
+                let mut f = self.parse_fn()?;
+                f.annotations = annotations;
                 DeclKind::Function(f)
             } else {
                 let e = self.error("expected 'class', 'interface', 'enum', 'trait', or 'immutable' inside namespace");
@@ -2820,38 +2825,51 @@ impl Parser {
         annotations
     }
 
-    fn parse_annotation_arg(&mut self) -> Result<Literal, Error> {
+    fn parse_annotation_arg(&mut self) -> Result<AnnotationArg, Error> {
         let token = self.peek();
         match &token.kind {
             TokenKind::Integer(n) => {
                 let val = *n;
                 self.bump();
-                Ok(Literal::Integer(val))
+                Ok(AnnotationArg::Literal(Literal::Integer(val)))
             }
             TokenKind::Float(f) => {
                 let val = *f;
                 self.bump();
-                Ok(Literal::Float(val))
+                Ok(AnnotationArg::Literal(Literal::Float(val)))
             }
             TokenKind::String(s) => {
                 let val = s.clone();
                 self.bump();
-                Ok(Literal::String(val))
+                Ok(AnnotationArg::Literal(Literal::String(val)))
             }
             TokenKind::Bool(b) => {
                 let val = *b;
                 self.bump();
-                Ok(Literal::Bool(val))
+                Ok(AnnotationArg::Literal(Literal::Bool(val)))
             }
             TokenKind::Keyword(Keyword::True) => {
                 self.bump();
-                Ok(Literal::Bool(true))
+                Ok(AnnotationArg::Literal(Literal::Bool(true)))
             }
             TokenKind::Keyword(Keyword::False) => {
                 self.bump();
-                Ok(Literal::Bool(false))
+                Ok(AnnotationArg::Literal(Literal::Bool(false)))
             }
-            _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, or bool)")),
+            // Qualified enum member: TypeName.VariantName  e.g. MediaType.APPLICATION_JSON
+            TokenKind::Ident(type_name) => {
+                let type_name = type_name.clone();
+                self.bump();
+                if self.consume(TokenKind::Dot) {
+                    if let TokenKind::Ident(variant) = &self.peek().kind {
+                        let variant = variant.clone();
+                        self.bump();
+                        return Ok(AnnotationArg::EnumValue(type_name, variant));
+                    }
+                }
+                Err(Error::new(token.span, "expected TypeName.VariantName for enum annotation argument"))
+            }
+            _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, bool, or EnumType.Variant)")),
         }
     }
 
@@ -4274,14 +4292,21 @@ mod tests {
         let d = first_decl("@StatusCode(201)\nfn create() -> Nothing {}");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.annotations[0].name, "StatusCode");
-        assert!(matches!(f.annotations[0].args[0], Literal::Integer(201)));
+        assert!(matches!(f.annotations[0].args[0], AnnotationArg::Literal(Literal::Integer(201))));
     }
 
     #[test]
     fn test_annotation_with_bool_arg() {
         let d = first_decl("@Option(\"--flag\", \"desc\", true)\nfn f() -> Nothing {}");
         let DeclKind::Function(f) = d else { panic!() };
-        assert!(matches!(f.annotations[0].args[2], Literal::Bool(true)));
+        assert!(matches!(f.annotations[0].args[2], AnnotationArg::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn test_annotation_with_enum_arg() {
+        let d = first_decl("@Produces(MediaType.APPLICATION_JSON)\nfn f() -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert!(matches!(&f.annotations[0].args[0], AnnotationArg::EnumValue(t, v) if t == "MediaType" && v == "APPLICATION_JSON"));
     }
 
     #[test]

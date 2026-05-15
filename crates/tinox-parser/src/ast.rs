@@ -458,10 +458,17 @@ pub struct Namespace {
     pub annotations: Vec<Annotation>,
 }
 
+/// An argument in an annotation — either a literal value or a qualified enum member (Type.Variant).
+#[derive(Debug, Clone)]
+pub enum AnnotationArg {
+    Literal(Literal),
+    EnumValue(String, String), // TypeName, VariantName — e.g. MediaType.APPLICATION_JSON
+}
+
 #[derive(Debug, Clone)]
 pub struct Annotation {
     pub name: Ident,
-    pub args: Vec<Literal>,
+    pub args: Vec<AnnotationArg>,
     pub span: Span,
 }
 

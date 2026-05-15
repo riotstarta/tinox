@@ -1,17 +1,24 @@
 // Tinox Runtime
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-#define _GNU_SOURCE
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <poll.h>
+#include <sys/uio.h>
+#include <signal.h>
+#include <sys/epoll.h>
+#include <time.h>
 
 // Memory allocation
 void* tinox_alloc(size_t size) {
@@ -62,14 +69,11 @@ int64_t tinox_string_length(const char* str) {
 }
 
 char* tinox_string_concat(const char* a, const char* b) {
-    size_t len_a = 0;
-    while (a[len_a] != '\0') len_a++;
-    size_t len_b = 0;
-    while (b[len_b] != '\0') len_b++;
-    
+    size_t len_a = strlen(a);
+    size_t len_b = strlen(b);
     char* result = malloc(len_a + len_b + 1);
-    for (size_t i = 0; i < len_a; i++) result[i] = a[i];
-    for (size_t i = 0; i < len_b; i++) result[len_a + i] = b[i];
+    memcpy(result, a, len_a);
+    memcpy(result + len_a, b, len_b);
     result[len_a + len_b] = '\0';
     return result;
 }
@@ -223,13 +227,58 @@ static int cmp_i64(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+// Fast inlined int64 sort: insertion sort for small ranges, quicksort otherwise.
+// No function-pointer overhead, no temp-buffer malloc (unlike glibc qsort/msort).
+static inline void i64_swap(int64_t* a, int64_t* b) { int64_t t = *a; *a = *b; *b = t; }
+
+static void sort_i64_range(int64_t* arr, int64_t lo, int64_t hi) {
+    while (lo < hi) {
+        if (hi - lo < 16) {
+            // Insertion sort: optimal for small ranges, no overhead
+            for (int64_t i = lo + 1; i <= hi; i++) {
+                int64_t key = arr[i];
+                int64_t j = i;
+                while (j > lo && arr[j-1] > key) { arr[j] = arr[j-1]; j--; }
+                arr[j] = key;
+            }
+            return;
+        }
+        // Median-of-3 pivot to avoid worst-case
+        int64_t mid = lo + (hi - lo) / 2;
+        if (arr[lo] > arr[mid]) i64_swap(&arr[lo], &arr[mid]);
+        if (arr[lo] > arr[hi])  i64_swap(&arr[lo], &arr[hi]);
+        if (arr[mid] > arr[hi]) i64_swap(&arr[mid], &arr[hi]);
+        int64_t pivot = arr[mid];
+        i64_swap(&arr[mid], &arr[hi-1]);
+        int64_t i = lo, j = hi - 1;
+        while (1) {
+            while (arr[++i] < pivot);
+            while (arr[--j] > pivot);
+            if (i >= j) break;
+            i64_swap(&arr[i], &arr[j]);
+        }
+        i64_swap(&arr[i], &arr[hi-1]);
+        // Recurse on smaller partition to bound stack depth
+        if (i - lo < hi - i) { sort_i64_range(arr, lo, i - 1); lo = i + 1; }
+        else                  { sort_i64_range(arr, i + 1, hi); hi = i - 1; }
+    }
+}
+
+static __thread int64_t* g_sort_buf = NULL;
+static __thread int64_t  g_sort_cap = 0;
+
 int64_t* tinox_array_sort(int64_t* data) {
     int64_t len = data[-1];
-    int64_t* raw = malloc((len + 1) * sizeof(int64_t));
-    raw[0] = len;
-    int64_t* nd = raw + 1;
-    for (int64_t i = 0; i < len; i++) nd[i] = data[i];
-    qsort(nd, (size_t)len, sizeof(int64_t), cmp_i64);
+    if (len + 1 > g_sort_cap) {
+        int64_t nc = g_sort_cap ? g_sort_cap * 2 : 256;
+        while (nc < len + 1) nc *= 2;
+        g_sort_buf = (int64_t*)realloc(g_sort_buf, (size_t)nc * sizeof(int64_t));
+        g_sort_cap = nc;
+    }
+    g_sort_buf[0] = len;
+    int64_t* nd = g_sort_buf + 1;
+    memcpy(nd, data, (size_t)len * sizeof(int64_t));
+    if (len > 1) sort_i64_range(nd, 0, len - 1);
     return nd;
 }
 
@@ -350,6 +399,7 @@ typedef struct TinoxMap {
     TinoxMapEntry* entries;
     size_t cap;
     size_t len;
+    int borrowed_keys; // 1 = keys/entries are arena-owned, don't free
 } TinoxMap;
 
 static size_t map_hash(const char* key, size_t cap) {
@@ -357,6 +407,32 @@ static size_t map_hash(const char* key, size_t cap) {
     for (const unsigned char* p = (const unsigned char*)key; *p; p++)
         h = (h ^ *p) * 1099511628211ULL;
     return h & (cap - 1);
+}
+
+static void map_rehash(TinoxMap* m); // forward declaration
+
+// Reset a map without freeing keys/entries (for static maps with borrowed_keys=1)
+static void tinox_map_reset(TinoxMap* m) {
+    m->len = 0;
+    memset(m->entries, 0, m->cap * sizeof(TinoxMapEntry));
+}
+
+// Store key without strdup — caller guarantees key lifetime exceeds map use
+static void tinox_map_set_borrow(void* map, const char* key, int64_t value) {
+    TinoxMap* m = (TinoxMap*)map;
+    if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM) map_rehash(m);
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k || k == (char*)1) {
+            m->entries[idx].key   = (char*)key; // no strdup
+            m->entries[idx].value = value;
+            m->len++;
+            return;
+        }
+        if (strcmp(k, key) == 0) { m->entries[idx].value = value; return; }
+        idx = (idx + 1) & (m->cap - 1);
+    }
 }
 
 static void map_rehash(TinoxMap* m) {
@@ -370,16 +446,18 @@ static void map_rehash(TinoxMap* m) {
         new_entries[idx].key   = k;
         new_entries[idx].value = m->entries[i].value;
     }
-    free(m->entries);
+    if (!m->borrowed_keys) free(m->entries);
     m->entries = new_entries;
     m->cap     = new_cap;
+    m->borrowed_keys = 0; // entries now heap-allocated
 }
 
 void* tinox_map_create(void) {
     TinoxMap* m = malloc(sizeof(TinoxMap));
-    m->cap     = TINOX_MAP_INIT_CAP;
-    m->len     = 0;
-    m->entries = calloc(m->cap, sizeof(TinoxMapEntry));
+    m->cap          = TINOX_MAP_INIT_CAP;
+    m->len          = 0;
+    m->entries      = calloc(m->cap, sizeof(TinoxMapEntry));
+    m->borrowed_keys = 0;
     return m;
 }
 
@@ -391,7 +469,7 @@ void tinox_map_set(void* map, const char* key, int64_t value) {
     while (1) {
         char* k = m->entries[idx].key;
         if (!k || k == (char*)1) {
-            m->entries[idx].key   = strdup(key);
+            m->entries[idx].key   = m->borrowed_keys ? (char*)key : strdup(key);
             m->entries[idx].value = value;
             m->len++;
             return;
@@ -476,6 +554,7 @@ int64_t* tinox_map_values(void* map) {
 
 void tinox_map_free(void* map) {
     TinoxMap* m = (TinoxMap*)map;
+    if (m->borrowed_keys) return; // arena-owned memory, nothing to free
     for (size_t i = 0; i < m->cap; i++) {
         char* k = m->entries[i].key;
         if (k && k != (char*)1) free(k);
@@ -665,6 +744,8 @@ void tinox_file_delete(const char* path) {
     remove(path);
 }
 
+static size_t fast_i64_write(int64_t val, char* buf);
+
 // ---- HTTP Server ----
 
 int64_t httpServerCreate(int64_t port) {
@@ -672,12 +753,13 @@ int64_t httpServerCreate(int64_t port) {
     if (fd < 0) return -1;
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port        = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
-    if (listen(fd, 128) < 0) { close(fd); return -1; }
+    if (listen(fd, 4096) < 0) { close(fd); return -1; }
     return (int64_t)fd;
 }
 
@@ -685,16 +767,32 @@ int64_t httpServerAcceptConn(int64_t server_fd) {
     struct sockaddr_in client = {0};
     socklen_t len = sizeof(client);
     int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
+    if (fd >= 0) {
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 }; // 5s zombie guard (poll handles keep-alive)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
     return (int64_t)fd;
 }
 
-// Reads a full HTTP/1.1 request from the socket and returns it as a heap string.
+// Static recv buffer — reused across requests, grows as needed
+static __thread char*  g_recv_buf = NULL;
+static __thread size_t g_recv_cap = 0;
+
+// Reads a full HTTP/1.1 request from the socket into g_recv_buf (static, not freed by caller).
 char* httpServerReadRequest(int64_t client_fd) {
-    size_t cap = 4096, used = 0;
-    char* buf = (char*)malloc(cap);
+    if (!g_recv_buf) { g_recv_cap = 4096; g_recv_buf = (char*)malloc(g_recv_cap); }
+    size_t used = 0;
+    char* buf = g_recv_buf;
+    size_t cap = g_recv_cap;
     int fd = (int)client_fd;
     while (1) {
-        if (used + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        if (used + 1 >= cap) {
+            cap *= 2;
+            buf = (char*)realloc(buf, cap);
+            g_recv_buf = buf; g_recv_cap = cap;
+        }
         ssize_t n = recv(fd, buf + used, cap - used - 1, 0);
         if (n <= 0) break;
         used += (size_t)n;
@@ -702,14 +800,27 @@ char* httpServerReadRequest(int64_t client_fd) {
         // Stop once we have the full headers (and body if Content-Length matches)
         char* hdr_end = strstr(buf, "\r\n\r\n");
         if (!hdr_end) continue;
-        // Check for Content-Length to read body
-        char* cl = strcasestr(buf, "Content-Length:");
+        // Check for Content-Length — scan line by line, no strcasestr overhead
+        char* cl = NULL;
+        for (char* s = buf; *s; ) {
+            while (*s && *s != '\n') s++;
+            if (*s) s++;
+            if ((s[0]=='C'||s[0]=='c') && (s[1]=='o'||s[1]=='O') && (s[2]=='n'||s[2]=='N') &&
+                (s[3]=='t'||s[3]=='T') && (s[4]=='e'||s[4]=='E') && (s[5]=='n'||s[5]=='N') &&
+                (s[6]=='t'||s[6]=='T') &&  s[7]=='-' &&
+                (s[8]=='L'||s[8]=='l') && (s[9]=='e'||s[9]=='E') && (s[10]=='n'||s[10]=='N') &&
+                (s[11]=='g'||s[11]=='G') && (s[12]=='t'||s[12]=='T') && (s[13]=='h'||s[13]=='H') &&
+                s[14]==':') { cl = s; break; }
+        }
         if (cl) {
             long body_len = atol(cl + 15);
             long header_len = (long)(hdr_end - buf) + 4;
             long total = header_len + body_len;
             while ((long)used < total) {
-                while (cap < (size_t)total + 1) { cap *= 2; buf = (char*)realloc(buf, cap); }
+                while (cap < (size_t)total + 1) {
+                cap *= 2; buf = (char*)realloc(buf, cap);
+                g_recv_buf = buf; g_recv_cap = cap;
+            }
                 ssize_t m = recv(fd, buf + used, (size_t)(total - (long)used), 0);
                 if (m <= 0) break;
                 used += (size_t)m;
@@ -851,161 +962,369 @@ static int route_matches(const char* pattern, const char* path, void* params_map
     return *pattern == '\0' && *path == '\0';
 }
 
-void tinox_HttpServer_listen(int64_t* server) {
-    TinoxHttpServer* srv = (TinoxHttpServer*)server;
-    int64_t server_fd = httpServerCreate(srv->port);
-    if (server_fd < 0) {
-        fprintf(stderr, "HttpServer: failed to bind port %lld\n", (long long)srv->port);
-        return;
+// Thread-local response buffer — reused across requests per thread
+static __thread char*  g_resp_buf = NULL;
+static __thread size_t g_resp_cap = 0;
+
+// Thread-local per-request structs — reused each request, one set per thread
+static __thread int64_t  g_response[3];
+static __thread int64_t  g_request[6];
+static __thread int64_t  g_ctx[2];
+static __thread char     g_empty_body[1];
+static __thread TinoxMap g_req_headers_map;
+static __thread TinoxMap g_resp_headers_map;
+static __thread TinoxMap g_path_params_map;
+static __thread int      g_thread_inited = 0;
+
+static TinoxMap* make_static_map(TinoxMap* m, size_t cap) {
+    m->entries      = (TinoxMapEntry*)calloc(cap, sizeof(TinoxMapEntry));
+    m->cap          = cap;
+    m->len          = 0;
+    m->borrowed_keys = 1;
+    return m;
+}
+
+static void thread_local_init(void) {
+    if (g_thread_inited) return;
+    g_resp_cap = 4096; g_resp_buf = (char*)malloc(g_resp_cap);
+    make_static_map(&g_req_headers_map,  16);
+    make_static_map(&g_resp_headers_map, 8);
+    make_static_map(&g_path_params_map,  8);
+    g_empty_body[0] = '\0';
+    g_thread_inited = 1;
+}
+
+// Normalize HTTP header key to canonical Title-Case-Hyphenated form in place.
+// e.g. "content-type" → "Content-Type", "ACCEPT" → "Accept"
+static void normalize_header_key(char* k) {
+    int cap_next = 1;
+    for (; *k; k++) {
+        if (*k == '-') { cap_next = 1; }
+        else if (cap_next) { *k = (char)toupper((unsigned char)*k); cap_next = 0; }
+        else { *k = (char)tolower((unsigned char)*k); }
     }
-    fprintf(stderr, "HttpServer listening on port %lld\n", (long long)srv->port);
+}
 
-    while (1) {
-        int64_t client_fd = httpServerAcceptConn(server_fd);
-        if (client_fd < 0) continue;
+static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out) {
+    *keep_alive_out = 0;
+    char* raw_req = httpServerReadRequest(client_fd);
+    if (!raw_req || !raw_req[0]) return;
 
-        char* raw_req = httpServerReadRequest(client_fd);
-        if (!raw_req) { httpServerCloseConn(client_fd); continue; }
-
-        char method[8] = {0};
-        char path[256] = {0};
-        char query[512] = {0};
-        sscanf(raw_req, "%7s %255s", method, path);
-        // Split path and query string
-        char* qmark = strchr(path, '?');
-        if (qmark) { strncpy(query, qmark + 1, 511); *qmark = '\0'; }
-
-        // Find matching route (supports :param segments)
-        TinoxRouteHandler handler = NULL;
-        void* path_params = tinox_map_create();
-        for (int i = 0; i < srv->route_count; i++) {
-            if (strcmp(srv->routes[i].method, method) != 0) continue;
-            void* candidate_params = tinox_map_create();
-            if (route_matches(srv->routes[i].path, path, candidate_params)) {
-                handler = srv->routes[i].handler;
-                // Merge candidate_params into path_params
-                tinox_map_free(path_params);
-                path_params = candidate_params;
-                break;
-            }
-            tinox_map_free(candidate_params);
+    char method[8];
+    char path[256];
+    char* query = (char*)"";
+    {
+        const char* sp = strchr(raw_req, ' ');
+        if (sp) {
+            int mlen = (int)(sp - raw_req); if (mlen > 7) mlen = 7;
+            memcpy(method, raw_req, mlen); method[mlen] = '\0';
+            sp++;
+            const char* ep = sp;
+            while (*ep && *ep != ' ' && *ep != '\r' && *ep != '\n' && (ep - sp) < 255) ep++;
+            int plen = (int)(ep - sp);
+            memcpy(path, sp, plen); path[plen] = '\0';
+        } else {
+            method[0] = '\0'; path[0] = '\0';
         }
+    }
+    char* qmark = strchr(path, '?');
+    if (qmark) { query = qmark + 1; *qmark = '\0'; }
 
-        // Parse HTTP headers from raw request into a map
-        void* req_headers = tinox_map_create();
-        char* hdr_line = strchr(raw_req, '\n');
-        while (hdr_line) {
-            hdr_line++;
-            if (*hdr_line == '\r' || *hdr_line == '\n' || *hdr_line == '\0') break;
-            char* colon = strchr(hdr_line, ':');
-            char* eol = strchr(hdr_line, '\n');
-            if (colon && eol && colon < eol) {
-                size_t klen = (size_t)(colon - hdr_line);
-                char* hkey = (char*)tinox_alloc(klen + 1);
-                memcpy(hkey, hdr_line, klen);
-                hkey[klen] = '\0';
-                char* vstart = colon + 1;
-                while (*vstart == ' ') vstart++;
-                size_t vlen = (size_t)(eol - vstart);
-                while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == ' ')) vlen--;
-                char* hval = (char*)tinox_alloc(vlen + 1);
-                memcpy(hval, vstart, vlen);
-                hval[vlen] = '\0';
-                tinox_map_set(req_headers, hkey, (int64_t)hval);
-            }
-            hdr_line = eol;
+    tinox_map_reset(&g_path_params_map);
+    TinoxRouteHandler handler = NULL;
+    for (int i = 0; i < srv->route_count; i++) {
+        if (strcmp(srv->routes[i].method, method) != 0) continue;
+        if (route_matches(srv->routes[i].path, path, &g_path_params_map)) {
+            handler = srv->routes[i].handler;
+            break;
         }
+        tinox_map_reset(&g_path_params_map);
+    }
 
-        // Extract body (after blank line)
-        char* req_body = "";
-        char* body_start = strstr(raw_req, "\r\n\r\n");
-        if (!body_start) body_start = strstr(raw_req, "\n\n");
-        if (body_start) {
-            body_start += (body_start[0] == '\r') ? 4 : 2;
-            req_body = body_start;
+    // Parse HTTP headers — normalize keys to Title-Case, track Connection header
+    tinox_map_reset(&g_req_headers_map);
+    int req_close = 0; // HTTP/1.1 default: keep-alive
+    char* hdr_line = strchr(raw_req, '\n');
+    while (hdr_line) {
+        hdr_line++;
+        if (*hdr_line == '\r' || *hdr_line == '\n' || *hdr_line == '\0') break;
+        char* colon = strchr(hdr_line, ':');
+        char* eol = strchr(hdr_line, '\n');
+        if (colon && eol && colon < eol) {
+            *colon = '\0';
+            char* hkey = hdr_line;
+            normalize_header_key(hkey);
+            char* vstart = colon + 1;
+            while (*vstart == ' ') vstart++;
+            size_t vlen = (size_t)(eol - vstart);
+            while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == ' ')) vlen--;
+            vstart[vlen] = '\0';
+            if (strcmp(hkey, "Connection") == 0 && strcmp(vstart, "close") == 0) req_close = 1;
+            tinox_map_set_borrow(&g_req_headers_map, hkey, (int64_t)vstart);
         }
+        hdr_line = eol;
+    }
 
-        // Build HttpResponse struct: [statusCode, headers_ptr, body_ptr]
-        int64_t* response = (int64_t*)tinox_alloc(3 * sizeof(int64_t));
-        char* empty_body = (char*)tinox_alloc(1);
-        empty_body[0] = '\0';
-        response[0] = handler ? 200 : 404;
-        response[1] = (int64_t)tinox_map_create();
-        response[2] = (int64_t)empty_body;
+    char* req_body = "";
+    if (hdr_line) {
+        if (*hdr_line == '\r') req_body = hdr_line + 2;
+        else if (*hdr_line == '\n') req_body = hdr_line + 1;
+    }
 
-        // Build HttpRequest struct: [method, path, body, headers, queryString, params]
-        int64_t* request = (int64_t*)tinox_alloc(6 * sizeof(int64_t));
-        request[0] = (int64_t)method;
-        request[1] = (int64_t)path;
-        request[2] = (int64_t)req_body;
-        request[3] = (int64_t)req_headers;
-        request[4] = (int64_t)query;
-        request[5] = (int64_t)path_params;
+    tinox_map_reset(&g_resp_headers_map);
+    g_response[0] = handler ? 200 : 404;
+    g_response[1] = (int64_t)&g_resp_headers_map;
+    g_response[2] = (int64_t)g_empty_body;
 
-        // Build HttpContext struct: [request_ptr, response_ptr]
-        int64_t* ctx = (int64_t*)tinox_alloc(2 * sizeof(int64_t));
-        ctx[0] = (int64_t)request;
-        ctx[1] = (int64_t)response;
+    g_request[0] = (int64_t)method;
+    g_request[1] = (int64_t)path;
+    g_request[2] = (int64_t)req_body;
+    g_request[3] = (int64_t)&g_req_headers_map;
+    g_request[4] = (int64_t)query;
+    g_request[5] = (int64_t)&g_path_params_map;
 
-        if (handler) {
-            handler((int64_t)ctx);
-        }
+    g_ctx[0] = (int64_t)g_request;
+    g_ctx[1] = (int64_t)g_response;
 
-        // Send HTTP response — serialize response headers from the map
-        char* body = (char*)response[2];
-        if (!body) body = "";
-        int64_t status = response[0];
-        void* resp_hdr_map = (void*)response[1];
-        // Build header lines from map
-        char hdr_buf[4096] = {0};
-        int hdr_off = 0;
+    if (handler) handler((int64_t)g_ctx);
+
+    char* body = (char*)g_response[2];
+    if (!body) body = "";
+    int64_t status = g_response[0];
+    void* resp_hdr_map = (void*)g_response[1];
+    char hdr_buf[4096];
+    size_t hdr_off = 0;
+    TinoxMap* rhm = (TinoxMap*)resp_hdr_map;
+    if (rhm && rhm->len > 0) {
         int64_t* hkeys = tinox_map_keys(resp_hdr_map);
         int64_t hklen = hkeys ? hkeys[-1] : 0;
         for (int64_t hi = 0; hi < hklen; hi++) {
             const char* hk = (const char*)(uintptr_t)hkeys[hi];
             const char* hv = (const char*)(uintptr_t)tinox_map_get(resp_hdr_map, hk);
             if (hk && hv) {
-                int n = snprintf(hdr_buf + hdr_off, sizeof(hdr_buf) - hdr_off,
-                    "%s: %s\r\n", hk, hv);
-                if (n > 0) hdr_off += n;
+                size_t kl = strlen(hk), vl = strlen(hv);
+                if (hdr_off + kl + vl + 4 < sizeof(hdr_buf)) {
+                    memcpy(hdr_buf + hdr_off, hk, kl); hdr_off += kl;
+                    hdr_buf[hdr_off++] = ':'; hdr_buf[hdr_off++] = ' ';
+                    memcpy(hdr_buf + hdr_off, hv, vl); hdr_off += vl;
+                    hdr_buf[hdr_off++] = '\r'; hdr_buf[hdr_off++] = '\n';
+                }
             }
         }
-        // Fallback Content-Type if not set
-        if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
-            int n = snprintf(hdr_buf + hdr_off, sizeof(hdr_buf) - hdr_off,
-                "Content-Type: application/json\r\n");
-            if (n > 0) hdr_off += n;
-        }
-        size_t body_len = strlen(body);
-        size_t resp_cap = body_len + sizeof(hdr_buf) + 256;
-        char* http_resp = (char*)malloc(resp_cap);
-        snprintf(http_resp, resp_cap,
-            "HTTP/1.1 %lld %s\r\n"
-            "%s"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "%s",
-            (long long)status, http_status_text(status),
-            hdr_buf, body_len, body);
+        free(hkeys - 1);
+    }
+    if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
+        static const char ct[] = "Content-Type: application/json\r\n";
+        memcpy(hdr_buf + hdr_off, ct, sizeof(ct) - 1);
+        hdr_off += sizeof(ct) - 1;
+    }
+    // Connection header
+    static const char conn_ka[]    = "Connection: keep-alive\r\n";
+    static const char conn_close[] = "Connection: close\r\n";
+    const char* conn_hdr     = req_close ? conn_close : conn_ka;
+    size_t      conn_hdr_len = req_close ? (sizeof(conn_close) - 1) : (sizeof(conn_ka) - 1);
 
-        httpServerSendRaw(client_fd, http_resp);
-        free(http_resp);
-        httpServerCloseConn(client_fd);
+    size_t body_len = strlen(body);
+    const char* status_text = http_status_text(status);
+    size_t st_len = strlen(status_text);
+    size_t resp_cap = 9 + 3 + 1 + st_len + 2 + hdr_off + 16 + 20 + 2 + conn_hdr_len + 2 + body_len + 1;
+    if (resp_cap > g_resp_cap) {
+        while (g_resp_cap < resp_cap) g_resp_cap *= 2;
+        g_resp_buf = (char*)realloc(g_resp_buf, g_resp_cap);
+    }
+    char* http_resp = g_resp_buf;
+    char* out = http_resp;
+    memcpy(out, "HTTP/1.1 ", 9); out += 9;
+    out[0] = '0' + (char)(status / 100);
+    out[1] = '0' + (char)(status / 10 % 10);
+    out[2] = '0' + (char)(status % 10);
+    out[3] = ' '; out += 4;
+    memcpy(out, status_text, st_len); out += st_len;
+    out[0] = '\r'; out[1] = '\n'; out += 2;
+    memcpy(out, hdr_buf, hdr_off); out += hdr_off;
+    memcpy(out, "Content-Length: ", 16); out += 16;
+    out += fast_i64_write((int64_t)body_len, out);
+    out[0] = '\r'; out[1] = '\n'; out += 2;
+    memcpy(out, conn_hdr, conn_hdr_len); out += conn_hdr_len;
+    out[0] = '\r'; out[1] = '\n'; out += 2;
+    memcpy(out, body, body_len); out += body_len;
+    size_t resp_total = (size_t)(out - http_resp);
+
+    // Send with pre-computed length (no strlen)
+    size_t sent_bytes = 0;
+    while (sent_bytes < resp_total) {
+        ssize_t n = send((int)client_fd, http_resp + sent_bytes, resp_total - sent_bytes, MSG_NOSIGNAL);
+        if (n <= 0) break;
+        sent_bytes += (size_t)n;
+    }
+    *keep_alive_out = !req_close;
+}
+
+// Per-connection state for epoll-based multi-connection handler
+#define EPOLL_MAX_CONNS 4096
+#define EPOLL_KEEP_ALIVE_MS 500  // close idle connections after 500ms
+
+typedef struct {
+    int      fd;          // -1 = unused slot
+    uint64_t last_ms;     // last activity timestamp (milliseconds)
+} EpollConnSlot;
+
+static __thread EpollConnSlot g_epoll_slots[EPOLL_MAX_CONNS];
+static __thread int           g_epoll_nconns = 0;  // number of active client connections
+
+static uint64_t epoll_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+static void epoll_slot_add(int fd) {
+    int idx = fd % EPOLL_MAX_CONNS;
+    if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
+    g_epoll_slots[idx].fd = fd;
+    g_epoll_slots[idx].last_ms = epoll_now_ms();
+}
+
+static void epoll_slot_remove(int fd) {
+    int idx = fd % EPOLL_MAX_CONNS;
+    if (g_epoll_slots[idx].fd >= 0) g_epoll_nconns--;
+    g_epoll_slots[idx].fd = -1;
+}
+
+static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
+    thread_local_init();
+
+    // Initialize slot table
+    for (int i = 0; i < EPOLL_MAX_CONNS; i++) g_epoll_slots[i].fd = -1;
+
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) { perror("epoll_create1"); return; }
+
+    // Register server socket for incoming connections
+    struct epoll_event ev;
+    ev.events  = EPOLLIN;
+    ev.data.fd = (int)server_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, (int)server_fd, &ev);
+
+    struct epoll_event events[64];
+
+    while (1) {
+        int n = epoll_wait(epfd, events, 64, 50); // 50ms timeout for stale-connection scan
+
+        uint64_t now_ms = epoll_now_ms();
+
+        for (int i = 0; i < n; i++) {
+            int fd = events[i].data.fd;
+
+            if (fd == (int)server_fd) {
+                // Accept one connection per epoll event (level-triggered: fires again if more pending)
+                struct sockaddr_in client = {0};
+                socklen_t len = sizeof(client);
+                int cfd = accept(fd, (struct sockaddr*)&client, &len);
+                if (cfd >= 0) {
+                    int one = 1;
+                    setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+                    struct timeval tv = { .tv_sec = 5 }; // zombie guard
+                    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                    struct epoll_event cev;
+                    cev.events  = EPOLLIN;
+                    cev.data.fd = cfd;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev);
+                    epoll_slot_add(cfd);
+                }
+            } else {
+                // Handle one request on this client connection
+                int keep_alive = 0;
+                tinox_handle_one(srv, (int64_t)fd, &keep_alive);
+                if (keep_alive) {
+                    g_epoll_slots[fd % EPOLL_MAX_CONNS].last_ms = now_ms;
+                } else {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    epoll_slot_remove(fd);
+                    close(fd);
+                }
+            }
+        }
+
+        // Scan for stale connections (only when we have active clients)
+        if (g_epoll_nconns > 0) {
+            for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
+                if (g_epoll_slots[i].fd < 0) continue;
+                if (now_ms - g_epoll_slots[i].last_ms >= EPOLL_KEEP_ALIVE_MS) {
+                    int fd = g_epoll_slots[i].fd;
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    epoll_slot_remove(fd);
+                    close(fd);
+                }
+            }
+        }
+    }
+}
+
+struct TinoxWorkerArgs { TinoxHttpServer* srv; int64_t port; };
+
+static void* tinox_worker_run(void* arg) {
+    struct TinoxWorkerArgs* wa = (struct TinoxWorkerArgs*)arg;
+    // Each worker creates its own SO_REUSEPORT socket for zero-contention accept()
+    int64_t server_fd = httpServerCreate(wa->port);
+    if (server_fd >= 0) tinox_handle_connections(wa->srv, server_fd);
+    return NULL;
+}
+
+void tinox_HttpServer_listen(int64_t* server) {
+    signal(SIGPIPE, SIG_IGN); // writev/send to closed connection should not kill process
+    TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    int64_t port = srv->port;
+    fprintf(stderr, "HttpServer listening on port %lld\n", (long long)port);
+
+    int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    int nthreads = ncpus > 0 ? ncpus : 8; // one thread per CPU, each handles multiple conns via epoll
+
+    static struct TinoxWorkerArgs worker_args;
+    worker_args.srv  = srv;
+    worker_args.port = port;
+
+    for (int i = 1; i < nthreads; i++) {
+        pthread_t tid;
+        pthread_create(&tid, NULL, tinox_worker_run, &worker_args);
+        pthread_detach(tid);
     }
 
+    // Main thread creates its own SO_REUSEPORT socket
+    int64_t server_fd = httpServerCreate(port);
+    if (server_fd < 0) { fprintf(stderr, "HttpServer: failed to bind\n"); return; }
+    tinox_handle_connections(srv, server_fd);
     httpServerClose(server_fd);
 }
 
 // ---- JSON ----
 
-#define JSON_NULL   0
-#define JSON_BOOL   1
-#define JSON_INT    2
-#define JSON_FLOAT  3
-#define JSON_STRING 4
-#define JSON_ARRAY  5
-#define JSON_OBJECT 6
+#define JSON_NULL      0
+#define JSON_BOOL      1
+#define JSON_INT       2
+#define JSON_FLOAT     3
+#define JSON_STRING    4
+#define JSON_ARRAY     5
+#define JSON_OBJECT    6
+#define JSON_INT_ARRAY 7  // fast-path: arr_val points to int64 values, arr_val[-1]=len
+
+// Arena allocator: all JsonValue nodes + string data for one parse live here.
+// Reset per jsonParse() call — valid until the next call.
+typedef struct { char* buf; size_t used; size_t cap; } JsonArena;
+static __thread JsonArena g_json_arena;
+
+static void* json_arena_alloc(size_t size) {
+    size = (size + 7) & ~(size_t)7;
+    if (g_json_arena.used + size > g_json_arena.cap) {
+        size_t nc = g_json_arena.cap ? g_json_arena.cap * 2 : 65536;
+        while (nc < g_json_arena.used + size) nc *= 2;
+        g_json_arena.buf = (char*)realloc(g_json_arena.buf, nc);
+        g_json_arena.cap = nc;
+    }
+    void* p = g_json_arena.buf + g_json_arena.used;
+    g_json_arena.used += size;
+    return p;
+}
 
 typedef struct TinoxJsonValue {
     int64_t type;
@@ -1020,23 +1339,69 @@ typedef struct TinoxJsonValue {
 } TinoxJsonValue;
 
 static TinoxJsonValue* json_alloc(int64_t type) {
-    TinoxJsonValue* v = (TinoxJsonValue*)malloc(sizeof(TinoxJsonValue));
-    memset(v, 0, sizeof(TinoxJsonValue));
+    TinoxJsonValue* v = (TinoxJsonValue*)json_arena_alloc(sizeof(TinoxJsonValue));
     v->type = type;
     return v;
 }
 
-static const char* json_skip_ws(const char* p) {
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-    return p;
+#define json_skip_ws(p) ({ const char* _p = (p); while (*_p == ' ' || *_p == '\t' || *_p == '\r' || *_p == '\n') _p++; _p; })
+
+// JSON-object map: all memory from arena, keys not strdup'd (no leaks on arena reset)
+static void* json_obj_map_create(void) {
+    TinoxMap* m = (TinoxMap*)json_arena_alloc(sizeof(TinoxMap));
+    m->cap = 4;
+    m->len = 0;
+    m->entries = (TinoxMapEntry*)json_arena_alloc(4 * sizeof(TinoxMapEntry));
+    memset(m->entries, 0, 4 * sizeof(TinoxMapEntry));
+    m->borrowed_keys = 1;
+    return m;
 }
+
+static void json_obj_map_set(void* map, const char* key, int64_t value) {
+    TinoxMap* m = (TinoxMap*)map;
+    if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM) {
+        size_t new_cap = m->cap * 2;
+        TinoxMapEntry* ne = (TinoxMapEntry*)json_arena_alloc(new_cap * sizeof(TinoxMapEntry));
+        memset(ne, 0, new_cap * sizeof(TinoxMapEntry));
+        for (size_t i = 0; i < m->cap; i++) {
+            char* k = m->entries[i].key;
+            if (!k || k == (char*)1) continue;
+            size_t idx = map_hash(k, new_cap);
+            while (ne[idx].key) idx = (idx + 1) & (new_cap - 1);
+            ne[idx] = m->entries[i];
+        }
+        m->entries = ne;
+        m->cap = new_cap;
+    }
+    size_t idx = map_hash(key, m->cap);
+    while (1) {
+        char* k = m->entries[idx].key;
+        if (!k || k == (char*)1) {
+            m->entries[idx].key   = (char*)key; // arena key, no strdup
+            m->entries[idx].value = value;
+            m->len++;
+            return;
+        }
+        if (strcmp(k, key) == 0) { m->entries[idx].value = value; return; }
+        idx = (idx + 1) & (m->cap - 1);
+    }
+}
+
 
 static TinoxJsonValue* json_parse_value(const char** p);
 
 static char* json_parse_string_raw(const char** p) {
     (*p)++; // skip '"'
-    size_t cap = 64, len = 0;
-    char* buf = (char*)malloc(cap);
+    // Pre-scan to get exact length — avoids malloc+realloc
+    const char* scan = *p;
+    size_t max_len = 0;
+    while (*scan && *scan != '"') {
+        if (*scan == '\\') scan++;
+        scan++;
+        max_len++;
+    }
+    char* buf = (char*)json_arena_alloc(max_len + 1);
+    size_t len = 0;
     while (**p && **p != '"') {
         if (**p == '\\') {
             (*p)++;
@@ -1052,7 +1417,6 @@ static char* json_parse_string_raw(const char** p) {
             buf[len++] = **p;
         }
         (*p)++;
-        if (len + 2 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
     }
     if (**p == '"') (*p)++;
     buf[len] = '\0';
@@ -1070,7 +1434,7 @@ static TinoxJsonValue* json_parse_value(const char** p) {
     }
     if (**p == '{') {
         TinoxJsonValue* v = json_alloc(JSON_OBJECT);
-        v->obj_val = tinox_map_create();
+        v->obj_val = json_obj_map_create(); // arena-allocated, no strdup for keys
         (*p)++; // skip '{'
         *p = json_skip_ws(*p);
         while (**p && **p != '}') {
@@ -1080,8 +1444,7 @@ static TinoxJsonValue* json_parse_value(const char** p) {
             *p = json_skip_ws(*p);
             if (**p == ':') (*p)++;
             TinoxJsonValue* val = json_parse_value(p);
-            tinox_map_set(v->obj_val, key, (int64_t)(uintptr_t)val);
-            free(key);
+            json_obj_map_set(v->obj_val, key, (int64_t)(uintptr_t)val);
             *p = json_skip_ws(*p);
             if (**p == ',') (*p)++;
         }
@@ -1089,13 +1452,64 @@ static TinoxJsonValue* json_parse_value(const char** p) {
         return v;
     }
     if (**p == '[') {
-        TinoxJsonValue* v = json_alloc(JSON_ARRAY);
         (*p)++; // skip '['
-        // Build as tinox array
+        *p = json_skip_ws(*p);
+        // Single-pass fast-path: parse integers directly with malloc+doubling.
+        // If a non-integer is found, free and fall through to generic parser.
+        if (**p == ']') {
+            (*p)++;
+            TinoxJsonValue* v = json_alloc(JSON_INT_ARRAY);
+            int64_t* raw = (int64_t*)json_arena_alloc(sizeof(int64_t));
+            raw[0] = 0;
+            v->arr_val = raw + 1;
+            return v;
+        }
+        const char* saved_p = *p;
+        // Stack buffer covers typical arrays without any malloc
+        int64_t stack_buf[256];
+        size_t fast_cap = 256, fast_len = 0;
+        int64_t* fast_arr = stack_buf;
+        int64_t* heap_buf = NULL;
+        int is_int_array = 1;
+        while (**p && **p != ']') {
+            *p = json_skip_ws(*p);
+            int neg = (**p == '-');
+            if (neg) (*p)++;
+            if (**p < '0' || **p > '9') { is_int_array = 0; break; }
+            int64_t val = 0;
+            while (**p >= '0' && **p <= '9') val = val * 10 + (*(*p)++ - '0');
+            *p = json_skip_ws(*p);
+            if (**p != ',' && **p != ']') { is_int_array = 0; break; }
+            if (fast_len >= fast_cap) {
+                fast_cap *= 2;
+                if (!heap_buf) {
+                    heap_buf = (int64_t*)malloc(fast_cap * sizeof(int64_t));
+                    memcpy(heap_buf, stack_buf, fast_len * sizeof(int64_t));
+                } else {
+                    heap_buf = (int64_t*)realloc(heap_buf, fast_cap * sizeof(int64_t));
+                }
+                fast_arr = heap_buf;
+            }
+            fast_arr[fast_len++] = neg ? -val : val;
+            if (**p == ',') (*p)++;
+        }
+        if (is_int_array && **p == ']') {
+            (*p)++;
+            TinoxJsonValue* v = json_alloc(JSON_INT_ARRAY);
+            int64_t* raw = (int64_t*)json_arena_alloc((fast_len + 1) * sizeof(int64_t));
+            raw[0] = (int64_t)fast_len;
+            memcpy(raw + 1, fast_arr, fast_len * sizeof(int64_t));
+            if (heap_buf) free(heap_buf);
+            v->arr_val = raw + 1;
+            return v;
+        }
+        if (heap_buf) free(heap_buf);
+        *p = saved_p; // restore position for generic fallback
+        // Generic fallback for mixed-type arrays
+        TinoxJsonValue* v = json_alloc(JSON_ARRAY);
         size_t cap = 8, len = 0;
         int64_t* raw = (int64_t*)malloc((cap + 1) * sizeof(int64_t));
         int64_t* arr = raw + 1;
-        *p = json_skip_ws(*p);
         while (**p && **p != ']') {
             TinoxJsonValue* elem = json_parse_value(p);
             if (len >= cap) {
@@ -1135,17 +1549,25 @@ static TinoxJsonValue* json_parse_value(const char** p) {
         return v;
     } else {
         TinoxJsonValue* v = json_alloc(JSON_INT);
-        v->int_val = atoll(start);
+        // Inline fast int parse — avoids strtol machinery of atoll
+        int64_t val = 0;
+        const char* s = start;
+        int neg = (*s == '-');
+        if (neg) s++;
+        while (*s >= '0' && *s <= '9') val = val * 10 + (*s++ - '0');
+        v->int_val = neg ? -val : val;
         return v;
     }
 }
 
 int64_t* jsonParse(const char* text) {
     if (!text) return (int64_t*)json_alloc(JSON_NULL);
+    g_json_arena.used = 0;  // reset arena — previous parse tree is invalidated
     const char* p = text;
     return (int64_t*)json_parse_value(&p);
 }
 
+static size_t fast_i64_write(int64_t val, char* buf);
 static void json_stringify_value(TinoxJsonValue* v, char** out, size_t* len, size_t* cap);
 
 static void json_append(char** out, size_t* len, size_t* cap, const char* s, size_t slen) {
@@ -1179,6 +1601,20 @@ static void json_stringify_value(TinoxJsonValue* v, char** out, size_t* len, siz
         case JSON_INT:    n = snprintf(buf, sizeof(buf), "%lld", (long long)v->int_val); json_append(out, len, cap, buf, n); break;
         case JSON_FLOAT:  n = snprintf(buf, sizeof(buf), "%g",   v->float_val); json_append(out, len, cap, buf, n); break;
         case JSON_STRING: json_append_str(out, len, cap, v->str_val ? v->str_val : ""); break;
+        case JSON_INT_ARRAY: {
+            json_append(out, len, cap, "[", 1);
+            if (v->arr_val) {
+                int64_t alen = v->arr_val[-1];
+                char nbuf[24];
+                for (int64_t i = 0; i < alen; i++) {
+                    if (i > 0) json_append(out, len, cap, ",", 1);
+                    size_t nlen = fast_i64_write(v->arr_val[i], nbuf);
+                    json_append(out, len, cap, nbuf, nlen);
+                }
+            }
+            json_append(out, len, cap, "]", 1);
+            break;
+        }
         case JSON_ARRAY: {
             json_append(out, len, cap, "[", 1);
             if (v->arr_val) {
@@ -1268,6 +1704,270 @@ int64_t jsonIsFloat(int64_t* value)  { return (value && ((TinoxJsonValue*)value)
 int64_t jsonIsBool(int64_t* value)   { return (value && ((TinoxJsonValue*)value)->type == JSON_BOOL)   ? 1 : 0; }
 int64_t jsonIsObject(int64_t* value) { return (value && ((TinoxJsonValue*)value)->type == JSON_OBJECT) ? 1 : 0; }
 int64_t jsonIsArray(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_ARRAY)  ? 1 : 0; }
+
+int64_t* jsonGetField(int64_t* obj, const char* key) {
+    TinoxJsonValue* v = (TinoxJsonValue*)obj;
+    if (!v || v->type != JSON_OBJECT || !v->obj_val) return NULL;
+    int64_t vptr = tinox_map_get(v->obj_val, key);
+    return (int64_t*)(uintptr_t)vptr;
+}
+
+static __thread int64_t* g_jia_buf = NULL;
+static __thread int64_t  g_jia_cap = 0;
+
+static int64_t* jia_ensure(int64_t need) {
+    if (need + 1 > g_jia_cap) {
+        int64_t nc = g_jia_cap ? g_jia_cap * 2 : 256;
+        while (nc < need + 1) nc *= 2;
+        g_jia_buf = (int64_t*)realloc(g_jia_buf, (size_t)nc * sizeof(int64_t));
+        g_jia_cap = nc;
+    }
+    return g_jia_buf;
+}
+
+int64_t* jsonIntArrayFromJson(int64_t* json_array) {
+    TinoxJsonValue* v = (TinoxJsonValue*)json_array;
+    if (!v) { int64_t* b = jia_ensure(0); b[0] = 0; return b + 1; }
+    // Fast-path: pure int array — just alias the arena data directly
+    if (v->type == JSON_INT_ARRAY) {
+        int64_t len = v->arr_val ? v->arr_val[-1] : 0;
+        int64_t* buf = jia_ensure(len);
+        buf[0] = len;
+        if (len > 0) memcpy(buf + 1, v->arr_val, (size_t)len * sizeof(int64_t));
+        return buf + 1;
+    }
+    // Generic JSON_ARRAY path
+    int64_t len = (v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    int64_t* buf = jia_ensure(len);
+    buf[0] = len;
+    for (int64_t i = 0; i < len; i++) {
+        TinoxJsonValue* elem = (TinoxJsonValue*)(uintptr_t)v->arr_val[i];
+        if (elem) {
+            if      (elem->type == JSON_INT)   buf[i + 1] = elem->int_val;
+            else if (elem->type == JSON_FLOAT) buf[i + 1] = (int64_t)elem->float_val;
+            else                               buf[i + 1] = 0;
+        } else {
+            buf[i + 1] = 0;
+        }
+    }
+    return buf + 1;
+}
+
+static const char g_digit_pairs[201] =
+    "00010203040506070809"
+    "10111213141516171819"
+    "20212223242526272829"
+    "30313233343536373839"
+    "40414243444546474849"
+    "50515253545556575859"
+    "60616263646566676869"
+    "70717273747576777879"
+    "80818283848586878889"
+    "90919293949596979899";
+
+__attribute__((noinline)) static size_t fast_i64_write(int64_t val, char* buf) {
+    if ((uint64_t)val < 10) { buf[0] = '0' + (char)val; return 1; }
+    if ((uint64_t)val < 100) {
+        int d = (int)val * 2;
+        buf[0] = g_digit_pairs[d]; buf[1] = g_digit_pairs[d + 1];
+        return 2;
+    }
+    char tmp[21];
+    int neg = val < 0;
+    uint64_t uval = neg ? -(uint64_t)val : (uint64_t)val;
+    int n = 0;
+    while (uval >= 100) {
+        int d = (int)(uval % 100) * 2;
+        tmp[n++] = g_digit_pairs[d + 1];
+        tmp[n++] = g_digit_pairs[d];
+        uval /= 100;
+    }
+    if (uval >= 10) {
+        int d = (int)uval * 2;
+        tmp[n++] = g_digit_pairs[d + 1];
+        tmp[n++] = g_digit_pairs[d];
+    } else {
+        tmp[n++] = '0' + (int)uval;
+    }
+    if (neg) tmp[n++] = '-';
+    for (int i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return (size_t)n;
+}
+
+static __thread char*  g_wrap_buf = NULL;
+static __thread size_t g_wrap_cap = 0;
+
+// Builds {"key":[val,...]} into a thread-local buffer — zero malloc per call
+char* jsonIntArrayWrap(const char* key, int64_t* arr) {
+    int64_t len = arr ? arr[-1] : 0;
+    size_t klen = strlen(key);
+    size_t need = 5 + klen + (size_t)len * 22 + 3;
+    if (need > g_wrap_cap) {
+        size_t nc = g_wrap_cap ? g_wrap_cap * 2 : 4096;
+        while (nc < need) nc *= 2;
+        g_wrap_buf = (char*)realloc(g_wrap_buf, nc);
+        g_wrap_cap = nc;
+    }
+    char* out = g_wrap_buf;
+    size_t pos = 0;
+    out[pos++] = '{';
+    out[pos++] = '"';
+    memcpy(out + pos, key, klen); pos += klen;
+    out[pos++] = '"';
+    out[pos++] = ':';
+    out[pos++] = '[';
+    if (arr) {
+        for (int64_t i = 0; i < len; i++) {
+            if (i > 0) out[pos++] = ',';
+            pos += fast_i64_write(arr[i], out + pos);
+        }
+    }
+    out[pos++] = ']';
+    out[pos++] = '}';
+    out[pos] = '\0';
+    return out;
+}
+
+char* jsonIntArrayToString(int64_t* arr) {
+    if (!arr) return strdup("[]");
+    int64_t len = arr[-1];
+    size_t cap = (size_t)(len * 21 + 4);
+    if (cap < 4) cap = 4;
+    char* out = (char*)malloc(cap);
+    size_t pos = 0;
+    out[pos++] = '[';
+    for (int64_t i = 0; i < len; i++) {
+        if (i > 0) out[pos++] = ',';
+        pos += fast_i64_write(arr[i], out + pos);
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    return out;
+}
+
+// ---- JsonBuilder — fast @JsonSerializable serialization ----
+
+typedef struct {
+    char*  buf;
+    size_t len;
+    size_t cap;
+    int    first;
+} JsonBuilder;
+
+static void jb_grow(JsonBuilder* b, size_t need) {
+    if (b->len + need <= b->cap) return;
+    while (b->cap < b->len + need) b->cap *= 2;
+    b->buf = (char*)realloc(b->buf, b->cap);
+}
+
+static void jb_key(JsonBuilder* b, const char* key) {
+    size_t kl = strlen(key);
+    jb_grow(b, kl + 4); // comma + quote + key + quote + colon
+    if (!b->first) b->buf[b->len++] = ',';
+    b->first = 0;
+    b->buf[b->len++] = '"';
+    memcpy(b->buf + b->len, key, kl); b->len += kl;
+    b->buf[b->len++] = '"';
+    b->buf[b->len++] = ':';
+}
+
+char* jsonBuilderCreate(void) {
+    JsonBuilder* b = (JsonBuilder*)malloc(sizeof(JsonBuilder));
+    b->cap = 256;
+    b->buf = (char*)malloc(b->cap);
+    b->len = 0;
+    b->first = 1;
+    b->buf[b->len++] = '{';
+    return (char*)b;
+}
+
+void jsonBuilderAddInt(char* handle, const char* key, int64_t val) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    jb_grow(b, 21);
+    b->len += fast_i64_write(val, b->buf + b->len);
+}
+
+void jsonBuilderAddFloat(char* handle, const char* key, double val) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    char tmp[32];
+    int n = snprintf(tmp, sizeof(tmp), "%g", val);
+    jb_grow(b, (size_t)n);
+    memcpy(b->buf + b->len, tmp, (size_t)n); b->len += (size_t)n;
+}
+
+void jsonBuilderAddBool(char* handle, const char* key, int val) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    if (val) { jb_grow(b, 4); memcpy(b->buf + b->len, "true",  4); b->len += 4; }
+    else      { jb_grow(b, 5); memcpy(b->buf + b->len, "false", 5); b->len += 5; }
+}
+
+void jsonBuilderAddString(char* handle, const char* key, const char* val) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    size_t vl = val ? strlen(val) : 0;
+    jb_grow(b, vl * 2 + 2); // worst-case: every char escaped
+    b->buf[b->len++] = '"';
+    if (val) {
+        for (size_t i = 0; i < vl; i++) {
+            unsigned char c = (unsigned char)val[i];
+            if      (c == '"')  { b->buf[b->len++] = '\\'; b->buf[b->len++] = '"'; }
+            else if (c == '\\') { b->buf[b->len++] = '\\'; b->buf[b->len++] = '\\'; }
+            else if (c == '\n') { b->buf[b->len++] = '\\'; b->buf[b->len++] = 'n'; }
+            else if (c == '\r') { b->buf[b->len++] = '\\'; b->buf[b->len++] = 'r'; }
+            else if (c == '\t') { b->buf[b->len++] = '\\'; b->buf[b->len++] = 't'; }
+            else                { b->buf[b->len++] = (char)c; }
+        }
+    }
+    b->buf[b->len++] = '"';
+}
+
+void jsonBuilderAddIntList(char* handle, const char* key, int64_t* arr) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    int64_t len = arr ? arr[-1] : 0;
+    jb_grow(b, (size_t)(len * 21 + 4));
+    b->buf[b->len++] = '[';
+    for (int64_t i = 0; i < len; i++) {
+        if (i > 0) b->buf[b->len++] = ',';
+        b->len += fast_i64_write(arr[i], b->buf + b->len);
+    }
+    b->buf[b->len++] = ']';
+}
+
+char* jsonBuilderFinish(char* handle) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_grow(b, 2);
+    b->buf[b->len++] = '}';
+    b->buf[b->len] = '\0';
+    char* result = b->buf;
+    free(b); // free the builder header only; result owns the buffer
+    return result;
+}
+
+// ---- fromJson field helpers — avoid two runtime calls per field ----
+
+int64_t jsonGetIntField(int64_t* obj, const char* key) {
+    return jsonGetInt(jsonGetField(obj, key));
+}
+
+double jsonGetFloatField(int64_t* obj, const char* key) {
+    return jsonGetFloat(jsonGetField(obj, key));
+}
+
+int jsonGetBoolField(int64_t* obj, const char* key) {
+    return (int)jsonGetBool(jsonGetField(obj, key));
+}
+
+char* jsonGetStringField(int64_t* obj, const char* key) {
+    return jsonGetString(jsonGetField(obj, key));
+}
+
+int64_t* jsonGetIntListField(int64_t* obj, const char* key) {
+    return jsonIntArrayFromJson(jsonGetField(obj, key));
+}
 
 // ---- Config (@Config annotation) ----
 // Reads key=value pairs from application.properties in the current directory.

@@ -61,9 +61,10 @@ fn class_to_info(c: &Class) -> ClassInfo {
             let params: Vec<String> = m.params.iter()
                 .map(|p| format!("{}: {}", p.name, type_str(&p.param_type)))
                 .collect();
+            let kw = if m.static_ { "fnc" } else { "fn" };
             MethodInfo {
                 name: m.name.clone(),
-                signature: format!("fn {}({}) -> {}", m.name, params.join(", "), type_str(&m.ret_type)),
+                signature: format!("{} {}({}) -> {}", kw, m.name, params.join(", "), type_str(&m.ret_type)),
                 doc: m.doc.clone(),
             }
         }).collect(),
@@ -862,7 +863,9 @@ fn extract_dot_chain(text: &str) -> Option<Vec<String>> {
 
 /// Resolves the type of a dot-chain like `["ctx"]` or `["ctx", "response"]`.
 fn resolve_chain_type(source: &SourceFile, registry: &TypeRegistry, chain: &[String]) -> Option<String> {
-    let first_type = resolve_var_type(source, &chain[0])?;
+    // Try variable lookup first; fall back to class name itself for static access (e.g. `Json.`)
+    let first_type = resolve_var_type(source, &chain[0])
+        .or_else(|| if registry.contains_key(&chain[0]) { Some(chain[0].clone()) } else { None })?;
     let mut current = first_type;
     for field_name in &chain[1..] {
         let info = registry.get(&current)?;

@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use tinox_common::Error;
 use tinox_lexer::Lexer;
 use tinox_parser::{ast::SourceFile, Parser};
-use tinox_typecheck::typecheck;
+use tinox_typecheck::{typecheck_with_prelude};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -72,6 +72,7 @@ struct Backend {
     docs: DashMap<Url, String>,
     asts: DashMap<Url, SourceFile>,
     stdlib_registry: TypeRegistry,
+    stdlib_asts: HashMap<String, SourceFile>,
 }
 
 impl Backend {
@@ -83,11 +84,21 @@ impl Backend {
                 stdlib_registry.entry(name).or_insert(info);
             }
         }
+        // Parse embedded stdlib into ASTs so typecheck_with_prelude can resolve imports.
+        let mut stdlib_asts = HashMap::new();
+        for (name, src) in EMBEDDED_STDLIB {
+            if let Ok(tokens) = Lexer::new(src).tokenize() {
+                if let Ok(ast) = Parser::new(tokens).parse() {
+                    stdlib_asts.insert(name.to_string(), ast);
+                }
+            }
+        }
         Self {
             client,
             docs: DashMap::new(),
             asts: DashMap::new(),
             stdlib_registry,
+            stdlib_asts,
         }
     }
 }
@@ -158,7 +169,22 @@ fn load_stdlib(path: &Path) -> TypeRegistry {
 
 impl Backend {
     async fn update(&self, uri: Url, text: String) {
-        let diags = compile(&text, |ast| {
+        // Quick pre-parse to extract import names for stdlib prelude resolution.
+        let import_names = if let Ok(tokens) = Lexer::new(&text).tokenize() {
+            if let Ok(ast) = Parser::new(tokens).parse() {
+                module_names_from_imports(&ast)
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        let preludes: Vec<&SourceFile> = import_names
+            .iter()
+            .filter_map(|name| self.stdlib_asts.get(name.as_str()))
+            .collect();
+
+        let diags = compile(&text, &preludes, |ast| {
             self.asts.insert(uri.clone(), ast);
         });
         self.docs.insert(uri.clone(), text);
@@ -180,7 +206,7 @@ fn err_to_diag(e: Error) -> Diagnostic {
 }
 
 // Lex → parse → typecheck; calls on_ast if parsing succeeded; returns diagnostics.
-fn compile(src: &str, on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
+fn compile(src: &str, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
     let tokens = match Lexer::new(src).tokenize() {
         Ok(t) => t,
         Err(errs) => return errs.into_iter().map(err_to_diag).collect(),
@@ -191,7 +217,7 @@ fn compile(src: &str, on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
         Err(bag) => return bag.errors.into_iter().map(err_to_diag).collect(),
     };
 
-    let diags = match typecheck(&ast) {
+    let diags = match typecheck_with_prelude(&ast, preludes) {
         Ok(_) => vec![],
         Err(bag) => bag.errors.into_iter().map(err_to_diag).collect(),
     };

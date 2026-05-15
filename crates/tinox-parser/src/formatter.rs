@@ -82,7 +82,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             if ann.args.is_empty() {
                 out.push_str(&format!("{}@{}\n", self.ind(), ann.name));
             } else {
-                let args: Vec<String> = ann.args.iter().map(fmt_literal).collect();
+                let args: Vec<String> = ann.args.iter().map(fmt_annotation_arg).collect();
                 out.push_str(&format!("{}@{}({})\n", self.ind(), ann.name, args.join(", ")));
             }
         }
@@ -574,6 +574,13 @@ fn fmt_visibility(vis: &Visibility) -> &'static str {
         Visibility::Private => "private ",
         Visibility::Protected => "protected ",
         Visibility::Package => "",
+    }
+}
+
+fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
+    match arg {
+        AnnotationArg::Literal(lit) => fmt_literal(lit),
+        AnnotationArg::EnumValue(type_name, variant) => format!("{}.{}", type_name, variant),
     }
 }
 

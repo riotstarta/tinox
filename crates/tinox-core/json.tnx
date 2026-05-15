@@ -60,40 +60,49 @@ namespace tinox.core.json
     extern fn jsonIsBool(value: JsonValue) -> Bool;
     extern fn jsonIsObject(value: JsonValue) -> Bool;
     extern fn jsonIsArray(value: JsonValue) -> Bool;
+    extern fn jsonGetField(obj: JsonValue, key: String) -> JsonValue;
+    extern fn jsonIntArrayFromJson(arr: JsonValue) -> List<Int64>;
+    extern fn jsonIntArrayToString(arr: List<Int64>) -> String;
+    extern fn jsonIntArrayWrap(key: String, arr: List<Int64>) -> String;
 
     class Json
     {
-        fn parse(text: String) -> JsonValue
+        fnc parse(text: String) -> JsonValue
         {
             return jsonParse(text);
         }
 
-        fn stringify(value: JsonValue) -> String
+        fnc stringify(value: JsonValue) -> String
         {
             return jsonStringify(value);
         }
 
-        /**
-         * Serializes a @JsonSerializable object to a JSON string.
-         * Calls the compiler-generated toJson() method on the object.
-         *
-         * Usage:
-         *   let json: String = Json::serialize(user);
-         */
-        fn serialize<T>(obj: T) -> String
+        fnc getField(obj: JsonValue, key: String) -> JsonValue
+        {
+            return jsonGetField(obj, key);
+        }
+
+        fnc intArrayFromJson(arr: JsonValue) -> List<Int64>
+        {
+            return jsonIntArrayFromJson(arr);
+        }
+
+        fnc intArrayToString(arr: List<Int64>) -> String
+        {
+            return jsonIntArrayToString(arr);
+        }
+
+        fnc intArrayWrap(key: String, arr: List<Int64>) -> String
+        {
+            return jsonIntArrayWrap(key, arr);
+        }
+
+        fnc serialize<T>(obj: T) -> String
         {
             return obj.toJson();
         }
 
-        /**
-         * Deserializes a JSON string into an object of type T.
-         * T must be annotated with @JsonSerializable.
-         * Calls the compiler-generated T::fromJson(JsonValue) method.
-         *
-         * Usage:
-         *   let user: User = Json::deserialize<User>(json);
-         */
-        fn deserialize<T>(text: String) -> T
+        fnc deserialize<T>(text: String) -> T
         {
             let value: JsonValue = jsonParse(text);
             return T::fromJson(value);
@@ -155,6 +164,11 @@ namespace tinox.core.json
         fn isArray() -> Bool
         {
             return jsonIsArray(this);
+        }
+
+        fn getField(key: String) -> JsonValue
+        {
+            return jsonGetField(this, key);
         }
     }
 }
