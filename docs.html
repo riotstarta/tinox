@@ -611,10 +611,11 @@
         nativen Binary kompiliert. Kein Interpreter, kein JIT.</p>
       </div>
       <div class="card">
-        <div class="icon">📦</div>
-        <h4>Kein GC</h4>
-        <p>Es gibt keinen Garbage Collector. Speicher wird manuell verwaltet.
-        Das vermeidet GC-Pausen bei hoher Last.</p>
+        <div class="icon">♻️</div>
+        <h4>Boehm GC</h4>
+        <p>Tinox verwendet den <strong>Boehm Garbage Collector</strong> – einen konservativen,
+        thread-sicheren GC. Speicher wird automatisch freigegeben; der Entwickler
+        muss nichts manuell verwalten.</p>
       </div>
       <div class="card">
         <div class="icon">🧵</div>
@@ -797,8 +798,15 @@
 
     <h3>Speicherverwaltung</h3>
     <p>
-      Kein Garbage Collector. Tinox verwendet <code>malloc</code>/<code>free</code>
-      direkt. Für häufige Operationen (Sort, JSON-Parsing) werden
+      Tinox verwendet den <strong>Boehm Garbage Collector</strong> (libgc) für automatisches
+      Speichermanagement. Der GC ist konservativ: Er scannt Stack und Register nach
+      Zeigern und gibt nicht mehr erreichbare Objekte frei – ohne dass der Entwickler
+      explizit <code>free()</code> aufrufen muss. Durch <code>GC_THREADS</code> ist er
+      vollständig thread-sicher und funktioniert korrekt mit dem epoll-basierten
+      HTTP-Server-Thread-Pool.
+    </p>
+    <p>
+      Für häufige Operationen (Sort, JSON-Parsing) werden
       <strong>thread-lokale statische Puffer</strong> verwendet, die einmal alloziert
       und dann wiederverwendet werden – das eliminiert den malloc-Overhead im
       Request-kritischen Pfad komplett.
@@ -1370,7 +1378,7 @@ epoll_fd = epoll_create1(0);
         <h4>✓ Vorteile</h4>
         <ul>
           <li>Sehr geringe Latenz und hoher Durchsatz dank LLVM + epoll</li>
-          <li>Kein GC – keine unvorhersehbaren Pausen unter Last</li>
+          <li>Boehm GC – automatisches Speichermanagement ohne Borrow-Checker-Komplexität</li>
           <li>Geringe Startup-Zeit (&lt;1ms) – ideal für Serverless/Lambda</li>
           <li>Java-ähnliche Syntax – niedrige Einstiegshürde für Backend-Entwickler</li>
           <li>Annotation-gesteuertes REST: minimaler Boilerplate</li>
@@ -1384,12 +1392,12 @@ epoll_fd = epoll_create1(0);
       <div class="cons">
         <h4>✗ Nachteile</h4>
         <ul>
-          <li>Keine automatische Speicherverwaltung – manuelle Speicherfehler möglich</li>
+          <li>Konservativer GC (Boehm) – kann bei Pointer-intensiven Workloads etwas langsamer sein als manuelles Management</li>
           <li>Kleines Ökosystem – keine reifen Third-Party-Bibliotheken</li>
           <li>Keine standardisierte Spezifikation – Sprache ändert sich schnell</li>
           <li>Compiler-Fehler noch nicht so hilfreich wie bei Rust oder Go</li>
           <li>Kein vollständiges Modulsystem mit echter Trennung zwischen Projekten</li>
-          <li>Keine Borrow-Checker-Sicherheit – manuelles Ressource-Management nötig</li>
+          <li>Keine Borrow-Checker-Sicherheit – Use-after-free theoretisch möglich (GC verhindert aber Leaks)</li>
           <li>Lange Compile-Zeiten durch LLVM (bei großen Projekten)</li>
           <li>Keine Windows-Unterstützung (epoll ist Linux-spezifisch)</li>
           <li>Noch keine stabilen Releases – pre-1.0</li>
@@ -1409,7 +1417,7 @@ epoll_fd = epoll_create1(0);
         <tr><td>Java / Kotlin</td><td>GC</td><td>Hoch (kein UAF)</td><td>GC-Pausen</td></tr>
         <tr><td>Rust</td><td>Ownership + Borrow-Checker</td><td>Sehr hoch (compile-time)</td><td>Maximal</td></tr>
         <tr><td>Go</td><td>GC (concurrent)</td><td>Hoch</td><td>Gut</td></tr>
-        <tr><td><strong>Tinox</strong></td><td>Manuell (malloc/free)</td><td>Entwicklerverantwortung</td><td>Maximal</td></tr>
+        <tr><td><strong>Tinox</strong></td><td>Boehm GC (konservativ)</td><td>GC verhindert Leaks</td><td>Sehr hoch</td></tr>
         <tr><td>C/C++</td><td>Manuell</td><td>Entwicklerverantwortung</td><td>Maximal</td></tr>
       </tbody>
     </table>
@@ -1449,16 +1457,16 @@ epoll_fd = epoll_create1(0);
         <div class="uc-icon">📊</div>
         <h4>Datenverarbeitungs-Pipelines</h4>
         <p>
-          Batch-Verarbeitung großer Datenmengen ohne GC-Overhead. Direkte
-          Speicherverwaltung ermöglicht Cache-freundliche Layouts.
+          Batch-Verarbeitung großer Datenmengen mit automatischem GC –
+          kein manuelles Speichermanagement nötig, trotzdem hohe Performance.
         </p>
       </div>
       <div class="usecase">
         <div class="uc-icon">🔒</div>
         <h4>Sicherheitskritische Dienste</h4>
         <p>
-          Deterministisches Laufzeitverhalten ohne GC-Nichtdeterminismus.
-          Annotationen für Sensitivität und Maskierung eingebaut.
+          Deterministisches Laufzeitverhalten durch konservativen GC mit
+          vorhersehbarem Verhalten. Annotationen für Sensitivität und Maskierung eingebaut.
         </p>
       </div>
       <div class="usecase">
@@ -1506,7 +1514,7 @@ epoll_fd = epoll_create1(0);
         </tr>
         <tr>
           <td>Garbage Collector</td>
-          <td>Nein</td>
+          <td>Ja (Boehm GC)</td>
           <td>Ja (G1GC, ZGC)</td>
           <td>Ja (concurrent)</td>
           <td>Nein (Ownership)</td>
@@ -1514,7 +1522,7 @@ epoll_fd = epoll_create1(0);
         </tr>
         <tr>
           <td>Speichersicherheit</td>
-          <td>Manuell</td>
+          <td>GC-geschützt (keine Leaks)</td>
           <td>GC-geschützt</td>
           <td>GC-geschützt</td>
           <td>Compile-time</td>

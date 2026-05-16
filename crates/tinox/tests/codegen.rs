@@ -56,7 +56,7 @@ fn run(source: &str) -> String {
         "runtime compile failed"
     );
     assert!(
-        Command::new("cc").args([&obj, &rt_obj, "-o", &tmp, "-lm", "-lpthread", "-no-pie"])
+        Command::new("cc").args([&obj, &rt_obj, "-o", &tmp, "-lm", "-lpthread", "-lgc", "-no-pie"])
             .status().expect("cc link").success(),
         "link failed"
     );
@@ -624,4 +624,67 @@ fn main() -> Int64 {
     return 0;
 }
 "#), "16\n27");
+}
+
+// ── Garbage Collector ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_gc_many_string_allocations() {
+    // 100k string allocations without explicit free — GC must not crash or OOM
+    assert_eq!(run(r#"
+fn main() -> Int64 {
+    var i: Int64 = 0;
+    while (i < 100000) {
+        let s: String = "item-" + i.toString();
+        i = i + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#), "ok");
+}
+
+#[test]
+fn test_gc_list_churn() {
+    // Repeated list creation — ensures GC collects unreachable list objects
+    assert_eq!(run(r#"
+fn main() -> Int64 {
+    var round: Int64 = 0;
+    while (round < 1000) {
+        var nums: List<Int64> = [];
+        var j: Int64 = 0;
+        while (j < 100) {
+            nums.push(j);
+            j = j + 1;
+        }
+        round = round + 1;
+    }
+    println("ok");
+    return 0;
+}
+"#), "ok");
+}
+
+#[test]
+fn test_gc_objects_survive_collection() {
+    // Objects that are still reachable must NOT be collected
+    assert_eq!(run(r#"
+class Counter {
+    var value: Int64;
+    fn increment() -> Nothing {
+        this.value = this.value + 1;
+    }
+}
+fn main() -> Int64 {
+    let c: Counter = Counter { value: 0 };
+    var i: Int64 = 0;
+    while (i < 10000) {
+        let noise: String = "noise-" + i.toString();
+        c.increment();
+        i = i + 1;
+    }
+    println(c.value.toString());
+    return 0;
+}
+"#), "10000");
 }
