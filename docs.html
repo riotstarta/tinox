@@ -37,8 +37,8 @@
 
     /* ── Sidebar ── */
     nav {
-      width: 270px;
-      min-width: 270px;
+      width: 248px;
+      min-width: 248px;
       background: var(--sidebar);
       border-right: 1px solid var(--border);
       padding: 32px 0;
@@ -72,20 +72,20 @@
     nav ul { list-style: none; }
 
     nav .section-label {
-      font-size: 0.65rem;
+      font-size: 0.62rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 1.2px;
       color: var(--text3);
-      padding: 16px 24px 6px;
+      padding: 12px 20px 4px;
     }
 
     nav a {
       display: block;
-      padding: 7px 24px;
+      padding: 5px 20px;
       color: var(--text2);
       text-decoration: none;
-      font-size: 0.88rem;
+      font-size: 0.82rem;
       border-left: 2px solid transparent;
       transition: all 0.15s;
     }
@@ -99,8 +99,18 @@
     /* ── Main ── */
     main {
       flex: 1;
-      max-width: 920px;
-      padding: 56px 64px;
+      min-width: 0;
+      padding: 48px 56px 80px;
+    }
+
+    /* Content width cap inside sections for readability on ultrawide */
+    section > p, section > ul, section > ol, section > .info-box,
+    section > .card-grid, section > .usecase-grid, section > .pros-cons,
+    section > .pipeline {
+      max-width: 1100px;
+    }
+    section > h2, section > h3, section > h4 {
+      max-width: 1100px;
     }
 
     section { margin-bottom: 72px; }
@@ -454,6 +464,42 @@
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Module sections ── */
+    [id^="mod-"] {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 40px;
+      margin-bottom: 32px;
+    }
+    [id^="mod-"] h2 {
+      font-size: 1.35rem;
+      margin-bottom: 6px;
+      padding-bottom: 10px;
+      border-bottom-color: var(--border);
+      color: #a8d0ff;
+    }
+    [id^="mod-"] h3 {
+      font-size: 1rem;
+      margin: 24px 0 10px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-size: 0.78rem;
+    }
+    [id^="mod-"] table {
+      font-size: 0.82rem;
+    }
+    [id^="mod-"] pre {
+      font-size: 0.8rem;
+    }
+    #modul-userguide {
+      background: none;
+      border: none;
+      padding: 0;
+      margin-bottom: 24px;
+    }
 
     @media (max-width: 900px) {
       nav { display: none; }
@@ -7085,11 +7131,6 @@ Logger::setLevel(dbLog, LogLevel::Warn());
 Logger::info(dbLog, "Diese Info wird unterdrückt.");
 Logger::warn(dbLog, "Verbindungspool fast erschöpft.");</code></pre>
 </section>
-
-</main>
-</body>
-</html>
-
 
 </main>
 </body>
