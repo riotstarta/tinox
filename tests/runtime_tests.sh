@@ -349,6 +349,148 @@ fn main() -> Int32
 EOF
 run_test "cast_as" "$TMP/t20.tnx" "3"
 
+# ── Test 21: HPACK encodeInt — RFC 7541 Appendix C.1.3 ──────
+cat >"$TMP/t21.tnx" <<'EOF'
+import tinox.core.hpack;
+fn main() -> Int32
+{
+    // Encode integer 10 with 5-bit prefix → single byte 10
+    let r1: List<Int64> = Hpack::encodeInt(10, 5, 0);
+    println(r1.len());
+    println(r1[0]);
+    // Encode integer 1337 with 5-bit prefix → [31, 154, 10] per RFC 7541 §C.1.3
+    let r2: List<Int64> = Hpack::encodeInt(1337, 5, 0);
+    println(r2.len());
+    println(r2[0]);
+    println(r2[1]);
+    println(r2[2]);
+    return 0;
+}
+EOF
+run_test "hpack_encode_int" "$TMP/t21.tnx" "$(printf '1\n10\n3\n31\n154\n10')"
+
+# ── Test 22: HPACK decodeInt ─────────────────────────────────
+cat >"$TMP/t22.tnx" <<'EOF'
+import tinox.core.hpack;
+fn main() -> Int32
+{
+    // Decode integer 1337 from bytes [31, 154, 10] with 5-bit prefix
+    let data: List<Int64> = [31, 154, 10];
+    let result: HpackIntResult = Hpack::decodeInt(data, 0, 5);
+    println(result.value);
+    println(result.nextOffset);
+    // Decode small integer 10 from single byte [10] with 5-bit prefix
+    let data2: List<Int64> = [10];
+    let r2: HpackIntResult = Hpack::decodeInt(data2, 0, 5);
+    println(r2.value);
+    println(r2.nextOffset);
+    return 0;
+}
+EOF
+run_test "hpack_decode_int" "$TMP/t22.tnx" "$(printf '1337\n3\n10\n1')"
+
+# ── Test 23: HPACK static table ──────────────────────────────
+cat >"$TMP/t23.tnx" <<'EOF'
+import tinox.core.hpack;
+fn main() -> Int32
+{
+    println(Hpack::staticName(2));
+    println(Hpack::staticValue(2));
+    println(Hpack::staticName(8));
+    println(Hpack::staticValue(8));
+    println(Hpack::staticName(28));
+    println(Hpack::staticName(61));
+    return 0;
+}
+EOF
+run_test "hpack_static_table" "$TMP/t23.tnx" "$(printf ':method\nGET\n:status\n200\ncontent-length\nwww-authenticate')"
+
+# ── Test 24: HPACK encode/decode round-trip ──────────────────
+cat >"$TMP/t24.tnx" <<'EOF'
+import tinox.core.hpack;
+fn main() -> Int32
+{
+    let dynEnc: HpackDynTable = HpackDynTable::new(4096);
+    let dynDec: HpackDynTable = HpackDynTable::new(4096);
+    let headers: List<HpackHeader> = [];
+    headers.push(HpackHeader::new(":status", "200"));
+    headers.push(HpackHeader::new("content-type", "application/json; charset=utf-8"));
+    headers.push(HpackHeader::new("x-request-id", "abc-123"));
+    let encoded: List<Int64> = Hpack::encode(headers, dynEnc);
+    let decoded: List<HpackHeader> = Hpack::decode(encoded, dynDec);
+    println(decoded.len());
+    println(decoded[0].name);
+    println(decoded[0].value);
+    println(decoded[1].name);
+    println(decoded[2].name);
+    println(decoded[2].value);
+    return 0;
+}
+EOF
+run_test "hpack_roundtrip" "$TMP/t24.tnx" "$(printf '3\n:status\n200\ncontent-type\nx-request-id\nabc-123')"
+
+# ── Test 25: HPACK dynamic table is populated on encode ──────
+cat >"$TMP/t25.tnx" <<'EOF'
+import tinox.core.hpack;
+fn main() -> Int32
+{
+    let dynEnc: HpackDynTable = HpackDynTable::new(4096);
+    let headers: List<HpackHeader> = [];
+    headers.push(HpackHeader::new("x-token", "secret"));
+    headers.push(HpackHeader::new("x-tenant", "acme"));
+    let encoded: List<Int64> = Hpack::encode(headers, dynEnc);
+    // Both non-static headers should be added to the dynamic table
+    println(dynEnc.entries.len());
+    println(dynEnc.entries[0].name);
+    println(dynEnc.entries[0].value);
+    println(dynEnc.entries[1].name);
+    return 0;
+}
+EOF
+run_test "hpack_dyn_table" "$TMP/t25.tnx" "$(printf '2\nx-tenant\nacme\nx-token')"
+
+# ── Test 26: HTTP/2 frame header byte serialization ──────────
+cat >"$TMP/t26.tnx" <<'EOF'
+fn encodeFrameHeader(length: Int64, frameType: Int64, flags: Int64, streamId: Int64) -> List<Int64>
+{
+    let out: List<Int64> = [];
+    out.push((length >> 16) & 255);
+    out.push((length >> 8) & 255);
+    out.push(length & 255);
+    out.push(frameType & 255);
+    out.push(flags & 255);
+    out.push((streamId >> 24) & 127);
+    out.push((streamId >> 16) & 255);
+    out.push((streamId >> 8) & 255);
+    out.push(streamId & 255);
+    return out;
+}
+fn main() -> Int32
+{
+    // SETTINGS frame: length=12, type=0x04, flags=0, stream=0
+    let h1: List<Int64> = encodeFrameHeader(12, 4, 0, 0);
+    println(h1.len());
+    println(h1[2]);
+    println(h1[3]);
+    // HEADERS frame: length=256, type=0x01, flags=0x05 (END_HEADERS|END_STREAM), stream=1
+    let h2: List<Int64> = encodeFrameHeader(256, 1, 5, 1);
+    println(h2[0]);
+    println(h2[1]);
+    println(h2[2]);
+    println(h2[3]);
+    println(h2[4]);
+    println(h2[8]);
+    // Large stream ID: stream=0x00ABCDEF
+    let h3: List<Int64> = encodeFrameHeader(0, 0, 0, 11259375);
+    println(h3[5]);
+    println(h3[6]);
+    println(h3[7]);
+    println(h3[8]);
+    return 0;
+}
+EOF
+run_test "http2_frame_header_bytes" "$TMP/t26.tnx" "$(printf '9\n12\n4\n0\n1\n0\n1\n5\n1\n0\n171\n205\n239')"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ ${#ERRORS[@]} -gt 0 ]; then
