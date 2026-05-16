@@ -31,22 +31,20 @@
       background: var(--bg);
       color: var(--text);
       line-height: 1.7;
-      display: flex;
-      min-height: 100vh;
     }
 
     /* ── Sidebar ── */
     nav {
+      position: fixed;
+      top: 0;
+      left: 0;
       width: 248px;
-      min-width: 248px;
+      height: 100vh;
+      overflow-y: auto;
       background: var(--sidebar);
       border-right: 1px solid var(--border);
       padding: 32px 0;
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      overflow-y: auto;
-      flex-shrink: 0;
+      z-index: 100;
     }
 
     nav .logo {
@@ -98,19 +96,9 @@
 
     /* ── Main ── */
     main {
-      flex: 1;
-      min-width: 0;
+      margin-left: 248px;
       padding: 48px 56px 80px;
-    }
-
-    /* Content width cap inside sections for readability on ultrawide */
-    section > p, section > ul, section > ol, section > .info-box,
-    section > .card-grid, section > .usecase-grid, section > .pros-cons,
-    section > .pipeline {
-      max-width: 1100px;
-    }
-    section > h2, section > h3, section > h4 {
-      max-width: 1100px;
+      min-width: 0;
     }
 
     section { margin-bottom: 72px; }
@@ -503,11 +491,9 @@
 
     @media (max-width: 900px) {
       nav { display: none; }
-      main { padding: 32px 24px; }
+      main { margin-left: 0; padding: 32px 24px; }
       .pros-cons { grid-template-columns: 1fr; }
     }
-  .import-hint { font-family: monospace; background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.4rem 0.75rem; margin: 0.5rem 0 1rem; border-radius: 4px; font-size: 0.9rem; color: var(--text); display: block; }
-  #mod-array h2, #mod-asm h2, #mod-base64 h2, #mod-bitmap h2, #mod-cache h2, #mod-collections h2, #mod-complex h2, #mod-cron h2, #mod-crypto h2, #mod-csv h2, #mod-debug h2, #mod-decimal h2, #mod-encoding h2, #mod-env h2, #mod-events h2, #mod-fmt h2, #mod-format h2, #mod-fs h2, #mod-graph h2, #mod-hash h2, #mod-heap h2, #mod-hex h2, #mod-hpack h2, #mod-http h2, #mod-http2_server h2, #mod-http_server h2, #mod-ini h2, #mod-io h2, #mod-iter h2, #mod-json h2, #mod-jwt h2, #mod-logger h2, #mod-math h2, #mod-mathf h2, #mod-mathx h2, #mod-option h2, #mod-pool h2, #mod-process h2, #mod-queue h2, #mod-random h2, #mod-ratelimit h2, #mod-regex h2, #mod-rest h2, #mod-rest_framework h2, #mod-result h2, #mod-semaphore h2, #mod-set h2, #mod-socket h2, #mod-sort h2, #mod-string h2, #mod-time h2, #mod-toml h2, #mod-tpl h2, #mod-trie h2, #mod-uri h2, #mod-uuid h2, #mod-validation h2, #mod-xml h2, #mod-yaml h2, #mod-zip h2 { font-family: monospace; }
   </style>
 </head>
 <body>
