@@ -20,13 +20,27 @@
 #include <sys/epoll.h>
 #include <time.h>
 
-// Memory allocation
+// Boehm GC — redirect all heap allocation through the collector
+#define GC_THREADS
+#include <gc.h>
+#undef malloc
+#undef calloc
+#undef realloc
+#undef free
+#undef strdup
+#define malloc(s)    GC_malloc(s)
+#define calloc(n,s)  GC_malloc((size_t)(n)*(size_t)(s))
+#define realloc(p,s) GC_realloc((p),(s))
+#define free(p)      GC_free(p)
+#define strdup(s)    GC_strdup(s)
+
+// Memory allocation (kept for ABI compatibility — codegen calls these)
 void* tinox_alloc(size_t size) {
-    return malloc(size);
+    return GC_malloc(size);
 }
 
 void tinox_free(void* ptr) {
-    free(ptr);
+    GC_free(ptr);
 }
 
 // Print functions
@@ -2099,6 +2113,7 @@ void tinox_cli_print_option(const char* names, const char* description) {
 extern int64_t tinox_main(void);
 
 int main(int argc, char** argv) {
+    GC_INIT();
     _tinox_argc = argc;
     _tinox_argv = argv;
     return (int)tinox_main();

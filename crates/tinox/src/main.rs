@@ -496,7 +496,7 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     // Compile to executable
     let exe = format!("{}.out", tmp_base);
     let mut cmd = Command::new("clang");
-    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm");
+    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm").arg("-lgc");
     if let Some(ref rt) = runtime_obj {
         cmd.arg(rt);
     }
@@ -1715,7 +1715,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     }
 
     let link_status = Command::new("cc")
-        .args(&[&obj_path, &runtime_obj, "-o", output_name, "-lm", "-lpthread", "-no-pie"])
+        .args(&[&obj_path, &runtime_obj, "-o", output_name, "-lm", "-lpthread", "-lgc", "-no-pie"])
         .status()
         .map_err(|e| format!("Failed to link: {}", e))?;
 
