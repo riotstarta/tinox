@@ -287,11 +287,11 @@ oder zur Laufzeit via `tinox_string_concat` zusammengebaut wenn nötig.
 
 ---
 
-## Phase 3 — C-Runtime: libpq PostgreSQL
+## Phase 3 — C-Runtime: libpq PostgreSQL ✅
 
 **Datei:** `runtime/runtime.c`
 
-### 3.1 Header und globale Connection
+### 3.1 Header und globale Connection ✅
 
 ```c
 #include <libpq-fe.h>
@@ -313,7 +313,7 @@ PGconn* tinox_db_get_conn(void) {
 }
 ```
 
-### 3.2 Query-Ausführung
+### 3.2 Query-Ausführung ✅
 
 ```c
 // params: i8** Array mit n_params Strings (NULL-terminiert pro String)
@@ -350,7 +350,7 @@ char* tinox_db_error(void* conn) {
 }
 ```
 
-### 3.3 Param-Helpers
+### 3.3 Param-Helpers ✅
 
 ```c
 char** tinox_params_alloc(int64_t n) {
@@ -368,18 +368,18 @@ char* tinox_int_to_param(int64_t val) {
 }
 ```
 
-### 3.4 Linker-Flag
+### 3.4 Linker-Flag ✅
 
 In `crates/tinox/src/main.rs` in `compile_ll_to_exe()` die `clang`-Argumente um `-lpq` erweitern.
 Bedingung: nur wenn `[database] driver = "postgres"` in tinox.toml.
 
 ---
 
-## Phase 4 — tinox.toml: [database] Config
+## Phase 4 — tinox.toml: [database] Config ✅
 
 **Datei:** `crates/tinox/src/main.rs`
 
-### 4.1 DbConfig Struct
+### 4.1 DbConfig Struct ✅
 
 ```rust
 struct DbConfig {
@@ -389,7 +389,7 @@ struct DbConfig {
 }
 ```
 
-### 4.2 `read_database_config()` Funktion
+### 4.2 `read_database_config()` Funktion ✅
 
 Analog zu `read_metrics_config()` — liest `[database]`-Sektion aus `tinox.toml`.
 
@@ -402,7 +402,7 @@ fn read_database_config() -> Option<DbConfig> {
 }
 ```
 
-### 4.3 Codegen: globale Connection initialisieren
+### 4.3 Codegen: globale Connection initialisieren ✅
 
 In `emit_entity_code()` (oder in der `tinox_main`-Generierung): wenn DbConfig vorhanden,
 eine Initialisierungsfunktion `__tinox_db_init()` generieren die `tinox_db_connect(url)` aufruft.

@@ -267,6 +267,54 @@ fn read_metrics_config() -> Option<String> {
     None
 }
 
+struct DbConfig {
+    driver: String,
+    url: String,
+    #[allow(dead_code)]
+    pool: usize,
+}
+
+/// Read `[database]` section from the nearest `tinox.toml`, if present.
+fn read_database_config() -> Option<DbConfig> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).ok()?;
+            let mut in_db = false;
+            let mut driver = String::new();
+            let mut url = String::new();
+            let mut pool: usize = 1;
+            let mut found = false;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_db = line == "[database]";
+                    if in_db { found = true; }
+                    continue;
+                }
+                if !in_db { continue; }
+                if let Some(rest) = line.strip_prefix("driver") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    driver = rest.trim_matches('"').to_string();
+                } else if let Some(rest) = line.strip_prefix("url") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    url = rest.trim_matches('"').to_string();
+                } else if let Some(rest) = line.strip_prefix("pool") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("1");
+                    pool = rest.parse().unwrap_or(1);
+                }
+            }
+            if found && !driver.is_empty() {
+                return Some(DbConfig { driver, url, pool });
+            }
+            return None;
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
 /// Read `name` from the nearest `tinox.toml`, if present.
 fn read_project_name() -> Option<String> {
     let mut dir = std::env::current_dir().ok()?;
@@ -1712,6 +1760,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
     codegen.set_entity_entries(entity_entries);
+    codegen.set_db_url(read_database_config().map(|c| c.url));
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;
@@ -1784,8 +1833,15 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let runtime_src = format!("{}/../../runtime/runtime.c", manifest_dir);
     let runtime_obj = format!("{}_runtime.o", output_name);
 
+    let db_cfg = read_database_config();
+    let db_driver = db_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
+
+    let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
+    if db_driver == "postgres" {
+        cc_args.push("-DTINOX_DB_POSTGRES");
+    }
     let cc_status = Command::new("cc")
-        .args(&["-c", &runtime_src, "-o", &runtime_obj, "-O3"])
+        .args(&cc_args)
         .status()
         .map_err(|e| format!("Failed to compile runtime: {}", e))?;
 
@@ -1793,8 +1849,16 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         return Err("Runtime compilation failed".to_string());
     }
 
+    let mut link_args = vec![obj_path.as_str(), runtime_obj.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-no-pie"];
+    if db_driver == "postgres" {
+        link_args.push("-lpq");
+    } else if db_driver == "mysql" {
+        link_args.push("-lmysqlclient");
+    } else if db_driver == "sqlite" {
+        link_args.push("-lsqlite3");
+    }
     let link_status = Command::new("cc")
-        .args(&[&obj_path, &runtime_obj, "-o", output_name, "-lm", "-lpthread", "-lgc", "-no-pie"])
+        .args(&link_args)
         .status()
         .map_err(|e| format!("Failed to link: {}", e))?;
 

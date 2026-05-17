@@ -2242,6 +2242,87 @@ char* tinox_metrics_prometheus(void) {
     return buf;
 }
 
+// ---- Database / ORM runtime ----
+// Compiled only when libpq is available (postgres driver).
+// SQLite and MySQL variants follow the same interface.
+
+#ifdef TINOX_DB_POSTGRES
+#include <libpq-fe.h>
+
+static PGconn* _tinox_db_conn = NULL;
+static pthread_mutex_t _tinox_db_mu = PTHREAD_MUTEX_INITIALIZER;
+
+void tinox_db_connect(const char* url) {
+    _tinox_db_conn = PQconnectdb(url);
+    if (PQstatus(_tinox_db_conn) != CONNECTION_OK) {
+        fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(_tinox_db_conn));
+        PQfinish(_tinox_db_conn);
+        exit(1);
+    }
+}
+
+void* tinox_db_get_conn(void) {
+    return _tinox_db_conn;
+}
+
+void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    PGresult* res = PQexecParams(
+        (PGconn*)conn, sql,
+        (int)n_params, NULL,
+        params, NULL, NULL, 0
+    );
+    ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Query error: %s\nSQL: %s\n", PQresultErrorMessage(res), sql);
+    }
+    return (void*)res;
+}
+
+int64_t tinox_db_nrows(void* result) { return (int64_t)PQntuples((PGresult*)result); }
+int64_t tinox_db_ncols(void* result) { return (int64_t)PQnfields((PGresult*)result); }
+
+char* tinox_db_getval(void* result, int64_t row, int64_t col) {
+    return GC_strdup(PQgetvalue((PGresult*)result, (int)row, (int)col));
+}
+
+bool tinox_db_is_null(void* result, int64_t row, int64_t col) {
+    return (bool)PQgetisnull((PGresult*)result, (int)row, (int)col);
+}
+
+void tinox_db_free(void* result) { PQclear((PGresult*)result); }
+
+char* tinox_db_error(void* conn) {
+    return GC_strdup(PQerrorMessage((PGconn*)conn));
+}
+
+#else
+// Stub implementations when no DB driver is selected — prevent link errors.
+void  tinox_db_connect(const char* url)                                       { (void)url; }
+void* tinox_db_get_conn(void)                                                  { return NULL; }
+void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
+int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }
+int64_t tinox_db_ncols(void* r)                                                { (void)r; return 0; }
+char*   tinox_db_getval(void* r, int64_t row, int64_t col)                    { (void)r;(void)row;(void)col; return ""; }
+bool    tinox_db_is_null(void* r, int64_t row, int64_t col)                   { (void)r;(void)row;(void)col; return true; }
+void    tinox_db_free(void* r)                                                 { (void)r; }
+char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
+#endif
+
+// Param helpers (always available)
+char** tinox_params_alloc(int64_t n) {
+    return (char**)GC_malloc(sizeof(char*) * (size_t)n);
+}
+
+void tinox_params_set(char** params, int64_t idx, const char* val) {
+    params[idx] = (char*)val;
+}
+
+char* tinox_int_to_param(int64_t val) {
+    char* buf = (char*)GC_malloc(32);
+    snprintf(buf, 32, "%ld", (long)val);
+    return buf;
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);

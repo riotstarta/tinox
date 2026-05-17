@@ -179,6 +179,8 @@ pub struct CodeGen {
     metric_entries: Vec<MetricEntry>,
     /// ORM entity entries from @Entity / @Table annotations
     entity_entries: Vec<EntityEntry>,
+    /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
+    db_url: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
@@ -236,6 +238,7 @@ impl CodeGen {
             json_serializable_classes: Vec::new(),
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
+            db_url: None,
             metrics_path: None,
             test_entry: None,
             has_main: false,
@@ -284,6 +287,10 @@ impl CodeGen {
 
     pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
         self.entity_entries = entries;
+    }
+
+    pub fn set_db_url(&mut self, url: Option<String>) {
+        self.db_url = url;
     }
 
     /// Register a string constant and return an inline `getelementptr` expression (i8*).
@@ -573,6 +580,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
         // DB / ORM runtime
+        writeln!(&mut self.ir, "declare void @tinox_db_connect(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_get_conn()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
@@ -2603,6 +2611,21 @@ impl CodeGen {
 
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
     fn emit_entity_code(&mut self) {
+        // Emit DB init via @llvm.global_ctors if a connection URL is configured
+        if let Some(url) = self.db_url.clone() {
+            let url_len = url.len() + 1;
+            let escaped = Self::escape_llvm_string(&url);
+            writeln!(&mut self.ir, "@__db_url = private constant [{url_len} x i8] c\"{escaped}\\00\"").unwrap();
+            writeln!(&mut self.ir, "define void @__tinox_db_init() {{").unwrap();
+            writeln!(&mut self.ir, "entry:").unwrap();
+            writeln!(&mut self.ir, "  %url = getelementptr [{url_len} x i8], [{url_len} x i8]* @__db_url, i64 0, i64 0").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_connect(i8* %url)").unwrap();
+            writeln!(&mut self.ir, "  ret void").unwrap();
+            writeln!(&mut self.ir, "}}").unwrap();
+            writeln!(&mut self.ir, "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] [{{ i32, void ()*, i8* }} {{ i32 10, void ()* @__tinox_db_init, i8* null }}]").unwrap();
+            writeln!(&mut self.ir).unwrap();
+        }
+
         let entities = self.entity_entries.clone();
         for entity in &entities {
             let cn = entity.class_name.clone();
