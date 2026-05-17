@@ -222,7 +222,7 @@ writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap(
 writeln!(&mut self.ir, "declare i8* @tinox_int_to_param(i64)").unwrap();
 ```
 
-### 2.4 `emit_entity_code()` — SQL-Konstanten und Mapping-Funktionen
+### 2.4 `emit_entity_code()` — SQL-Konstanten und Mapping-Funktionen ✅
 
 Neue Methode `fn emit_entity_code(&mut self)`, aufgerufen am Ende von `gen()`.
 

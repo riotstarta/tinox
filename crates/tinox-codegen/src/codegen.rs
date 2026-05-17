@@ -867,6 +867,9 @@ impl CodeGen {
         // Emit test-runner main if set_test_entry() was called
         self.emit_test_code();
 
+        // Emit SQL-constant functions and row-mapping helpers for @Entity classes
+        self.emit_entity_code();
+
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
             writeln!(
@@ -2298,6 +2301,127 @@ impl CodeGen {
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
+    }
+
+    /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
+    fn emit_entity_code(&mut self) {
+        let entities = self.entity_entries.clone();
+        for entity in &entities {
+            let cn = entity.class_name.clone();
+            let table = entity.table_name.clone();
+            let fields = entity.fields.clone();
+
+            // SELECT sql
+            let cols: Vec<String> = fields.iter().map(|f| f.column_name.clone()).collect();
+            let select_sql = format!("SELECT {} FROM {}", cols.join(", "), table);
+            self.emit_sql_const_fn(&format!("{cn}_selectSql"), &select_sql);
+
+            // INSERT sql (exclude @GeneratedValue fields)
+            let ins_fields: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_generated).collect();
+            let ins_cols: Vec<&str> = ins_fields.iter().map(|f| f.column_name.as_str()).collect();
+            let ins_phs: Vec<String> = (1..=ins_fields.len()).map(|i| format!("${i}")).collect();
+            let insert_sql = format!(
+                "INSERT INTO {table} ({}) VALUES ({}) RETURNING id",
+                ins_cols.join(", "),
+                ins_phs.join(", ")
+            );
+            self.emit_sql_const_fn(&format!("{cn}_insertSql"), &insert_sql);
+
+            // UPDATE sql (non-id fields in SET, id field in WHERE)
+            let id_col = fields.iter().find(|f| f.is_id).map(|f| f.column_name.clone()).unwrap_or_else(|| "id".to_string());
+            let non_id: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_id).collect();
+            let set_clauses: Vec<String> = non_id.iter().enumerate().map(|(i, f)| format!("{} = ${}", f.column_name, i + 1)).collect();
+            let update_sql = format!(
+                "UPDATE {table} SET {} WHERE {id_col} = ${}",
+                set_clauses.join(", "),
+                non_id.len() + 1
+            );
+            self.emit_sql_const_fn(&format!("{cn}_updateSql"), &update_sql);
+
+            // DELETE sql
+            let delete_sql = format!("DELETE FROM {table} WHERE {id_col} = $1");
+            self.emit_sql_const_fn(&format!("{cn}_deleteSql"), &delete_sql);
+
+            // fromRow and toParams
+            self.emit_entity_from_row(&cn, &fields);
+            self.emit_entity_to_params(&cn, &fields);
+        }
+    }
+
+    fn emit_sql_const_fn(&mut self, fn_name: &str, sql: &str) {
+        let label = format!("__sql_{}_{}", fn_name, self.strings.len());
+        self.strings.insert(label.clone(), sql.to_string());
+        let len = sql.len() + 1;
+        writeln!(&mut self.ir, "define i8* @{fn_name}() {{").unwrap();
+        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "  ret i8* getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
+    fn emit_entity_from_row(&mut self, class_name: &str, fields: &[EntityFieldEntry]) {
+        let n = fields.len();
+        let alloc_size = n as i64 * 8;
+        writeln!(&mut self.ir, "define i8* @{class_name}_fromRow(i8* %result, i64 %row_idx) {{").unwrap();
+        writeln!(&mut self.ir, "entry:").unwrap();
+        let raw = self.temp();
+        let ptr = self.temp();
+        writeln!(&mut self.ir, "  {raw} = call i8* @tinox_alloc(i64 {alloc_size})").unwrap();
+        writeln!(&mut self.ir, "  {ptr} = bitcast i8* {raw} to i64*").unwrap();
+        for (col_idx, field) in fields.iter().enumerate() {
+            let val = self.temp();
+            writeln!(&mut self.ir, "  {val} = call i8* @tinox_db_getval(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
+            let fptr = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
+            match field.field_llvm_type.as_str() {
+                "i8*" => {
+                    let as_int = self.temp();
+                    writeln!(&mut self.ir, "  {as_int} = ptrtoint i8* {val} to i64").unwrap();
+                    writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
+                }
+                _ => {
+                    let as_int = self.temp();
+                    writeln!(&mut self.ir, "  {as_int} = call i64 @tinox_string_to_int(i8* {val})").unwrap();
+                    writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
+                }
+            }
+        }
+        writeln!(&mut self.ir, "  ret i8* {raw}").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
+    fn emit_entity_to_params(&mut self, class_name: &str, fields: &[EntityFieldEntry]) {
+        // INSERT variant: exclude @GeneratedValue fields; slot_idx = field position in struct
+        let ins_fields: Vec<(usize, &EntityFieldEntry)> = fields.iter()
+            .enumerate()
+            .filter(|(_, f)| !f.is_generated)
+            .collect();
+        let n = ins_fields.len();
+        writeln!(&mut self.ir, "define i8** @{class_name}_toParams(i64* %entity, i64* %out_n) {{").unwrap();
+        writeln!(&mut self.ir, "entry:").unwrap();
+        let arr = self.temp();
+        writeln!(&mut self.ir, "  {arr} = call i8** @tinox_params_alloc(i64 {n})").unwrap();
+        for (param_idx, (slot_idx, field)) in ins_fields.iter().enumerate() {
+            let fptr = self.temp();
+            let fval = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
+            writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
+            let pstr = if field.field_llvm_type == "i8*" {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
+                s
+            } else {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
+                s
+            };
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {param_idx}, i8* {pstr})").unwrap();
+        }
+        writeln!(&mut self.ir, "  store i64 {n}, i64* %out_n").unwrap();
+        writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
     }
 
     /// Emit `tinox_main` for a single test method: allocate object, call method,
