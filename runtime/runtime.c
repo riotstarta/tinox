@@ -2308,6 +2308,179 @@ void    tinox_db_free(void* r)                                                 {
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
 #endif
 
+// ---- MySQL driver ----
+#ifdef TINOX_DB_MYSQL
+#include <mysql/mysql.h>
+
+static MYSQL* _tinox_mysql_conn = NULL;
+static pthread_mutex_t _tinox_mysql_mu = PTHREAD_MUTEX_INITIALIZER;
+
+// URL format: mysql://user:pass@host:port/database
+static void _parse_mysql_url(const char* url,
+    char* host, char* user, char* pass, char* db, unsigned int* port) {
+    // Defaults
+    strcpy(host, "127.0.0.1");
+    strcpy(user, "root");
+    strcpy(pass, "");
+    strcpy(db,   "");
+    *port = 3306;
+
+    // Skip "mysql://"
+    const char* p = url;
+    if (strncmp(p, "mysql://", 8) == 0) p += 8;
+
+    // user:pass@
+    const char* at = strchr(p, '@');
+    if (at) {
+        char userinfo[256];
+        strncpy(userinfo, p, (size_t)(at - p));
+        userinfo[at - p] = '\0';
+        const char* colon = strchr(userinfo, ':');
+        if (colon) {
+            strncpy(user, userinfo, (size_t)(colon - userinfo));
+            user[colon - userinfo] = '\0';
+            strcpy(pass, colon + 1);
+        } else {
+            strcpy(user, userinfo);
+        }
+        p = at + 1;
+    }
+
+    // host:port/db
+    const char* slash = strchr(p, '/');
+    if (slash) {
+        char hostport[256];
+        strncpy(hostport, p, (size_t)(slash - p));
+        hostport[slash - p] = '\0';
+        strcpy(db, slash + 1);
+        const char* portcolon = strchr(hostport, ':');
+        if (portcolon) {
+            strncpy(host, hostport, (size_t)(portcolon - hostport));
+            host[portcolon - hostport] = '\0';
+            *port = (unsigned int)atoi(portcolon + 1);
+        } else {
+            strcpy(host, hostport);
+        }
+    } else {
+        strcpy(host, p);
+    }
+}
+
+void tinox_db_connect(const char* url) {
+    _tinox_mysql_conn = mysql_init(NULL);
+    if (!_tinox_mysql_conn) {
+        fprintf(stderr, "MySQL init failed\n");
+        exit(1);
+    }
+    char host[256], user[256], pass[256], db[256];
+    unsigned int port;
+    _parse_mysql_url(url, host, user, pass, db, &port);
+    if (!mysql_real_connect(_tinox_mysql_conn, host, user, pass, db, port, NULL, 0)) {
+        fprintf(stderr, "MySQL connection failed: %s\n", mysql_error(_tinox_mysql_conn));
+        mysql_close(_tinox_mysql_conn);
+        exit(1);
+    }
+}
+
+typedef struct {
+    int n_cols;
+    int n_rows;
+    char** data;   // row-major: data[row * n_cols + col]
+} TinoxMysqlResult;
+
+void* tinox_db_get_conn(void) { return _tinox_mysql_conn; }
+
+void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    MYSQL_STMT* stmt = mysql_stmt_init((MYSQL*)conn);
+    if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) {
+        fprintf(stderr, "MySQL prepare error: %s\n", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return NULL;
+    }
+
+    MYSQL_BIND* bind = NULL;
+    unsigned long* lengths = NULL;
+    if (n_params > 0) {
+        bind    = (MYSQL_BIND*)calloc((size_t)n_params, sizeof(MYSQL_BIND));
+        lengths = (unsigned long*)calloc((size_t)n_params, sizeof(unsigned long));
+        for (int i = 0; i < (int)n_params; i++) {
+            lengths[i] = params[i] ? (unsigned long)strlen(params[i]) : 0;
+            bind[i].buffer_type   = MYSQL_TYPE_STRING;
+            bind[i].buffer        = (char*)params[i];
+            bind[i].buffer_length = lengths[i];
+            bind[i].length        = &lengths[i];
+        }
+        mysql_stmt_bind_param(stmt, bind);
+    }
+
+    if (mysql_stmt_execute(stmt) != 0) {
+        fprintf(stderr, "MySQL execute error: %s\n", mysql_stmt_error(stmt));
+        if (bind)    free(bind);
+        if (lengths) free(lengths);
+        mysql_stmt_close(stmt);
+        return NULL;
+    }
+
+    MYSQL_RES* meta = mysql_stmt_result_metadata(stmt);
+    int n_cols = meta ? mysql_num_fields(meta) : 0;
+    mysql_stmt_store_result(stmt);
+    int n_rows = (int)mysql_stmt_num_rows(stmt);
+
+    TinoxMysqlResult* res = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
+    res->n_cols = n_cols;
+    res->n_rows = n_rows;
+    res->data   = n_cols * n_rows > 0
+        ? (char**)GC_malloc(sizeof(char*) * (size_t)(n_cols * n_rows))
+        : NULL;
+
+    if (n_cols > 0 && n_rows > 0) {
+        MYSQL_BIND* out_bind = (MYSQL_BIND*)calloc((size_t)n_cols, sizeof(MYSQL_BIND));
+        char** bufs    = (char**)calloc((size_t)n_cols, sizeof(char*));
+        unsigned long* out_len = (unsigned long*)calloc((size_t)n_cols, sizeof(unsigned long));
+        for (int c = 0; c < n_cols; c++) {
+            bufs[c] = (char*)GC_malloc(512);
+            out_bind[c].buffer_type   = MYSQL_TYPE_STRING;
+            out_bind[c].buffer        = bufs[c];
+            out_bind[c].buffer_length = 511;
+            out_bind[c].length        = &out_len[c];
+        }
+        mysql_stmt_bind_result(stmt, out_bind);
+        for (int r = 0; r < n_rows; r++) {
+            mysql_stmt_fetch(stmt);
+            for (int c = 0; c < n_cols; c++) {
+                bufs[c][out_len[c]] = '\0';
+                res->data[r * n_cols + c] = GC_strdup(bufs[c]);
+            }
+        }
+        free(out_bind);
+        free(bufs);
+        free(out_len);
+    }
+
+    if (meta)    mysql_free_result(meta);
+    if (bind)    free(bind);
+    if (lengths) free(lengths);
+    mysql_stmt_close(stmt);
+    return (void*)res;
+}
+
+int64_t tinox_db_nrows(void* r)              { return r ? ((TinoxMysqlResult*)r)->n_rows : 0; }
+int64_t tinox_db_ncols(void* r)              { return r ? ((TinoxMysqlResult*)r)->n_cols : 0; }
+char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
+    TinoxMysqlResult* res = (TinoxMysqlResult*)r;
+    if (!res || !res->data) return "";
+    return res->data[(int)row * res->n_cols + (int)col];
+}
+bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
+    TinoxMysqlResult* res = (TinoxMysqlResult*)r;
+    if (!res || !res->data) return true;
+    return res->data[(int)row * res->n_cols + (int)col] == NULL;
+}
+void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
+char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
+
+#endif /* TINOX_DB_MYSQL */
+
 // Param helpers (always available)
 char** tinox_params_alloc(int64_t n) {
     return (char**)GC_malloc(sizeof(char*) * (size_t)n);
