@@ -255,7 +255,7 @@ Alloziert i8**-Array mit Anzahl der nicht-ID-Felder (für INSERT) oder
 allen Feldern (für UPDATE). Konvertiert Int64 via `tinox_int_to_string`.
 Schreibt Anzahl in `*out_n`.
 
-### 2.5 Lambda → SQL Übersetzung
+### 2.5 Lambda → SQL Übersetzung ✅
 
 Das ist das Kernstück. Der Codegen analysiert Lambda-Ausdrücke die an
 `.filter()`, `.orderBy()`, `.sum()` übergeben werden.

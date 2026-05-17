@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::path::Path;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern,
-    SourceFile, Stmt, StmtKind, Type,
+    BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern,
+    SourceFile, Stmt, StmtKind, Type, UnaryOp,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2303,6 +2303,304 @@ impl CodeGen {
         }
     }
 
+    /// Translate a lambda body expression into a SQL predicate fragment.
+    /// Emits LLVM IR to evaluate parameter values and returns:
+    ///   (sql_fragment, vec_of_i8ptr_regs)
+    /// Returns None if the expression cannot be statically translated.
+    fn lambda_to_sql_and_params(
+        &mut self,
+        body: &Expr,
+        param_name: &str,
+        fields: &[EntityFieldEntry],
+        param_offset: usize,
+        ctx: &mut GenCtx,
+    ) -> Option<(String, Vec<String>)> {
+        match &body.node {
+            ExprKind::Binary { op, lhs, rhs } => {
+                match op {
+                    BinaryOp::And => {
+                        let (lsql, mut lparams) = self.lambda_to_sql_and_params(lhs, param_name, fields, param_offset, ctx)?;
+                        let (rsql, rparams) = self.lambda_to_sql_and_params(rhs, param_name, fields, param_offset + lparams.len(), ctx)?;
+                        lparams.extend(rparams);
+                        Some((format!("({}) AND ({})", lsql, rsql), lparams))
+                    }
+                    BinaryOp::Or => {
+                        let (lsql, mut lparams) = self.lambda_to_sql_and_params(lhs, param_name, fields, param_offset, ctx)?;
+                        let (rsql, rparams) = self.lambda_to_sql_and_params(rhs, param_name, fields, param_offset + lparams.len(), ctx)?;
+                        lparams.extend(rparams);
+                        Some((format!("({}) OR ({})", lsql, rsql), lparams))
+                    }
+                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                        let sql_op = match op {
+                            BinaryOp::Eq => "=",
+                            BinaryOp::Ne => "!=",
+                            BinaryOp::Lt => "<",
+                            BinaryOp::Le => "<=",
+                            BinaryOp::Gt => ">",
+                            BinaryOp::Ge => ">=",
+                            _ => unreachable!(),
+                        };
+                        let n = param_offset + 1;
+                        let fields_clone = fields.to_vec();
+                        if let Some(col) = orm_extract_field(lhs, param_name, &fields_clone) {
+                            let col = col.to_string();
+                            let reg = self.emit_orm_param_value(rhs, ctx)?;
+                            Some((format!("{} {} ${}", col, sql_op, n), vec![reg]))
+                        } else if let Some(col) = orm_extract_field(rhs, param_name, &fields_clone) {
+                            let col = col.to_string();
+                            let flipped = match op {
+                                BinaryOp::Lt => ">",
+                                BinaryOp::Le => ">=",
+                                BinaryOp::Gt => "<",
+                                BinaryOp::Ge => "<=",
+                                _ => sql_op,
+                            };
+                            let reg = self.emit_orm_param_value(lhs, ctx)?;
+                            Some((format!("{} {} ${}", col, flipped, n), vec![reg]))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            ExprKind::Unary { op: UnaryOp::Not, operand } => {
+                let (sql, params) = self.lambda_to_sql_and_params(operand, param_name, fields, param_offset, ctx)?;
+                Some((format!("NOT ({})", sql), params))
+            }
+            ExprKind::MethodCall { obj, method, args } => {
+                let fields_clone = fields.to_vec();
+                if let Some(col) = orm_extract_field(obj, param_name, &fields_clone) {
+                    let col = col.to_string();
+                    if args.len() == 1 {
+                        if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
+                            let n = param_offset + 1;
+                            let like_val = match method.as_str() {
+                                "startsWith" => format!("{}%", s),
+                                "endsWith"   => format!("%{}", s),
+                                "contains"   => format!("%{}%", s),
+                                _ => return None,
+                            };
+                            let label = format!("__orm_like_{}", self.strings.len());
+                            self.strings.insert(label.clone(), like_val.clone());
+                            let len = like_val.len() + 1;
+                            let like_reg = self.temp();
+                            writeln!(&mut self.ir, "  {like_reg} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+                            return Some((format!("{} LIKE ${}", col, n), vec![like_reg]));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit code to evaluate an ORM parameter expression and return an i8* register.
+    fn emit_orm_param_value(&mut self, expr: &Expr, ctx: &mut GenCtx) -> Option<String> {
+        match &expr.node {
+            ExprKind::Literal(Literal::String(s)) => {
+                let s_clone = s.clone();
+                let label = format!("__orm_p_{}", self.strings.len());
+                self.strings.insert(label.clone(), s_clone.clone());
+                let len = s_clone.len() + 1;
+                let reg = self.temp();
+                writeln!(&mut self.ir, "  {reg} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+                Some(reg)
+            }
+            ExprKind::Literal(Literal::Integer(n)) => {
+                let reg = self.temp();
+                writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {n})").unwrap();
+                Some(reg)
+            }
+            ExprKind::Literal(Literal::Bool(b)) => {
+                let val: i64 = if *b { 1 } else { 0 };
+                let reg = self.temp();
+                writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {val})").unwrap();
+                Some(reg)
+            }
+            _ => {
+                // Runtime expression — evaluate and convert to string
+                if let Ok((val_reg, val_ty)) = self.gen_expr(expr, ctx) {
+                    let reg = self.temp();
+                    match val_ty.as_str() {
+                        "i8*" => {
+                            writeln!(&mut self.ir, "  {reg} = bitcast i8* {val_reg} to i8*").unwrap();
+                        }
+                        _ => {
+                            writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {val_reg})").unwrap();
+                        }
+                    }
+                    Some(reg)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Generate the full query code for an ORM chain and return (result_reg, result_type).
+    fn gen_orm_query(
+        &mut self,
+        chain: &OrmChain,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let entity = self.entity_entries.iter().find(|e| e.class_name == chain.entity_class).cloned();
+        let entity = match entity {
+            Some(e) => e,
+            None => return Ok(("0".to_string(), "i64*".to_string())),
+        };
+
+        // Build WHERE clause and collect params
+        let mut where_parts: Vec<String> = Vec::new();
+        let mut all_params: Vec<String> = Vec::new();
+        let fields = entity.fields.clone();
+
+        for (param_name, body) in &chain.filters {
+            let param_name = param_name.clone();
+            let body = body.clone();
+            let offset = all_params.len();
+            if let Some((sql, params)) = self.lambda_to_sql_and_params(&body, &param_name, &fields, offset, ctx) {
+                where_parts.push(sql);
+                all_params.extend(params);
+            }
+        }
+
+        // Build ORDER BY clause
+        let order_sql = if chain.order_by.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = chain.order_by.iter().map(|(col, desc)| {
+                // Look up column name from field name
+                let col_name = entity.fields.iter()
+                    .find(|f| f.field_name == *col || f.column_name == *col)
+                    .map(|f| f.column_name.as_str())
+                    .unwrap_or(col.as_str());
+                if *desc { format!("{} DESC", col_name) } else { format!("{} ASC", col_name) }
+            }).collect();
+            format!(" ORDER BY {}", parts.join(", "))
+        };
+
+        // Build LIMIT / OFFSET
+        let limit_sql = chain.limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
+        let offset_sql = chain.offset_val.map(|n| format!(" OFFSET {}", n)).unwrap_or_default();
+
+        // Build the full SQL string at compile time if possible (no runtime concatenation needed
+        // for WHERE clause shape — only the parameter values are runtime)
+        let base_sql = format!("SELECT {} FROM {}",
+            entity.fields.iter().map(|f| f.column_name.as_str()).collect::<Vec<_>>().join(", "),
+            entity.table_name);
+        let where_sql = if where_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_parts.join(" AND "))
+        };
+        let full_sql = format!("{}{}{}{}{}", base_sql, where_sql, order_sql, limit_sql, offset_sql);
+
+        // Emit SQL string constant
+        let sql_label = format!("__orm_query_{}", self.strings.len());
+        let sql_len = full_sql.len() + 1;
+        self.strings.insert(sql_label.clone(), full_sql);
+        let sql_ptr = self.temp();
+        writeln!(&mut self.ir, "  {sql_ptr} = getelementptr [{sql_len} x i8], [{sql_len} x i8]* @{sql_label}, i64 0, i64 0").unwrap();
+
+        // Allocate params array and fill it
+        let n_params = all_params.len() as i64;
+        let params_arr = self.temp();
+        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_params})").unwrap();
+        for (i, param_reg) in all_params.iter().enumerate() {
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 {i}, i8* {param_reg})").unwrap();
+        }
+
+        // Execute query
+        let conn_reg = self.temp();
+        let result_reg = self.temp();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
+
+        match chain.terminal.as_str() {
+            "count" => {
+                let n = self.temp();
+                writeln!(&mut self.ir, "  {n} = call i64 @tinox_db_nrows(i8* {result_reg})").unwrap();
+                writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+                Ok((n, "i64".to_string()))
+            }
+            "first" => {
+                let from_row_fn = format!("{}_fromRow", entity.class_name);
+                let obj_reg = self.temp();
+                writeln!(&mut self.ir, "  {obj_reg} = call i8* @{from_row_fn}(i8* {result_reg}, i64 0)").unwrap();
+                writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+                let as_i64ptr = self.temp();
+                writeln!(&mut self.ir, "  {as_i64ptr} = ptrtoint i8* {obj_reg} to i64").unwrap();
+                Ok((as_i64ptr, "i64".to_string()))
+            }
+            _ => {
+                // "list" — build a List
+                let from_row_fn = format!("{}_fromRow", entity.class_name);
+                let nrows = self.temp();
+                writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {result_reg})").unwrap();
+
+                // Allocate result array: nrows * 8 bytes
+                let arr_bytes = self.temp();
+                let arr_ptr = self.temp();
+                writeln!(&mut self.ir, "  {arr_bytes} = mul i64 {nrows}, 8").unwrap();
+                writeln!(&mut self.ir, "  {arr_ptr} = call i8* @tinox_alloc(i64 {arr_bytes})").unwrap();
+                let arr_i64 = self.temp();
+                writeln!(&mut self.ir, "  {arr_i64} = bitcast i8* {arr_ptr} to i64*").unwrap();
+
+                // Allocate a boxed counter for the List (tinox arrays are i64* with length prefix)
+                let list_raw = self.temp();
+                let list_ptr = self.temp();
+                writeln!(&mut self.ir, "  {list_raw} = call i8* @tinox_alloc(i64 16)").unwrap(); // [length, data_ptr]
+                writeln!(&mut self.ir, "  {list_ptr} = bitcast i8* {list_raw} to i64*").unwrap();
+                let len_slot = self.temp();
+                writeln!(&mut self.ir, "  {len_slot} = getelementptr i64, i64* {list_ptr}, i64 0").unwrap();
+                writeln!(&mut self.ir, "  store i64 {nrows}, i64* {len_slot}").unwrap();
+                let data_slot = self.temp();
+                writeln!(&mut self.ir, "  {data_slot} = getelementptr i64, i64* {list_ptr}, i64 1").unwrap();
+                let arr_as_int = self.temp();
+                writeln!(&mut self.ir, "  {arr_as_int} = ptrtoint i64* {arr_i64} to i64").unwrap();
+                writeln!(&mut self.ir, "  store i64 {arr_as_int}, i64* {data_slot}").unwrap();
+
+                // Loop: i = 0; while i < nrows { arr[i] = fromRow(result, i); i++ }
+                let loop_bb = self.new_bb("orm_loop");
+                let body_bb = self.new_bb("orm_body");
+                let exit_bb = self.new_bb("orm_exit");
+
+                let idx_alloc = self.temp();
+                writeln!(&mut self.ir, "  {idx_alloc} = alloca i64").unwrap();
+                writeln!(&mut self.ir, "  store i64 0, i64* {idx_alloc}").unwrap();
+                writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+                writeln!(&mut self.ir, "{loop_bb}:").unwrap();
+                let cur_i = self.temp();
+                writeln!(&mut self.ir, "  {cur_i} = load i64, i64* {idx_alloc}").unwrap();
+                let cond = self.temp();
+                writeln!(&mut self.ir, "  {cond} = icmp slt i64 {cur_i}, {nrows}").unwrap();
+                writeln!(&mut self.ir, "  br i1 {cond}, label %{body_bb}, label %{exit_bb}").unwrap();
+                writeln!(&mut self.ir, "{body_bb}:").unwrap();
+
+                let row_obj = self.temp();
+                writeln!(&mut self.ir, "  {row_obj} = call i8* @{from_row_fn}(i8* {result_reg}, i64 {cur_i})").unwrap();
+                let row_as_int = self.temp();
+                writeln!(&mut self.ir, "  {row_as_int} = ptrtoint i8* {row_obj} to i64").unwrap();
+                let slot = self.temp();
+                writeln!(&mut self.ir, "  {slot} = getelementptr i64, i64* {arr_i64}, i64 {cur_i}").unwrap();
+                writeln!(&mut self.ir, "  store i64 {row_as_int}, i64* {slot}").unwrap();
+                let next_i = self.temp();
+                writeln!(&mut self.ir, "  {next_i} = add i64 {cur_i}, 1").unwrap();
+                writeln!(&mut self.ir, "  store i64 {next_i}, i64* {idx_alloc}").unwrap();
+                writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+                writeln!(&mut self.ir, "{exit_bb}:").unwrap();
+
+                writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+
+                let list_as_int = self.temp();
+                writeln!(&mut self.ir, "  {list_as_int} = ptrtoint i64* {list_ptr} to i64").unwrap();
+                Ok((list_as_int, "i64".to_string()))
+            }
+        }
+    }
+
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
     fn emit_entity_code(&mut self) {
         let entities = self.entity_entries.clone();
@@ -4082,6 +4380,16 @@ impl CodeGen {
                 Ok((result, ret_ty))
             }
             ExprKind::MethodCall { obj, method, args } => {
+                // ORM query chain: DB.of(T).filter(lambda)...list()/first()/count()
+                if matches!(method.as_str(), "list" | "first" | "count") && args.is_empty() {
+                    if let Some(chain) = try_extract_orm_chain(obj, method.as_str()) {
+                        if self.entity_entries.iter().any(|e| e.class_name == chain.entity_class) {
+                            let chain = chain.clone();
+                            return self.gen_orm_query(&chain, ctx);
+                        }
+                    }
+                }
+
                 // Static method call: ClassName.fnc(args) — obj is a class name, not an instance
                 if let ExprKind::Ident(class_name) = &obj.node {
                     let method_key = format!("{}_{}", class_name, method);
@@ -7068,6 +7376,111 @@ pub struct GenCtx {
     ret_type: String,
     /// If set, emit histogram_record before every return. (metric_name, start_reg)
     timed_metric: Option<(String, String)>,
+}
+
+// ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
+
+/// Describes an ORM query chain unwound from `DB.of(T).filter(...).orderBy(...).limit(n).list()`
+#[derive(Debug, Clone)]
+struct OrmChain {
+    entity_class: String,
+    /// (lambda_param_name, lambda_body_expr)
+    filters: Vec<(String, Expr)>,
+    /// (col_name, is_desc)
+    order_by: Vec<(String, bool)>,
+    limit: Option<i64>,
+    offset_val: Option<i64>,
+    /// terminal operation: "list" | "first" | "count"
+    terminal: String,
+}
+
+/// Try to unwind a `DB.of(T).filter(...).orderBy(...).limit(n).list()` chain
+/// into an OrmChain descriptor. Returns None if the expr is not an ORM chain.
+fn try_extract_orm_chain(expr: &Expr, terminal: &str) -> Option<OrmChain> {
+    let mut chain = OrmChain {
+        entity_class: String::new(),
+        filters: Vec::new(),
+        order_by: Vec::new(),
+        limit: None,
+        offset_val: None,
+        terminal: terminal.to_string(),
+    };
+    unwind_orm_chain(expr, &mut chain)?;
+    if chain.entity_class.is_empty() { None } else { Some(chain) }
+}
+
+fn unwind_orm_chain(expr: &Expr, chain: &mut OrmChain) -> Option<()> {
+    match &expr.node {
+        ExprKind::MethodCall { obj, method, args } => {
+            match method.as_str() {
+                "filter" => {
+                    if let Some(ExprKind::Lambda { params, body, .. }) = args.first().map(|a| &a.node) {
+                        let param_name = params.first().map(|p| p.name.clone()).unwrap_or_default();
+                        chain.filters.push((param_name, *body.clone()));
+                    }
+                    unwind_orm_chain(obj, chain)
+                }
+                "orderBy" => {
+                    if let Some(lambda) = args.first() {
+                        if let ExprKind::Lambda { body, .. } = &lambda.node {
+                            if let ExprKind::FieldAccess { field, .. } = &body.node {
+                                chain.order_by.push((field.clone(), false));
+                            }
+                        }
+                    }
+                    unwind_orm_chain(obj, chain)
+                }
+                "orderByDesc" => {
+                    if let Some(lambda) = args.first() {
+                        if let ExprKind::Lambda { body, .. } = &lambda.node {
+                            if let ExprKind::FieldAccess { field, .. } = &body.node {
+                                chain.order_by.push((field.clone(), true));
+                            }
+                        }
+                    }
+                    unwind_orm_chain(obj, chain)
+                }
+                "limit" => {
+                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
+                        chain.limit = Some(*n);
+                    }
+                    unwind_orm_chain(obj, chain)
+                }
+                "offset" => {
+                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
+                        chain.offset_val = Some(*n);
+                    }
+                    unwind_orm_chain(obj, chain)
+                }
+                "of" => {
+                    // DB.of(ClassName) — bottom of the chain
+                    if let ExprKind::Ident(db_name) = &obj.node {
+                        if db_name == "DB" {
+                            if let Some(ExprKind::Ident(class_name)) = args.first().map(|a| &a.node) {
+                                chain.entity_class = class_name.clone();
+                                return Some(());
+                            }
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract the column name for `param.field` in a lambda body.
+fn orm_extract_field<'a>(expr: &Expr, param: &str, fields: &'a [EntityFieldEntry]) -> Option<&'a str> {
+    if let ExprKind::FieldAccess { obj, field } = &expr.node {
+        if let ExprKind::Ident(name) = &obj.node {
+            if name == param {
+                return fields.iter().find(|f| f.field_name == *field).map(|f| f.column_name.as_str());
+            }
+        }
+    }
+    None
 }
 
 pub fn gen(source: &SourceFile) -> Result<CodeGen, ErrorBag> {
