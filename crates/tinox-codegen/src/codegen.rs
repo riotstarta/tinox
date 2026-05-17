@@ -572,6 +572,18 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_gauge_set(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
+        // DB / ORM runtime
+        writeln!(&mut self.ir, "declare i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_ncols(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_getval(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i1  @tinox_db_is_null(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_int_to_param(i64)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.

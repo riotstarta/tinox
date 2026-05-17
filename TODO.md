@@ -206,7 +206,7 @@ pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
 }
 ```
 
-### 2.3 LLVM-Deklarationen (in `gen()`, bei den anderen `declare`s)
+### 2.3 LLVM-Deklarationen (in `gen()`, bei den anderen `declare`s) ✅
 
 ```rust
 writeln!(&mut self.ir, "declare i8* @tinox_db_get_conn()").unwrap();
