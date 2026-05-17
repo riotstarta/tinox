@@ -85,6 +85,20 @@ pub struct RouteEntry {
     pub is_static: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetricKind {
+    Timed,
+    Counted,
+}
+
+#[derive(Debug, Clone)]
+pub struct MetricEntry {
+    pub kind: MetricKind,
+    pub metric_name: String,
+    pub class_name: String,
+    pub fn_name: String,
+}
+
 pub struct CodeGen {
     ir: String,
     lambda_ir: String,
@@ -144,6 +158,10 @@ pub struct CodeGen {
     do_not_serialize_fields: Vec<LogMaskFieldInfo>,
     /// Class names annotated with @JsonSerializable — get a compiler-generated toJson() method
     json_serializable_classes: Vec<String>,
+    /// Metric instrumentation entries from @Timed / @Counted annotations
+    metric_entries: Vec<MetricEntry>,
+    /// Whether a [metrics] endpoint is enabled (path to expose on)
+    metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
     test_entry: Option<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
@@ -197,6 +215,8 @@ impl CodeGen {
             masked_fields: Vec::new(),
             do_not_serialize_fields: Vec::new(),
             json_serializable_classes: Vec::new(),
+            metric_entries: Vec::new(),
+            metrics_path: None,
             test_entry: None,
             has_main: false,
             defined_classes: HashSet::new(),
@@ -222,6 +242,7 @@ impl CodeGen {
         masked_fields: Vec<LogMaskFieldInfo>,
         do_not_serialize_fields: Vec<LogMaskFieldInfo>,
         json_serializable_classes: Vec<String>,
+        metric_entries: Vec<MetricEntry>,
     ) {
         self.inline_functions = inline_fns;
         self.inline_methods = inline_meths;
@@ -234,6 +255,29 @@ impl CodeGen {
         self.masked_fields = masked_fields;
         self.do_not_serialize_fields = do_not_serialize_fields;
         self.json_serializable_classes = json_serializable_classes;
+        self.metric_entries = metric_entries;
+    }
+
+    pub fn set_metrics_config(&mut self, path: Option<String>) {
+        self.metrics_path = path;
+    }
+
+    /// Register a string constant and return an inline `getelementptr` expression (i8*).
+    fn make_string_const(&mut self, s: &str) -> String {
+        let label = format!("__metric_str_{}", self.strings.len());
+        self.strings.insert(label.clone(), s.to_string());
+        let len = s.len() + 1;
+        format!("getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0")
+    }
+
+    /// Emit a tinox_clock_nanos() call, subtract start_reg, and call tinox_histogram_record.
+    fn emit_histogram_record(&mut self, label: &str, start_reg: &str) {
+        let end_reg  = self.temp();
+        let dur_reg  = self.temp();
+        let name_ptr = self.make_string_const(label);
+        writeln!(&mut self.ir, "{} = call i64 @tinox_clock_nanos()", end_reg).unwrap();
+        writeln!(&mut self.ir, "{} = sub i64 {}, {}", dur_reg, end_reg, start_reg).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_histogram_record(i8* {}, i64 {})", name_ptr, dur_reg).unwrap();
     }
 
     /// Configure a single test to run: generates `tinox_main` that calls
@@ -498,6 +542,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_cli_get_int(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_positional(i32)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_cli_print_option(i8*, i8*)").unwrap();
+        // Metrics runtime
+        writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_histogram_record(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_gauge_set(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -1011,6 +1061,52 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir).unwrap();
         }
 
+        // ── Metrics endpoint shim (if enabled) ──────────────────────────────────
+        let metrics_path = self.metrics_path.clone();
+        if let Some(ref mpath) = metrics_path {
+            let mpath_escaped = Self::escape_llvm_string(mpath);
+            let mpath_len = mpath.len() + 1;
+            writeln!(&mut self.ir,
+                "@__metrics_path = private constant [{mpath_len} x i8] c\"{mpath_escaped}\\00\"").unwrap();
+            // Shim: GET /metrics → call tinox_metrics_prometheus(), return as text/plain
+            writeln!(&mut self.lambda_ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
+            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "define void @__metrics_shim(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            // HttpContext[1] = response ptr (i64*)
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            // Get prometheus text
+            writeln!(&mut self.lambda_ir, "  %prom_text = call i8* @tinox_metrics_prometheus()").unwrap();
+            // Set status 200
+            writeln!(&mut self.lambda_ir, "  %sc_field = getelementptr i64, i64* %resp_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 200, i64* %sc_field").unwrap();
+            // Set body
+            writeln!(&mut self.lambda_ir, "  %body_field = getelementptr i64, i64* %resp_ptr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %body_i64 = ptrtoint i8* %prom_text to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %body_i64, i64* %body_field").unwrap();
+            // Set Content-Type header to text/plain; version=0.0.4
+            let ct = "text/plain; version=0.0.4";
+            let ct_escaped = Self::escape_llvm_string(ct);
+            let ct_len = ct.len() + 1;
+            writeln!(&mut self.ir,
+                "@__metrics_ct = private constant [{ct_len} x i8] c\"{ct_escaped}\\00\"").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %ct_hdr_key = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %ct_hdr_val = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__metrics_ct, i64 0, i64 0").unwrap();
+            // headers are at HttpResponse[1] (i8* to map)
+            writeln!(&mut self.lambda_ir, "  %hdrs_field = getelementptr i64, i64* %resp_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %hdrs_i64 = load i64, i64* %hdrs_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %hdrs_ptr = inttoptr i64 %hdrs_i64 to i8*").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_ptr, i8* %ct_hdr_key, i64 %body_i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
         // ── __tinox_register_routes ─────────────────────────────────────────────
         writeln!(&mut self.lambda_ir, "define void @__tinox_register_routes(i64* %server) {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry:").unwrap();
@@ -1026,6 +1122,17 @@ impl CodeGen {
                 "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
             writeln!(&mut self.lambda_ir,
                 "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+        }
+
+        // Register the /metrics route if enabled
+        if let Some(ref mpath) = metrics_path {
+            let mpath_len = mpath.len() + 1;
+            writeln!(&mut self.lambda_ir,
+                "  %metrics_fn = ptrtoint void (i64)* @__metrics_shim to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %metrics_path = getelementptr [{mpath_len} x i8], [{mpath_len} x i8]* @__metrics_path, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  call void @tinox_HttpServer_get(i64* %server, i8* %metrics_path, i64 %metrics_fn)").unwrap();
         }
 
         writeln!(&mut self.lambda_ir, "  ret void").unwrap();
@@ -1218,6 +1325,7 @@ impl CodeGen {
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_type.clone(),
+            timed_metric: None,
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -1261,6 +1369,25 @@ impl CodeGen {
         .unwrap();
         writeln!(&mut self.ir, "entry:").unwrap();
 
+        // @Counted — increment call counter at function entry
+        let counted_metric = self.metric_entries.iter().find(|m| {
+            m.kind == MetricKind::Counted && m.class_name.is_empty() && m.fn_name == f.name
+        }).map(|m| m.metric_name.clone());
+        if let Some(ref label) = counted_metric {
+            let s = self.make_string_const(label);
+            writeln!(&mut self.ir, "call void @tinox_counter_inc(i8* {})", s).unwrap();
+        }
+
+        // @Timed — record start timestamp
+        let timed_metric = self.metric_entries.iter().find(|m| {
+            m.kind == MetricKind::Timed && m.class_name.is_empty() && m.fn_name == f.name
+        }).map(|m| m.metric_name.clone());
+        if let Some(ref label) = timed_metric {
+            let start_reg = self.temp();
+            writeln!(&mut self.ir, "{} = call i64 @tinox_clock_nanos()", start_reg).unwrap();
+            ctx.timed_metric = Some((label.clone(), start_reg));
+        }
+
         self.gen_stmt_body(&f.body, &mut ctx)?;
 
         let has_terminator = self.ir.lines().last().map_or(false, |l| {
@@ -1268,6 +1395,9 @@ impl CodeGen {
             t.starts_with("ret ") || t.starts_with("br ")
         });
         if !has_terminator {
+            if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
+                self.emit_histogram_record(label, start_reg);
+            }
             if ret_type == "void" {
                 writeln!(&mut self.ir, "ret void").unwrap();
             } else if ret_type.ends_with('*') {
@@ -1306,6 +1436,7 @@ impl CodeGen {
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_type.clone(),
+            timed_metric: None,
         };
 
         let mut params_str = if method.static_ {
@@ -1352,6 +1483,29 @@ impl CodeGen {
         .unwrap();
         writeln!(&mut self.ir, "entry:").unwrap();
 
+        // @Counted — increment call counter at method entry
+        let counted_metric = self.metric_entries.iter().find(|m| {
+            m.kind == MetricKind::Counted
+                && m.class_name == class_name
+                && m.fn_name == method.name
+        }).map(|m| m.metric_name.clone());
+        if let Some(ref label) = counted_metric {
+            let s = self.make_string_const(label);
+            writeln!(&mut self.ir, "call void @tinox_counter_inc(i8* {})", s).unwrap();
+        }
+
+        // @Timed — record start timestamp, store in ctx for return emission
+        let timed_metric = self.metric_entries.iter().find(|m| {
+            m.kind == MetricKind::Timed
+                && m.class_name == class_name
+                && m.fn_name == method.name
+        }).map(|m| m.metric_name.clone());
+        if let Some(ref label) = timed_metric {
+            let start_reg = self.temp();
+            writeln!(&mut self.ir, "{} = call i64 @tinox_clock_nanos()", start_reg).unwrap();
+            ctx.timed_metric = Some((label.clone(), start_reg));
+        }
+
         self.gen_stmt_body(&method.body, &mut ctx)?;
 
         let has_terminator = self.ir.lines().last().map_or(false, |l| {
@@ -1359,6 +1513,10 @@ impl CodeGen {
             t.starts_with("ret ") || t.starts_with("br ")
         });
         if !has_terminator {
+            // Emit timing before implicit return
+            if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
+                self.emit_histogram_record(label, start_reg);
+            }
             if ret_type == "void" {
                 writeln!(&mut self.ir, "ret void").unwrap();
             } else if ret_type.ends_with('*') {
@@ -2235,6 +2393,9 @@ impl CodeGen {
                 if let Some(scope) = ctx.defer_stack.last_mut() {
                     scope.clear();
                 }
+                if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
+                    self.emit_histogram_record(label, start_reg);
+                }
                 let (val, ty) = self.gen_expr(expr, ctx)?;
                 let expected = &ctx.ret_type.clone();
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
@@ -2263,6 +2424,9 @@ impl CodeGen {
             }
             StmtKind::Return(None) => {
                 self.gen_defer_scope(ctx)?;
+                if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
+                    self.emit_histogram_record(label, start_reg);
+                }
                 writeln!(&mut self.ir, "ret void").unwrap();
             }
             StmtKind::Expr(expr) => {
@@ -5773,6 +5937,7 @@ impl CodeGen {
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_ty.clone(),
+            timed_metric: None,
         };
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
@@ -6741,6 +6906,8 @@ pub struct GenCtx {
     in_defer_exec: bool,
     /// LLVM return type of the current function (for casting return values)
     ret_type: String,
+    /// If set, emit histogram_record before every return. (metric_name, start_reg)
+    timed_metric: Option<(String, String)>,
 }
 
 pub fn gen(source: &SourceFile) -> Result<CodeGen, ErrorBag> {
@@ -8431,7 +8598,7 @@ mod tests {
         cg.set_annotation_info(
             Default::default(), Default::default(), vec![], vec![],
             Default::default(), vec![], vec![], s_fields, m_fields,
-            vec![], vec![],
+            vec![], vec![], vec![],
         );
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
@@ -8455,6 +8622,7 @@ mod tests {
             Default::default(), vec![], vec![], vec![], vec![],
             dns_fields,
             json_classes.into_iter().map(|s| s.to_string()).collect(),
+            vec![],
         );
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
@@ -8542,7 +8710,7 @@ mod tests {
             Default::default(), Default::default(), vec![], vec![],
             Default::default(), vec![], vec![],
             vec![LogMaskFieldInfo { class_name: "User".to_string(), field_name: "password".to_string() }],
-            vec![], vec![], vec![],
+            vec![], vec![], vec![], vec![],
         );
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
@@ -8670,6 +8838,7 @@ mod tests {
             Default::default(), vec![], vec![], vec![], vec![],
             vec![],
             vec!["User".to_string()],
+            vec![],
         );
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
@@ -8692,6 +8861,7 @@ mod tests {
             vec![],
             vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "internalId".to_string() }],
             vec!["Record".to_string()],
+            vec![],
         );
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();

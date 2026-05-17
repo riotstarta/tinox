@@ -234,6 +234,39 @@ fn build(args: &[String]) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OptLevel { Release, Debug }
 
+/// Read `[metrics]` section from the nearest `tinox.toml`, if present.
+/// Returns `Some(path)` when `enabled = true` is set; `None` otherwise.
+fn read_metrics_config() -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).ok()?;
+            let mut in_metrics = false;
+            let mut enabled = false;
+            let mut path = "/metrics".to_string();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_metrics = line == "[metrics]";
+                    continue;
+                }
+                if !in_metrics { continue; }
+                if let Some(rest) = line.strip_prefix("enabled") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    enabled = rest == "true";
+                } else if let Some(rest) = line.strip_prefix("path") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("/metrics");
+                    path = rest.trim_matches('"').to_string();
+                }
+            }
+            return if enabled { Some(path) } else { None };
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
 /// Read `name` from the nearest `tinox.toml`, if present.
 fn read_project_name() -> Option<String> {
     let mut dir = std::env::current_dir().ok()?;
@@ -1380,7 +1413,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         .collect();
     cg.set_annotation_info(ann.inline_functions, ann.inline_methods, route_entries,
         di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields,
-        do_not_serialize_fields, ann.json_serializable_classes);
+        do_not_serialize_fields, ann.json_serializable_classes, vec![]);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -1632,7 +1665,21 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             field_name: f.field_name.clone(),
         })
         .collect();
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields, do_not_serialize_fields, ann_result.json_serializable_classes);
+    let metric_entries: Vec<tinox_codegen::MetricEntry> = ann_result.metric_entries
+        .iter()
+        .map(|m| tinox_codegen::MetricEntry {
+            kind: match m.kind {
+                tinox_typecheck::annotations::MetricKind::Timed   => tinox_codegen::MetricKind::Timed,
+                tinox_typecheck::annotations::MetricKind::Counted => tinox_codegen::MetricKind::Counted,
+                tinox_typecheck::annotations::MetricKind::Gauge   => tinox_codegen::MetricKind::Counted, // gauge on fields, handled separately
+            },
+            metric_name: m.metric_name.clone(),
+            class_name:  m.class_name.clone(),
+            fn_name:     m.fn_name.clone(),
+        })
+        .collect();
+    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields, do_not_serialize_fields, ann_result.json_serializable_classes, metric_entries);
+    codegen.set_metrics_config(read_metrics_config());
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

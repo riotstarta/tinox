@@ -128,6 +128,25 @@ pub struct CliCommandInfo {
     pub arguments: Vec<CliArgumentInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetricKind {
+    Timed,
+    Counted,
+    Gauge,
+}
+
+#[derive(Debug, Clone)]
+pub struct MetricInfo {
+    pub kind: MetricKind,
+    /// Custom label from the annotation argument, e.g. @Timed("my_label").
+    /// Falls back to "<ClassName>_<methodName>" or "<funcName>" when omitted.
+    pub metric_name: String,
+    /// Set for methods; empty for top-level functions.
+    pub class_name: String,
+    /// The Tinox function / method name.
+    pub fn_name: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
@@ -144,6 +163,7 @@ pub struct AnnotationProcessingResult {
     pub json_serializable_classes: Vec<String>,
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
+    pub metric_entries: Vec<MetricInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -409,6 +429,38 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Excludes a field from all serialization (JSON, XML, etc.)".to_string(),
+            },
+        );
+
+        // Metrics annotations
+        registry.insert(
+            "Timed".to_string(),
+            AnnotationInfo {
+                name: "Timed".to_string(),
+                valid_targets: vec![AnnotationTarget::Function, AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 1,
+                description: "@Timed[(\"label\")] — records execution time as a Prometheus summary".to_string(),
+            },
+        );
+        registry.insert(
+            "Counted".to_string(),
+            AnnotationInfo {
+                name: "Counted".to_string(),
+                valid_targets: vec![AnnotationTarget::Function, AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 1,
+                description: "@Counted[(\"label\")] — increments a Prometheus counter on each call".to_string(),
+            },
+        );
+        registry.insert(
+            "Gauge".to_string(),
+            AnnotationInfo {
+                name: "Gauge".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 1,
+                max_args: 1,
+                description: "@Gauge(\"label\") — tracks a numeric field as a Prometheus gauge".to_string(),
             },
         );
 
@@ -701,6 +753,21 @@ impl AnnotationProcessor {
                             description,
                         });
                     }
+                    "Timed" | "Counted" => {
+                        let default_label = format!("{}_{}", class.name, method.name);
+                        let label = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
+                            s.clone()
+                        } else {
+                            default_label
+                        };
+                        let kind = if ann.name == "Timed" { MetricKind::Timed } else { MetricKind::Counted };
+                        result.metric_entries.push(MetricInfo {
+                            kind,
+                            metric_name: label,
+                            class_name: class.name.clone(),
+                            fn_name: method.name.clone(),
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -713,16 +780,33 @@ impl AnnotationProcessor {
         result: &mut AnnotationProcessingResult,
     ) {
         for ann in &f.annotations {
-            if ann.name == "inline" {
-                result.inline_functions.insert(f.name.clone());
-            }
-            if ann.name == "deprecated" {
-                let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
-                    format!("function '{}' is deprecated: {}", f.name, s)
-                } else {
-                    format!("function '{}' is deprecated", f.name)
-                };
-                result.deprecated_warnings.push(msg);
+            match ann.name.as_str() {
+                "inline" => {
+                    result.inline_functions.insert(f.name.clone());
+                }
+                "deprecated" => {
+                    let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
+                        format!("function '{}' is deprecated: {}", f.name, s)
+                    } else {
+                        format!("function '{}' is deprecated", f.name)
+                    };
+                    result.deprecated_warnings.push(msg);
+                }
+                "Timed" | "Counted" => {
+                    let label = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
+                        s.clone()
+                    } else {
+                        f.name.clone()
+                    };
+                    let kind = if ann.name == "Timed" { MetricKind::Timed } else { MetricKind::Counted };
+                    result.metric_entries.push(MetricInfo {
+                        kind,
+                        metric_name: label,
+                        class_name: String::new(),
+                        fn_name: f.name.clone(),
+                    });
+                }
+                _ => {}
             }
         }
     }

@@ -2108,6 +2108,140 @@ void tinox_cli_print_option(const char* names, const char* description) {
     printf("  %-22s  %s\n", names, description ? description : "");
 }
 
+// ---- Metrics ----
+
+#define TINOX_MAX_METRICS 512
+
+typedef struct {
+    char   name[256];
+    int64_t value;
+} TinoxCounter;
+
+typedef struct {
+    char    name[256];
+    int64_t count;
+    int64_t sum_ns;
+    int64_t min_ns;
+    int64_t max_ns;
+} TinoxHistogram;
+
+typedef struct {
+    char    name[256];
+    int64_t value;
+} TinoxGauge;
+
+static TinoxCounter   _tinox_counters[TINOX_MAX_METRICS];
+static TinoxHistogram _tinox_histograms[TINOX_MAX_METRICS];
+static TinoxGauge     _tinox_gauges[TINOX_MAX_METRICS];
+static int _tinox_counter_n   = 0;
+static int _tinox_histogram_n = 0;
+static int _tinox_gauge_n     = 0;
+static pthread_mutex_t _tinox_metrics_mu = PTHREAD_MUTEX_INITIALIZER;
+
+int64_t tinox_clock_nanos(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+void tinox_counter_inc(const char* name) {
+    pthread_mutex_lock(&_tinox_metrics_mu);
+    for (int i = 0; i < _tinox_counter_n; i++) {
+        if (strcmp(_tinox_counters[i].name, name) == 0) {
+            _tinox_counters[i].value++;
+            pthread_mutex_unlock(&_tinox_metrics_mu);
+            return;
+        }
+    }
+    if (_tinox_counter_n < TINOX_MAX_METRICS) {
+        strncpy(_tinox_counters[_tinox_counter_n].name, name, 255);
+        _tinox_counters[_tinox_counter_n].name[255] = '\0';
+        _tinox_counters[_tinox_counter_n].value = 1;
+        _tinox_counter_n++;
+    }
+    pthread_mutex_unlock(&_tinox_metrics_mu);
+}
+
+void tinox_histogram_record(const char* name, int64_t duration_ns) {
+    pthread_mutex_lock(&_tinox_metrics_mu);
+    for (int i = 0; i < _tinox_histogram_n; i++) {
+        if (strcmp(_tinox_histograms[i].name, name) == 0) {
+            _tinox_histograms[i].count++;
+            _tinox_histograms[i].sum_ns += duration_ns;
+            if (duration_ns < _tinox_histograms[i].min_ns) _tinox_histograms[i].min_ns = duration_ns;
+            if (duration_ns > _tinox_histograms[i].max_ns) _tinox_histograms[i].max_ns = duration_ns;
+            pthread_mutex_unlock(&_tinox_metrics_mu);
+            return;
+        }
+    }
+    if (_tinox_histogram_n < TINOX_MAX_METRICS) {
+        strncpy(_tinox_histograms[_tinox_histogram_n].name, name, 255);
+        _tinox_histograms[_tinox_histogram_n].name[255] = '\0';
+        _tinox_histograms[_tinox_histogram_n].count   = 1;
+        _tinox_histograms[_tinox_histogram_n].sum_ns  = duration_ns;
+        _tinox_histograms[_tinox_histogram_n].min_ns  = duration_ns;
+        _tinox_histograms[_tinox_histogram_n].max_ns  = duration_ns;
+        _tinox_histogram_n++;
+    }
+    pthread_mutex_unlock(&_tinox_metrics_mu);
+}
+
+void tinox_gauge_set(const char* name, int64_t value) {
+    pthread_mutex_lock(&_tinox_metrics_mu);
+    for (int i = 0; i < _tinox_gauge_n; i++) {
+        if (strcmp(_tinox_gauges[i].name, name) == 0) {
+            _tinox_gauges[i].value = value;
+            pthread_mutex_unlock(&_tinox_metrics_mu);
+            return;
+        }
+    }
+    if (_tinox_gauge_n < TINOX_MAX_METRICS) {
+        strncpy(_tinox_gauges[_tinox_gauge_n].name, name, 255);
+        _tinox_gauges[_tinox_gauge_n].name[255] = '\0';
+        _tinox_gauges[_tinox_gauge_n].value = value;
+        _tinox_gauge_n++;
+    }
+    pthread_mutex_unlock(&_tinox_metrics_mu);
+}
+
+// Returns a heap-allocated Prometheus-format string; caller need not free (GC-managed).
+char* tinox_metrics_prometheus(void) {
+    pthread_mutex_lock(&_tinox_metrics_mu);
+    // Rough upper bound: 256 bytes per metric entry
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 512 + 64;
+    char* buf = (char*)GC_malloc(cap);
+    size_t pos = 0;
+
+    for (int i = 0; i < _tinox_counter_n; i++) {
+        pos += (size_t)snprintf(buf + pos, cap - pos,
+            "# TYPE %s_total counter\n%s_total %lld\n",
+            _tinox_counters[i].name, _tinox_counters[i].name,
+            (long long)_tinox_counters[i].value);
+    }
+    for (int i = 0; i < _tinox_histogram_n; i++) {
+        double sum_s   = (double)_tinox_histograms[i].sum_ns / 1e9;
+        double min_s   = (double)_tinox_histograms[i].min_ns / 1e9;
+        double max_s   = (double)_tinox_histograms[i].max_ns / 1e9;
+        int64_t count  = _tinox_histograms[i].count;
+        const char* n  = _tinox_histograms[i].name;
+        pos += (size_t)snprintf(buf + pos, cap - pos,
+            "# TYPE %s_duration_seconds summary\n"
+            "%s_duration_seconds_count %lld\n"
+            "%s_duration_seconds_sum %.9f\n"
+            "%s_duration_seconds_min %.9f\n"
+            "%s_duration_seconds_max %.9f\n",
+            n, n, (long long)count, n, sum_s, n, min_s, n, max_s);
+    }
+    for (int i = 0; i < _tinox_gauge_n; i++) {
+        pos += (size_t)snprintf(buf + pos, cap - pos,
+            "# TYPE %s gauge\n%s %lld\n",
+            _tinox_gauges[i].name, _tinox_gauges[i].name,
+            (long long)_tinox_gauges[i].value);
+    }
+    pthread_mutex_unlock(&_tinox_metrics_mu);
+    return buf;
+}
+
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);
