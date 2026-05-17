@@ -1,0 +1,84 @@
+module tinox.core.db;
+
+namespace tinox.core.db
+{
+    // EntityQuery<T> is an API wrapper for the ORM query DSL.
+    // The actual SQL generation from lambdas happens at compile time
+    // in the codegen (Phase 2). The generated ClassName_selectSql(),
+    // ClassName_fromRow(), ClassName_toParams() functions are called
+    // via the compile-time intercepted list()/first()/count() methods.
+    //
+    // Usage:
+    //   let users: List<User> = DB.of(User)
+    //       .filter(u -> u.age > 18)
+    //       .orderBy(u -> u.name)
+    //       .limit(10)
+    //       .list();
+
+    class EntityQuery<T>
+    {
+        fn filter(predicate: fnc(T) -> Bool) -> EntityQuery<T>
+        {
+            return this;
+        }
+
+        fn orderBy(field: fnc(T) -> Any) -> EntityQuery<T>
+        {
+            return this;
+        }
+
+        fn orderByDesc(field: fnc(T) -> Any) -> EntityQuery<T>
+        {
+            return this;
+        }
+
+        fn limit(n: Int64) -> EntityQuery<T>
+        {
+            return this;
+        }
+
+        fn offset(n: Int64) -> EntityQuery<T>
+        {
+            return this;
+        }
+
+        // list(), first(), count() — intercepted at compile time by the
+        // codegen when called on a DB.of(T)... chain. These bodies are
+        // fallback stubs only and should never execute at runtime.
+        fn list() -> List<T>
+        {
+            return List::new();
+        }
+
+        fn first() -> T
+        {
+            return T {};
+        }
+
+        fn count() -> Int64
+        {
+            return 0;
+        }
+
+        fn save(entity: T) -> T
+        {
+            return entity;
+        }
+
+        fn delete(entity: T) -> Nothing
+        {
+        }
+
+        fn saveAll(entities: List<T>) -> Nothing
+        {
+        }
+    }
+
+    class DB
+    {
+        fnc of<T>() -> EntityQuery<T>
+        {
+            return EntityQuery<T> {};
+        }
+    }
+}

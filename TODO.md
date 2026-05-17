@@ -425,7 +425,7 @@ entry:
 
 ---
 
-## Phase 5 — Stdlib: Lambda-Query-DSL
+## Phase 5 — Stdlib: Lambda-Query-DSL ✅
 
 **Datei:** `crates/tinox-core/db.tnx`
 
