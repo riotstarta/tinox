@@ -572,6 +572,9 @@
     <li><a href="#eclipse">Eclipse-Plugin</a></li>
     <li><a href="#cli">CLI-Werkzeuge</a></li>
 
+    <li class="section-label">Datenbankzugriff</li>
+    <li><a href="#orm">ORM &amp; Lambda-Query-DSL</a></li>
+
     <li class="section-label">Performance</li>
     <li><a href="#http-server">HTTP-Server</a></li>
     <li><a href="#benchmark">Benchmark vs. Quarkus</a></li>
@@ -6812,6 +6815,110 @@ Logger::setLevel(dbLog, LogLevel::Warn());
 Logger::info(dbLog, "Diese Info wird unterdrückt.");
 Logger::warn(dbLog, "Verbindungspool fast erschöpft.");</code></pre>
   </div>
+
+
+  <!-- ══════════════ ORM ══════════════ -->
+  <section id="orm">
+  <h2>ORM &amp; Lambda-Query-DSL</h2>
+  <p>Tinox bietet ein typsicheres ORM nach dem JPA/QueryDSL-Prinzip. Klassen werden mit Annotations als Datenbank-Tabellen markiert. Abfragen laufen ausschließlich über ein Lambda-DSL — keine String-basierten Queries.</p>
+
+  <h3>Annotations</h3>
+  <div class="card">
+    <table style="width:100%;border-collapse:collapse">
+      <tr><th style="text-align:left;padding:4px 8px">Annotation</th><th style="text-align:left;padding:4px 8px">Ziel</th><th style="text-align:left;padding:4px 8px">Beschreibung</th></tr>
+      <tr><td style="padding:4px 8px"><code>@Entity</code></td><td>Klasse</td><td>Markiert die Klasse als Datenbank-Entität</td></tr>
+      <tr><td style="padding:4px 8px"><code>@Table("name")</code></td><td>Klasse</td><td>Setzt den Tabellennamen (Standard: lowercase Klassenname)</td></tr>
+      <tr><td style="padding:4px 8px"><code>@Id</code></td><td>Feld</td><td>Primärschlüssel</td></tr>
+      <tr><td style="padding:4px 8px"><code>@Column("col")</code></td><td>Feld</td><td>Mappt Feld auf DB-Spalte (Standard: Feldname)</td></tr>
+      <tr><td style="padding:4px 8px"><code>@GeneratedValue</code></td><td>Feld</td><td>ID wird von der DB generiert (AUTO_INCREMENT / SERIAL)</td></tr>
+      <tr><td style="padding:4px 8px"><code>@NotNull</code></td><td>Feld</td><td>Spalte ist NOT NULL</td></tr>
+    </table>
+  </div>
+
+  <h3>Entity-Definition</h3>
+  <div class="card"><pre><code>@Entity
+@Table("users")
+class User {
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+    @Column("active")
+    var active: Bool;
+}</code></pre></div>
+
+  <h3>tinox.toml – [database]-Konfiguration</h3>
+  <div class="card"><pre><code># PostgreSQL
+[database]
+driver = "postgres"
+url    = "postgres://user:pass@localhost:5432/mydb"
+pool   = 10
+
+# MySQL / MariaDB
+[database]
+driver = "mysql"
+url    = "mysql://user:pass@localhost:3306/mydb"
+
+# SQLite (kein DB-Server nötig)
+[database]
+driver = "sqlite"
+url    = "sqlite:///path/to/database.db"</code></pre></div>
+
+  <h3>Lambda-Query-DSL</h3>
+  <div class="card"><pre><code>// Alle Nutzer über 18, alphabetisch, max. 10 Ergebnisse
+let adults: List&lt;User&gt; = DB.of(User)
+    .filter(u -&gt; u.age &gt; 18)
+    .orderBy(u -&gt; u.name)
+    .limit(10)
+    .list();
+
+// Einzelnen Nutzer lesen
+let alice: User = DB.of(User)
+    .filter(u -&gt; u.name == "Alice")
+    .first();
+
+// Anzahl aktiver Nutzer
+let n: Int64 = DB.of(User)
+    .filter(u -&gt; u.active == true)
+    .count();</code></pre></div>
+
+  <h3>Lambda → SQL Übersetzungstabelle</h3>
+  <div class="card">
+    <table style="width:100%;border-collapse:collapse">
+      <tr><th style="text-align:left;padding:4px 8px">Lambda-Ausdruck</th><th style="text-align:left;padding:4px 8px">SQL-Fragment</th></tr>
+      <tr><td style="padding:4px 8px"><code>u.age &gt; 18</code></td><td><code>age &gt; $1</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>u.name == "Alice"</code></td><td><code>name = $1</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>u.name != "Bob"</code></td><td><code>name != $1</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>u.name.startsWith("A")</code></td><td><code>name LIKE 'A%'</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>u.name.endsWith("z")</code></td><td><code>name LIKE '%z'</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>u.name.contains("oo")</code></td><td><code>name LIKE '%oo%'</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>expr1 &amp;&amp; expr2</code></td><td><code>(pred1) AND (pred2)</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>expr1 || expr2</code></td><td><code>(pred1) OR (pred2)</code></td></tr>
+      <tr><td style="padding:4px 8px"><code>!expr</code></td><td><code>NOT (pred)</code></td></tr>
+    </table>
+  </div>
+
+  <h3>Speichern, Ändern, Löschen</h3>
+  <div class="card"><pre><code>// INSERT (ID wird von der DB gesetzt)
+let user: User = User {};
+user.name = "Alice";
+user.age  = 30;
+let saved: User = DB.of(User).save(user);
+
+// DELETE
+DB.of(User).delete(saved);
+
+// Mehrere auf einmal speichern
+let list: List&lt;User&gt; = List::new();
+list.add(user1);
+list.add(user2);
+DB.of(User).saveAll(list);</code></pre></div>
+
+  <h3>Fehlerbehandlung</h3>
+  <p>Datenbankfehler werden aktuell auf stderr protokolliert. Eine try/catch-Integration ist für eine spätere Version geplant. Verbindungsfehler beim Start beenden das Programm mit einer aussagekräftigen Fehlermeldung.</p>
+  </section>
 
 </main>
 </body>

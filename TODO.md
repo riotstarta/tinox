@@ -547,7 +547,7 @@ Linker-Flag: `-lsqlite3` (überall vorhanden)
 
 ---
 
-## Phase 8 — Dokumentation
+## Phase 8 — Dokumentation ✅
 
 **Dateien:** `docs.html` und `docs_en.html`
 
