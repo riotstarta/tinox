@@ -516,7 +516,7 @@ Linker-Flag: `-lmysqlclient`
 
 ---
 
-## Phase 7 — C-Runtime: SQLite
+## Phase 7 — C-Runtime: SQLite ✅
 
 **Datei:** `runtime/runtime.c`
 

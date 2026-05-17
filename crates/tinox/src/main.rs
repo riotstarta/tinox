@@ -1839,6 +1839,10 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
+    } else if db_driver == "mysql" {
+        cc_args.push("-DTINOX_DB_MYSQL");
+    } else if db_driver == "sqlite" {
+        cc_args.push("-DTINOX_DB_SQLITE");
     }
     let cc_status = Command::new("cc")
         .args(&cc_args)

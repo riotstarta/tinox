@@ -2308,6 +2308,97 @@ void    tinox_db_free(void* r)                                                 {
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
 #endif
 
+// ---- SQLite driver ----
+#ifdef TINOX_DB_SQLITE
+#include <sqlite3.h>
+
+static sqlite3* _tinox_sqlite_db = NULL;
+
+typedef struct {
+    int n_cols;
+    int n_rows;
+    char** data;  // row-major: data[row * n_cols + col]
+} TinoxSqliteResult;
+
+void tinox_db_connect(const char* url) {
+    // url may be a path or sqlite:///path
+    const char* path = url;
+    if (strncmp(path, "sqlite:///", 10) == 0) path += 9;
+    else if (strncmp(path, "sqlite://", 9) == 0) path += 9;
+    if (sqlite3_open(path, &_tinox_sqlite_db) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(_tinox_sqlite_db));
+        exit(1);
+    }
+}
+
+void* tinox_db_get_conn(void) { return _tinox_sqlite_db; }
+
+void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    sqlite3* db = (sqlite3*)conn;
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
+        return NULL;
+    }
+    for (int i = 0; i < (int)n_params; i++) {
+        sqlite3_bind_text(stmt, i + 1, params[i], -1, SQLITE_STATIC);
+    }
+
+    // First pass: count rows
+    int n_rows = 0, n_cols = sqlite3_column_count(stmt);
+    // Collect all rows into a temporary list
+    char*** rows = NULL;
+    int rows_cap = 0;
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (n_rows >= rows_cap) {
+            rows_cap = rows_cap ? rows_cap * 2 : 16;
+            rows = (char***)realloc(rows, sizeof(char**) * (size_t)rows_cap);
+        }
+        rows[n_rows] = (char**)GC_malloc(sizeof(char*) * (size_t)(n_cols > 0 ? n_cols : 1));
+        for (int c = 0; c < n_cols; c++) {
+            const char* val = (const char*)sqlite3_column_text(stmt, c);
+            rows[n_rows][c] = val ? GC_strdup(val) : NULL;
+        }
+        n_rows++;
+    }
+    sqlite3_finalize(stmt);
+
+    TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
+    res->n_cols = n_cols;
+    res->n_rows = n_rows;
+    if (n_rows > 0 && n_cols > 0) {
+        res->data = (char**)GC_malloc(sizeof(char*) * (size_t)(n_rows * n_cols));
+        for (int r = 0; r < n_rows; r++) {
+            for (int c = 0; c < n_cols; c++) {
+                res->data[r * n_cols + c] = rows[r][c];
+            }
+        }
+    } else {
+        res->data = NULL;
+    }
+    if (rows) free(rows);
+    return (void*)res;
+}
+
+int64_t tinox_db_nrows(void* r)                       { return r ? ((TinoxSqliteResult*)r)->n_rows : 0; }
+int64_t tinox_db_ncols(void* r)                       { return r ? ((TinoxSqliteResult*)r)->n_cols : 0; }
+char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
+    TinoxSqliteResult* res = (TinoxSqliteResult*)r;
+    if (!res || !res->data) return "";
+    char* v = res->data[(int)row * res->n_cols + (int)col];
+    return v ? v : "";
+}
+bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
+    TinoxSqliteResult* res = (TinoxSqliteResult*)r;
+    if (!res || !res->data) return true;
+    return res->data[(int)row * res->n_cols + (int)col] == NULL;
+}
+void    tinox_db_free(void* r) { (void)r; }
+char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
+
+#endif /* TINOX_DB_SQLITE */
+
 // ---- MySQL driver ----
 #ifdef TINOX_DB_MYSQL
 #include <mysql/mysql.h>
