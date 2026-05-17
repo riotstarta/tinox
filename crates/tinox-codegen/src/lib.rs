@@ -12,3 +12,5 @@ pub use codegen::CliArgumentInfo;
 pub use codegen::LogMaskFieldInfo;
 pub use codegen::MetricEntry;
 pub use codegen::MetricKind;
+pub use codegen::EntityEntry;
+pub use codegen::EntityFieldEntry;

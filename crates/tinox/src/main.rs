@@ -1414,6 +1414,22 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     cg.set_annotation_info(ann.inline_functions, ann.inline_methods, route_entries,
         di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields,
         do_not_serialize_fields, ann.json_serializable_classes, vec![]);
+    let entity_entries_test: Vec<tinox_codegen::EntityEntry> = ann.entity_entries
+        .iter()
+        .map(|e| tinox_codegen::EntityEntry {
+            class_name: e.class_name.clone(),
+            table_name: e.table_name.clone(),
+            fields: e.fields.iter().map(|f| tinox_codegen::EntityFieldEntry {
+                field_name: f.field_name.clone(),
+                column_name: f.column_name.clone(),
+                is_id: f.is_id,
+                is_generated: f.is_generated,
+                not_null: f.not_null,
+                field_llvm_type: f.field_llvm_type.clone(),
+            }).collect(),
+        })
+        .collect();
+    cg.set_entity_entries(entity_entries_test);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -1680,6 +1696,22 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .collect();
     codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields, do_not_serialize_fields, ann_result.json_serializable_classes, metric_entries);
     codegen.set_metrics_config(read_metrics_config());
+    let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
+        .iter()
+        .map(|e| tinox_codegen::EntityEntry {
+            class_name: e.class_name.clone(),
+            table_name: e.table_name.clone(),
+            fields: e.fields.iter().map(|f| tinox_codegen::EntityFieldEntry {
+                field_name: f.field_name.clone(),
+                column_name: f.column_name.clone(),
+                is_id: f.is_id,
+                is_generated: f.is_generated,
+                not_null: f.not_null,
+                field_llvm_type: f.field_llvm_type.clone(),
+            }).collect(),
+        })
+        .collect();
+    codegen.set_entity_entries(entity_entries);
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

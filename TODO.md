@@ -25,11 +25,11 @@ let adults: List<User> = DB.of(User)
 
 ---
 
-## Phase 1 — ORM-Annotations registrieren
+## Phase 1 — ORM-Annotations registrieren ✅
 
 **Datei:** `crates/tinox-typecheck/src/annotations.rs`
 
-### 1.1 Neue Structs anlegen
+### 1.1 Neue Structs anlegen ✅
 
 Nach den bestehenden Structs (z.B. nach `TestInfo`) folgende Typen einfügen:
 
@@ -52,7 +52,7 @@ pub struct EntityInfo {
 }
 ```
 
-### 1.2 Zu `AnnotationProcessingResult` hinzufügen
+### 1.2 Zu `AnnotationProcessingResult` hinzufügen ✅
 
 ```rust
 pub entity_entries: Vec<EntityInfo>,
@@ -60,7 +60,7 @@ pub entity_entries: Vec<EntityInfo>,
 
 (In `Default` impl: `entity_entries: Vec::new()`)
 
-### 1.3 Annotations in `AnnotationProcessor::new()` registrieren
+### 1.3 Annotations in `AnnotationProcessor::new()` registrieren ✅
 
 ```rust
 registry.insert("Entity", AnnotationInfo {
@@ -95,7 +95,7 @@ registry.insert("NotNull", AnnotationInfo {
 });
 ```
 
-### 1.4 Verarbeitung in `process_class_annotations()`
+### 1.4 Verarbeitung in `process_class_annotations()` ✅
 
 In der match-Schleife über `class.annotations`:
 
@@ -138,7 +138,7 @@ if has_entity {
 }
 ```
 
-### 1.5 Wiring in `crates/tinox/src/main.rs`
+### 1.5 Wiring in `crates/tinox/src/main.rs` ✅
 
 Analog zu `route_entries` / `di_components` etc.:
 
@@ -168,7 +168,7 @@ let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
-### 2.1 Neue Structs
+### 2.1 Neue Structs ✅
 
 ```rust
 #[derive(Debug, Clone)]
@@ -191,7 +191,7 @@ pub struct EntityEntry {
 
 In `lib.rs` exportieren: `pub use codegen::EntityEntry; pub use codegen::EntityFieldEntry;`
 
-### 2.2 Felder in `CodeGen` struct
+### 2.2 Felder in `CodeGen` struct ✅
 
 ```rust
 entity_entries: Vec<EntityEntry>,

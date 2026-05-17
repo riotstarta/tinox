@@ -99,6 +99,23 @@ pub struct MetricEntry {
     pub fn_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct EntityFieldEntry {
+    pub field_name: String,
+    pub column_name: String,
+    pub is_id: bool,
+    pub is_generated: bool,
+    pub not_null: bool,
+    pub field_llvm_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntityEntry {
+    pub class_name: String,
+    pub table_name: String,
+    pub fields: Vec<EntityFieldEntry>,
+}
+
 pub struct CodeGen {
     ir: String,
     lambda_ir: String,
@@ -160,6 +177,8 @@ pub struct CodeGen {
     json_serializable_classes: Vec<String>,
     /// Metric instrumentation entries from @Timed / @Counted annotations
     metric_entries: Vec<MetricEntry>,
+    /// ORM entity entries from @Entity / @Table annotations
+    entity_entries: Vec<EntityEntry>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
@@ -216,6 +235,7 @@ impl CodeGen {
             do_not_serialize_fields: Vec::new(),
             json_serializable_classes: Vec::new(),
             metric_entries: Vec::new(),
+            entity_entries: Vec::new(),
             metrics_path: None,
             test_entry: None,
             has_main: false,
@@ -260,6 +280,10 @@ impl CodeGen {
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
         self.metrics_path = path;
+    }
+
+    pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
+        self.entity_entries = entries;
     }
 
     /// Register a string constant and return an inline `getelementptr` expression (i8*).
