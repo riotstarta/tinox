@@ -322,6 +322,8 @@ pub struct TypeChecker {
     type_param_scope: HashSet<String>,
     /// Expected return type of the function currently being checked.
     current_return_type: Option<ValueType>,
+    /// All class names defined in the program — allows passing a class as a value (e.g. DB.of(User)).
+    known_class_names: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -878,6 +880,7 @@ impl TypeChecker {
             field_visibility: HashMap::new(),
             type_param_scope: HashSet::new(),
             current_return_type: None,
+            known_class_names: HashSet::new(),
         }
     }
 
@@ -1073,11 +1076,11 @@ impl TypeChecker {
                                 };
                                 params.extend(
                                     method.params.iter()
-                                        .map(|p| (p.name.clone(), Self::type_to_value(&p.param_type))),
+                                        .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &method.type_params))),
                                 );
                                 let sig = FunctionSignature {
                                     params,
-                                    return_type: Self::type_to_value(&method.ret_type),
+                                    return_type: Self::type_to_value_erasing(&method.ret_type, &method.type_params),
                                 };
                                 let key = format!("{}_{}", c.name, method.name);
                                 self.symbols.functions.insert(key.clone(), sig);
@@ -1351,6 +1354,7 @@ impl TypeChecker {
                         }
                     }
 
+                    self.known_class_names.insert(name.clone());
                     processed.insert(name.clone());
                 }
                 if processed.len() == before {
@@ -1785,6 +1789,9 @@ impl TypeChecker {
                     ty.clone()
                 } else if self.symbols.functions.contains_key(name) {
                     ValueType::Fn
+                } else if self.known_class_names.contains(name) {
+                    // Class name used as a value (e.g. DB.of(User)) — treat as Any
+                    ValueType::Any
                 } else {
                     self.errors
                         .push(TypeError::UndefinedVariable(name.clone(), expr.span).to_error());

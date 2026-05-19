@@ -707,10 +707,18 @@ impl Parser {
     }
 
     fn parse_type_base(&mut self) -> Result<Type, Error> {
-        // `Nothing` is a keyword token, not an identifier — handle it before parse_ident
+        // These are keyword tokens, not identifiers — handle them before parse_ident
         if self.check_keyword(Keyword::Nothing) {
             self.bump();
             return Ok(Type::Nothing);
+        }
+        if self.check_keyword(Keyword::Any) {
+            self.bump();
+            return Ok(Type::Any);
+        }
+        if self.check_keyword(Keyword::Never) {
+            self.bump();
+            return Ok(Type::Never);
         }
         let ident = self.parse_ident()?;
 

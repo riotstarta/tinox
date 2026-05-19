@@ -430,7 +430,24 @@ impl CodeGen {
     fn infer_struct_type<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         use tinox_parser::ExprKind;
         match &expr.node {
-            ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+            ExprKind::Ident(name) => {
+                let ty = ctx.local_types.get(name)?;
+                // "List:ClassName" → strip prefix, return element class name
+                if let Some(cls) = ty.strip_prefix("List:") {
+                    return Some(cls.to_string());
+                }
+                Some(ty.clone())
+            }
+            ExprKind::Index { obj, .. } => {
+                // For arr[i], infer the element struct type from the array variable
+                if let ExprKind::Ident(arr_name) = &obj.node {
+                    let ty = ctx.local_types.get(arr_name.as_str())?;
+                    // "List:ClassName" → element type is ClassName
+                    ty.strip_prefix("List:").map(|s| s.to_string())
+                } else {
+                    None
+                }
+            }
             ExprKind::This => ctx.current_struct.clone(),
             ExprKind::FieldAccess { obj, field } => {
                 let outer = self.infer_struct_type(obj, ctx)?;
@@ -586,6 +603,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_ncols(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_getval(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64  @tinox_db_getval_int(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i1  @tinox_db_is_null(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
@@ -2543,34 +2561,33 @@ impl CodeGen {
                 Ok((as_i64ptr, "i64".to_string()))
             }
             _ => {
-                // "list" — build a List
+                // "list" — build a List using Tinox array convention:
+                // layout: [length | elem0 | elem1 | ... | elemN-1]
+                // returned pointer points to elem0; length lives at index -1.
                 let from_row_fn = format!("{}_fromRow", entity.class_name);
                 let nrows = self.temp();
                 writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {result_reg})").unwrap();
 
-                // Allocate result array: nrows * 8 bytes
-                let arr_bytes = self.temp();
-                let arr_ptr = self.temp();
-                writeln!(&mut self.ir, "  {arr_bytes} = mul i64 {nrows}, 8").unwrap();
-                writeln!(&mut self.ir, "  {arr_ptr} = call i8* @tinox_alloc(i64 {arr_bytes})").unwrap();
-                let arr_i64 = self.temp();
-                writeln!(&mut self.ir, "  {arr_i64} = bitcast i8* {arr_ptr} to i64*").unwrap();
+                // Allocate (nrows + 1) * 8 bytes: slot 0 = length, slots 1..nrows = elements
+                let total_slots = self.temp();
+                let total_bytes = self.temp();
+                let raw_ptr = self.temp();
+                let raw_i64 = self.temp();
+                writeln!(&mut self.ir, "  {total_slots} = add i64 {nrows}, 1").unwrap();
+                writeln!(&mut self.ir, "  {total_bytes} = mul i64 {total_slots}, 8").unwrap();
+                writeln!(&mut self.ir, "  {raw_ptr} = call i8* @tinox_alloc(i64 {total_bytes})").unwrap();
+                writeln!(&mut self.ir, "  {raw_i64} = bitcast i8* {raw_ptr} to i64*").unwrap();
 
-                // Allocate a boxed counter for the List (tinox arrays are i64* with length prefix)
-                let list_raw = self.temp();
-                let list_ptr = self.temp();
-                writeln!(&mut self.ir, "  {list_raw} = call i8* @tinox_alloc(i64 16)").unwrap(); // [length, data_ptr]
-                writeln!(&mut self.ir, "  {list_ptr} = bitcast i8* {list_raw} to i64*").unwrap();
+                // Store length at index 0
                 let len_slot = self.temp();
-                writeln!(&mut self.ir, "  {len_slot} = getelementptr i64, i64* {list_ptr}, i64 0").unwrap();
+                writeln!(&mut self.ir, "  {len_slot} = getelementptr i64, i64* {raw_i64}, i64 0").unwrap();
                 writeln!(&mut self.ir, "  store i64 {nrows}, i64* {len_slot}").unwrap();
-                let data_slot = self.temp();
-                writeln!(&mut self.ir, "  {data_slot} = getelementptr i64, i64* {list_ptr}, i64 1").unwrap();
-                let arr_as_int = self.temp();
-                writeln!(&mut self.ir, "  {arr_as_int} = ptrtoint i64* {arr_i64} to i64").unwrap();
-                writeln!(&mut self.ir, "  store i64 {arr_as_int}, i64* {data_slot}").unwrap();
 
-                // Loop: i = 0; while i < nrows { arr[i] = fromRow(result, i); i++ }
+                // elem0 lives at index 1 — this is the pointer returned to callers
+                let data_ptr = self.temp();
+                writeln!(&mut self.ir, "  {data_ptr} = getelementptr i64, i64* {raw_i64}, i64 1").unwrap();
+
+                // Loop: i = 0; while i < nrows { data_ptr[i] = fromRow(result, i); i++ }
                 let loop_bb = self.new_bb("orm_loop");
                 let body_bb = self.new_bb("orm_body");
                 let exit_bb = self.new_bb("orm_exit");
@@ -2592,7 +2609,7 @@ impl CodeGen {
                 let row_as_int = self.temp();
                 writeln!(&mut self.ir, "  {row_as_int} = ptrtoint i8* {row_obj} to i64").unwrap();
                 let slot = self.temp();
-                writeln!(&mut self.ir, "  {slot} = getelementptr i64, i64* {arr_i64}, i64 {cur_i}").unwrap();
+                writeln!(&mut self.ir, "  {slot} = getelementptr i64, i64* {data_ptr}, i64 {cur_i}").unwrap();
                 writeln!(&mut self.ir, "  store i64 {row_as_int}, i64* {slot}").unwrap();
                 let next_i = self.temp();
                 writeln!(&mut self.ir, "  {next_i} = add i64 {cur_i}, 1").unwrap();
@@ -2602,9 +2619,8 @@ impl CodeGen {
 
                 writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
 
-                let list_as_int = self.temp();
-                writeln!(&mut self.ir, "  {list_as_int} = ptrtoint i64* {list_ptr} to i64").unwrap();
-                Ok((list_as_int, "i64".to_string()))
+                // Return pointer to elem0 — same layout as ArrayLiteral (type i64*)
+                Ok((data_ptr, "i64*".to_string()))
             }
         }
     }
@@ -2673,9 +2689,11 @@ impl CodeGen {
         let label = format!("__sql_{}_{}", fn_name, self.strings.len());
         self.strings.insert(label.clone(), sql.to_string());
         let len = sql.len() + 1;
+        let ptr = self.temp();
         writeln!(&mut self.ir, "define i8* @{fn_name}() {{").unwrap();
         writeln!(&mut self.ir, "entry:").unwrap();
-        writeln!(&mut self.ir, "  ret i8* getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "  {ptr} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "  ret i8* {ptr}").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
     }
@@ -2690,20 +2708,21 @@ impl CodeGen {
         writeln!(&mut self.ir, "  {raw} = call i8* @tinox_alloc(i64 {alloc_size})").unwrap();
         writeln!(&mut self.ir, "  {ptr} = bitcast i8* {raw} to i64*").unwrap();
         for (col_idx, field) in fields.iter().enumerate() {
-            let val = self.temp();
-            writeln!(&mut self.ir, "  {val} = call i8* @tinox_db_getval(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
             let fptr = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
             match field.field_llvm_type.as_str() {
                 "i8*" => {
+                    let val = self.temp();
+                    writeln!(&mut self.ir, "  {val} = call i8* @tinox_db_getval(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
                     let as_int = self.temp();
                     writeln!(&mut self.ir, "  {as_int} = ptrtoint i8* {val} to i64").unwrap();
                     writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
                 }
                 _ => {
-                    let as_int = self.temp();
-                    writeln!(&mut self.ir, "  {as_int} = call i64 @tinox_string_to_int(i8* {val})").unwrap();
-                    writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
+                    // Direct int64 read — no string conversion
+                    let ival = self.temp();
+                    writeln!(&mut self.ir, "  {ival} = call i64 @tinox_db_getval_int(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
+                    writeln!(&mut self.ir, "  store i64 {ival}, i64* {fptr}").unwrap();
                 }
             }
         }
@@ -3020,6 +3039,16 @@ impl CodeGen {
                     };
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
+                    }
+                    // For List<ClassName> annotations, track element type for indexed field access
+                    if let Some(Type::Generic { name: gname, args }) = ty {
+                        if gname == "List" {
+                            if let Some(Type::Named(cls)) = args.first() {
+                                if self.defined_classes.contains(cls.as_str()) {
+                                    ctx.local_types.insert(name.clone(), format!("List:{}", cls));
+                                }
+                            }
+                        }
                     }
                     if is_heap_ptr {
                         writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();

@@ -1,0 +1,8 @@
+[package]
+name = "crud"
+version = "0.1.0"
+description = "Full CRUD REST API example with SQLite and related entities"
+
+[database]
+driver = "sqlite"
+url = "crud.db"

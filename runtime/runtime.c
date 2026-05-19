@@ -2285,6 +2285,11 @@ char* tinox_db_getval(void* result, int64_t row, int64_t col) {
     return GC_strdup(PQgetvalue((PGresult*)result, (int)row, (int)col));
 }
 
+int64_t tinox_db_getval_int(void* result, int64_t row, int64_t col) {
+    char* v = PQgetvalue((PGresult*)result, (int)row, (int)col);
+    return v ? (int64_t)atoll(v) : 0LL;
+}
+
 bool tinox_db_is_null(void* result, int64_t row, int64_t col) {
     return (bool)PQgetisnull((PGresult*)result, (int)row, (int)col);
 }
@@ -2295,21 +2300,9 @@ char* tinox_db_error(void* conn) {
     return GC_strdup(PQerrorMessage((PGconn*)conn));
 }
 
-#else
-// Stub implementations when no DB driver is selected — prevent link errors.
-void  tinox_db_connect(const char* url)                                       { (void)url; }
-void* tinox_db_get_conn(void)                                                  { return NULL; }
-void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
-int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }
-int64_t tinox_db_ncols(void* r)                                                { (void)r; return 0; }
-char*   tinox_db_getval(void* r, int64_t row, int64_t col)                    { (void)r;(void)row;(void)col; return ""; }
-bool    tinox_db_is_null(void* r, int64_t row, int64_t col)                   { (void)r;(void)row;(void)col; return true; }
-void    tinox_db_free(void* r)                                                 { (void)r; }
-char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
-#endif
+#elif defined(TINOX_DB_SQLITE)
 
 // ---- SQLite driver ----
-#ifdef TINOX_DB_SQLITE
 #include <sqlite3.h>
 
 static sqlite3* _tinox_sqlite_db = NULL;
@@ -2333,12 +2326,53 @@ void tinox_db_connect(const char* url) {
 
 void* tinox_db_get_conn(void) { return _tinox_sqlite_db; }
 
+// ---- Statement cache (Optimization 1) ----
+#define STMT_CACHE_SIZE 64
+typedef struct { const char* sql; sqlite3_stmt* stmt; } StmtCacheEntry;
+static StmtCacheEntry _stmt_cache[STMT_CACHE_SIZE];
+
+static sqlite3_stmt* _stmt_cache_get(const char* sql) {
+    unsigned h = 0;
+    for (const char* p = sql; *p; p++) h = h * 31 + (unsigned char)*p;
+    h %= STMT_CACHE_SIZE;
+    for (int i = 0; i < STMT_CACHE_SIZE; i++) {
+        int slot = (h + i) % STMT_CACHE_SIZE;
+        if (!_stmt_cache[slot].sql) return NULL;
+        if (strcmp(_stmt_cache[slot].sql, sql) == 0) return _stmt_cache[slot].stmt;
+    }
+    return NULL;
+}
+
+static void _stmt_cache_put(const char* sql, sqlite3_stmt* stmt) {
+    unsigned h = 0;
+    for (const char* p = sql; *p; p++) h = h * 31 + (unsigned char)*p;
+    h %= STMT_CACHE_SIZE;
+    for (int i = 0; i < STMT_CACHE_SIZE; i++) {
+        int slot = (h + i) % STMT_CACHE_SIZE;
+        if (!_stmt_cache[slot].sql || strcmp(_stmt_cache[slot].sql, sql) == 0) {
+            _stmt_cache[slot].sql = sql;
+            _stmt_cache[slot].stmt = stmt;
+            return;
+        }
+    }
+    // Cache full: evict slot h (simple strategy)
+    sqlite3_finalize(_stmt_cache[h].stmt);
+    _stmt_cache[h].sql = sql;
+    _stmt_cache[h].stmt = stmt;
+}
+
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
     sqlite3* db = (sqlite3*)conn;
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
-        return NULL;
+    sqlite3_stmt* stmt = _stmt_cache_get(sql);
+    if (stmt) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+    } else {
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
+            return NULL;
+        }
+        _stmt_cache_put(sql, stmt);
     }
     for (int i = 0; i < (int)n_params; i++) {
         sqlite3_bind_text(stmt, i + 1, params[i], -1, SQLITE_STATIC);
@@ -2362,7 +2396,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         }
         n_rows++;
     }
-    sqlite3_finalize(stmt);
+    // Do NOT finalize — statement is cached for reuse
 
     TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
     res->n_cols = n_cols;
@@ -2389,6 +2423,13 @@ char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
     char* v = res->data[(int)row * res->n_cols + (int)col];
     return v ? v : "";
 }
+int64_t tinox_db_getval_int(void* result, int64_t row, int64_t col) {
+    TinoxSqliteResult* res = (TinoxSqliteResult*)result;
+    if (!res || !res->data) return 0;
+    char* v = res->data[(int)row * res->n_cols + (int)col];
+    if (!v) return 0;
+    return (int64_t)atoll(v);
+}
 bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     TinoxSqliteResult* res = (TinoxSqliteResult*)r;
     if (!res || !res->data) return true;
@@ -2397,10 +2438,9 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; }
 char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
 
-#endif /* TINOX_DB_SQLITE */
+#elif defined(TINOX_DB_MYSQL)
 
 // ---- MySQL driver ----
-#ifdef TINOX_DB_MYSQL
 #include <mysql/mysql.h>
 
 static MYSQL* _tinox_mysql_conn = NULL;
@@ -2562,6 +2602,13 @@ char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
     if (!res || !res->data) return "";
     return res->data[(int)row * res->n_cols + (int)col];
 }
+int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col) {
+    TinoxMysqlResult* res = (TinoxMysqlResult*)r;
+    if (!res || !res->data) return 0;
+    char* v = res->data[(int)row * res->n_cols + (int)col];
+    if (!v) return 0;
+    return (int64_t)atoll(v);
+}
 bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     TinoxMysqlResult* res = (TinoxMysqlResult*)r;
     if (!res || !res->data) return true;
@@ -2570,7 +2617,19 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
 char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 
-#endif /* TINOX_DB_MYSQL */
+#else
+// Stub implementations when no DB driver is selected — prevent link errors.
+void  tinox_db_connect(const char* url)                                       { (void)url; }
+void* tinox_db_get_conn(void)                                                  { return NULL; }
+void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
+int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }
+int64_t tinox_db_ncols(void* r)                                                { (void)r; return 0; }
+char*   tinox_db_getval(void* r, int64_t row, int64_t col)                    { (void)r;(void)row;(void)col; return ""; }
+int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col)                { (void)r;(void)row;(void)col; return 0; }
+bool    tinox_db_is_null(void* r, int64_t row, int64_t col)                   { (void)r;(void)row;(void)col; return true; }
+void    tinox_db_free(void* r)                                                 { (void)r; }
+char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
+#endif /* DB driver */
 
 // Param helpers (always available)
 char** tinox_params_alloc(int64_t n) {

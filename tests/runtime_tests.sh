@@ -491,6 +491,267 @@ fn main() -> Int32
 EOF
 run_test "http2_frame_header_bytes" "$TMP/t26.tnx" "$(printf '9\n12\n4\n0\n1\n0\n1\n5\n1\n0\n171\n205\n239')"
 
+# ── ORM / SQLite Tests ───────────────────────────────────────
+# run_db_test <name> <tnx_code> <setup_sql> <expected>
+# Creates an isolated dir with tinox.toml + SQLite DB, cds in, runs tinox.
+ABS_TINOX="$(cd "$(dirname "$TINOX")" && pwd)/$(basename "$TINOX")"
+
+run_db_test() {
+    local name="$1"
+    local tnx_code="$2"
+    local setup_sql="$3"
+    local expected="$4"
+
+    if ! command -v sqlite3 &>/dev/null; then
+        echo "  SKIP  $name (sqlite3 not installed)"
+        return
+    fi
+
+    local dir="$TMP/db_$name"
+    mkdir -p "$dir"
+    cat >"$dir/tinox.toml" <<'TOML'
+[database]
+driver = "sqlite"
+url = "test.db"
+TOML
+    printf '%s\n' "$tnx_code" >"$dir/test.tnx"
+    sqlite3 "$dir/test.db" "$setup_sql"
+
+    local actual
+    actual=$(cd "$dir" && timeout 15 "$ABS_TINOX" run test.tnx 2>&1) || { actual="CRASH/TIMEOUT"; }
+    if [ "$actual" = "$expected" ]; then
+        echo "  PASS  $name"
+        ((PASS++))
+    else
+        echo "  FAIL  $name"
+        echo "        expected: $(echo "$expected" | head -5)"
+        echo "        got:      $(echo "$actual"   | head -5)"
+        ((FAIL++))
+        ERRORS+=("$name")
+    fi
+}
+
+# ── Test 27: ORM — list() alle Zeilen ───────────────────────
+read -r -d '' TNX_27 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let users: List<User> = DB.of(User).list();
+    println(users.len());
+    println(users[0].name);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_list" "$TNX_27" \
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+     INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Carol', 35);" \
+    "$(printf '3\nAlice')"
+
+# ── Test 28: ORM — filter(u -> u.age > 25) ──────────────────
+read -r -d '' TNX_28 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let adults: List<User> = DB.of(User)
+        .filter(u => u.age > 25)
+        .list();
+    println(adults.len());
+    println(adults[0].name);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_filter_gt" "$TNX_28" \
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+     INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 20), ('Carol', 35);" \
+    "$(printf '2\nAlice')"
+
+# ── Test 29: ORM — count() ──────────────────────────────────
+read -r -d '' TNX_29 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("products")
+class Product
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("price")
+    var price: Int64;
+}
+
+fn main() -> Int32
+{
+    let total: Int64 = DB.of(Product).count();
+    println(total);
+    let cheap: Int64 = DB.of(Product)
+        .filter(p => p.price < 100)
+        .count();
+    println(cheap);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_count" "$TNX_29" \
+    "CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price INTEGER NOT NULL);
+     INSERT INTO products (name, price) VALUES ('Widget', 50), ('Gadget', 150), ('Doohickey', 75);" \
+    "$(printf '3\n2')"
+
+# ── Test 30: ORM — orderBy + limit ──────────────────────────
+read -r -d '' TNX_30 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let top2: List<User> = DB.of(User)
+        .orderBy(u => u.name)
+        .limit(2)
+        .list();
+    println(top2.len());
+    println(top2[0].name);
+    println(top2[1].name);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_order_limit" "$TNX_30" \
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+     INSERT INTO users (name, age) VALUES ('Zara', 28), ('Alice', 30), ('Bob', 25), ('Carol', 35);" \
+    "$(printf '2\nAlice\nBob')"
+
+# ── Test 31: ORM — first() mit filter ───────────────────────
+read -r -d '' TNX_31 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let u: User = DB.of(User)
+        .filter(u => u.name == "Carol")
+        .first();
+    println(u.name);
+    println(u.age);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_first" "$TNX_31" \
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+     INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Carol', 35);" \
+    "$(printf 'Carol\n35')"
+
+# ── Test 32: ORM — filter mit String startsWith ─────────────
+read -r -d '' TNX_32 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let cs: List<User> = DB.of(User)
+        .filter(u => u.name.startsWith("C"))
+        .list();
+    println(cs.len());
+    println(cs[0].name);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_filter_startswith" "$TNX_32" \
+    "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+     INSERT INTO users (name, age) VALUES ('Alice', 30), ('Carol', 35), ('Charlie', 22);" \
+    "$(printf '2\nCarol')"
+
+# ── Test 33: ORM — orderByDesc + offset ─────────────────────
+read -r -d '' TNX_33 <<'EOF' || true
+import tinox.core.db;
+
+@Entity
+@Table("scores")
+class Score
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("player")
+    var player: String;
+    @Column("points")
+    var points: Int64;
+}
+
+fn main() -> Int32
+{
+    let ranked: List<Score> = DB.of(Score)
+        .orderByDesc(s => s.points)
+        .offset(1)
+        .limit(2)
+        .list();
+    println(ranked.len());
+    println(ranked[0].player);
+    println(ranked[1].player);
+    return 0;
+}
+EOF
+run_db_test "orm_sqlite_order_desc_offset" "$TNX_33" \
+    "CREATE TABLE scores (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, points INTEGER NOT NULL);
+     INSERT INTO scores (player, points) VALUES ('Alice', 100), ('Bob', 300), ('Carol', 200), ('Dave', 150);" \
+    "$(printf '2\nCarol\nDave')"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ ${#ERRORS[@]} -gt 0 ]; then
