@@ -55,3 +55,5 @@ benchmarks/bench_primes_opt
 benchmarks/bench_sum
 benchmarks/bench_sum_new
 benchmarks/bench_sum_opt
+.tinox_dev_*
+massif.out.*

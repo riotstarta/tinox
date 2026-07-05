@@ -106,8 +106,12 @@ char* tinox_int_to_string(int64_t val) {
 }
 
 char* tinox_float_to_string(double val) {
-    char* result = malloc(32);
-    snprintf(result, 32, "%g", val);
+    char* result = malloc(40);
+    // shortest representation that round-trips exactly
+    for (int prec = 15; prec <= 17; prec++) {
+        snprintf(result, 40, "%.*g", prec, val);
+        if (strtod(result, NULL) == val) return result;
+    }
     return result;
 }
 
@@ -186,6 +190,14 @@ int64_t tinox_string_equals(const char* a, const char* b) {
     if (a == b) return 1;
     if (!a || !b) return 0;
     return strcmp(a, b) == 0 ? 1 : 0;
+}
+
+int64_t tinox_string_compare(const char* a, const char* b) {
+    if (a == b) return 0;
+    if (!a) return -1;
+    if (!b) return 1;
+    int r = strcmp(a, b);
+    return r < 0 ? -1 : (r > 0 ? 1 : 0);
 }
 
 int64_t tinox_string_contains(const char* haystack, const char* needle) {
@@ -315,6 +327,14 @@ int64_t tinox_array_index_of(int64_t* data, int64_t val) {
     int64_t len = data[-1];
     for (int64_t i = 0; i < len; i++) if (data[i] == val) return i;
     return -1;
+}
+
+int64_t* tinox_array_remove_at(int64_t* data, int64_t idx) {
+    int64_t len = data[-1];
+    if (idx < 0 || idx >= len) return data;
+    for (int64_t i = idx; i < len - 1; i++) data[i] = data[i + 1];
+    data[-1] = len - 1;
+    return data;
 }
 
 // ---- Async runtime ----
@@ -756,6 +776,265 @@ int64_t tinox_file_exists(const char* path) {
 
 void tinox_file_delete(const char* path) {
     remove(path);
+}
+
+// ---- High-level file I/O (used by Tinox builtins) ----
+
+char* fileReadAllText(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return GC_strdup("");
+    // Try seek-based size detection first (works for regular files)
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        if (size > 0) {
+            fseek(f, 0, SEEK_SET);
+            char* buf = (char*)GC_malloc(size + 1);
+            size_t got = fread(buf, 1, size, f);
+            fclose(f);
+            buf[got] = '\0';
+            return buf;
+        }
+        fseek(f, 0, SEEK_SET);
+    }
+    // Fall back to dynamic read (for pipes, /dev/stdin, character devices)
+    size_t capacity = 4096;
+    size_t used = 0;
+    char* buf = (char*)GC_malloc(capacity);
+    size_t n;
+    while ((n = fread(buf + used, 1, capacity - used - 1, f)) > 0) {
+        used += n;
+        if (used + 1 >= capacity) {
+            capacity *= 2;
+            char* newbuf = (char*)GC_malloc(capacity);
+            memcpy(newbuf, buf, used);
+            buf = newbuf;
+        }
+    }
+    fclose(f);
+    buf[used] = '\0';
+    return buf;
+}
+
+void fileWriteAllText(const char* path, const char* content) {
+    FILE* f = fopen(path, "w");
+    if (f) { fputs(content, f); fclose(f); }
+}
+
+void fileAppendText(const char* path, const char* content) {
+    FILE* f = fopen(path, "a");
+    if (f) { fputs(content, f); fclose(f); }
+}
+
+void fileClose(void* handle) {
+    if (handle) fclose((FILE*)handle);
+}
+
+// ---- Process / Environment builtins ----
+
+// Forward declarations for CLI argument globals (defined later in this file)
+extern int    _tinox_argc;
+extern char** _tinox_argv;
+
+void processExit(int64_t code) {
+    exit((int)code);
+}
+
+int64_t* processArgs(void) {
+    // Returns a Tinox array (i64* with length at [-1]) of arg strings as i64 (ptrtoint)
+    int64_t n = (int64_t)_tinox_argc;
+    int64_t* arr = (int64_t*)GC_malloc(sizeof(int64_t) * (n + 1));
+    arr[0] = n;  // length at index 0, data starts at index 1 (we use len at [-1] convention)
+    // Actually Tinox arrays store length at data[-1]: allocate n+1 slots, return ptr+1
+    int64_t* data = arr + 1;
+    data[-1] = n;
+    for (int64_t i = 0; i < n; i++) {
+        data[i] = (int64_t)_tinox_argv[i];
+    }
+    return data;
+}
+
+char* envGet(const char* name) {
+    char* v = getenv(name);
+    return v ? GC_strdup(v) : GC_strdup("");
+}
+
+void envSet(const char* name, const char* value) {
+    setenv(name, value, 1);
+}
+
+void envRemove(const char* name) {
+    unsetenv(name);
+}
+
+char* envCurrentDir(void) {
+    char buf[4096];
+    if (getcwd(buf, sizeof(buf))) return GC_strdup(buf);
+    return GC_strdup("");
+}
+
+void envSetCurrentDir(const char* path) {
+    chdir(path);
+}
+
+// ---- Directory builtins ----
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+char* dirList(const char* path) {
+    // Returns a Tinox array of filename strings
+    DIR* d = opendir(path);
+    if (!d) {
+        // Return empty array
+        int64_t* arr = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
+        arr[0] = 0; arr[1] = 0;
+        int64_t* data = arr + 1;
+        data[-1] = 0;
+        return (char*)data;
+    }
+    // Collect entries
+    int64_t cap = 32;
+    int64_t len = 0;
+    int64_t* entries = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
+    entries[0] = 0; // length placeholder
+    int64_t* data = entries + 1;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (len >= cap) {
+            cap *= 2;
+            int64_t* ne = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
+            ne[0] = 0;
+            memcpy(ne + 1, data, len * sizeof(int64_t));
+            data = ne + 1;
+        }
+        data[len++] = (int64_t)GC_strdup(ent->d_name);
+    }
+    closedir(d);
+    data[-1] = len;
+    return (char*)data;
+}
+
+void dirCreate(const char* path) {
+    mkdir(path, 0755);
+}
+
+void dirDelete(const char* path) {
+    rmdir(path);
+}
+
+// ---- Regex builtins ----
+
+#include <regex.h>
+
+int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
+    const char* pattern = (const char*)pattern_i64;
+    const char* subject = (const char*)subject_i64;
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return 0;
+    int r = regexec(&re, subject, 0, NULL, 0);
+    regfree(&re);
+    return (r == 0) ? 1 : 0;
+}
+
+int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
+    const char* pattern = (const char*)pattern_i64;
+    const char* subject = (const char*)subject_i64;
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) {
+        int64_t* data = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
+        data[0] = 0; data[1] = 0; data[-1] = 0;
+        return (int64_t)(data + 1);
+    }
+    int64_t cap = 8;
+    int64_t len = 0;
+    int64_t* buf = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
+    int64_t* data = buf + 1;
+    data[-1] = 0;
+    const char* s = subject;
+    regmatch_t m;
+    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+        if (len >= cap) {
+            cap *= 2;
+            int64_t* nb = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
+            memcpy(nb + 1, data, len * sizeof(int64_t));
+            data = nb + 1;
+        }
+        int mlen = m.rm_eo - m.rm_so;
+        char* match_str = (char*)GC_malloc(mlen + 1);
+        memcpy(match_str, s + m.rm_so, mlen);
+        match_str[mlen] = '\0';
+        data[len++] = (int64_t)match_str;
+        s += m.rm_eo;
+        if (m.rm_eo == 0) s++;
+    }
+    regfree(&re);
+    data[-1] = len;
+    return (int64_t)data;
+}
+
+int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+    const char* pattern = (const char*)pattern_i64;
+    const char* subject = (const char*)subject_i64;
+    const char* replacement = (const char*)replacement_i64;
+    // Simple replacement — replace first match
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+    regmatch_t m;
+    if (regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
+    size_t pre = m.rm_so, rep_len = strlen(replacement), suf = strlen(subject) - m.rm_eo;
+    char* result = (char*)GC_malloc(pre + rep_len + suf + 1);
+    memcpy(result, subject, pre);
+    memcpy(result + pre, replacement, rep_len);
+    memcpy(result + pre + rep_len, subject + m.rm_eo, suf);
+    result[pre + rep_len + suf] = '\0';
+    regfree(&re);
+    return (int64_t)result;
+}
+
+int64_t regexSplit(int64_t pattern_i64, int64_t subject_i64) {
+    return regexFindAll(pattern_i64, subject_i64); // simplified
+}
+
+// First match at/after byte offset. Returns Tinox i64-array
+// [match_start, match_end, g1_start, g1_end, ...] (byte offsets into subject,
+// -1/-1 for unmatched groups). Empty array = no match or bad pattern.
+int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offset, int64_t icase) {
+    int64_t* empty = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
+    empty[0] = 0; empty[1] = 0;
+    int64_t* empty_data = empty + 1;
+    empty_data[-1] = 0;
+
+    size_t slen = strlen(subject);
+    if (offset < 0 || (size_t)offset > slen) return empty_data;
+
+    regex_t re;
+    int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0);
+    if (regcomp(&re, pattern, cflags) != 0) return empty_data;
+
+    size_t ngroups = re.re_nsub + 1;
+    regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);
+    int eflags = (offset > 0) ? REG_NOTBOL : 0;
+    if (regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
+        regfree(&re);
+        return empty_data;
+    }
+    regfree(&re);
+
+    int64_t len = (int64_t)(ngroups * 2);
+    int64_t* buf = (int64_t*)GC_malloc(sizeof(int64_t) * (len + 1));
+    int64_t* data = buf + 1;
+    data[-1] = len;
+    for (size_t g = 0; g < ngroups; g++) {
+        if (m[g].rm_so < 0) {
+            data[g * 2] = -1;
+            data[g * 2 + 1] = -1;
+        } else {
+            data[g * 2] = (int64_t)m[g].rm_so + offset;
+            data[g * 2 + 1] = (int64_t)m[g].rm_eo + offset;
+        }
+    }
+    return data;
 }
 
 static size_t fast_i64_write(int64_t val, char* buf);
@@ -2051,8 +2330,8 @@ int64_t tinox_config_get_bool(const char* key) {
 
 // ---- CLI argument parsing (@Command / @Option / @Argument) ----
 
-static int    _tinox_argc = 0;
-static char** _tinox_argv = NULL;
+int    _tinox_argc = 0;
+char** _tinox_argv = NULL;
 
 // Scans argv for --long-name or -s and returns the following value, or NULL.
 char* tinox_cli_get_string(const char* long_name, const char* short_name) {
@@ -2656,3 +2935,51 @@ int main(int argc, char** argv) {
     _tinox_argv = argv;
     return (int)tinox_main();
 }
+
+// Float classification and constants
+int64_t mathIsNan(double x) { return isnan(x) ? 1 : 0; }
+int64_t mathIsInfinite(double x) { return isinf(x) ? 1 : 0; }
+int64_t mathIsNormal(double x) { return isnormal(x) ? 1 : 0; }
+double mathNan(void) { return NAN; }
+double mathInf(void) { return INFINITY; }
+
+// Env listing
+char* envDump(void) {
+    extern char** environ;
+    size_t total = 1;
+    for (int i = 0; environ[i]; i++) total += strlen(environ[i]) + 1;
+    char* buf = GC_malloc(total);
+    char* p = buf;
+    for (int i = 0; environ[i]; i++) {
+        size_t len = strlen(environ[i]);
+        memcpy(p, environ[i], len); p[len] = '\n'; p += len + 1;
+    }
+    *p = '\0';
+    return buf;
+}
+
+// Time
+int64_t currentTimeSecs(void) { return (int64_t)time(NULL); }
+
+char* strftimeStr(const char* fmt, int64_t t) {
+    time_t ts = (time_t)t;
+    struct tm tm_buf;
+    gmtime_r(&ts, &tm_buf);
+    char buf[256];
+    strftime(buf, sizeof(buf), fmt, &tm_buf);
+    return GC_strdup(buf);
+}
+
+int64_t fromdateStr(const char* s) {
+    struct tm tm_buf = {0};
+    // Try "%Y-%m-%dT%H:%M:%SZ" and "%Y-%m-%dT%H:%M:%S"
+    char* r = strptime(s, "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+    if (!r) r = strptime(s, "%Y-%m-%dT%H:%M:%S", &tm_buf);
+    if (!r) r = strptime(s, "%Y-%m-%d", &tm_buf);
+    if (!r) return 0;
+    return (int64_t)timegm(&tm_buf);
+}
+
+void printStderr(const char* msg) { fputs(msg, stderr); fputc('\n', stderr); }
+
+int64_t isStdinTty(void) { return isatty(STDIN_FILENO) ? 1 : 0; }

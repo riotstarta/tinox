@@ -125,6 +125,8 @@ pub struct CodeGen {
     #[allow(dead_code)]
     closure_envs: HashMap<String, String>,
     method_ret_types: HashMap<String, String>,
+    method_ret_class: HashMap<String, String>, // method key → Tinox class name when it returns a class
+    static_method_keys: HashSet<String>,       // method keys for static (fnc) methods — no self param
     // vtable support
     /// interface_name -> ordered method names (vtable slot order)
     vtable_layouts: HashMap<String, Vec<String>>,
@@ -151,6 +153,9 @@ pub struct CodeGen {
     generated_specializations: HashSet<String>,
     /// Set of all enum variant names (for bare-name match patterns)
     known_enum_variants: HashSet<String>,
+    /// variant name → payload kind per argument ("String" | "Map" | "List" | "Other"),
+    /// used to bind match-pattern payload variables with their true LLVM type.
+    enum_variant_payloads: HashMap<String, Vec<String>>,
     /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
     known_enum_types: HashSet<String>,
     /// Annotation processing: functions annotated @inline
@@ -211,6 +216,8 @@ impl CodeGen {
             struct_layouts: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
+            method_ret_class: HashMap::new(),
+            static_method_keys: HashSet::new(),
             vtable_layouts: HashMap::new(),
             class_implements: HashMap::new(),
             classes_with_vtable: HashSet::new(),
@@ -224,6 +231,7 @@ impl CodeGen {
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
             known_enum_variants: HashSet::new(),
+            enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
@@ -413,6 +421,92 @@ impl CodeGen {
         result
     }
 
+    /// Classify an enum variant payload type for match-binding purposes.
+    fn payload_kind(ty: &Type) -> String {
+        match ty {
+            Type::String => "String",
+            Type::Map(_, _) => "Map",
+            Type::Array(_) => "List",
+            Type::Generic { name, .. } if name == "List" => "List",
+            Type::Float32 | Type::Float64 => "Float",
+            Type::Mutable(inner) | Type::Ref(inner) => return Self::payload_kind(inner),
+            _ => "Other",
+        }
+        .to_string()
+    }
+
+    /// The payload map is keyed by variant name only; when two enums share a
+    /// variant name (e.g. a payload variant and a no-arg token variant), keep the
+    /// entry with more payload info — no-arg matches never bind payloads, so the
+    /// richer entry is always safe to use.
+    fn register_variant_payloads(&mut self, name: &str, kinds: Vec<String>) {
+        match self.enum_variant_payloads.get(name) {
+            Some(existing) if existing.len() >= kinds.len() => {}
+            _ => {
+                self.enum_variant_payloads.insert(name.to_string(), kinds);
+            }
+        }
+    }
+
+    /// Bind a match-pattern payload variable with the LLVM type derived from the
+    /// enum declaration's payload type, so that subsequent operator/method dispatch
+    /// (string ==/+/len/contains, map get/insert, array len/iteration) works correctly.
+    fn bind_match_payload(
+        &mut self,
+        ctx: &mut GenCtx,
+        disc_name: &str,
+        arg_index: usize,
+        arg_name: &str,
+        arg_val: &str,
+    ) {
+        let kind = self
+            .enum_variant_payloads
+            .get(disc_name)
+            .and_then(|ks| ks.get(arg_index))
+            .cloned()
+            .unwrap_or_else(|| "Other".to_string());
+        // Unique slot name avoids duplicate allocas when the same variable name
+        // appears in multiple match arms.
+        let slot_name = format!("{}_{}", arg_name, self.temp_count);
+        self.temp_count += 1;
+        let (llvm_ty, decl_ty): (&str, Option<&str>) = match kind.as_str() {
+            "String" => ("i8*", None),
+            "Map" => ("i8*", Some("Map")),
+            "List" => ("i64*", None),
+            "Float" => ("double", None),
+            _ => ("i64", None),
+        };
+        let store_val = if llvm_ty == "i64" {
+            arg_val.to_string()
+        } else if llvm_ty == "double" {
+            let p = self.temp();
+            writeln!(&mut self.ir, "{} = bitcast i64 {} to double", p, arg_val).unwrap();
+            p
+        } else {
+            let p = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", p, arg_val, llvm_ty).unwrap();
+            p
+        };
+        ctx.locals
+            .insert(arg_name.to_string(), (llvm_ty.to_string(), ctx.locals.len()));
+        ctx.local_slots.insert(arg_name.to_string(), slot_name.clone());
+        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
+        writeln!(
+            &mut self.ir,
+            "store {} {}, {}* %{}",
+            llvm_ty, store_val, llvm_ty, slot_name
+        )
+        .unwrap();
+        match decl_ty {
+            Some(t) => {
+                ctx.local_types.insert(arg_name.to_string(), t.to_string());
+            }
+            None => {
+                ctx.local_types.remove(arg_name);
+            }
+        }
+    }
+
     fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
         use tinox_parser::Type;
         match ty {
@@ -455,6 +549,19 @@ impl CodeGen {
                     .get(&outer)
                     .and_then(|m| m.get(field.as_str()))
                     .cloned()
+            }
+            ExprKind::EnumValue { enum_name, variant, .. } => {
+                // Static method call returning a known class, e.g. JsonValueHelper::asObject
+                let key = format!("{}_{}", enum_name, variant);
+                self.method_ret_class.get(&key).cloned()
+            }
+            ExprKind::MethodCall { obj: mc_obj, method: mc_method, .. } => {
+                // Instance method call returning a known class
+                self.infer_struct_type(mc_obj, ctx)
+                    .and_then(|obj_class| {
+                        let key = format!("{}_{}", obj_class, mc_method);
+                        self.method_ret_class.get(&key).cloned()
+                    })
             }
             _ => None,
         }
@@ -545,6 +652,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_bool(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_equals(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_compare(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
@@ -577,6 +685,27 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_file_eof(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_file_exists(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_file_delete(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @dirList(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @dirCreate(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @dirDelete(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @envGet(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @envSet(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @envRemove(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @envCurrentDir()").unwrap();
+        writeln!(&mut self.ir, "declare void @envSetCurrentDir(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @fileReadAllText(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @fileWriteAllText(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @fileAppendText(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @fileClose(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @processArgs()").unwrap();
+        writeln!(&mut self.ir, "declare i1 @fileExists(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @processExit(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @regexIsMatch(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @regexFindAll(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @regexReplace(i64, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @regexSplit(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @regexMatchGroups(i8*, i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_remove_at(i64*, i64)").unwrap();
         // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
@@ -610,6 +739,31 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_int_to_param(i64)").unwrap();
+        // float math builtins
+        writeln!(&mut self.ir, "declare double @log(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @exp(double)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mathIsNan(double)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mathIsInfinite(double)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mathIsNormal(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @mathNan()").unwrap();
+        writeln!(&mut self.ir, "declare double @mathInf()").unwrap();
+        writeln!(&mut self.ir, "declare double @tgamma(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @lgamma(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @cbrt(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @trunc(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @rint(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @logb(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @log2(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @log10(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @exp2(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @exp10(double)").unwrap();
+        // jgrep-tinox env/time/debug builtins
+        writeln!(&mut self.ir, "declare i8* @envDump()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @currentTimeSecs()").unwrap();
+        writeln!(&mut self.ir, "declare i8* @strftimeStr(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @fromdateStr(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @printStderr(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -633,6 +787,38 @@ impl CodeGen {
             })
             .map(|c| (c.name.clone(), c))
             .collect();
+
+        // Pre-pass: register all enum type names so that method return type resolution
+        // (which calls type_to_llvm_inst) can correctly classify Named enum types as i64.
+        for decl in &source.decls {
+            match &decl.node {
+                DeclKind::Enum(e) => {
+                    self.known_enum_types.insert(e.name.clone());
+                    for variant in &e.variants {
+                        self.known_enum_variants.insert(variant.name.clone());
+                        self.register_variant_payloads(
+                            &variant.name,
+                            variant.args.iter().map(Self::payload_kind).collect(),
+                        );
+                    }
+                }
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Enum(e) = &inner.node {
+                            self.known_enum_types.insert(e.name.clone());
+                            for variant in &e.variants {
+                                self.known_enum_variants.insert(variant.name.clone());
+                                self.register_variant_payloads(
+                            &variant.name,
+                            variant.args.iter().map(Self::payload_kind).collect(),
+                        );
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
 
         // First pass: build struct_layouts (with vtable slot at index 0 where needed)
         // and method_impl (for inherited method dispatch). Handles both top-level and
@@ -740,11 +926,23 @@ impl CodeGen {
 
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
-                    self.method_impl.insert(key.clone(), key);
+                    self.method_impl.insert(key.clone(), key.clone());
                     self.method_ret_types.insert(
                         format!("{}_{}", c.name, method.name),
-                        Self::type_to_llvm(&method.ret_type),
+                        self.type_to_llvm_inst(&method.ret_type),
                     );
+                    // Track static methods (fnc) — they don't have a self parameter
+                    if method.static_ {
+                        self.static_method_keys.insert(key.clone());
+                    }
+                    // Track class name for methods returning class instances (for local_types inference)
+                    if let Type::Named(ret_class) = &method.ret_type {
+                        if self.defined_classes.contains(ret_class.as_str()) || self.struct_layouts.contains_key(ret_class.as_str()) {
+                            self.method_ret_class.insert(key.clone(), ret_class.clone());
+                        }
+                    } else if matches!(&method.ret_type, Type::Map(_, _)) {
+                        self.method_ret_class.insert(key.clone(), "Map".to_string());
+                    }
                     let param_tys: Vec<tinox_parser::Type> = method.params.iter()
                         .map(|p| p.param_type.clone()).collect();
                     self.method_param_types.insert(format!("{}_{}", c.name, method.name), param_tys);
@@ -762,7 +960,7 @@ impl CodeGen {
                                     aname, &method.name, &class_ast_map,
                                 );
                                 self.method_impl.insert(child_key.clone(), owner_key.clone());
-                                self.method_ret_types.insert(child_key, Self::type_to_llvm(&method.ret_type));
+                                self.method_ret_types.insert(child_key, self.type_to_llvm_inst(&method.ret_type));
                             }
                         }
                     }
@@ -791,6 +989,10 @@ impl CodeGen {
                     self.known_enum_types.insert(e.name.clone());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
+                        self.register_variant_payloads(
+                            &variant.name,
+                            variant.args.iter().map(Self::payload_kind).collect(),
+                        );
                     }
                 }
                 DeclKind::Namespace(ns) => {
@@ -803,6 +1005,10 @@ impl CodeGen {
                             self.known_enum_types.insert(e.name.clone());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
+                                self.register_variant_payloads(
+                            &variant.name,
+                            variant.args.iter().map(Self::payload_kind).collect(),
+                        );
                             }
                         } else if let DeclKind::Function(f) = &inner.node {
                             // Register namespace-level functions (incl. extern) in fn_sigs
@@ -1406,7 +1612,8 @@ impl CodeGen {
             if let Type::Named(class_name) = &p.param_type {
                 ctx.local_types.insert(p.name.clone(), class_name.clone());
             } else if matches!(&p.param_type, Type::Array(inner) if matches!(inner.as_ref(), Type::String))
-                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array") {
+                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array")
+                || matches!(&p.param_type, Type::Generic { name, args } if name == "List" && matches!(args.first(), Some(Type::String))) {
                 ctx.local_types.insert(p.name.clone(), "Array:String".to_string());
             }
         }
@@ -1527,7 +1734,8 @@ impl CodeGen {
             if let Type::Named(cn) = &p.param_type {
                 ctx.local_types.insert(p.name.clone(), cn.clone());
             } else if matches!(&p.param_type, Type::Array(inner) if matches!(inner.as_ref(), Type::String))
-                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array") {
+                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array")
+                || matches!(&p.param_type, Type::Generic { name, args } if name == "List" && matches!(args.first(), Some(Type::String))) {
                 ctx.local_types.insert(p.name.clone(), "Array:String".to_string());
             }
         }
@@ -2959,6 +3167,13 @@ impl CodeGen {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexFindAll" || n == "regexSplit") {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexMatchGroups") {
+                            llvm_ty = "i64*".to_string();
+                            true
                         } else { false }
                     } else if let ExprKind::MethodCall { method, .. } = &v.node {
                         if method == "split" {
@@ -2969,7 +3184,7 @@ impl CodeGen {
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                            || matches!(ty, Some(Type::Generic { name, args }) if name == "Array" && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
+                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
                         if is_str_ann || is_str_lit {
                             struct_name = Some("Array:String".to_string());
@@ -2999,7 +3214,8 @@ impl CodeGen {
                         struct_name = Some("Map".to_string());
                         llvm_ty = "i8*".to_string();
                     } else if matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array") {
+                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array")
+                        || matches!(ty, Some(Type::Generic { name, args }) if name == "List" && matches!(args.first(), Some(Type::String))) {
                         struct_name = Some("Array:String".to_string());
                         llvm_ty = "i64*".to_string();
                     }
@@ -3028,14 +3244,54 @@ impl CodeGen {
                     }
                     // If the declared type annotation is an interface, record the
                     // interface name so vtable dispatch is used for method calls.
+                    // Also infer class name from constructor/factory calls when no annotation is present.
+                    // Use method_ret_class mapping built during pre-pass for accurate type inference.
+                    let inferred_struct = if struct_name.is_none() {
+                        match &val.node {
+                            ExprKind::EnumValue { enum_name, variant, .. } => {
+                                let method_key = format!("{}_{}", enum_name, variant);
+                                let result = self.method_ret_class.get(&method_key).cloned()
+                                    .or_else(|| {
+                                        // Fallback: constructor heuristic
+                                        let is_ctor = variant == "new" || variant.starts_with("from")
+                                            || variant.starts_with("create") || variant.starts_with("make");
+                                        if is_ctor && self.struct_layouts.contains_key(enum_name.as_str()) {
+                                            Some(enum_name.clone())
+                                        } else { None }
+                                    });
+                                result
+                            }
+                            ExprKind::Call { func, .. } => {
+                                match &func.node {
+                                    ExprKind::Ident(fname) if fname == "dirList" => {
+                                        Some("Array:String".to_string())
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            ExprKind::MethodCall { obj: mc_obj, method: mc_method, .. } => {
+                                // Infer return class from instance method call, e.g. evaluator.eval() -> EvalResult
+                                self.infer_struct_type(mc_obj, ctx)
+                                    .and_then(|obj_class| {
+                                        let method_key = format!("{}_{}", obj_class, mc_method);
+                                        self.method_ret_class.get(&method_key).cloned()
+                                    })
+                            }
+                            ExprKind::Ident(src_name) => {
+                                // Copy type from source variable (e.g. let x = someObj)
+                                ctx.local_types.get(src_name.as_str()).cloned()
+                            }
+                            _ => None,
+                        }
+                    } else { struct_name.clone() };
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
                             Some(ann.clone())
                         } else {
-                            struct_name.clone()
+                            inferred_struct.clone().or_else(|| struct_name.clone())
                         }
                     } else {
-                        struct_name.clone()
+                        inferred_struct.clone().or_else(|| struct_name.clone())
                     };
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
@@ -3052,20 +3308,34 @@ impl CodeGen {
                     }
                     if is_heap_ptr {
                         writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
-                        writeln!(
-                            &mut self.ir,
-                            "store {} {}, {}* %{}",
-                            val_ty, v, actual_ty, slot_name
-                        )
-                        .unwrap();
+                        // Coerce value to actual slot type
+                        let store_val = if val_ty == actual_ty || val_ty.is_empty() || actual_ty.is_empty() {
+                            v.clone()
+                        } else if val_ty == "i64" && (actual_ty.ends_with('*') || actual_ty == "ptr") {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap(); c
+                        } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap(); c
+                        } else if val_ty == "i1" && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
+                        } else if val_ty == "double" && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap(); c
+                        } else { v.clone() };
+                        writeln!(&mut self.ir, "store {} {}, {}* %{}", actual_ty, store_val, actual_ty, slot_name).unwrap();
                     } else {
-                        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
-                        writeln!(
-                            &mut self.ir,
-                            "store {} {}, {}* %{}",
-                            val_ty, v, llvm_ty, slot_name
-                        )
-                        .unwrap();
+                        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
+                        // Coerce value to actual slot type
+                        let store_val = if val_ty == actual_ty || val_ty.is_empty() || actual_ty.is_empty() {
+                            v.clone()
+                        } else if val_ty == "i64" && (actual_ty.ends_with('*') || actual_ty == "ptr") {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap(); c
+                        } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap(); c
+                        } else if val_ty == "i1" && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
+                        } else if val_ty == "double" && actual_ty == "i64" {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap(); c
+                        } else { v.clone() };
+                        writeln!(&mut self.ir, "store {} {}, {}* %{}", actual_ty, store_val, actual_ty, slot_name).unwrap();
                     }
                 } else {
                     let slot = ctx.locals.len();
@@ -3107,6 +3377,13 @@ impl CodeGen {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexFindAll" || n == "regexSplit") {
+                            llvm_ty = "i64*".to_string();
+                            struct_name = Some("Array:String".to_string());
+                            true
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexMatchGroups") {
+                            llvm_ty = "i64*".to_string();
+                            true
                         } else { false }
                     } else if let ExprKind::MethodCall { method, .. } = &v.node {
                         if method == "split" {
@@ -3117,7 +3394,7 @@ impl CodeGen {
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                            || matches!(ty, Some(Type::Generic { name, args }) if name == "Array" && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
+                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
                         if is_str_ann || is_str_lit {
                             struct_name = Some("Array:String".to_string());
@@ -3147,11 +3424,17 @@ impl CodeGen {
                         struct_name = Some("Map".to_string());
                         llvm_ty = "i8*".to_string();
                     } else if matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array") {
+                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array")
+                        || matches!(ty, Some(Type::Generic { name, args }) if name == "List" && matches!(args.first(), Some(Type::String))) {
                         struct_name = Some("Array:String".to_string());
                         llvm_ty = "i64*".to_string();
                     }
                 }
+
+                // Generate a unique alloca slot name to avoid duplicate definitions
+                let slot_name = format!("{}_{}", name, self.temp_count);
+                self.temp_count += 1;
+                ctx.local_slots.insert(name.clone(), slot_name.clone());
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
@@ -3159,29 +3442,84 @@ impl CodeGen {
                         val_ty.clone()
                     } else if is_ptr {
                         llvm_ty.clone()
+                    } else if ty.is_none() || matches!(ty, Some(Type::Infer)) {
+                        // No annotation: use the value's actual LLVM type (preserves i8* for strings,
+                        // double for floats, etc. — avoids spurious ptrtoint/print_int for string vars)
+                        val_ty.clone()
                     } else {
                         llvm_ty.clone()
                     };
                     let slot = ctx.locals.len();
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
+                    // Infer struct type from static method calls (EnumValue) and instance method calls.
+                    // This ensures local_types is set so subsequent method calls dispatch correctly.
+                    let inferred_struct_var = if struct_name.is_none() {
+                        match &val.node {
+                            ExprKind::EnumValue { enum_name, variant, .. } => {
+                                let method_key = format!("{}_{}", enum_name, variant);
+                                self.method_ret_class.get(&method_key).cloned()
+                                    .or_else(|| {
+                                        let is_ctor = variant == "new" || variant.starts_with("from")
+                                            || variant.starts_with("create") || variant.starts_with("make");
+                                        if is_ctor && self.struct_layouts.contains_key(enum_name.as_str()) {
+                                            Some(enum_name.clone())
+                                        } else { None }
+                                    })
+                            }
+                            ExprKind::MethodCall { obj: mc_obj, method: mc_method, .. } => {
+                                self.infer_struct_type(mc_obj, ctx)
+                                    .and_then(|obj_class| {
+                                        let method_key = format!("{}_{}", obj_class, mc_method);
+                                        self.method_ret_class.get(&method_key).cloned()
+                                    })
+                            }
+                            ExprKind::Ident(src_name) => {
+                                // Copy type from source variable (e.g. var newCtx = ctx)
+                                ctx.local_types.get(src_name.as_str()).cloned()
+                            }
+                            _ => None,
+                        }
+                    } else { struct_name.clone() };
                     // If the declared type annotation is an interface, use it for vtable dispatch.
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
                             Some(ann.clone())
                         } else {
-                            struct_name.clone()
+                            inferred_struct_var.clone().or_else(|| struct_name.clone())
                         }
                     } else {
-                        struct_name.clone()
+                        inferred_struct_var.clone().or_else(|| struct_name.clone())
                     };
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
                     }
-                    writeln!(&mut self.ir, "%{} = alloca {}", name, actual_ty).unwrap();
+                    writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
+                    // Coerce value type to slot type if necessary
+                    let store_val = if val_ty == actual_ty || val_ty.is_empty() || actual_ty.is_empty() {
+                        v.clone()
+                    } else if val_ty == "i64" && (actual_ty.ends_with('*') || actual_ty == "ptr") {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap();
+                        c
+                    } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap();
+                        c
+                    } else if val_ty == "i1" && actual_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap();
+                        c
+                    } else if val_ty == "double" && actual_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap();
+                        c
+                    } else {
+                        v.clone()
+                    };
                     writeln!(
                         &mut self.ir,
                         "store {} {}, {}* %{}",
-                        val_ty, v, actual_ty, name
+                        actual_ty, store_val, actual_ty, slot_name
                     )
                     .unwrap();
                 } else {
@@ -3190,7 +3528,7 @@ impl CodeGen {
                     if let Some(sn) = &struct_name {
                         ctx.local_types.insert(name.clone(), sn.clone());
                     }
-                    writeln!(&mut self.ir, "%{} = alloca {}", name, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
                 }
             }
             StmtKind::If {
@@ -3370,11 +3708,19 @@ impl CodeGen {
                     ("0".to_string(), len_val, None, Some(iter_ptr))
                 } else {
                     // Array: length at data_ptr[-1]
+                    // iter_ptr may be i64 (pointer encoded as integer) or i64*/ptr — coerce to ptr.
+                    let arr_ptr_val = if iter_ty == "i64" {
+                        let p = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", p, iter_ptr).unwrap();
+                        p
+                    } else {
+                        iter_ptr.clone()
+                    };
                     let len_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, iter_ptr).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, arr_ptr_val).unwrap();
                     let len_val = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
-                    ("0".to_string(), len_val, Some(iter_ptr), None)
+                    ("0".to_string(), len_val, Some(arr_ptr_val), None)
                 };
 
                 // Give loop variable a unique LLVM slot to avoid duplicate alloca on re-use
@@ -3660,18 +4006,36 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
                             c
                         };
-                        let store_val = if val_ty == "i8*" {
+                        let store_val = if val_ty == "i64" || val_ty.is_empty() {
+                            val
+                        } else if val_ty == "i1" {
                             let c = self.temp();
-                            writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", c, val).unwrap();
+                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
                             c
-                        } else { val };
+                        } else if val_ty == "double" || val_ty == "float" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                            c
+                        } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                            c
+                        };
                         writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_i8, key_i8, store_val).unwrap();
                     } else {
+                        // Coerce base_ptr to i64* if it's encoded as i64
+                        let base_arr = if base_ty == "i64" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, base_ptr).unwrap();
+                            c
+                        } else {
+                            base_ptr.clone()
+                        };
                         let ptr_name = self.temp();
                         writeln!(
                             &mut self.ir,
                             "{} = getelementptr i64, ptr {}, i64 {}",
-                            ptr_name, base_ptr, idx_val
+                            ptr_name, base_arr, idx_val
                         )
                         .unwrap();
                         // Strings stored as i64 (ptrtoint); bools need zext; others direct
@@ -3728,7 +4092,7 @@ impl CodeGen {
                 let (l, lt) = self.gen_expr(lhs, ctx)?;
                 let (r, rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
-                let float = Self::is_float(&lt);
+                let float = Self::is_float(&lt) || Self::is_float(&rt);
                 // Coerce object (i64*) → String if one side is already a String.
                 // This calls ClassName_toString() if it exists, enabling "text" + obj syntax.
                 let (l, lt) = if (lt == "i64*" && (rt == "i8*" || rt == "i64*")) || (lt == "i8*" && rt == "i64*") {
@@ -3776,44 +4140,77 @@ impl CodeGen {
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap();
                                 c
                             };
-                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, l_str, r_str).unwrap()
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, l_str, r_str).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         } else if float {
-                            writeln!(&mut self.ir, "{} = fadd {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fadd {} {}, {}", result, float_ty, lf, rf).unwrap();
+                            return Ok((result, float_ty.to_string()));
                         } else {
                             writeln!(&mut self.ir, "{} = add {} {}, {}", result, lt, l, r).unwrap()
                         }
                     }
                     tinox_parser::BinaryOp::Sub => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fsub {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fsub {} {}, {}", result, float_ty, lf, rf).unwrap();
+                            return Ok((result, float_ty.to_string()));
                         } else {
                             writeln!(&mut self.ir, "{} = sub {} {}, {}", result, lt, l, r).unwrap()
                         }
                     }
                     tinox_parser::BinaryOp::Mul => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fmul {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fmul {} {}, {}", result, float_ty, lf, rf).unwrap();
+                            return Ok((result, float_ty.to_string()));
                         } else {
                             writeln!(&mut self.ir, "{} = mul {} {}, {}", result, lt, l, r).unwrap()
                         }
                     }
                     tinox_parser::BinaryOp::Div => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, float_ty, lf, rf).unwrap();
+                            return Ok((result, float_ty.to_string()));
                         } else {
                             writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, lt, l, r).unwrap()
                         }
                     }
                     tinox_parser::BinaryOp::Mod => {
                         if float {
-                            writeln!(&mut self.ir, "{} = frem {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = frem {} {}, {}", result, float_ty, lf, rf).unwrap();
+                            return Ok((result, float_ty.to_string()));
                         } else {
                             writeln!(&mut self.ir, "{} = srem {} {}, {}", result, lt, l, r).unwrap()
                         }
                     }
                     tinox_parser::BinaryOp::Eq => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp oeq {} {}, {}", result, lt, l, r).unwrap()
+                            // Coerce i64 operands to double if needed (float bits stored as i64).
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap();
+                                c
+                            } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap();
+                                c
+                            } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp oeq {} {}, {}", result, float_ty, lf, rf).unwrap()
                         } else if lt == "i8*" || rt == "i8*" {
                             // String semantic equality
                             let l_str = if lt == "i8*" { l.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap(); c };
@@ -3836,7 +4233,10 @@ impl CodeGen {
                     }
                     tinox_parser::BinaryOp::Ne => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp one {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp one {} {}, {}", result, float_ty, lf, rf).unwrap()
                         } else if lt == "i8*" || rt == "i8*" {
                             let l_str = if lt == "i8*" { l.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, l).unwrap(); c };
                             let r_str = if rt == "i8*" { r.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, r).unwrap(); c };
@@ -3859,7 +4259,14 @@ impl CodeGen {
                     }
                     tinox_parser::BinaryOp::Lt => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp olt {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp olt {} {}, {}", result, float_ty, lf, rf).unwrap()
+                        } else if lt == "i8*" && rt == "i8*" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
+                            writeln!(&mut self.ir, "{} = icmp slt i64 {}, 0", result, c).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp slt {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -3867,7 +4274,14 @@ impl CodeGen {
                     }
                     tinox_parser::BinaryOp::Le => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp ole {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp ole {} {}, {}", result, float_ty, lf, rf).unwrap()
+                        } else if lt == "i8*" && rt == "i8*" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
+                            writeln!(&mut self.ir, "{} = icmp sle i64 {}, 0", result, c).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sle {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -3875,7 +4289,14 @@ impl CodeGen {
                     }
                     tinox_parser::BinaryOp::Gt => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp ogt {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp ogt {} {}, {}", result, float_ty, lf, rf).unwrap()
+                        } else if lt == "i8*" && rt == "i8*" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
+                            writeln!(&mut self.ir, "{} = icmp sgt i64 {}, 0", result, c).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sgt {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -3883,18 +4304,47 @@ impl CodeGen {
                     }
                     tinox_parser::BinaryOp::Ge => {
                         if float {
-                            writeln!(&mut self.ir, "{} = fcmp oge {} {}, {}", result, lt, l, r).unwrap()
+                            let float_ty = if lt == "double" || rt == "double" { "double" } else { lt.as_str() };
+                            let lf = if lt != "double" && lt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, lt, l).unwrap(); c } else { l.clone() };
+                            let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
+                            writeln!(&mut self.ir, "{} = fcmp oge {} {}, {}", result, float_ty, lf, rf).unwrap()
+                        } else if lt == "i8*" && rt == "i8*" {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
+                            writeln!(&mut self.ir, "{} = icmp sge i64 {}, 0", result, c).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = icmp sge {} {}, {}", result, lt, l, r).unwrap()
                         }
                         return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::And => {
-                        writeln!(&mut self.ir, "{} = and i1 {}, {}", result, l, r).unwrap();
+                        // Coerce operands to i1 if they are i64 (booleans stored as i64).
+                        let li1 = if lt == "i1" { l.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, lt, l).unwrap();
+                            c
+                        };
+                        let ri1 = if rt == "i1" { r.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, rt, r).unwrap();
+                            c
+                        };
+                        writeln!(&mut self.ir, "{} = and i1 {}, {}", result, li1, ri1).unwrap();
                         return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::Or => {
-                        writeln!(&mut self.ir, "{} = or i1 {}, {}", result, l, r).unwrap();
+                        // Coerce operands to i1 if they are i64 (booleans stored as i64).
+                        let li1 = if lt == "i1" { l.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, lt, l).unwrap();
+                            c
+                        };
+                        let ri1 = if rt == "i1" { r.clone() } else {
+                            let c = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, rt, r).unwrap();
+                            c
+                        };
+                        writeln!(&mut self.ir, "{} = or i1 {}, {}", result, li1, ri1).unwrap();
                         return Ok((result, "i1".to_string()));
                     }
                     tinox_parser::BinaryOp::BitAnd => {
@@ -4094,6 +4544,43 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        "log" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @log(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "exp" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @exp(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "fabs" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @llvm.fabs.f64(double {})", result, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "mathTgamma" | "mathLgamma" | "mathCbrt" | "mathTrunc" | "mathRint" | "mathLogb"
+                        | "mathLog2" | "mathLog10" | "mathExp2" | "mathExp10" => {
+                            let libm = name[4..].to_lowercase();
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @{}(double {})", result, libm, val).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "mathIsNan" | "mathIsInfinite" | "mathIsNormal" => {
+                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @{}(double {})", result, name, val).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "mathNan" | "mathInf" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @{}()", result, name).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "charAt" => {
                             let (ptr, _) = self.gen_expr(&args[0], ctx)?;
                             let (idx, _) = self.gen_expr(&args[1], ctx)?;
@@ -4201,19 +4688,23 @@ impl CodeGen {
                             return Ok((result, "i8*".to_string()));
                         }
                         "startsWith" => {
-                            let (s, _) = self.gen_expr(&args[0], ctx)?;
-                            let (prefix, _) = self.gen_expr(&args[1], ctx)?;
+                            let (s, s_ty) = self.gen_expr(&args[0], ctx)?;
+                            let s_ptr = if s_ty == "i8*" { s.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, s).unwrap(); c };
+                            let (prefix, p_ty) = self.gen_expr(&args[1], ctx)?;
+                            let p_ptr = if p_ty == "i8*" { prefix.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, prefix).unwrap(); c };
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", result, s, prefix).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", result, s_ptr, p_ptr).unwrap();
                             let bool_val = self.temp();
                             writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                             return Ok((bool_val, "i1".to_string()));
                         }
                         "endsWith" => {
-                            let (s, _) = self.gen_expr(&args[0], ctx)?;
-                            let (suffix, _) = self.gen_expr(&args[1], ctx)?;
+                            let (s, s_ty) = self.gen_expr(&args[0], ctx)?;
+                            let s_ptr = if s_ty == "i8*" { s.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, s).unwrap(); c };
+                            let (suffix, suf_ty) = self.gen_expr(&args[1], ctx)?;
+                            let suf_ptr = if suf_ty == "i8*" { suffix.clone() } else { let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, suffix).unwrap(); c };
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", result, s, suffix).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", result, s_ptr, suf_ptr).unwrap();
                             let bool_val = self.temp();
                             writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                             return Ok((bool_val, "i1".to_string()));
@@ -4267,9 +4758,14 @@ impl CodeGen {
                             return Ok((result, "i8*".to_string()));
                         }
                         "fileExists" => {
-                            let (path, _) = self.gen_expr(&args[0], ctx)?;
+                            let (path, path_ty) = self.gen_expr(&args[0], ctx)?;
+                            let path_str = if path_ty == "i8*" { path.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, path).unwrap();
+                                c
+                            };
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_file_exists(i8* {})", raw, path).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_file_exists(i8* {})", raw, path_str).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
                             return Ok((result, "i1".to_string()));
@@ -4278,6 +4774,79 @@ impl CodeGen {
                             let (path, _) = self.gen_expr(&args[0], ctx)?;
                             writeln!(&mut self.ir, "call void @tinox_file_delete(i8* {})", path).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "processArgs" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @processArgs()", result).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "processExit" => {
+                            let (code, code_ty) = self.gen_expr(&args[0], ctx)?;
+                            let code_i64 = if code_ty == "i64" { code.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = zext {} {} to i64", c, code_ty, code).unwrap();
+                                c
+                            };
+                            writeln!(&mut self.ir, "call void @processExit(i64 {})", code_i64).unwrap();
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "dirList" => {
+                            let (path, path_ty) = self.gen_expr(&args[0], ctx)?;
+                            let path_str = if path_ty == "i8*" { path.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, path).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @dirList(i8* {})", result, path_str).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "regexFindAll" | "regexSplit" => {
+                            let (pat, pat_ty) = self.gen_expr(&args[0], ctx)?;
+                            let pat_i64 = if pat_ty == "i64" { pat.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, pat_ty, pat).unwrap();
+                                c
+                            };
+                            let (subj, subj_ty) = self.gen_expr(&args[1], ctx)?;
+                            let subj_i64 = if subj_ty == "i64" { subj.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, subj_ty, subj).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @{}(i64 {}, i64 {})", result, name, pat_i64, subj_i64).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "regexMatchGroups" => {
+                            let (pat, pat_ty) = self.gen_expr(&args[0], ctx)?;
+                            let pat_str = if pat_ty == "i8*" { pat.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, pat).unwrap();
+                                c
+                            };
+                            let (subj, subj_ty) = self.gen_expr(&args[1], ctx)?;
+                            let subj_str = if subj_ty == "i8*" { subj.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, subj).unwrap();
+                                c
+                            };
+                            let (off, _) = self.gen_expr(&args[2], ctx)?;
+                            let (icase, _) = self.gen_expr(&args[3], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @regexMatchGroups(i8* {}, i8* {}, i64 {}, i64 {})", result, pat_str, subj_str, off, icase).unwrap();
+                            return Ok((result, "i64*".to_string()));
+                        }
+                        "fileReadAllText" => {
+                            let (path, path_ty) = self.gen_expr(&args[0], ctx)?;
+                            let path_str = if path_ty == "i8*" { path.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, path).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @fileReadAllText(i8* {})", result, path_str).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         }
                         _ => name.clone(),
                     },
@@ -4484,9 +5053,25 @@ impl CodeGen {
 
                 // Array method dispatch: only trigger for explicit Array types or when declared type is
                 // unknown (None) and obj_ty is i64* — never trigger for known struct instances.
+                // Also trigger for i64 objects (ptrtoint'd array pointers) with known array methods.
                 let is_known_struct = declared_type.as_deref()
                     .map(|t| self.struct_layouts.contains_key(t))
                     .unwrap_or(false);
+                // Array-only methods (excludes contains/len/remove/insert which are also map methods)
+                let array_only_methods = ["push","pop","sort","reverse","slice","join",
+                    "first","last","find","filter","map","reduce","any","all","indexOf",
+                    "clear","isEmpty","toList","unique","flatten","zip","unzip","take","skip",
+                    "sortBy","groupBy","partition","sum","min","max","average","forEach"];
+                let is_i64_array_method = obj_ty == "i64" && !is_known_struct
+                    && array_only_methods.contains(&method.as_str());
+                // Coerce i64 array pointer to i64* for array dispatch
+                let (obj_ptr, obj_ty) = if is_i64_array_method {
+                    let c = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                    (c, "i64*".to_string())
+                } else {
+                    (obj_ptr, obj_ty)
+                };
                 let is_array_type = declared_type.as_deref().map(|t| t == "Array:String" || t == "Array").unwrap_or(false)
                     || (obj_ty == "i64*" && !is_known_struct);
                 if is_array_type && obj_ty != "i8*" {
@@ -4505,6 +5090,10 @@ impl CodeGen {
                                 let c = self.temp();
                                 let base_ty = val_ty.trim_end_matches('*');
                                 writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", c, base_ty, val).unwrap();
+                                c
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
                                 c
                             } else { val };
                             let result = self.temp();
@@ -4611,6 +5200,17 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_join(i64* {}, i8* {})", result, obj_ptr, sep).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
+                        "removeAt" => {
+                            let (idx, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_remove_at(i64* {}, i64 {})", result, obj_ptr, idx).unwrap();
+                            // Write the new pointer back to the source variable if possible
+                            if let ExprKind::Ident(var_name) = &obj.node {
+                                let slot = ctx.local_slots.get(var_name.as_str()).cloned().unwrap_or_else(|| var_name.clone());
+                                writeln!(&mut self.ir, "store i64* {}, i64** %{}", result, slot).unwrap();
+                            }
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
                         _ => {}
                     }
                 }
@@ -4628,47 +5228,92 @@ impl CodeGen {
                     }
                 }
 
-                // Map method dispatch
-                if declared_type.as_deref() == Some("Map") {
+                // Map method dispatch — also handle i64 objects that may be ptrtoint'd Map pointers
+                let is_map_dispatch = declared_type.as_deref() == Some("Map")
+                    || (obj_ty == "i64" && matches!(method.as_str(), "get" | "insert" | "contains" | "keys" | "values" | "remove" | "len"));
+                if is_map_dispatch {
+                    let map_obj_ptr = if obj_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, obj_ptr).unwrap();
+                        c
+                    } else {
+                        obj_ptr.clone()
+                    };
                     match method.as_str() {
                         "get" => {
-                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
+                            let key_i8 = if key_ty == "i8*" { key.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
+                                c
+                            };
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, obj_ptr, key).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_obj_ptr, key_i8).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "insert" => {
-                            let (key, _) = self.gen_expr(&args[0], ctx)?;
-                            let (val, _) = self.gen_expr(&args[1], ctx)?;
-                            writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", obj_ptr, key, val).unwrap();
+                            let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
+                            let key_i8 = if key_ty == "i8*" { key.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
+                                c
+                            };
+                            let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
+                            let val_i64 = if val_ty == "i64" || val_ty.is_empty() {
+                                val.clone()
+                            } else if val_ty == "i1" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                                c
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else {
+                                // pointer type — ptrtoint
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            };
+                            writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_obj_ptr, key_i8, val_i64).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         "contains" => {
-                            let (key, _) = self.gen_expr(&args[0], ctx)?;
+                            let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
+                            let key_str = if key_ty == "i8*" { key.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
+                                c
+                            };
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_contains(i8* {}, i8* {})", raw, obj_ptr, key).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_contains(i8* {}, i8* {})", raw, map_obj_ptr, key_str).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "remove" => {
-                            let (key, _) = self.gen_expr(&args[0], ctx)?;
-                            writeln!(&mut self.ir, "call void @tinox_map_remove(i8* {}, i8* {})", obj_ptr, key).unwrap();
+                            let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
+                            let key_str = if key_ty == "i8*" { key.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
+                                c
+                            };
+                            writeln!(&mut self.ir, "call void @tinox_map_remove(i8* {}, i8* {})", map_obj_ptr, key_str).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         "len" => {
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_len(i8* {})", result, obj_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_map_len(i8* {})", result, map_obj_ptr).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "keys" => {
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_keys(i8* {})", result, obj_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_keys(i8* {})", result, map_obj_ptr).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
                         "values" => {
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_values(i8* {})", result, obj_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_map_values(i8* {})", result, map_obj_ptr).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
                         _ => {}
@@ -4780,33 +5425,53 @@ impl CodeGen {
                             return Ok((result, "i8*".to_string()));
                         }
                         "contains" => {
-                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+                                c
+                            };
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_contains(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_contains(i8* {}, i8* {})", raw, obj_ptr, arg_str).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "startsWith" => {
-                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+                                c
+                            };
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_starts_with(i8* {}, i8* {})", raw, obj_ptr, arg_str).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "endsWith" => {
-                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+                                c
+                            };
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", raw, obj_ptr, arg).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_ends_with(i8* {}, i8* {})", raw, obj_ptr, arg_str).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "indexOf" => {
-                            let (arg, _) = self.gen_expr(&args[0], ctx)?;
+                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+                                c
+                            };
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "charAt" => {
@@ -4848,6 +5513,17 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "double".to_string()));
+                        }
+                        "split" => {
+                            let (delim, delim_ty) = self.gen_expr(&args[0], ctx)?;
+                            let delim_str = if delim_ty == "i8*" { delim.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, delim).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_split(i8* {}, i8* {})", result, obj_ptr, delim_str).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         _ => {}
                     }
@@ -5111,8 +5787,16 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = zext i8 {} to i64", extended, byte).unwrap();
                     Ok((extended, "i64".to_string()))
                 } else {
+                    // Coerce base pointer to ptr if it's an i64 (pointer-as-integer).
+                    let base_as_ptr = if base_ty == "i64" {
+                        let p = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", p, base_ptr).unwrap();
+                        p
+                    } else {
+                        base_ptr.clone()
+                    };
                     let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, base_as_ptr, idx_val).unwrap();
                     let raw = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ptr_name).unwrap();
                     if is_str_arr {
@@ -5135,9 +5819,21 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", data_ptr, full_ptr).unwrap();
                 for (i, elem) in elements.iter().enumerate() {
                     let (val, val_ty) = self.gen_expr(elem, ctx)?;
-                    let store_val = if val_ty == "i8*" {
+                    let store_val = if val_ty == "i1" {
                         let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", cast, val).unwrap();
+                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
+                        cast
+                    } else if val_ty == "double" || val_ty == "float" {
+                        let cast = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                        cast
+                    } else if val_ty != "i64" && !val_ty.is_empty() && val_ty != "void" {
+                        let cast = self.temp();
+                        if val_ty == "ptr" {
+                            writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", cast, val).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                        }
                         cast
                     } else {
                         val
@@ -5152,9 +5848,23 @@ impl CodeGen {
                 let map_ptr = self.temp();
                 writeln!(&mut self.ir, "{} = call i8* @tinox_map_create()", map_ptr).unwrap();
                 for (key_expr, val_expr) in entries {
-                    let (key_val, _) = self.gen_expr(key_expr, ctx)?;
-                    let (val_val, _) = self.gen_expr(val_expr, ctx)?;
-                    writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_ptr, key_val, val_val).unwrap();
+                    let (key_val, key_ty) = self.gen_expr(key_expr, ctx)?;
+                    let key_i8 = if key_ty == "i8*" { key_val.clone() } else {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key_val).unwrap();
+                        c
+                    };
+                    let (val_val, val_ty) = self.gen_expr(val_expr, ctx)?;
+                    let val_i64 = if val_ty == "i64" || val_ty.is_empty() {
+                        val_val.clone()
+                    } else if val_ty == "i1" {
+                        let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val_val).unwrap(); c
+                    } else if val_ty == "double" || val_ty == "float" {
+                        let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val_val).unwrap(); c
+                    } else {
+                        let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val_val).unwrap(); c
+                    };
+                    writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_ptr, key_i8, val_i64).unwrap();
                 }
                 Ok((map_ptr, "i8*".to_string()))
             }
@@ -5414,9 +6124,10 @@ impl CodeGen {
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
                     let mut args_parts: Vec<String> = Vec::new();
-                    // Class methods always have an implicit self param in their LLVM definition.
-                    // Pass null as self since these are static-style calls (constructor / utility).
-                    if self.method_param_types.contains_key(&static_key) {
+                    // Instance methods (fn) have an implicit self param — pass null.
+                    // Static methods (fnc) do not have self — don't add null.
+                    let is_static = self.static_method_keys.contains(&static_key);
+                    if self.method_param_types.contains_key(&static_key) && !is_static {
                         args_parts.push("i64* null".to_string());
                     }
                     for arg in args.iter() {
@@ -5518,8 +6229,38 @@ impl CodeGen {
                 }
                 if let Some(val_expr) = value {
                     let (val, ty) = self.gen_expr(val_expr, ctx)?;
-                    let llvm_ty = Self::llvm_type_str(&ty);
-                    writeln!(&mut self.ir, "ret {} {}", llvm_ty, val).unwrap();
+                    let expected = ctx.ret_type.clone();
+                    let (final_val, final_ty) = if !expected.is_empty() && ty != expected {
+                        let is_from_float = Self::is_float(&ty);
+                        let is_to_float = Self::is_float(&expected);
+                        let cast_op = match (ty.as_str(), expected.as_str()) {
+                            _ if is_from_float && is_to_float => "fptrunc",
+                            (from, _) if is_to_float && from.starts_with('i') => "bitcast",
+                            (_, to) if is_from_float && to.starts_with('i') => "bitcast",
+                            (from, to) if from.ends_with('*') && to.ends_with('*') => "bitcast",
+                            (from, to) if from.starts_with('i') && to.starts_with('i')
+                                && !from.contains('*') && !to.contains('*') =>
+                            {
+                                let from_bits: u32 = from[1..].parse().unwrap_or(64);
+                                let to_bits: u32 = to[1..].parse().unwrap_or(64);
+                                if from_bits > to_bits { "trunc" } else { "zext" }
+                            }
+                            (from, to) if !from.ends_with('*') && to.ends_with('*') => "inttoptr",
+                            (from, to) if from.ends_with('*') && !to.ends_with('*') => "ptrtoint",
+                            _ => "",
+                        };
+                        if !cast_op.is_empty() {
+                            let tmp = self.temp();
+                            writeln!(&mut self.ir, "{} = {} {} {} to {}", tmp, cast_op, ty, val, expected).unwrap();
+                            (tmp, expected.clone())
+                        } else {
+                            (val, ty)
+                        }
+                    } else {
+                        (val, ty)
+                    };
+                    let llvm_ty = Self::llvm_type_str(&final_ty);
+                    writeln!(&mut self.ir, "ret {} {}", llvm_ty, final_val).unwrap();
                 } else {
                     writeln!(&mut self.ir, "ret void").unwrap();
                 }
@@ -5641,9 +6382,21 @@ impl CodeGen {
                         let layout_idx = field_start + arg_idx;
                         if layout_idx < layout.len() {
                             let (val, val_ty) = self.gen_expr(arg, ctx)?;
-                            let store_val = if val_ty == "i8*" {
+                            let store_val = if val_ty == "i1" {
                                 let c = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", c, val).unwrap();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                                c
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else if val_ty != "i64" && !val_ty.is_empty() && val_ty != "void" {
+                                let c = self.temp();
+                                if val_ty == "ptr" {
+                                    writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", c, val).unwrap();
+                                } else {
+                                    writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                                }
                                 c
                             } else {
                                 val
@@ -5706,12 +6459,24 @@ impl CodeGen {
             ExprKind::Match { expr, cases } => {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 let merge_bb = self.new_bb("match_end");
-                let mut last_result: (String, String) = ("0".to_string(), "i64".to_string());
+                // Pre-allocate a result slot so each arm can store its value into it.
+                // This ensures the result dominates the merge block regardless of which arm ran.
+                let result_slot = format!("match_result_{}", self.temp_count);
+                self.temp_count += 1;
+                writeln!(&mut self.ir, "%{} = alloca i64", result_slot).unwrap();
+                writeln!(&mut self.ir, "store i64 0, i64* %{}", result_slot).unwrap();
+                let mut last_result_ty: String = "i64".to_string();
                 for case in cases {
                     match &case.pattern {
                         Pattern::Wildcard(_) => {
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                            last_result = (body_val, body_ty);
+                            last_result_ty = body_ty.clone();
+                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
+                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
+                                else { "0".to_string() };
+                            writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                         }
                         Pattern::Literal(lit, _) => {
@@ -5733,18 +6498,31 @@ impl CodeGen {
                             .unwrap();
                             writeln!(&mut self.ir, "{}:", case_bb).unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                            last_result = (body_val, body_ty);
+                            last_result_ty = body_ty.clone();
+                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
+                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
+                                else { "0".to_string() };
+                            writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
                         }
                         Pattern::Ident(name, _, _) if self.known_enum_variants.contains(name) => {
                             // Bare enum variant name (e.g. `North` instead of `Dir::North`)
                             let discriminator = name.chars().map(|c| c as i64).sum::<i64>();
+                            let val_i64 = if val_ty.ends_with('*') || val_ty == "ptr" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else {
+                                val.clone()
+                            };
                             let cmp = self.temp();
                             writeln!(
                                 &mut self.ir,
                                 "{} = icmp eq i64 {}, {}",
-                                cmp, val, discriminator
+                                cmp, val_i64, discriminator
                             )
                             .unwrap();
                             let case_bb = self.new_bb("match_case");
@@ -5757,39 +6535,96 @@ impl CodeGen {
                             .unwrap();
                             writeln!(&mut self.ir, "{}:", case_bb).unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                            last_result = (body_val, body_ty);
+                            last_result_ty = body_ty.clone();
+                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
+                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
+                                else { "0".to_string() };
+                            writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
                         }
                         Pattern::Ident(name, _, _) => {
                             let llvm_ty = val_ty.clone();
+                            let slot_name = format!("{}_{}", name, self.temp_count);
+                            self.temp_count += 1;
                             ctx.locals
                                 .insert(name.clone(), (llvm_ty.clone(), ctx.locals.len()));
-                            writeln!(&mut self.ir, "%{} = alloca {}", name, llvm_ty).unwrap();
+                            ctx.local_slots.insert(name.clone(), slot_name.clone());
+                            writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
                             writeln!(
                                 &mut self.ir,
                                 "store {} {}, {}* %{}",
-                                val_ty, val, llvm_ty, name
+                                val_ty, val, llvm_ty, slot_name
                             )
                             .unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                            last_result = (body_val, body_ty);
+                            last_result_ty = body_ty.clone();
+                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
+                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
+                                else { "0".to_string() };
+                            writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                            ctx.locals.remove(name);
+                            ctx.local_slots.remove(name.as_str());
                         }
-                        Pattern::EnumVariant { variant, args, .. } => {
+                        Pattern::EnumVariant { enum_name, variant, args, .. } => {
                             // For enum variants, we need to:
                             // 1. Extract and compare the discriminator
                             // 2. If it matches, bind any pattern arguments
 
-                            let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+                            // When written as `Variant(args)` (no :: qualifier), the parser
+                            // puts the name in `enum_name` and leaves `variant` empty.
+                            // When written as `Enum::Variant(args)`, the name is in `variant`.
+                            let disc_name = if variant.is_empty() { enum_name } else { variant };
+                            let discriminator = disc_name.chars().map(|c| c as i64).sum::<i64>();
 
-                            if !args.is_empty() && val_ty.ends_with("*") {
-                                // Load discriminator from the enum value
+                            // Normalize the match subject to i64 so all arms use the same
+                            // pointer-range-guarded logic regardless of the subject's LLVM type.
+                            // Enum values are either a plain discriminator (< 65536, no-arg
+                            // variants) or a heap pointer to [disc, payload...].
+                            let val_i64 = if val_ty.ends_with('*') || val_ty == "ptr" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else {
+                                val.clone()
+                            };
+                            let case_bb = self.new_bb("match_case");
+                            let next_bb = self.new_bb("match_next");
+                            if !args.is_empty() {
+                                // Payload variant: guard with pointer-range check before
+                                // dereferencing, since the value may be a plain discriminator.
+                                let try_ptr_bb = self.new_bb("try_ptr");
+                                let is_ptr_check = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = icmp ugt i64 {}, 65535",
+                                    is_ptr_check, val_i64
+                                )
+                                .unwrap();
+                                writeln!(
+                                    &mut self.ir,
+                                    "br i1 {}, label %{}, label %{}",
+                                    is_ptr_check, try_ptr_bb, next_bb
+                                )
+                                .unwrap();
+                                writeln!(&mut self.ir, "{}:", try_ptr_bb).unwrap();
+                                let ptr_val = self.temp();
+                                writeln!(
+                                    &mut self.ir,
+                                    "{} = inttoptr i64 {} to i64*",
+                                    ptr_val, val_i64
+                                )
+                                .unwrap();
                                 let disc_ptr = self.temp();
                                 writeln!(
                                     &mut self.ir,
                                     "{} = getelementptr i64, ptr {}, i64 0",
-                                    disc_ptr, val
+                                    disc_ptr, ptr_val
                                 )
                                 .unwrap();
                                 let loaded_disc = self.temp();
@@ -5799,7 +6634,6 @@ impl CodeGen {
                                     loaded_disc, disc_ptr
                                 )
                                 .unwrap();
-
                                 let cmp = self.temp();
                                 writeln!(
                                     &mut self.ir,
@@ -5807,9 +6641,6 @@ impl CodeGen {
                                     cmp, loaded_disc, discriminator
                                 )
                                 .unwrap();
-
-                                let case_bb = self.new_bb("match_case");
-                                let next_bb = self.new_bb("match_next");
                                 writeln!(
                                     &mut self.ir,
                                     "br i1 {}, label %{}, label %{}",
@@ -5818,7 +6649,7 @@ impl CodeGen {
                                 .unwrap();
                                 writeln!(&mut self.ir, "{}:", case_bb).unwrap();
 
-                                // Bind arguments if present
+                                // Bind arguments
                                 for (i, arg_pattern) in args.iter().enumerate() {
                                     if let Pattern::Ident(arg_name, _, _) = arg_pattern {
                                         let arg_ptr = self.temp();
@@ -5826,7 +6657,7 @@ impl CodeGen {
                                             &mut self.ir,
                                             "{} = getelementptr i64, ptr {}, i64 {}",
                                             arg_ptr,
-                                            val,
+                                            ptr_val,
                                             i + 1
                                         )
                                         .unwrap();
@@ -5837,36 +6668,18 @@ impl CodeGen {
                                             arg_val, arg_ptr
                                         )
                                         .unwrap();
-                                        ctx.locals.insert(
-                                            arg_name.clone(),
-                                            ("i64".to_string(), ctx.locals.len()),
-                                        );
-                                        writeln!(&mut self.ir, "%{} = alloca i64", arg_name)
-                                            .unwrap();
-                                        writeln!(
-                                            &mut self.ir,
-                                            "store i64 {}, i64* %{}",
-                                            arg_val, arg_name
-                                        )
-                                        .unwrap();
+                                        self.bind_match_payload(ctx, disc_name, i, arg_name, &arg_val);
                                     }
                                 }
-
-                                let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                                last_result = (body_val, body_ty);
-                                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
-                                writeln!(&mut self.ir, "{}:", next_bb).unwrap();
-                            } else if val_ty == "i64" {
-                                // Simple enum variant (no arguments)
+                            } else {
+                                // No-arg variant: plain discriminator compare
                                 let cmp = self.temp();
                                 writeln!(
                                     &mut self.ir,
                                     "{} = icmp eq i64 {}, {}",
-                                    cmp, val, discriminator
+                                    cmp, val_i64, discriminator
                                 )
                                 .unwrap();
-                                let case_bb = self.new_bb("match_case");
-                                let next_bb = self.new_bb("match_next");
                                 writeln!(
                                     &mut self.ir,
                                     "br i1 {}, label %{}, label %{}",
@@ -5874,18 +6687,48 @@ impl CodeGen {
                                 )
                                 .unwrap();
                                 writeln!(&mut self.ir, "{}:", case_bb).unwrap();
-                                let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
-                                last_result = (body_val, body_ty);
-                                writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
-                                writeln!(&mut self.ir, "{}:", next_bb).unwrap();
                             }
+                            let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            last_result_ty = body_ty.clone();
+                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
+                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
+                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
+                                else { "0".to_string() };
+                            writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
+                            writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                            writeln!(&mut self.ir, "{}:", next_bb).unwrap();
                         }
                         _ => {}
                     }
                 }
                 writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
-                Ok(last_result)
+                // Load the result from the pre-allocated result slot.
+                // This value is valid regardless of which arm ran (dominates all uses).
+                let result_val = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* %{}", result_val, result_slot).unwrap();
+                // Restore the original type if the result is a pointer type
+                let final_ty = if last_result_ty == "i64" || last_result_ty == "void" || last_result_ty.is_empty() {
+                    last_result_ty.clone()
+                } else if last_result_ty == "i1" {
+                    // Restore bool: truncate from i64
+                    let b = self.temp();
+                    writeln!(&mut self.ir, "{} = trunc i64 {} to i1", b, result_val).unwrap();
+                    return Ok((b, "i1".to_string()));
+                } else if last_result_ty == "double" {
+                    let d = self.temp();
+                    writeln!(&mut self.ir, "{} = bitcast i64 {} to double", d, result_val).unwrap();
+                    return Ok((d, "double".to_string()));
+                } else if last_result_ty.ends_with('*') || last_result_ty == "ptr" {
+                    // Restore pointer type: inttoptr
+                    let p = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", p, result_val, last_result_ty).unwrap();
+                    return Ok((p, last_result_ty));
+                } else {
+                    last_result_ty.clone()
+                };
+                Ok((result_val, final_ty))
             }
             ExprKind::This => {
                 if ctx.params.contains("self") {
@@ -6224,7 +7067,30 @@ impl CodeGen {
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 } else if let ExprKind::Ident(name) = &target.node {
                     let store_ty = ctx.locals.get(name).map(|(t, _)| t.clone()).unwrap_or_else(|| val_ty.clone());
-                    writeln!(&mut self.ir, "store {} {}, {}* %{}", val_ty, val, store_ty, name).unwrap();
+                    let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
+                    // Coerce value type to target slot type
+                    let store_val = if val_ty == store_ty || val_ty.is_empty() || store_ty.is_empty() {
+                        val.clone()
+                    } else if val_ty == "i64" && (store_ty.ends_with('*') || store_ty == "ptr") {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, val, store_ty).unwrap();
+                        c
+                    } else if (val_ty.ends_with('*') || val_ty == "ptr") && store_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                        c
+                    } else if val_ty == "i1" && store_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                        c
+                    } else if val_ty == "double" && store_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, val).unwrap();
+                        c
+                    } else {
+                        val.clone()
+                    };
+                    writeln!(&mut self.ir, "store {} {}, {}* %{}", store_ty, store_val, store_ty, slot).unwrap();
                 }
                 Ok((val, val_ty))
             }
@@ -6253,6 +7119,7 @@ impl CodeGen {
             ExprKind::Ident(name) => {
                 if let Some((ty, _)) = ctx.locals.get(name) {
                     let ty = ty.clone();
+                    let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
                     let loaded = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -6260,30 +7127,58 @@ impl CodeGen {
                         loaded.as_str(),
                         ty,
                         ty,
-                        name.as_str()
+                        slot.as_str()
                     )
                     .unwrap();
-                    let (rhs, _) = self.gen_expr(value, ctx)?;
+                    let (rhs_raw, rhs_ty) = self.gen_expr(value, ctx)?;
+                    let rhs = if ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add) {
+                        rhs_raw
+                    } else if rhs_ty == ty || rhs_ty.is_empty() {
+                        rhs_raw
+                    } else if rhs_ty == "i64" && ty == "double" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = sitofp i64 {} to double", c, rhs_raw).unwrap();
+                        c
+                    } else if rhs_ty == "double" && ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, rhs_raw).unwrap();
+                        c
+                    } else {
+                        rhs_raw
+                    };
+                    if ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add) {
+                        // String += String → Konkatenation
+                        let result = self.temp();
+                        writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, loaded, rhs).unwrap();
+                        writeln!(&mut self.ir, "store i8* {}, i8** %{}", result, slot).unwrap();
+                        return Ok((result, ty));
+                    }
+                    let is_float = ty == "double" || ty == "float";
                     let result = self.temp();
                     match op {
                         tinox_parser::CompoundOp::Add => {
-                            writeln!(&mut self.ir, "{} = add {} {}, {}", result, ty, loaded, rhs)
+                            let instr = if is_float { "fadd" } else { "add" };
+                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::Sub => {
-                            writeln!(&mut self.ir, "{} = sub {} {}, {}", result, ty, loaded, rhs)
+                            let instr = if is_float { "fsub" } else { "sub" };
+                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::Mul => {
-                            writeln!(&mut self.ir, "{} = mul {} {}, {}", result, ty, loaded, rhs)
+                            let instr = if is_float { "fmul" } else { "mul" };
+                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::Div => {
-                            writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, ty, loaded, rhs)
+                            let instr = if is_float { "fdiv" } else { "sdiv" };
+                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::Mod => {
-                            writeln!(&mut self.ir, "{} = srem {} {}, {}", result, ty, loaded, rhs)
+                            let instr = if is_float { "frem" } else { "srem" };
+                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::BitAnd => {
@@ -6311,7 +7206,7 @@ impl CodeGen {
                                 .unwrap();
                         }
                     }
-                    writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, result, ty, name).unwrap();
+                    writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, result, ty, slot).unwrap();
                     return Ok((result, ty));
                 }
             }
@@ -6685,7 +7580,9 @@ impl CodeGen {
     }
 
     fn new_bb(&mut self, name: &str) -> String {
-        format!("{}_{}", name, self.temp_count)
+        let n = self.temp_count;
+        self.temp_count += 1;
+        format!("{}_{}", name, n)
     }
 
     #[allow(dead_code)]

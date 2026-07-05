@@ -882,6 +882,31 @@ impl Parser {
                             let value = self.parse_expr()?;
                             self.expect(TokenKind::Semicolon)?;
                             StmtKind::Assignment { target, value }
+                        } else if self.check(TokenKind::PlusEquals)
+                            || self.check(TokenKind::MinusEquals)
+                            || self.check(TokenKind::StarEquals)
+                            || self.check(TokenKind::SlashEquals)
+                            || self.check(TokenKind::PercentEquals)
+                        {
+                            let op = match self.peek().kind {
+                                TokenKind::PlusEquals => CompoundOp::Add,
+                                TokenKind::MinusEquals => CompoundOp::Sub,
+                                TokenKind::StarEquals => CompoundOp::Mul,
+                                TokenKind::SlashEquals => CompoundOp::Div,
+                                TokenKind::PercentEquals => CompoundOp::Mod,
+                                _ => unreachable!(),
+                            };
+                            self.bump();
+                            let value = self.parse_expr()?;
+                            self.expect(TokenKind::Semicolon)?;
+                            StmtKind::Expr(Spanned::new(
+                                ExprKind::CompoundAssign {
+                                    op,
+                                    target: Box::new(target),
+                                    value: Box::new(value),
+                                },
+                                ident_span,
+                            ))
                         } else if self.check(TokenKind::LParen) {
                             self.bump();
                             let mut args = Vec::new();

@@ -729,6 +729,13 @@ impl TypeChecker {
                 return_type: ret,
             });
         }
+        symbols.functions.insert("regexMatchGroups".to_string(), FunctionSignature {
+            params: vec![
+                ("pattern".to_string(), ValueType::String), ("subject".to_string(), ValueType::String),
+                ("offset".to_string(), ValueType::Int), ("icase".to_string(), ValueType::Int),
+            ],
+            return_type: ValueType::Array,
+        });
         // Env
         for name in &["envGet", "envSet", "envRemove", "envCurrentDir", "envSetCurrentDir"] {
             let ret = if *name == "envGet" || *name == "envCurrentDir" { ValueType::String } else { ValueType::Nothing };
@@ -867,6 +874,39 @@ impl TypeChecker {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
         }
+        // float math builtins
+        for name in &["log", "exp", "fabs", "mathTgamma", "mathLgamma", "mathCbrt", "mathTrunc", "mathRint", "mathLogb",
+                      "mathLog2", "mathLog10", "mathExp2", "mathExp10"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Float,
+            });
+        }
+        for name in &["mathIsNan", "mathIsInfinite", "mathIsNormal"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Int,
+            });
+        }
+        for name in &["mathNan", "mathInf"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![], return_type: ValueType::Float,
+            });
+        }
+        // jgrep-tinox env/time builtins
+        symbols.functions.insert("envDump".to_string(), FunctionSignature { params: vec![], return_type: ValueType::String });
+        symbols.functions.insert("currentTimeSecs".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("strftimeStr".to_string(), FunctionSignature {
+            params: vec![("fmt".to_string(), ValueType::String), ("t".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("fromdateStr".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("printStderr".to_string(), FunctionSignature {
+            params: vec![("msg".to_string(), ValueType::String)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("isStdinTty".to_string(), FunctionSignature {
+            params: vec![], return_type: ValueType::Int,
+        });
         Self {
             errors: Vec::new(),
             symbols,
@@ -1635,9 +1675,10 @@ impl TypeChecker {
                         .to_error(),
                     );
                 }
+                let was_in_loop = self.symbols.in_loop;
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
-                self.symbols.in_loop = false;
+                self.symbols.in_loop = was_in_loop;
                 false
             }
             StmtKind::For { var, iter, body } => {
@@ -1649,16 +1690,18 @@ impl TypeChecker {
                     ValueType::String => ValueType::String,
                     other => other,
                 };
+                let was_in_loop = self.symbols.in_loop;
                 self.symbols.in_loop = true;
                 self.symbols.variables.insert(var.clone(), (elem_ty, false));
                 self.check_stmt(body);
-                self.symbols.in_loop = false;
+                self.symbols.in_loop = was_in_loop;
                 false
             }
             StmtKind::Loop { body } => {
+                let was_in_loop = self.symbols.in_loop;
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
-                self.symbols.in_loop = false;
+                self.symbols.in_loop = was_in_loop;
                 false
             }
             StmtKind::Return(opt_expr) => {
@@ -1773,9 +1816,10 @@ impl TypeChecker {
                 if let Some(update_expr) = update {
                     self.infer_type(update_expr);
                 }
+                let was_in_loop = self.symbols.in_loop;
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
-                self.symbols.in_loop = false;
+                self.symbols.in_loop = was_in_loop;
                 false
             }
         }
@@ -2377,8 +2421,9 @@ impl TypeChecker {
             }
             BinaryOp::Eq | BinaryOp::Ne => lhs == rhs,
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float)
+                (matches!(lhs, ValueType::Int | ValueType::Float)
+                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                    || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
             }
         };
         if !valid {
@@ -3624,8 +3669,8 @@ fn f(foo: Foo) { let y = foo.x; }
     }
 
     #[test]
-    fn test_compare_strings_err() {
-        err_contains("fn f(a: String, b: String) -> Bool { return a < b; }", "cannot be applied");
+    fn test_compare_strings_ok() {
+        ok("fn f(a: String, b: String) -> Bool { return a < b; }");
     }
 
     #[test]
