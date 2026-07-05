@@ -248,7 +248,23 @@ let entries = copyStringList(dirList(path));
 
 ---
 
-## Bug 8 — (nicht vergeben / offen für neue Findings)
+## Bug 8 — `let ks = map.keys()` typisiert Elemente nicht als String
+
+**Status: GEFIXT (2026-07-05)** — Die Let-Binding-Inferenz kannte `Array:String` nur für `.split()`-Methodenaufrufe; `.keys()` fehlte. Iteration über das Ergebnis druckte Pointer-Werte statt Strings. Fix: `method == "keys"` in beiden MethodCall-Inferenz-Armen (let/var) ergänzt.
+
+**Datei:** `crates/tinox-codegen/src/codegen.rs`
+
+**Problem:**
+```tinox
+match v {
+    Obj(o) => {
+        let ks = o.keys();
+        for k in ks { print(k); }  // druckt Zahlen (Pointer) statt Keys
+    }
+}
+```
+
+**Entdeckt beim:** Rückbau der wrapObj/objKeys-Workarounds in jgrep — genau diese Helfer hatten das Problem kaschiert (fnc mit deklariertem Rückgabetyp `List<String>` lieferte korrekte Typinfo).
 
 ---
 

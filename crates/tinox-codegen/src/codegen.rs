@@ -3176,7 +3176,7 @@ impl CodeGen {
                             true
                         } else { false }
                     } else if let ExprKind::MethodCall { method, .. } = &v.node {
-                        if method == "split" {
+                        if method == "split" || method == "keys" {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
@@ -3386,7 +3386,7 @@ impl CodeGen {
                             true
                         } else { false }
                     } else if let ExprKind::MethodCall { method, .. } = &v.node {
-                        if method == "split" {
+                        if method == "split" || method == "keys" {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
