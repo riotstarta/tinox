@@ -452,6 +452,60 @@ fn strContains(haystack: String, needle: String) -> Bool { return haystack.conta
 
 ---
 
+## Bug 15 — `.len()` auf List<String>-Elementen aus Funktionsergebnissen geht durch Map-Dispatch
+
+**Status: GEFIXT (2026-07-06)** — Entdeckt beim ygrep-Port (YAML-Parser in jgrep-tinox).
+
+**Problem:**
+```tinox
+fn splitLines(s: String) -> List<String> { ... }
+
+let lines = splitLines(content);
+lines[0].len();          // ruft tinox_map_len auf dem String-Pointer auf → Müll
+let raw = this.rawLines[i];
+raw.len();               // dito für List<String>-Felder
+```
+Die Let/Var-Inferenz kannte `Array:String` nur für `split()`/`keys()`-Aufrufe (Bug 8).
+Funktions-/Methodenaufrufe mit deklariertem Rückgabetyp `List<String>` sowie
+`List<String>`-Felder blieben untypisiert; Elemente wurden als `i64` behandelt, und
+`.len()` auf `i64` landet im Map-Dispatch (`tinox_map_len` liest Bytes 8–16 des Strings).
+Je nach Heap-Layout „funktionierte" das zufällig (substring clampt), oder Zeilen
+verschwanden (bei 15/16-Zeichen-Strings war das gelesene Längenfeld 0).
+
+**Fix (mehrteilig, `codegen.rs`):**
+1. Pre-Pass registriert Methoden und Top-Level-Funktionen mit Rückgabetyp
+   `List<String>`/`Array<String>` in `method_ret_class` als `"Array:String"`
+   (Helper `is_string_list_type`).
+2. `inferred_struct`-Arme (let + var) schlagen jetzt auch für `ExprKind::Call`
+   in `method_ret_class` nach.
+3. `extract_class_type_name` liefert für String-Listen `"Array:String"`, und der
+   Index-Codegen fällt für Nicht-Ident-Objekte (z. B. `this.feld[i]`) auf
+   `infer_struct_type` zurück → Elemente von `List<String>`-Feldern sind i8*.
+4. Folgefix: Der `"Array:String:elem"`-Marker von for-Schleifen wird nach
+   Schleifenende entfernt, und Let/Var-Neubindungen ohne Typ-Info löschen
+   veraltete `local_types`-Einträge (`local_types` ist funktionsflach; vorher
+   erbte eine spätere Variable gleichen Namens den Marker und bekam ein
+   ungültiges `inttoptr i64` auf einen i8*-Load → llc-Fehler).
+
+---
+
+## Bug 16 — String-Literal mit führendem `#` wird als Raw-String gelext
+
+**Status: GEFIXT (2026-07-06)** — Entdeckt beim ygrep-Port (YAML-Kommentar-Tests).
+
+**Problem:**
+```tinox
+let s = "# top\na: 1";   // \n bleibt als Backslash+n im String stehen
+```
+Der Lexer behandelte `"` gefolgt von `#` als Raw-String-Beginn
+(`read_raw_string`, gedacht für `r#"…"#`). Ein normaler String, dessen erstes
+Zeichen `#` ist, verlor dadurch die komplette Escape-Verarbeitung.
+
+**Fix:** Sonderfall im `'"'`-Arm des Lexers entfernt — Raw-Strings sind immer
+`r`-präfigiert (`r"…"`, `r#"…"#`); `"#…"` ist ein normales String-Literal.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

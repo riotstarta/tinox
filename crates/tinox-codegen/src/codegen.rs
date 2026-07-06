@@ -507,8 +507,25 @@ impl CodeGen {
         }
     }
 
+    /// True for declared return/field types `List<String>` and `Array<String>` —
+    /// used to type such values as "Array:String" so element access yields strings.
+    fn is_string_list_type(ty: &tinox_parser::Type) -> bool {
+        use tinox_parser::Type;
+        match ty {
+            Type::Array(inner) => matches!(inner.as_ref(), Type::String),
+            Type::Generic { name, args } => {
+                (name == "List" || name == "Array")
+                    && matches!(args.first(), Some(Type::String))
+            }
+            _ => false,
+        }
+    }
+
     fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
         use tinox_parser::Type;
+        if Self::is_string_list_type(ty) {
+            return Some("Array:String".to_string());
+        }
         match ty {
             Type::Named(n) => Some(n.clone()),
             Type::Generic { name, .. } => Some(name.clone()),
@@ -942,6 +959,8 @@ impl CodeGen {
                         }
                     } else if matches!(&method.ret_type, Type::Map(_, _)) {
                         self.method_ret_class.insert(key.clone(), "Map".to_string());
+                    } else if Self::is_string_list_type(&method.ret_type) {
+                        self.method_ret_class.insert(key.clone(), "Array:String".to_string());
                     }
                     let param_tys: Vec<tinox_parser::Type> = method.params.iter()
                         .map(|p| p.param_type.clone()).collect();
@@ -979,7 +998,10 @@ impl CodeGen {
                         let fn_name = if f.name == "main" { "tinox_main".to_string() } else { f.name.clone() };
                         let ret_ty = self.type_to_llvm_inst(&f.ret_type);
                         let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
-                        self.fn_sigs.insert(fn_name, (ret_ty, param_tys));
+                        self.fn_sigs.insert(fn_name.clone(), (ret_ty, param_tys));
+                        if Self::is_string_list_type(&f.ret_type) {
+                            self.method_ret_class.insert(fn_name, "Array:String".to_string());
+                        }
                     }
                 }
                 DeclKind::Class(c) if !c.type_params.is_empty() => {
@@ -3266,6 +3288,9 @@ impl CodeGen {
                                     ExprKind::Ident(fname) if fname == "dirList" => {
                                         Some("Array:String".to_string())
                                     }
+                                    ExprKind::Ident(fname) => {
+                                        self.method_ret_class.get(fname.as_str()).cloned()
+                                    }
                                     _ => None,
                                 }
                             }
@@ -3295,6 +3320,10 @@ impl CodeGen {
                     };
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
+                    } else {
+                        // Re-binding a name without type info must clear any stale entry
+                        // (e.g. a former loop var's "Array:String:elem" marker).
+                        ctx.local_types.remove(name.as_str());
                     }
                     // For List<ClassName> annotations, track element type for indexed field access
                     if let Some(Type::Generic { name: gname, args }) = ty {
@@ -3473,6 +3502,14 @@ impl CodeGen {
                                         self.method_ret_class.get(&method_key).cloned()
                                     })
                             }
+                            ExprKind::Call { func, .. } => {
+                                match &func.node {
+                                    ExprKind::Ident(fname) => {
+                                        self.method_ret_class.get(fname.as_str()).cloned()
+                                    }
+                                    _ => None,
+                                }
+                            }
                             ExprKind::Ident(src_name) => {
                                 // Copy type from source variable (e.g. var newCtx = ctx)
                                 ctx.local_types.get(src_name.as_str()).cloned()
@@ -3492,6 +3529,10 @@ impl CodeGen {
                     };
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
+                    } else {
+                        // Re-binding a name without type info must clear any stale entry
+                        // (e.g. a former loop var's "Array:String:elem" marker).
+                        ctx.local_types.remove(name.as_str());
                     }
                     writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
                     // Coerce value type to slot type if necessary
@@ -3792,6 +3833,12 @@ impl CodeGen {
                 writeln!(&mut self.ir, "store i64 {}, i64* %{}", inc, idx_slot).unwrap();
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                // The elem marker is only valid inside the loop body — a later variable
+                // with the same name must not inherit it (local_types is function-flat).
+                if ctx.local_types.get(var.as_str()).map(|t| t == "Array:String:elem").unwrap_or(false) {
+                    ctx.local_types.remove(var.as_str());
+                }
 
                 ctx.break_target = old_break;
                 ctx.continue_target = old_continue;
@@ -5741,7 +5788,10 @@ impl CodeGen {
             }
             ExprKind::Index { obj, index } => {
                 let arr_name = if let ExprKind::Ident(n) = &obj.node { Some(n.clone()) } else { None };
-                let declared_elem_type = arr_name.as_ref().and_then(|n| ctx.local_types.get(n)).cloned();
+                let declared_elem_type = arr_name.as_ref().and_then(|n| ctx.local_types.get(n)).cloned()
+                    // Fields like `this.rawLines` (List<String>) have no local_types entry —
+                    // fall back to struct field type info so elements are typed as strings.
+                    .or_else(|| self.infer_struct_type(obj, ctx));
                 let is_str_arr = declared_elem_type.as_deref() == Some("Array:String");
                 let is_map = declared_elem_type.as_deref() == Some("Map");
 

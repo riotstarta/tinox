@@ -403,11 +403,9 @@ impl<'a> Lexer<'a> {
                 }
             }
             '"' => {
-                if self.peek_next() == '#' {
-                    self.read_raw_string()?
-                } else {
-                    self.read_string()?
-                }
+                // Raw strings are always r-prefixed (r"…", r#"…"#) — a plain string
+                // starting with '#' (e.g. "# comment") is a normal string literal.
+                self.read_string()?
             }
             'r' => {
                 if self.peek_next() == '"' || (self.peek_next() == '#' && self.chars.get(self.pos + 2) == Some(&'"')) {
