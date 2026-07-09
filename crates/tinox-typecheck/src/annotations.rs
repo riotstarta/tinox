@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, Span};
-use tinox_parser::{Annotation, AnnotationArg, Class, DeclKind, FieldDef, Function, Method, Namespace, Type};
+use tinox_parser::{Annotation, AnnotationArg, Class, DeclKind, FieldDef, Function, Literal, Method, Namespace, Type};
 
 fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
     match arg {
@@ -11,6 +11,8 @@ fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
                 _ => None,
             }
         }
+        // String literal form: @Produces("application/json")
+        AnnotationArg::Literal(Literal::String(s)) => Some(s.clone()),
         _ => None,
     }
 }

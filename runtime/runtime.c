@@ -165,9 +165,35 @@ int64_t* tinox_array_pop(int64_t* h) {
     return h;
 }
 
+// Insert val at index idx (clamped to [0, len]), shifting the tail right.
+int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
+    TinoxArray* a = (TinoxArray*)h;
+    if (idx < 0) idx = 0;
+    if (idx > a->len) idx = a->len;
+    if (a->len == a->cap) {
+        int64_t ncap = a->cap < 4 ? 4 : a->cap * 2;
+        int64_t* nd = (int64_t*)GC_malloc((size_t)ncap * sizeof(int64_t));
+        if (a->len > 0) memcpy(nd, a->data, (size_t)a->len * sizeof(int64_t));
+        a->data = nd;
+        a->cap = ncap;
+    }
+    memmove(a->data + idx + 1, a->data + idx, (size_t)(a->len - idx) * sizeof(int64_t));
+    a->data[idx] = val;
+    a->len++;
+    return h;
+}
+
 char* tinox_char_at(const char* s, int64_t i) {
     char* result = malloc(2);
     result[0] = s[i];
+    result[1] = '\0';
+    return result;
+}
+
+// Single-char string from a byte value (fromCharCode builtin)
+char* tinox_from_char_code(int64_t c) {
+    char* result = malloc(2);
+    result[0] = (char)c;
     result[1] = '\0';
     return result;
 }

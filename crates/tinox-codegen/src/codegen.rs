@@ -377,6 +377,13 @@ impl CodeGen {
         };
         for f in &c.fields {
             if let Some(class_name) = Self::extract_class_type_name(&f.field_type) {
+                // "List:X" only helps element inference when X is a class —
+                // downgrade to plain "List" for enums/unknown types (same
+                // guard as the let-binding path).
+                let class_name = match class_name.strip_prefix("List:") {
+                    Some(cls) if !class_map.contains_key(cls) => "List".to_string(),
+                    _ => class_name,
+                };
                 result.insert(f.name.clone(), class_name);
             }
         }
@@ -528,6 +535,15 @@ impl CodeGen {
         }
         match ty {
             Type::Named(n) => Some(n.clone()),
+            // List<Class>/Array<Class> → "List:Class", so indexed element
+            // access (e.g. this.entries[i].name) knows the element type.
+            Type::Generic { name, args } if name == "List" || name == "Array" => {
+                if let Some(Type::Named(cls)) = args.first() {
+                    Some(format!("List:{}", cls))
+                } else {
+                    Some(name.clone())
+                }
+            }
             Type::Generic { name, .. } => Some(name.clone()),
             Type::Map(_, _) => Some("Map".to_string()),
             Type::Mutable(inner) | Type::Ref(inner) | Type::Array(inner) => {
@@ -556,7 +572,9 @@ impl CodeGen {
                     // "List:ClassName" → element type is ClassName
                     ty.strip_prefix("List:").map(|s| s.to_string())
                 } else {
-                    None
+                    // e.g. this.entries[i] — container is a List<Class> field/call
+                    self.infer_struct_type(obj, ctx)
+                        .and_then(|t| t.strip_prefix("List:").map(|s| s.to_string()))
                 }
             }
             ExprKind::This => ctx.current_struct.clone(),
@@ -640,6 +658,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_char_at(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_from_char_code(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_new(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_push(i64*, i64)").unwrap();
@@ -724,6 +743,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @regexSplit(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @regexMatchGroups(i8*, i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_remove_at(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_insert(i64*, i64, i64)").unwrap();
         // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
@@ -4822,6 +4842,17 @@ impl CodeGen {
                             writeln!(&mut self.ir, "call void @processExit(i64 {})", code_i64).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
+                        "fromCharCode" => {
+                            let (code, code_ty) = self.gen_expr(&args[0], ctx)?;
+                            let code_i64 = if code_ty == "i64" || code_ty.is_empty() { code } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = zext {} {} to i64", c, code_ty, code).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_from_char_code(i64 {})", result, code_i64).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
                         "dirList" => {
                             let (path, path_ty) = self.gen_expr(&args[0], ctx)?;
                             let path_str = if path_ty == "i8*" { path.clone() } else {
@@ -5207,6 +5238,26 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_remove_at(i64* {}, i64 {})", result, obj_ptr, idx).unwrap();
                             // Stable handle — removeAt mutates in place, no write-back.
+                            return Ok(("0".to_string(), "void".to_string()));
+                        }
+                        "insert" => {
+                            let (idx, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
+                            let store_val = if val_ty.ends_with('*') || val_ty == "ptr" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else if val_ty == "i1" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                                c
+                            } else { val };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_insert(i64* {}, i64 {}, i64 {})", result, obj_ptr, idx, store_val).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         _ => {}

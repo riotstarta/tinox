@@ -33,7 +33,7 @@ bestehende Testsuite.
 
 ## Phase 0 — Fundament (1–2 Tage, sofort)
 
-### 0.1 `make check` als ein Einstiegspunkt + CI
+### 0.1 `make check` als ein Einstiegspunkt + CI — ✅ erledigt (2026-07-09)
 - Ein Target, das alles ausführt: `cargo test --release`, E2E-Suite (s. Phase 1),
   Dogfood-Builds (s. Phase 3). Lokal per Git-Hook (pre-push), optional
   GitHub Actions wenn das Repo remote liegt.
@@ -41,13 +41,24 @@ bestehende Testsuite.
   rote Test (`test_process_produces_consumes`) wird gefixt oder als
   `#[ignore]` mit Begründung markiert — eine dauerrote Suite erzieht zum
   Wegschauen.
+- **Stand:** `Makefile` mit `check` = Unit-Tests + `tests/runtime_tests.sh` +
+  jgrep-Dogfood (Build + 170 Tests). Suite ist komplett grün: annotations-Test
+  gefixt (@Produces/@Consumes mit String-Literal), hpack-Tests gefixt
+  (`insert()` auf Listen, `fromCharCode`, Element-Typinferenz für
+  `List<Class>`-Felder). Git-Hook/CI steht noch aus.
 
-### 0.2 LLVM-IR-Verifier-Gate
+### 0.2 LLVM-IR-Verifier-Gate — ✅ erledigt (2026-07-09)
 - Jedes generierte `.ll` in Tests und optional bei `tinox build` durch
   `opt -passes=verify` (bzw. `llvm-as -o /dev/null`) schicken.
 - Fängt sofort die Klasse „ungültiges IR erst bei llc/opt sichtbar"
   (benannter void-Call beim ygrep-Port, `inttoptr i64` auf ptr aus Bug 15.4).
 - Aufwand: ~1 Stunde. Höchstes Nutzen/Kosten-Verhältnis im ganzen Plan.
+- **Stand:** `verify_ir()` in `crates/tinox/src/main.rs` läuft bei jedem
+  `compile_ll_to_exe` (build/run/test, auch Debug-Modus, wo `opt` sonst ganz
+  übersprungen wird). Meldet „internal compiler error: generated invalid
+  LLVM IR" mit den ersten 20 Verifier-Zeilen. Bekannter offener Fund damit
+  diagnostizierbar: Lambda-Block-Body auf `HttpServer.get` erzeugt
+  `store ptr → i1`-Mismatch (vorher nur „opt failed").
 
 ---
 

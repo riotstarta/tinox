@@ -514,6 +514,7 @@ impl TypeChecker {
         symbols.functions.insert("Array_contains".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Bool });
         symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
         symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::Array });
+        symbols.functions.insert("Array_insert".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)], return_type: ValueType::Nothing });
         // List<T> is the same as Array at runtime — mirror all Array_* builtins under List_*
         for (arr_key, sig) in symbols.functions.iter().filter(|(k, _)| k.starts_with("Array_")).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() {
             let list_key = arr_key.replacen("Array_", "List_", 1);

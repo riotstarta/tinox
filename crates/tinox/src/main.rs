@@ -1772,8 +1772,35 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     compile_ll_to_exe(&ir_path, output_name, opt)
 }
 
+/// IR verifier gate: run the LLVM verifier on the generated .ll so invalid IR
+/// fails immediately with a real diagnostic (instead of a bare "opt failed"/
+/// "llc failed" later — or a silent miscompile in Debug mode, where opt is
+/// skipped entirely). Invalid IR is always a codegen bug, never a user error.
+fn verify_ir(ir_path: &str) -> Result<(), String> {
+    let out = Command::new("opt")
+        .args(["-passes=verify", "-disable-output", ir_path])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let excerpt: Vec<&str> = stderr.lines().take(20).collect();
+            Err(format!(
+                "internal compiler error: generated invalid LLVM IR ({})\n{}\n\
+                 This is a Tinox codegen bug — please report it with the source file.",
+                ir_path,
+                excerpt.join("\n")
+            ))
+        }
+        // opt not installed — skip the gate, the normal pipeline will complain.
+        Err(_) => Ok(()),
+    }
+}
+
 fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
     let obj_path = format!("{}.o", output_name);
+
+    verify_ir(ir_path)?;
 
     let (llc_opt_flag, opt_flag) = match opt {
         OptLevel::Release => ("-O3", "-O3"),
