@@ -752,6 +752,71 @@ run_db_test "orm_sqlite_order_desc_offset" "$TNX_33" \
      INSERT INTO scores (player, points) VALUES ('Alice', 100), ('Bob', 300), ('Carol', 200), ('Dave', 150);" \
     "$(printf '2\nCarol\nDave')"
 
+# ── Test 34: Array — 1M Pushes (amortisiert O(1), Timeout-Guard gegen O(n²)) ──
+cat >"$TMP/t34.tnx" <<'EOF'
+fn main() -> Int32
+{
+    var xs: List<Int64> = [];
+    var i = 0;
+    while i < 1000000 {
+        xs.push(i);
+        i += 1;
+    }
+    var s = 0;
+    for x in xs { s += x; }
+    println(xs.len());
+    println(s);
+    return 0;
+}
+EOF
+run_test "array_push_1m_o1" "$TMP/t34.tnx" "$(printf '1000000\n499999500000')"
+
+# ── Test 35: Array — Referenz-Semantik: Aliase teilen das Handle ──
+cat >"$TMP/t35.tnx" <<'EOF'
+fn addOne(xs: List<Int64>) -> Int64
+{
+    xs.push(99);
+    return xs.len();
+}
+
+fn main() -> Int32
+{
+    var a: List<Int64> = [1, 2];
+    let b = a;
+    a.push(3);
+    println(b.len());
+    println(b[2]);
+    println(addOne(a));
+    println(a.len());
+    a.pop();
+    println(b.len());
+    return 0;
+}
+EOF
+run_test "array_alias_reference_semantics" "$TMP/t35.tnx" "$(printf '3\n3\n4\n4\n3')"
+
+# ── Test 36: Array — sort/reverse/slice liefern frische Arrays ──
+cat >"$TMP/t36.tnx" <<'EOF'
+fn main() -> Int32
+{
+    var a: List<Int64> = [3, 1, 2];
+    let s1 = a.sort();
+    let s2 = a.reverse();
+    println(a[0]);
+    println(s1[0]);
+    println(s2[0]);
+    s1.push(100);
+    println(a.len());
+    println(s1.len());
+    let sl = s1.slice(0, 2);
+    sl.push(7);
+    println(s1.len());
+    println(sl.len());
+    return 0;
+}
+EOF
+run_test "array_copy_methods_fresh" "$TMP/t36.tnx" "$(printf '3\n1\n2\n3\n4\n4\n3')"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ ${#ERRORS[@]} -gt 0 ]; then

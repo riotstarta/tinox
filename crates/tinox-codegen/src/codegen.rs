@@ -641,6 +641,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_char_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_new(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_push(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_pop(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_slice(i64*, i64, i64)").unwrap();
@@ -2798,24 +2799,10 @@ impl CodeGen {
                 let nrows = self.temp();
                 writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {result_reg})").unwrap();
 
-                // Allocate (nrows + 1) * 8 bytes: slot 0 = length, slots 1..nrows = elements
-                let total_slots = self.temp();
-                let total_bytes = self.temp();
-                let raw_ptr = self.temp();
-                let raw_i64 = self.temp();
-                writeln!(&mut self.ir, "  {total_slots} = add i64 {nrows}, 1").unwrap();
-                writeln!(&mut self.ir, "  {total_bytes} = mul i64 {total_slots}, 8").unwrap();
-                writeln!(&mut self.ir, "  {raw_ptr} = call i8* @tinox_alloc(i64 {total_bytes})").unwrap();
-                writeln!(&mut self.ir, "  {raw_i64} = bitcast i8* {raw_ptr} to i64*").unwrap();
-
-                // Store length at index 0
-                let len_slot = self.temp();
-                writeln!(&mut self.ir, "  {len_slot} = getelementptr i64, i64* {raw_i64}, i64 0").unwrap();
-                writeln!(&mut self.ir, "  store i64 {nrows}, i64* {len_slot}").unwrap();
-
-                // elem0 lives at index 1 — this is the pointer returned to callers
-                let data_ptr = self.temp();
-                writeln!(&mut self.ir, "  {data_ptr} = getelementptr i64, i64* {raw_i64}, i64 1").unwrap();
+                // Allocate an array handle with nrows elements
+                let handle = self.temp();
+                writeln!(&mut self.ir, "  {handle} = call i64* @tinox_array_new(i64 {nrows}, i64 0)").unwrap();
+                let data_ptr = self.emit_array_data(&handle);
 
                 // Loop: i = 0; while i < nrows { data_ptr[i] = fromRow(result, i); i++ }
                 let loop_bb = self.new_bb("orm_loop");
@@ -2849,8 +2836,8 @@ impl CodeGen {
 
                 writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
 
-                // Return pointer to elem0 — same layout as ArrayLiteral (type i64*)
-                Ok((data_ptr, "i64*".to_string()))
+                // Return the array handle — same layout as ArrayLiteral (type i64*)
+                Ok((handle, "i64*".to_string()))
             }
         }
     }
@@ -3285,7 +3272,7 @@ impl CodeGen {
                             }
                             ExprKind::Call { func, .. } => {
                                 match &func.node {
-                                    ExprKind::Ident(fname) if fname == "dirList" => {
+                                    ExprKind::Ident(fname) if fname == "dirList" || fname == "processArgs" => {
                                         Some("Array:String".to_string())
                                     }
                                     ExprKind::Ident(fname) => {
@@ -3748,20 +3735,20 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", len_val, iter_ptr).unwrap();
                     ("0".to_string(), len_val, None, Some(iter_ptr))
                 } else {
-                    // Array: length at data_ptr[-1]
+                    // Array handle: len at slot 0, data pointer at slot 2.
                     // iter_ptr may be i64 (pointer encoded as integer) or i64*/ptr — coerce to ptr.
-                    let arr_ptr_val = if iter_ty == "i64" {
+                    let handle = if iter_ty == "i64" {
                         let p = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", p, iter_ptr).unwrap();
                         p
                     } else {
                         iter_ptr.clone()
                     };
-                    let len_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, arr_ptr_val).unwrap();
-                    let len_val = self.temp();
-                    writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
-                    ("0".to_string(), len_val, Some(arr_ptr_val), None)
+                    let len_val = self.emit_array_len(&handle);
+                    // Snapshot the data pointer once — pushes during iteration that
+                    // grow the buffer are not observed by this loop.
+                    let data_ptr = self.emit_array_data(&handle);
+                    ("0".to_string(), len_val, Some(data_ptr), None)
                 };
 
                 // Give loop variable a unique LLVM slot to avoid duplicate alloca on re-use
@@ -4078,11 +4065,12 @@ impl CodeGen {
                         } else {
                             base_ptr.clone()
                         };
+                        let data_ptr = self.emit_array_data(&base_arr);
                         let ptr_name = self.temp();
                         writeln!(
                             &mut self.ir,
                             "{} = getelementptr i64, ptr {}, i64 {}",
-                            ptr_name, base_arr, idx_val
+                            ptr_name, data_ptr, idx_val
                         )
                         .unwrap();
                         // Strings stored as i64 (ptrtoint); bools need zext; others direct
@@ -4468,15 +4456,13 @@ impl CodeGen {
                         }
                         "len" => {
                             let (ptr, ty) = self.gen_expr(&args[0], ctx)?;
-                            let result = self.temp();
                             if ty == "i8*" {
+                                let result = self.temp();
                                 writeln!(&mut self.ir, "{} = call i64 @tinox_string_length(i8* {})", result, ptr).unwrap();
-                            } else {
-                                // Array: length is stored at index -1 by convention (or 0 offset)
-                                let len_ptr = self.temp();
-                                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, ptr).unwrap();
-                                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, len_ptr).unwrap();
+                                return Ok((result, "i64".to_string()));
                             }
+                            // Array handle: length is slot 0
+                            let result = self.emit_array_len(&ptr);
                             return Ok((result, "i64".to_string()));
                         }
                         "assert" => {
@@ -4512,22 +4498,21 @@ impl CodeGen {
                         }
                         "first" => {
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
+                            let data_ptr = self.emit_array_data(&arr);
                             let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, arr).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, data_ptr).unwrap();
                             let val = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr).unwrap();
                             return Ok((val, "i64".to_string()));
                         }
                         "last" => {
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
-                            let len_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, arr).unwrap();
-                            let len_val = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
+                            let len_val = self.emit_array_len(&arr);
+                            let data_ptr = self.emit_array_data(&arr);
                             let last_idx = self.temp();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
                             let elem_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, arr, last_idx).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, last_idx).unwrap();
                             let val = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", val, elem_ptr).unwrap();
                             return Ok((val, "i64".to_string()));
@@ -5125,10 +5110,7 @@ impl CodeGen {
                     let is_str = declared_type.as_deref() == Some("Array:String");
                     match method.as_str() {
                         "len" => {
-                            let len_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, obj_ptr).unwrap();
-                            let result = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", result, len_ptr).unwrap();
+                            let result = self.emit_array_len(&obj_ptr);
                             return Ok((result, "i64".to_string()));
                         }
                         "push" => {
@@ -5145,34 +5127,8 @@ impl CodeGen {
                             } else { val };
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, obj_ptr, store_val).unwrap();
-                            // Write the new pointer back to the source (push may realloc)
-                            if let ExprKind::Ident(var_name) = &obj.node {
-                                let slot = ctx.local_slots.get(var_name.as_str()).cloned().unwrap_or_else(|| var_name.clone());
-                                writeln!(&mut self.ir, "store i64* {}, i64** %{}", result, slot).unwrap();
-                            } else if let ExprKind::FieldAccess { obj: field_obj, field: field_name } = &obj.node {
-                                // Re-derive the struct field GEP and store the new array ptr as i64
-                                let (parent_raw, parent_ty) = self.gen_expr(field_obj, ctx)?;
-                                let parent_ptr = if parent_ty == "i64" {
-                                    let c = self.temp();
-                                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, parent_raw).unwrap();
-                                    c
-                                } else {
-                                    parent_raw
-                                };
-                                let struct_name = match &field_obj.node {
-                                    ExprKind::This => ctx.current_struct.clone().unwrap_or_default(),
-                                    ExprKind::Ident(n) => ctx.local_types.get(n).cloned().unwrap_or_default(),
-                                    _ => self.infer_struct_type(field_obj, ctx).unwrap_or_default(),
-                                };
-                                let field_offset = self.struct_layouts.get(&struct_name)
-                                    .and_then(|fields| fields.iter().position(|f| f == field_name))
-                                    .unwrap_or(0) as i64;
-                                let field_gep = self.temp();
-                                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_gep, parent_ptr, field_offset).unwrap();
-                                let new_i64 = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i64* {} to i64", new_i64, result).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", new_i64, field_gep).unwrap();
-                            }
+                            // Arrays are stable handles — push mutates in place,
+                            // no pointer write-back needed.
                             return Ok((result, "i64*".to_string()));
                         }
                         "pop" => {
@@ -5181,8 +5137,9 @@ impl CodeGen {
                             return Ok((result, "i64*".to_string()));
                         }
                         "first" => {
+                            let data_ptr = self.emit_array_data(&obj_ptr);
                             let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, obj_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, data_ptr).unwrap();
                             let raw = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ptr).unwrap();
                             if is_str {
@@ -5193,14 +5150,12 @@ impl CodeGen {
                             return Ok((raw, "i64".to_string()));
                         }
                         "last" => {
-                            let len_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 -1", len_ptr, obj_ptr).unwrap();
-                            let len_val = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
+                            let len_val = self.emit_array_len(&obj_ptr);
+                            let data_ptr = self.emit_array_data(&obj_ptr);
                             let last_idx = self.temp();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
                             let elem_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, obj_ptr, last_idx).unwrap();
+                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, last_idx).unwrap();
                             let raw = self.temp();
                             writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, elem_ptr).unwrap();
                             if is_str {
@@ -5251,11 +5206,7 @@ impl CodeGen {
                             let (idx, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_remove_at(i64* {}, i64 {})", result, obj_ptr, idx).unwrap();
-                            // Write the new pointer back to the source variable if possible
-                            if let ExprKind::Ident(var_name) = &obj.node {
-                                let slot = ctx.local_slots.get(var_name.as_str()).cloned().unwrap_or_else(|| var_name.clone());
-                                writeln!(&mut self.ir, "store i64* {}, i64** %{}", result, slot).unwrap();
-                            }
+                            // Stable handle — removeAt mutates in place, no write-back.
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         _ => {}
@@ -5845,8 +5796,9 @@ impl CodeGen {
                     } else {
                         base_ptr.clone()
                     };
+                    let data_ptr = self.emit_array_data(&base_as_ptr);
                     let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, base_as_ptr, idx_val).unwrap();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, data_ptr, idx_val).unwrap();
                     let raw = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ptr_name).unwrap();
                     if is_str_arr {
@@ -5860,13 +5812,9 @@ impl CodeGen {
             }
             ExprKind::ArrayLiteral(elements) => {
                 let n = elements.len();
-                let raw = self.temp();
-                writeln!(&mut self.ir, "{} = call i8* @tinox_alloc(i64 {})", raw, (n + 1) * 8).unwrap();
-                let full_ptr = self.temp();
-                writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", full_ptr, raw).unwrap();
-                writeln!(&mut self.ir, "store i64 {}, i64* {}", n, full_ptr).unwrap();
-                let data_ptr = self.temp();
-                writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", data_ptr, full_ptr).unwrap();
+                let handle = self.temp();
+                writeln!(&mut self.ir, "{} = call i64* @tinox_array_new(i64 {}, i64 0)", handle, n).unwrap();
+                let data_ptr = self.emit_array_data(&handle);
                 for (i, elem) in elements.iter().enumerate() {
                     let (val, val_ty) = self.gen_expr(elem, ctx)?;
                     let store_val = if val_ty == "i1" {
@@ -5892,7 +5840,7 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, i).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, elem_ptr).unwrap();
                 }
-                Ok((data_ptr, "i64*".to_string()))
+                Ok((handle, "i64*".to_string()))
             }
             ExprKind::MapLiteral(entries) => {
                 let map_ptr = self.temp();
@@ -7280,11 +7228,12 @@ impl CodeGen {
                 } else {
                     return self.gen_expr(obj, ctx);
                 };
+                let data_ptr = self.emit_array_data(&base_ptr);
                 let ptr_name = self.temp();
                 writeln!(
                     &mut self.ir,
                     "{} = getelementptr i64, ptr {}, i64 {}",
-                    ptr_name, base_ptr, idx_val
+                    ptr_name, data_ptr, idx_val
                 )
                 .unwrap();
                 let loaded = self.temp();
@@ -7627,6 +7576,27 @@ impl CodeGen {
         let t = format!("%tmp.{}", self.temp_count);
         self.temp_count += 1;
         t
+    }
+
+    /// Arrays are stable handles: [0]=len, [1]=cap, [2]=data (i64* as i64).
+    /// Emits a load of the length from an array handle.
+    fn emit_array_len(&mut self, handle: &str) -> String {
+        let len_ptr = self.temp();
+        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", len_ptr, handle).unwrap();
+        let len_val = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", len_val, len_ptr).unwrap();
+        len_val
+    }
+
+    /// Emits a load of the element-data pointer (slot 2) from an array handle.
+    fn emit_array_data(&mut self, handle: &str) -> String {
+        let data_slot = self.temp();
+        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 2", data_slot, handle).unwrap();
+        let data_i64 = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", data_i64, data_slot).unwrap();
+        let data_ptr = self.temp();
+        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", data_ptr, data_i64).unwrap();
+        data_ptr
     }
 
     fn new_bb(&mut self, name: &str) -> String {

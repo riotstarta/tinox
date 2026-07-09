@@ -75,6 +75,26 @@ void* tinox_array_alloc(size_t element_size, size_t length) {
     return calloc(element_size * length, 1);
 }
 
+// ---- Tinox arrays: stable handle {len, cap, data} ----
+// A Tinox array value is a pointer to this 3-slot handle. push/pop/removeAt
+// mutate the handle in place (push is amortized O(1) via geometric growth);
+// slice/sort/reverse return fresh arrays. All aliases share the handle.
+typedef struct {
+    int64_t len;
+    int64_t cap;
+    int64_t* data;
+} TinoxArray;
+
+int64_t* tinox_array_new(int64_t len, int64_t cap) {
+    if (cap < len) cap = len;
+    if (cap < 4) cap = 4;
+    TinoxArray* a = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
+    a->len = len;
+    a->cap = cap;
+    a->data = (int64_t*)GC_malloc((size_t)cap * sizeof(int64_t));
+    return (int64_t*)a;
+}
+
 // String functions
 int64_t tinox_string_length(const char* str) {
     int64_t len = 0;
@@ -115,34 +135,34 @@ char* tinox_float_to_string(double val) {
     return result;
 }
 
-int64_t* tinox_array_slice(int64_t* data, int64_t from, int64_t to) {
+int64_t* tinox_array_slice(int64_t* h, int64_t from, int64_t to) {
+    TinoxArray* a = (TinoxArray*)h;
+    if (from < 0) from = 0;
+    if (to > a->len) to = a->len;
     int64_t len = to - from;
-    if (len <= 0) { int64_t* r = (int64_t*)malloc(sizeof(int64_t)); r[0] = 0; return r + 1; }
-    int64_t* raw = (int64_t*)malloc((len + 1) * sizeof(int64_t));
-    raw[0] = len;
-    int64_t* nd = raw + 1;
-    for (int64_t i = 0; i < len; i++) nd[i] = data[from + i];
-    return nd;
+    if (len < 0) len = 0;
+    int64_t* nh = tinox_array_new(len, 0);
+    if (len > 0) memcpy(((TinoxArray*)nh)->data, a->data + from, (size_t)len * sizeof(int64_t));
+    return nh;
 }
 
-int64_t* tinox_array_push(int64_t* data, int64_t val) {
-    int64_t len = data[-1];
-    int64_t* raw = (int64_t*)malloc((len + 2) * sizeof(int64_t));
-    raw[0] = len + 1;
-    int64_t* nd = raw + 1;
-    for (int64_t i = 0; i < len; i++) nd[i] = data[i];
-    nd[len] = val;
-    return nd;
+int64_t* tinox_array_push(int64_t* h, int64_t val) {
+    TinoxArray* a = (TinoxArray*)h;
+    if (a->len == a->cap) {
+        int64_t ncap = a->cap < 4 ? 4 : a->cap * 2;
+        int64_t* nd = (int64_t*)GC_malloc((size_t)ncap * sizeof(int64_t));
+        if (a->len > 0) memcpy(nd, a->data, (size_t)a->len * sizeof(int64_t));
+        a->data = nd;
+        a->cap = ncap;
+    }
+    a->data[a->len++] = val;
+    return h;
 }
 
-int64_t* tinox_array_pop(int64_t* data) {
-    int64_t len = data[-1];
-    if (len == 0) return data;
-    int64_t* raw = (int64_t*)malloc(len * sizeof(int64_t));
-    raw[0] = len - 1;
-    int64_t* nd = raw + 1;
-    for (int64_t i = 0; i < len - 1; i++) nd[i] = data[i];
-    return nd;
+int64_t* tinox_array_pop(int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    if (a->len > 0) a->len--;
+    return h;
 }
 
 char* tinox_char_at(const char* s, int64_t i) {
@@ -290,51 +310,43 @@ static void sort_i64_range(int64_t* arr, int64_t lo, int64_t hi) {
     }
 }
 
-static __thread int64_t* g_sort_buf = NULL;
-static __thread int64_t  g_sort_cap = 0;
-
-int64_t* tinox_array_sort(int64_t* data) {
-    int64_t len = data[-1];
-    if (len + 1 > g_sort_cap) {
-        int64_t nc = g_sort_cap ? g_sort_cap * 2 : 256;
-        while (nc < len + 1) nc *= 2;
-        g_sort_buf = (int64_t*)realloc(g_sort_buf, (size_t)nc * sizeof(int64_t));
-        g_sort_cap = nc;
-    }
-    g_sort_buf[0] = len;
-    int64_t* nd = g_sort_buf + 1;
-    memcpy(nd, data, (size_t)len * sizeof(int64_t));
+int64_t* tinox_array_sort(int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a->len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
+    if (len > 0) memcpy(nd, a->data, (size_t)len * sizeof(int64_t));
     if (len > 1) sort_i64_range(nd, 0, len - 1);
-    return nd;
+    return nh;
 }
 
-int64_t* tinox_array_reverse(int64_t* data) {
-    int64_t len = data[-1];
-    int64_t* raw = malloc((len + 1) * sizeof(int64_t));
-    raw[0] = len;
-    int64_t* nd = raw + 1;
-    for (int64_t i = 0; i < len; i++) nd[i] = data[len - 1 - i];
-    return nd;
+int64_t* tinox_array_reverse(int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a->len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
+    for (int64_t i = 0; i < len; i++) nd[i] = a->data[len - 1 - i];
+    return nh;
 }
 
-int64_t tinox_array_contains(int64_t* data, int64_t val) {
-    int64_t len = data[-1];
-    for (int64_t i = 0; i < len; i++) if (data[i] == val) return 1;
+int64_t tinox_array_contains(int64_t* h, int64_t val) {
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (a->data[i] == val) return 1;
     return 0;
 }
 
-int64_t tinox_array_index_of(int64_t* data, int64_t val) {
-    int64_t len = data[-1];
-    for (int64_t i = 0; i < len; i++) if (data[i] == val) return i;
+int64_t tinox_array_index_of(int64_t* h, int64_t val) {
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (a->data[i] == val) return i;
     return -1;
 }
 
-int64_t* tinox_array_remove_at(int64_t* data, int64_t idx) {
-    int64_t len = data[-1];
-    if (idx < 0 || idx >= len) return data;
-    for (int64_t i = idx; i < len - 1; i++) data[i] = data[i + 1];
-    data[-1] = len - 1;
-    return data;
+int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
+    TinoxArray* a = (TinoxArray*)h;
+    if (idx < 0 || idx >= a->len) return h;
+    for (int64_t i = idx; i < a->len - 1; i++) a->data[i] = a->data[i + 1];
+    a->len--;
+    return h;
 }
 
 // ---- Async runtime ----
@@ -560,30 +572,28 @@ int64_t tinox_map_len(void* map) {
 
 int64_t* tinox_map_keys(void* map) {
     TinoxMap* m = (TinoxMap*)map;
-    int64_t* raw = (int64_t*)malloc((m->len + 1) * sizeof(int64_t));
-    raw[0] = (int64_t)m->len;
-    int64_t* nd = raw + 1;
+    int64_t* nh = tinox_array_new((int64_t)m->len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
     size_t j = 0;
     for (size_t i = 0; i < m->cap; i++) {
         char* k = m->entries[i].key;
         if (k && k != (char*)1)
             nd[j++] = (int64_t)(uintptr_t)k;
     }
-    return nd;
+    return nh;
 }
 
 int64_t* tinox_map_values(void* map) {
     TinoxMap* m = (TinoxMap*)map;
-    int64_t* raw = (int64_t*)malloc((m->len + 1) * sizeof(int64_t));
-    raw[0] = (int64_t)m->len;
-    int64_t* nd = raw + 1;
+    int64_t* nh = tinox_array_new((int64_t)m->len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
     size_t j = 0;
     for (size_t i = 0; i < m->cap; i++) {
         char* k = m->entries[i].key;
         if (k && k != (char*)1)
             nd[j++] = m->entries[i].value;
     }
-    return nd;
+    return nh;
 }
 
 void tinox_map_free(void* map) {
@@ -665,16 +675,15 @@ int64_t* tinox_string_split(const char* str, const char* delim) {
         count = strlen(str);
         if (count == 0) count = 1;
     }
-    int64_t* raw = (int64_t*)malloc((count + 1) * sizeof(int64_t));
-    raw[0] = (int64_t)count;
-    int64_t* nd = raw + 1;
+    int64_t* nh = tinox_array_new((int64_t)count, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
     if (dlen == 0) {
         for (size_t i = 0; i < count; i++) {
             char* s = (char*)malloc(2);
             s[0] = str[i]; s[1] = '\0';
             nd[i] = (int64_t)(uintptr_t)s;
         }
-        return nd;
+        return nh;
     }
     size_t i = 0;
     const char* start = str;
@@ -690,11 +699,13 @@ int64_t* tinox_string_split(const char* str, const char* delim) {
     char* part = (char*)malloc(plen + 1);
     memcpy(part, start, plen); part[plen] = '\0';
     nd[i] = (int64_t)(uintptr_t)part;
-    return nd;
+    return nh;
 }
 
-char* tinox_string_join(int64_t* arr, const char* sep) {
-    int64_t len = arr[-1];
+char* tinox_string_join(int64_t* h, const char* sep) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t* arr = a->data;
+    int64_t len = a->len;
     if (len == 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
     size_t seplen = strlen(sep);
     size_t total = 0;
@@ -840,17 +851,14 @@ void processExit(int64_t code) {
 }
 
 int64_t* processArgs(void) {
-    // Returns a Tinox array (i64* with length at [-1]) of arg strings as i64 (ptrtoint)
+    // Returns a Tinox array handle of arg strings as i64 (ptrtoint)
     int64_t n = (int64_t)_tinox_argc;
-    int64_t* arr = (int64_t*)GC_malloc(sizeof(int64_t) * (n + 1));
-    arr[0] = n;  // length at index 0, data starts at index 1 (we use len at [-1] convention)
-    // Actually Tinox arrays store length at data[-1]: allocate n+1 slots, return ptr+1
-    int64_t* data = arr + 1;
-    data[-1] = n;
+    int64_t* nh = tinox_array_new(n, 0);
+    int64_t* data = ((TinoxArray*)nh)->data;
     for (int64_t i = 0; i < n; i++) {
         data[i] = (int64_t)_tinox_argv[i];
     }
-    return data;
+    return nh;
 }
 
 char* envGet(const char* name) {
@@ -882,37 +890,17 @@ void envSetCurrentDir(const char* path) {
 #include <sys/stat.h>
 
 char* dirList(const char* path) {
-    // Returns a Tinox array of filename strings
+    // Returns a Tinox array handle of filename strings
+    int64_t* nh = tinox_array_new(0, 32);
     DIR* d = opendir(path);
-    if (!d) {
-        // Return empty array
-        int64_t* arr = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
-        arr[0] = 0; arr[1] = 0;
-        int64_t* data = arr + 1;
-        data[-1] = 0;
-        return (char*)data;
-    }
-    // Collect entries
-    int64_t cap = 32;
-    int64_t len = 0;
-    int64_t* entries = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
-    entries[0] = 0; // length placeholder
-    int64_t* data = entries + 1;
+    if (!d) return (char*)nh;
     struct dirent* ent;
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        if (len >= cap) {
-            cap *= 2;
-            int64_t* ne = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
-            ne[0] = 0;
-            memcpy(ne + 1, data, len * sizeof(int64_t));
-            data = ne + 1;
-        }
-        data[len++] = (int64_t)GC_strdup(ent->d_name);
+        tinox_array_push(nh, (int64_t)GC_strdup(ent->d_name));
     }
     closedir(d);
-    data[-1] = len;
-    return (char*)data;
+    return (char*)nh;
 }
 
 void dirCreate(const char* path) {
@@ -940,37 +928,22 @@ int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
 int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
+    int64_t* nh = tinox_array_new(0, 8);
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) {
-        int64_t* data = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
-        data[0] = 0; data[1] = 0; data[-1] = 0;
-        return (int64_t)(data + 1);
-    }
-    int64_t cap = 8;
-    int64_t len = 0;
-    int64_t* buf = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
-    int64_t* data = buf + 1;
-    data[-1] = 0;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)nh;
     const char* s = subject;
     regmatch_t m;
     while (*s && regexec(&re, s, 1, &m, 0) == 0) {
-        if (len >= cap) {
-            cap *= 2;
-            int64_t* nb = (int64_t*)GC_malloc(sizeof(int64_t) * (cap + 1));
-            memcpy(nb + 1, data, len * sizeof(int64_t));
-            data = nb + 1;
-        }
         int mlen = m.rm_eo - m.rm_so;
         char* match_str = (char*)GC_malloc(mlen + 1);
         memcpy(match_str, s + m.rm_so, mlen);
         match_str[mlen] = '\0';
-        data[len++] = (int64_t)match_str;
+        tinox_array_push(nh, (int64_t)match_str);
         s += m.rm_eo;
         if (m.rm_eo == 0) s++;
     }
     regfree(&re);
-    data[-1] = len;
-    return (int64_t)data;
+    return (int64_t)nh;
 }
 
 int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
@@ -1000,31 +973,27 @@ int64_t regexSplit(int64_t pattern_i64, int64_t subject_i64) {
 // [match_start, match_end, g1_start, g1_end, ...] (byte offsets into subject,
 // -1/-1 for unmatched groups). Empty array = no match or bad pattern.
 int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offset, int64_t icase) {
-    int64_t* empty = (int64_t*)GC_malloc(sizeof(int64_t) * 2);
-    empty[0] = 0; empty[1] = 0;
-    int64_t* empty_data = empty + 1;
-    empty_data[-1] = 0;
+    int64_t* empty = tinox_array_new(0, 0);
 
     size_t slen = strlen(subject);
-    if (offset < 0 || (size_t)offset > slen) return empty_data;
+    if (offset < 0 || (size_t)offset > slen) return empty;
 
     regex_t re;
     int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0);
-    if (regcomp(&re, pattern, cflags) != 0) return empty_data;
+    if (regcomp(&re, pattern, cflags) != 0) return empty;
 
     size_t ngroups = re.re_nsub + 1;
     regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);
     int eflags = (offset > 0) ? REG_NOTBOL : 0;
     if (regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
         regfree(&re);
-        return empty_data;
+        return empty;
     }
     regfree(&re);
 
     int64_t len = (int64_t)(ngroups * 2);
-    int64_t* buf = (int64_t*)GC_malloc(sizeof(int64_t) * (len + 1));
-    int64_t* data = buf + 1;
-    data[-1] = len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* data = ((TinoxArray*)nh)->data;
     for (size_t g = 0; g < ngroups; g++) {
         if (m[g].rm_so < 0) {
             data[g * 2] = -1;
@@ -1034,7 +1003,7 @@ int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offs
             data[g * 2 + 1] = (int64_t)m[g].rm_eo + offset;
         }
     }
-    return data;
+    return nh;
 }
 
 static size_t fast_i64_write(int64_t val, char* buf);
@@ -1389,8 +1358,9 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     size_t hdr_off = 0;
     TinoxMap* rhm = (TinoxMap*)resp_hdr_map;
     if (rhm && rhm->len > 0) {
-        int64_t* hkeys = tinox_map_keys(resp_hdr_map);
-        int64_t hklen = hkeys ? hkeys[-1] : 0;
+        int64_t* hkeys_h = tinox_map_keys(resp_hdr_map);
+        int64_t* hkeys = ((TinoxArray*)hkeys_h)->data;
+        int64_t hklen = ((TinoxArray*)hkeys_h)->len;
         for (int64_t hi = 0; hi < hklen; hi++) {
             const char* hk = (const char*)(uintptr_t)hkeys[hi];
             const char* hv = (const char*)(uintptr_t)tinox_map_get(resp_hdr_map, hk);
@@ -1404,7 +1374,6 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
                 }
             }
         }
-        free(hkeys - 1);
     }
     if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
         static const char ct[] = "Content-Type: application/json\r\n";
@@ -1923,8 +1892,9 @@ static void json_stringify_value(TinoxJsonValue* v, char** out, size_t* len, siz
         case JSON_OBJECT: {
             json_append(out, len, cap, "{", 1);
             if (v->obj_val) {
-                int64_t* keys = tinox_map_keys(v->obj_val);
-                int64_t klen = keys ? keys[-1] : 0;
+                int64_t* keys_h = tinox_map_keys(v->obj_val);
+                int64_t* keys = ((TinoxArray*)keys_h)->data;
+                int64_t klen = ((TinoxArray*)keys_h)->len;
                 for (int64_t i = 0; i < klen; i++) {
                     if (i > 0) json_append(out, len, cap, ",", 1);
                     const char* k = (const char*)(uintptr_t)keys[i];
@@ -2005,45 +1975,32 @@ int64_t* jsonGetField(int64_t* obj, const char* key) {
     return (int64_t*)(uintptr_t)vptr;
 }
 
-static __thread int64_t* g_jia_buf = NULL;
-static __thread int64_t  g_jia_cap = 0;
-
-static int64_t* jia_ensure(int64_t need) {
-    if (need + 1 > g_jia_cap) {
-        int64_t nc = g_jia_cap ? g_jia_cap * 2 : 256;
-        while (nc < need + 1) nc *= 2;
-        g_jia_buf = (int64_t*)realloc(g_jia_buf, (size_t)nc * sizeof(int64_t));
-        g_jia_cap = nc;
-    }
-    return g_jia_buf;
-}
-
 int64_t* jsonIntArrayFromJson(int64_t* json_array) {
     TinoxJsonValue* v = (TinoxJsonValue*)json_array;
-    if (!v) { int64_t* b = jia_ensure(0); b[0] = 0; return b + 1; }
-    // Fast-path: pure int array — just alias the arena data directly
+    if (!v) return tinox_array_new(0, 0);
+    // Fast-path: pure int array — copy the arena data
+    // (internal JSON arrays keep the arena layout with len at arr_val[-1])
     if (v->type == JSON_INT_ARRAY) {
         int64_t len = v->arr_val ? v->arr_val[-1] : 0;
-        int64_t* buf = jia_ensure(len);
-        buf[0] = len;
-        if (len > 0) memcpy(buf + 1, v->arr_val, (size_t)len * sizeof(int64_t));
-        return buf + 1;
+        int64_t* nh = tinox_array_new(len, 0);
+        if (len > 0) memcpy(((TinoxArray*)nh)->data, v->arr_val, (size_t)len * sizeof(int64_t));
+        return nh;
     }
     // Generic JSON_ARRAY path
     int64_t len = (v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
-    int64_t* buf = jia_ensure(len);
-    buf[0] = len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* buf = ((TinoxArray*)nh)->data;
     for (int64_t i = 0; i < len; i++) {
         TinoxJsonValue* elem = (TinoxJsonValue*)(uintptr_t)v->arr_val[i];
         if (elem) {
-            if      (elem->type == JSON_INT)   buf[i + 1] = elem->int_val;
-            else if (elem->type == JSON_FLOAT) buf[i + 1] = (int64_t)elem->float_val;
-            else                               buf[i + 1] = 0;
+            if      (elem->type == JSON_INT)   buf[i] = elem->int_val;
+            else if (elem->type == JSON_FLOAT) buf[i] = (int64_t)elem->float_val;
+            else                               buf[i] = 0;
         } else {
-            buf[i + 1] = 0;
+            buf[i] = 0;
         }
     }
-    return buf + 1;
+    return nh;
 }
 
 static const char g_digit_pairs[201] =
@@ -2091,8 +2048,10 @@ static __thread char*  g_wrap_buf = NULL;
 static __thread size_t g_wrap_cap = 0;
 
 // Builds {"key":[val,...]} into a thread-local buffer — zero malloc per call
-char* jsonIntArrayWrap(const char* key, int64_t* arr) {
-    int64_t len = arr ? arr[-1] : 0;
+char* jsonIntArrayWrap(const char* key, int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a ? a->len : 0;
+    const int64_t* arr = a ? a->data : NULL;
     size_t klen = strlen(key);
     size_t need = 5 + klen + (size_t)len * 22 + 3;
     if (need > g_wrap_cap) {
@@ -2121,9 +2080,11 @@ char* jsonIntArrayWrap(const char* key, int64_t* arr) {
     return out;
 }
 
-char* jsonIntArrayToString(int64_t* arr) {
-    if (!arr) return strdup("[]");
-    int64_t len = arr[-1];
+char* jsonIntArrayToString(int64_t* h) {
+    if (!h) return strdup("[]");
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a->len;
+    const int64_t* arr = a->data;
     size_t cap = (size_t)(len * 21 + 4);
     if (cap < 4) cap = 4;
     char* out = (char*)malloc(cap);
@@ -2217,10 +2178,12 @@ void jsonBuilderAddString(char* handle, const char* key, const char* val) {
     b->buf[b->len++] = '"';
 }
 
-void jsonBuilderAddIntList(char* handle, const char* key, int64_t* arr) {
+void jsonBuilderAddIntList(char* handle, const char* key, int64_t* h) {
     JsonBuilder* b = (JsonBuilder*)handle;
     jb_key(b, key);
-    int64_t len = arr ? arr[-1] : 0;
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a ? a->len : 0;
+    const int64_t* arr = a ? a->data : NULL;
     jb_grow(b, (size_t)(len * 21 + 4));
     b->buf[b->len++] = '[';
     for (int64_t i = 0; i < len; i++) {

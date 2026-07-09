@@ -530,18 +530,34 @@ vorher „grüne" Tests können echte Fehlschläge gewesen sein.
 
 ## Notiz — `tinox_array_push` ist O(n) pro Push (kein Kapazitäts-Überhang)
 
-Kein Bug im engen Sinn, aber eine Performance-Falle (2026-07-07):
-`tinox_array_push` kopiert bei jedem Push das komplette Array — Listen-Aufbau
-per Push in Schleifen ist dadurch O(n²). Ein Versuch, das Array via `GC_size`
-in place wachsen zu lassen, wurde **zurückgenommen**: Der erzeugte Code
-verlässt sich auf Copy-Semantik (Aliase behalten den alten Stand);
-In-Place-Growth korrumpiert aliasierte Listen abhängig von der GC-Blockgröße
-(nichtdeterministisch — in jgrep verschwanden select-Treffer erst ab ~50
-Dokumenten und die Läufe hingen teils). Ein echter Fix braucht entweder
-stabile Handles (ABI-Änderung: {len, cap, data}-Header) oder Ownership-Info im
-Codegen. Bis dahin: Hot Paths auf Streaming umstellen statt Listen zu
-materialisieren (so in jgrep gelöst). Gleiche Falle: `tinox_string_substring`
-und `tinox_string_length` machen `strlen` über den ganzen String — Lexer, die
+**Status: GEFIXT (2026-07-09)** — Array-ABI auf stabile Handles umgestellt.
+Ein Array-Wert ist jetzt ein `i64*` auf einen 3-Slot-Header `{len, cap, data}`;
+der Element-Buffer hängt an Slot 2 und wächst geometrisch (Verdopplung,
+min. 4). `push`/`pop`/`removeAt` mutieren das Handle in place → Push ist
+amortisiert O(1), Pop O(1). `slice`/`sort`/`reverse` liefern weiterhin frische
+Arrays. Benchmark: 100k Pushes 2,53 s → ~1 ms; 1 Mio. Pushes in 5 ms
+(Regressionstest `array_push_1m_o1` in tests/runtime_tests.sh).
+
+**Semantik-Änderung:** Listen haben jetzt durchgängige **Referenz-Semantik** —
+Aliase (`let b = a`, Funktionsparameter, Struct-Felder) teilen das Handle und
+sehen Pushes/Pops. Vorher war die Semantik inkonsistent (Element-Zuweisungen
+und `removeAt` in place sichtbar, Pushes nicht) — genau diese Inkonsistenz
+hatte den GC_size-Versuch nichtdeterministisch korrumpiert. Die jgrep-Suite
+(170 Tests) läuft unverändert grün; Semantik-Tests:
+`array_alias_reference_semantics`, `array_copy_methods_fresh`.
+
+**Dabei mitgefixt (latenter Bug derselben Klasse):** `xs.push(v)` auf einem
+*Funktionsparameter* emittierte einen Pointer-Write-back durch den rohen
+SSA-Wert (`store i64* %new, i64** %xs` — %xs ist aber kein Slot) und
+überschrieb damit Element 0 des Caller-Arrays. Mit stabilen Handles ist der
+Write-back ersatzlos entfernt (push/removeAt geben dasselbe Handle zurück).
+Außerdem: `sort()` gab einen thread-lokalen Shared-Buffer zurück (zweiter
+sort()-Aufruf korrumpierte das erste Ergebnis) — jetzt frische Allokation.
+Ebenso `processArgs()`-Elemente als String typisiert (gleiche Lücke wie
+Bug 7/dirList).
+
+Weiterhin offen (unverändert): `tinox_string_substring` und
+`tinox_string_length` machen `strlen` über den ganzen String — Lexer, die
 zeichenweise über einen großen Quellstring laufen, müssen die Länge cachen und
 `charAt` (O(1), ohne strlen) statt `substring(i, i+1)` benutzen.
 
