@@ -506,6 +506,47 @@ Zeichen `#` ist, verlor dadurch die komplette Escape-Verarbeitung.
 
 ---
 
+## Bug 17 — Test-Harness liest Bool-Rückgabe als i64: fehlschlagende Tests werden PASS
+
+**Status: GEFIXT (2026-07-07)** — Entdeckt bei der jgrep-Performance-Arbeit; hatte
+in der jgrep-Suite zwei echte Fehlschläge verdeckt (`flatten(1)`, NDJSON-Recovery).
+
+**Problem:**
+`emit_test_code()` rief die `@Test`-Methode als `call i64 @Class_method(...)` auf
+und prüfte `icmp ne i64 %result, 0`. Die Methode ist aber als `i1` definiert
+(Bool-Rückgabe). Der ABI-Mismatch liest die oberen 63 Bits von `%rax` als
+undefinierten Müll: nach `return xs.len() == 999;` steht dort z. B. noch der
+Wert von `len()` — Ergebnis ≠ 0 → Test „bestanden", obwohl er `false` liefert.
+`return false;` als einziger Ausdruck fiel dagegen korrekt durch (xor eax,eax).
+Effekt: Tests, deren letzter Ausdruck ein Vergleich nach vorheriger Berechnung
+ist, können praktisch nie fehlschlagen.
+
+**Fix:** Aufruf als `call i1` + direktes `select i1` (codegen.rs, `emit_test_code`).
+
+**Merkposten:** Nach dem Fix jede bestehende Suite einmal neu laufen lassen —
+vorher „grüne" Tests können echte Fehlschläge gewesen sein.
+
+---
+
+## Notiz — `tinox_array_push` ist O(n) pro Push (kein Kapazitäts-Überhang)
+
+Kein Bug im engen Sinn, aber eine Performance-Falle (2026-07-07):
+`tinox_array_push` kopiert bei jedem Push das komplette Array — Listen-Aufbau
+per Push in Schleifen ist dadurch O(n²). Ein Versuch, das Array via `GC_size`
+in place wachsen zu lassen, wurde **zurückgenommen**: Der erzeugte Code
+verlässt sich auf Copy-Semantik (Aliase behalten den alten Stand);
+In-Place-Growth korrumpiert aliasierte Listen abhängig von der GC-Blockgröße
+(nichtdeterministisch — in jgrep verschwanden select-Treffer erst ab ~50
+Dokumenten und die Läufe hingen teils). Ein echter Fix braucht entweder
+stabile Handles (ABI-Änderung: {len, cap, data}-Header) oder Ownership-Info im
+Codegen. Bis dahin: Hot Paths auf Streaming umstellen statt Listen zu
+materialisieren (so in jgrep gelöst). Gleiche Falle: `tinox_string_substring`
+und `tinox_string_length` machen `strlen` über den ganzen String — Lexer, die
+zeichenweise über einen großen Quellstring laufen, müssen die Länge cachen und
+`charAt` (O(1), ohne strlen) statt `substring(i, i+1)` benutzen.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

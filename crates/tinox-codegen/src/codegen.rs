@@ -3014,10 +3014,10 @@ impl CodeGen {
             writeln!(&mut b, "  %zi{fi} = getelementptr i64, i64* %obj, i64 {fi}").unwrap();
             writeln!(&mut b, "  store i64 0, i64* %zi{fi}").unwrap();
         }
-        writeln!(&mut b, "  %result = call i64 @{class}_{method}(i64* %obj)").unwrap();
-        // result != 0 → pass (exit 0), result == 0 → fail (exit 1)
-        writeln!(&mut b, "  %pass = icmp ne i64 %result, 0").unwrap();
-        writeln!(&mut b, "  %code = select i1 %pass, i64 0, i64 1").unwrap();
+        // @Test methods return Bool (i1) — calling them as i64 reads garbage
+        // in the upper bits and turned failing tests into passes.
+        writeln!(&mut b, "  %result = call i1 @{class}_{method}(i64* %obj)").unwrap();
+        writeln!(&mut b, "  %code = select i1 %result, i64 0, i64 1").unwrap();
         writeln!(&mut b, "  ret i64 %code").unwrap();
         writeln!(&mut b, "}}").unwrap();
         writeln!(&mut b).unwrap();
