@@ -1,7 +1,11 @@
 # Ein Einstiegspunkt für alles (TESTPLAN Phase 0.1):
 # Regel: kein Compiler-Commit ohne grünes `make check`.
+# `make install-hooks` aktiviert das pre-push-Gate.
 
-.PHONY: check test e2e dogfood
+DOGFOOD_DIR ?= ../jgrep-tinox
+export DOGFOOD_DIR
+
+.PHONY: check test e2e dogfood install-hooks
 
 check: test e2e dogfood
 
@@ -13,15 +17,13 @@ test:
 e2e:
 	cargo test --release -p tinox --test e2e --test matrix --test boundary
 
-# Dogfood: jgrep/ygrep bauen und deren Testsuiten laufen lassen (wenn ausgecheckt)
+# Dogfood: examples/ + benchmarks/ bauen, jgrep/ygrep bauen und testen
+# (jgrep-Checkout via DOGFOOD_DIR konfigurierbar)
 dogfood:
-	@if [ -d ../jgrep-tinox ]; then \
-		cargo build --release && \
-		cd ../jgrep-tinox && \
-		PATH=$(CURDIR)/target/release:$$PATH bash build.sh && \
-		for t in tests/*_test.tnx; do \
-			PATH=$(CURDIR)/target/release:$$PATH tinox test "$$t" || exit 1; \
-		done; \
-	else \
-		echo "dogfood: ../jgrep-tinox nicht gefunden — übersprungen"; \
-	fi
+	cargo build --release
+	bash scripts/dogfood.sh
+
+# Git-Hooks aktivieren (pre-push führt `make check` aus)
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath = .githooks gesetzt (pre-push: make check)"

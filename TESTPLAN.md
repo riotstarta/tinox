@@ -171,7 +171,7 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
 
 ---
 
-## Phase 3 — Dogfooding als CI-Gate (~½ Tag Setup)
+## Phase 3 — Dogfooding als CI-Gate — ✅ erledigt (2026-07-10)
 
 jgrep-tinox hat mehr Bugs gefunden als alle Unit-Tests zusammen. Das
 institutionalisieren:
@@ -183,6 +183,15 @@ institutionalisieren:
 - Compiler-Änderung, die Dogfood bricht → Commit blockiert. Genau die
   Situation aus dem ygrep-Port (Array:String-Fix brach den Evaluator) wäre
   damit vor dem Commit sichtbar gewesen, nicht danach.
+- **Stand:** `scripts/dogfood.sh` (via `make dogfood`, Teil von
+  `make check`): 6 examples bauen + 3 Smoke-Runs mit Soll-Ausgabe,
+  3 benchmarks kompilieren, jgrep bauen + 5 Suiten (170 Tests);
+  `DOGFOOD_DIR` konfigurierbar. Pre-push-Hook: `.githooks/pre-push`
+  führt `make check` aus, aktiviert per `make install-hooks`
+  (core.hooksPath). Bekannt kaputte Beispiele (vorbestehend, im Skript
+  dokumentiert): examples.tnx (Int32/Int64-Mix), interface_extends +
+  mini_http (Library ohne main), rest_with_mini (@Json_deserialize
+  fehlt), modules/multi_import (alte `::`-Importsyntax).
 
 ---
 
