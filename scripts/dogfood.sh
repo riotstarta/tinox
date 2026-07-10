@@ -17,10 +17,11 @@ bad()  { echo "FAIL"; FAIL=1; }
 
 echo "== Dogfood: examples bauen =="
 # Bekannt kaputte Beispiele (vorbestehend, siehe TESTPLAN Phase 3):
-#   interface_extends   — Library-Datei ohne main
-#   mini_http.tnx       — Library-Modul ohne main
-#   rest_with_mini.tnx  — @Json_deserialize nicht implementiert
-#   modules/multi_import — veraltete `import a::b;`-Syntax
+#   rest_with_mini.tnx  — Json::deserialize<T>: der Parser verwirft die
+#     expliziten Typargumente (parser.rs "Skip optional generic type args"),
+#     und generische Methoden (fnc serialize<T>/deserialize<T> in json.tnx)
+#     werden nie monomorphisiert → Call auf undefiniertes @Json_deserialize.
+#     Braucht: type_args im EnumValue-AST + Methoden-Monomorphisierung.
 GOOD_EXAMPLES=(
     examples/examples.tnx
     examples/cli_test.tnx
@@ -29,6 +30,8 @@ GOOD_EXAMPLES=(
     examples/rest_minimal.tnx
     examples/rest_test.tnx
     examples/modules/main.tnx
+    examples/modules/multi_import.tnx
+    examples/interface_extends.tnx
 )
 for f in "${GOOD_EXAMPLES[@]}"; do
     step "$f"
@@ -46,6 +49,12 @@ smoke() { # name file expected
 smoke simple examples/simple_test.tnx ""
 smoke vtable examples/vtable_dispatch.tnx "$(printf '5\n10\n42')"
 smoke modules examples/modules/main.tnx "$(printf '7\n12')"
+smoke multiimport examples/modules/multi_import.tnx "$(printf '25\n30')"
+smoke ifaceext examples/interface_extends.tnx "42"
+
+echo "== Dogfood: Library-Beispiele typechecken =="
+step "examples/mini_http.tnx (check)"
+if "$TINOX" check examples/mini_http.tnx >/dev/null 2>&1; then ok; else bad; fi
 
 echo "== Dogfood: benchmarks kompilieren =="
 for f in benchmarks/*.tnx; do

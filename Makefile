@@ -5,7 +5,7 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks
+.PHONY: check test e2e dogfood install-hooks asan
 
 check: test e2e dogfood
 
@@ -22,6 +22,16 @@ e2e:
 dogfood:
 	cargo build --release
 	bash scripts/dogfood.sh
+
+# Sanitizer-Lauf (TESTPLAN 2.3): E2E-Suite mit AddressSanitizer-Runtime.
+# Plain malloc statt Boehm-GC (-DTINOX_NO_GC), damit ASan jede Allokation
+# sieht; Leaks sind dabei Absicht (detect_leaks=0), Ziel sind Overflows/UAF.
+# Nicht Teil von `make check` — wöchentlich/vor Releases laufen lassen.
+asan:
+	cargo build --release
+	TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" \
+	ASAN_OPTIONS="detect_leaks=0" \
+	cargo test --release -p tinox --test e2e --test boundary
 
 # Git-Hooks aktivieren (pre-push führt `make check` aus)
 install-hooks:

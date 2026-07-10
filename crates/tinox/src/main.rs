@@ -1869,6 +1869,12 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let db_cfg = read_database_config();
     let db_driver = db_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
 
+    // Zusätzliche C-Flags aus der Umgebung, z. B. für Sanitizer-Läufe:
+    // TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" (siehe make asan)
+    let extra_cflags: Vec<String> = std::env::var("TINOX_CFLAGS")
+        .map(|v| v.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
@@ -1877,6 +1883,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     } else if db_driver == "sqlite" {
         cc_args.push("-DTINOX_DB_SQLITE");
     }
+    cc_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let cc_status = Command::new("cc")
         .args(&cc_args)
         .status()
@@ -1894,6 +1901,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     } else if db_driver == "sqlite" {
         link_args.push("-lsqlite3");
     }
+    link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let link_status = Command::new("cc")
         .args(&link_args)
         .status()

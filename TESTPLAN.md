@@ -177,10 +177,15 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   EOF ohne `]` endlos (gefixt). Echtes cargo-fuzz mit Corpus bleibt
   als Ausbau offen.
 
-### 2.3 Sanitizer-Lauf
+### 2.3 Sanitizer-Lauf — ✅ erledigt (2026-07-10)
 - Wöchentlich (oder pre-release): E2E-Suite unter AddressSanitizer
   (runtime.c ist handgeschriebenes C — malloc ohne free überall) und
   einmal unter Valgrind. Ziel zunächst nur: keine **neuen** Fehler.
+- **Stand:** `make asan` — E2E- + Grenzwert-Suite mit ASan-instrumentierter
+  Runtime. Boehm-GC ist für ASan unsichtbar, daher `-DTINOX_NO_GC`
+  (plain calloc, Leaks Absicht, detect_leaks=0); `TINOX_CFLAGS` wird vom
+  Compiler an beide cc-Aufrufe durchgereicht. Erster Lauf: sauber.
+  Bewusst nicht Teil von `make check` (Laufzeit); wöchentlich/pre-release.
 
 ---
 

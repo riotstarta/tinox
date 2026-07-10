@@ -20,6 +20,17 @@
 #include <sys/epoll.h>
 #include <time.h>
 
+#ifdef TINOX_NO_GC
+// Sanitizer-Modus (make asan): plain malloc statt Boehm-GC, damit ASan
+// jede Allokation sieht (GC-Heap ist für ASan unsichtbar). Nichts wird
+// freigegeben — Leaks sind hier Absicht, Overflows/UAF das Ziel.
+#include <string.h>
+#define GC_malloc(s)     calloc(1, (s))
+#define GC_realloc(p, s) realloc((p), (s))
+#define GC_free(p)       ((void)(p))
+#define GC_strdup(s)     strdup(s)
+#define GC_INIT()        ((void)0)
+#else
 // Boehm GC — redirect all heap allocation through the collector
 #define GC_THREADS
 #include <gc.h>
@@ -33,6 +44,7 @@
 #define realloc(p,s) GC_realloc((p),(s))
 #define free(p)      GC_free(p)
 #define strdup(s)    GC_strdup(s)
+#endif
 
 // Memory allocation (kept for ABI compatibility — codegen calls these)
 void* tinox_alloc(size_t size) {

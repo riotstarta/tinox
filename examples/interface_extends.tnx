@@ -19,3 +19,12 @@ class Circle implements IDrawable
         return 42;
     }
 }
+
+fn main() -> Int64
+{
+    let c = Circle {};
+    let d: IDrawable = c;
+    d.draw();
+    println(d.area());
+    return 0;
+}

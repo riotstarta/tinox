@@ -545,7 +545,8 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Import)?;
         let mut path = vec![self.parse_ident()?];
-        while self.consume(TokenKind::Dot) {
+        // Beide Separatoren erlaubt: `import a.b;` und `import a::b;`
+        while self.consume(TokenKind::Dot) || self.consume(TokenKind::ColonColon) {
             path.push(self.parse_ident()?);
         }
 

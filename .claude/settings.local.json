@@ -55,7 +55,8 @@
       "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/cls_new2_out)",
       "Bash(timeout 5 ./target/debug/tinox build /tmp/cls_new3.tnx -o /tmp/cls_new3_out)",
       "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/cls_new2_out)",
-      "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/x)"
+      "Bash(timeout 3 ./target/debug/tinox build /tmp/cls_new2.tnx -o /tmp/x)",
+      "Bash(./target/release/tinox build *)"
     ]
   }
 }
