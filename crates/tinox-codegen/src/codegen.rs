@@ -687,6 +687,11 @@ impl CodeGen {
         .unwrap();
         writeln!(&mut self.ir, "target triple = \"x86_64-unknown-linux-gnu\"").unwrap();
         writeln!(&mut self.ir).unwrap();
+        // Global error slot for cross-function throw propagation:
+        // throw without an enclosing try stores here and returns; statements
+        // inside a try body check the slot and branch to the catch.
+        writeln!(&mut self.ir, "@__tinox_err = global i64 0").unwrap();
+        writeln!(&mut self.ir).unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_int(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_string(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_float(double)").unwrap();
@@ -3808,21 +3813,35 @@ impl CodeGen {
             }
             StmtKind::Throw(expr) => {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
+                let store_val = if val_ty == "double" || val_ty == "float" {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                    cast
+                } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
+                    let cast = self.temp();
+                    writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                    cast
+                } else {
+                    val
+                };
                 if let Some((catch_bb, error_var)) = &ctx.error_catch {
-                    let store_val = if val_ty == "double" || val_ty == "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else {
-                        val
-                    };
                     let (catch_bb, error_var) = (catch_bb.clone(), error_var.clone());
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, error_var).unwrap();
                     writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
+                } else {
+                    // No enclosing try in this function: park the error in the
+                    // global slot and return a zero value — the nearest try
+                    // further up the call chain consumes it.
+                    writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", store_val).unwrap();
+                    match ctx.ret_type.as_str() {
+                        "void" | "" => writeln!(&mut self.ir, "ret void").unwrap(),
+                        "double" => writeln!(&mut self.ir, "ret double 0.0").unwrap(),
+                        "float" => writeln!(&mut self.ir, "ret float 0.0").unwrap(),
+                        t if t.ends_with('*') || t == "ptr" => {
+                            writeln!(&mut self.ir, "ret {} null", t).unwrap()
+                        }
+                        t => writeln!(&mut self.ir, "ret {} 0", t).unwrap(),
+                    }
                 }
             }
             StmtKind::Try {
@@ -4069,6 +4088,16 @@ impl CodeGen {
                         let slot = ctx.local_slots.get(&name).cloned().unwrap_or_else(|| name.clone());
                         let (val, val_ty) = self.gen_expr(value, ctx)?;
                         // Convert value type to target type if they differ
+                        let int_bits = |t: &str| -> Option<u32> {
+                            match t {
+                                "i1" => Some(1),
+                                "i8" => Some(8),
+                                "i16" => Some(16),
+                                "i32" => Some(32),
+                                "i64" => Some(64),
+                                _ => None,
+                            }
+                        };
                         let store_val = if val_ty == ty || val_ty.is_empty() || ty.is_empty() {
                             val
                         } else if val_ty == "i64" && (ty.ends_with('*') || ty == "ptr") {
@@ -4078,6 +4107,17 @@ impl CodeGen {
                         } else if (val_ty.ends_with('*') || val_ty == "ptr") && ty == "i64" {
                             let c = self.temp();
                             writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                            c
+                        } else if let (Some(from), Some(to)) = (int_bits(&val_ty), int_bits(&ty)) {
+                            // Integer width mismatch (e.g. counter: Int32 = counter + 1
+                            // where the addition widened to i64): trunc/extend.
+                            let c = self.temp();
+                            if from > to {
+                                writeln!(&mut self.ir, "{} = trunc {} {} to {}", c, val_ty, val, ty).unwrap();
+                            } else {
+                                let instr = if val_ty == "i1" { "zext" } else { "sext" };
+                                writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, val_ty, val, ty).unwrap();
+                            }
                             c
                         } else {
                             val
@@ -4282,6 +4322,34 @@ impl CodeGen {
                         (s, "i8*".to_string())
                     } else { (r, rt) }
                 } else { (r, rt) };
+                // Unify mixed integer widths (e.g. Int32 var + Int64 loop
+                // index): extend the narrower operand, so every integer op
+                // arm below sees matching types.
+                fn int_width(t: &str) -> Option<u32> {
+                    match t {
+                        "i1" => Some(1),
+                        "i8" => Some(8),
+                        "i16" => Some(16),
+                        "i32" => Some(32),
+                        "i64" => Some(64),
+                        _ => None,
+                    }
+                }
+                let (l, lt, r, rt) = match (int_width(&lt), int_width(&rt)) {
+                    (Some(a), Some(b)) if a < b => {
+                        let c = self.temp();
+                        let instr = if lt == "i1" { "zext" } else { "sext" };
+                        writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, lt, l, rt).unwrap();
+                        (c, rt.clone(), r, rt)
+                    }
+                    (Some(a), Some(b)) if a > b => {
+                        let c = self.temp();
+                        let instr = if rt == "i1" { "zext" } else { "sext" };
+                        writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, rt, r, lt).unwrap();
+                        (l, lt.clone(), c, lt)
+                    }
+                    _ => (l, lt, r, rt),
+                };
                 match op {
                     tinox_parser::BinaryOp::Add => {
                         if lt == "i8*" || rt == "i8*" || lt == "i64*" || rt == "i64*" {
@@ -4558,6 +4626,7 @@ impl CodeGen {
             ExprKind::Call { func, args } => {
                 let mut args_str = String::new();
                 let mut arg_types = Vec::new();
+                let mut arg_vals = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         args_str.push_str(", ");
@@ -4565,6 +4634,7 @@ impl CodeGen {
                     let (val, ty) = self.gen_expr(arg, ctx)?;
                     args_str.push_str(&format!("{} {}", ty, val));
                     arg_types.push(ty);
+                    arg_vals.push(val);
                 }
                 let fn_name = match &func.node {
                     ExprKind::Ident(name) => match name.as_str() {
@@ -4572,11 +4642,22 @@ impl CodeGen {
                         "print" | "println" => {
                             if !args.is_empty() {
                                 let ty = &arg_types[0];
+                                // i32 ist auf LLVM-Ebene sowohl Char als auch
+                                // Int32 — nur echte Char-Literale drucken als
+                                // Zeichen, Int32-Werte numerisch (sext + int).
+                                let is_char_lit =
+                                    matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)));
                                 let llvm_fn = match ty.as_str() {
                                     "i8*" => "tinox_print_string",
                                     "double" => "tinox_print_float",
                                     "i1" => "tinox_print_bool",
-                                    "i32" => "tinox_print_char",
+                                    "i32" if is_char_lit => "tinox_print_char",
+                                    t if t.starts_with('i') && t != "i64" && !t.ends_with('*') => {
+                                        let c = self.temp();
+                                        writeln!(&mut self.ir, "{} = sext {} {} to i64", c, t, arg_vals[0]).unwrap();
+                                        args_str = format!("i64 {}", c);
+                                        "tinox_print_int"
+                                    }
                                     _ => "tinox_print_int",
                                 };
                                 writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
@@ -5729,6 +5810,19 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, obj_ptr).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
+                        "sqrt" if args.is_empty() => {
+                            // x.sqrt() on numeric values → libm sqrt (double)
+                            let arg = if obj_ty == "double" {
+                                obj_ptr.clone()
+                            } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = sitofp {} {} to double", c, obj_ty, obj_ptr).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, arg).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         _ => {}
                     }
                 }
@@ -5777,6 +5871,21 @@ impl CodeGen {
                         .get(iface_name)
                         .and_then(|methods| methods.iter().position(|m| m == method))
                         .unwrap_or(0) as i64;
+
+                    // The object may arrive as i64 (e.g. a loop variable over
+                    // List<Interface>) — coerce to a pointer first and rebuild
+                    // the argument list with the coerced self.
+                    let obj_ptr = if obj_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                        c
+                    } else {
+                        obj_ptr.clone()
+                    };
+                    let mut full_args_str = format!("i64* {}", obj_ptr);
+                    for (val, ty) in &extra_args {
+                        full_args_str.push_str(&format!(", {} {}", ty, val));
+                    }
 
                     // Load vtable pointer from slot 0 of the object.
                     // The object is an i64* pointer; slot 0 holds the vtable address as i64.
@@ -7830,6 +7939,23 @@ impl CodeGen {
         }
     }
 
+    /// Consume a cross-function error parked in @__tinox_err: move it into
+    /// the local error slot and branch to the catch dispatch block.
+    fn emit_global_err_check(&mut self, catch_bb: &str, error_var: &str) {
+        let e = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", e).unwrap();
+        let has = self.temp();
+        writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, e).unwrap();
+        let err_bb = self.new_bb("gerr");
+        let cont_bb = self.new_bb("gcont");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, err_bb, cont_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", err_bb).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
+        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
+    }
+
     fn gen_try_stmt(
         &mut self,
         body: &Box<Stmt>,
@@ -7857,7 +7983,18 @@ impl CodeGen {
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
         let old_error_catch = ctx.error_catch.take();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone()));
-        self.gen_stmt_body(body, ctx)?;
+        // Statement-level checks of the global error slot: a callee without
+        // its own try parks thrown errors in @__tinox_err and returns; after
+        // each try-body statement we consume it and branch to the catch.
+        if let StmtKind::Block(stmts) = &body.node {
+            for stmt in stmts {
+                self.gen_stmt_body(&Box::new(stmt.clone()), ctx)?;
+                self.emit_global_err_check(&catch_bb, &error_var);
+            }
+        } else {
+            self.gen_stmt_body(body, ctx)?;
+            self.emit_global_err_check(&catch_bb, &error_var);
+        }
         ctx.error_catch = old_error_catch;
         let try_ok_bb = self.new_bb("try_ok");
         writeln!(&mut self.ir, "br label %{}", try_ok_bb).unwrap();
@@ -7891,7 +8028,12 @@ impl CodeGen {
                     .insert(catch.param.clone(), (llvm_ty.clone(), param_slot));
 
                 writeln!(&mut self.ir, "{}:", clause_bbs[i]).unwrap();
-                writeln!(&mut self.ir, "%{} = alloca {}", catch.param, llvm_ty).unwrap();
+                // Unique slot name — the same catch-param name in a later
+                // try/catch of this function must not redefine %<param>.
+                let param_slot_name = format!("{}_{}", catch.param, self.temp_count);
+                self.temp_count += 1;
+                ctx.local_slots.insert(catch.param.clone(), param_slot_name.clone());
+                writeln!(&mut self.ir, "%{} = alloca {}", param_slot_name, llvm_ty).unwrap();
                 let err_val = self.temp();
                 writeln!(
                     &mut self.ir,
@@ -7916,7 +8058,7 @@ impl CodeGen {
                 writeln!(
                     &mut self.ir,
                     "store {} {}, {}* %{}",
-                    llvm_ty, store_val, llvm_ty, catch.param
+                    llvm_ty, store_val, llvm_ty, param_slot_name
                 )
                 .unwrap();
                 self.gen_stmt_body(&catch.body, ctx)?;

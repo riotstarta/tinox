@@ -17,12 +17,12 @@ bad()  { echo "FAIL"; FAIL=1; }
 
 echo "== Dogfood: examples bauen =="
 # Bekannt kaputte Beispiele (vorbestehend, siehe TESTPLAN Phase 3):
-#   examples.tnx        — Int32/Int64-Mix im Codegen (add i32 mit i64-Operand)
 #   interface_extends   — Library-Datei ohne main
 #   mini_http.tnx       — Library-Modul ohne main
 #   rest_with_mini.tnx  — @Json_deserialize nicht implementiert
 #   modules/multi_import — veraltete `import a::b;`-Syntax
 GOOD_EXAMPLES=(
+    examples/examples.tnx
     examples/cli_test.tnx
     examples/simple_test.tnx
     examples/vtable_dispatch.tnx

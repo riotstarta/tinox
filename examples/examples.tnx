@@ -4,7 +4,7 @@
 // ============================================================
 // Example 1: Hello World
 // ============================================================
-fn main() -> Int32
+fn example_hello() -> Int32
 {
     print("Hello, World!");
     return 0;
@@ -352,7 +352,7 @@ fn main() -> Int32
     print("=== Tinox Examples ===\n\n");
 
     print("--- Hello World ---\n");
-    // Hello World is defined above
+    example_hello();
 
     print("\n--- Arithmetic ---\n");
     example_arithmetic();
