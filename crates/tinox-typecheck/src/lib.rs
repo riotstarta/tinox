@@ -2182,7 +2182,14 @@ impl TypeChecker {
                         (Self::type_to_value(&param.param_type), false),
                     );
                 }
+                // Return statements in the lambda body belong to the lambda,
+                // not the enclosing function: check them against the lambda's
+                // annotated return type, or not at all if unannotated.
+                let lambda_ret = ret_type.as_ref().map(|t| Self::type_to_value(t));
+                let saved_return_type =
+                    std::mem::replace(&mut self.current_return_type, lambda_ret);
                 let body_ty = self.infer_type(body);
+                self.current_return_type = saved_return_type;
                 self.symbols.exit_scope(saved_vars);
                 let _ret = ret_type
                     .as_ref()

@@ -817,6 +817,45 @@ fn main() -> Int32
 EOF
 run_test "array_copy_methods_fresh" "$TMP/t36.tnx" "$(printf '3\n1\n2\n3\n4\n4\n3')"
 
+# ── Test 37: Lambdas in List<fnc(...)> — indizierter Aufruf, Bool-Rückgabe ──
+cat >"$TMP/t37.tnx" <<'EOF'
+fn main() -> Int32
+{
+    var checks: List<fnc(Int64) -> Bool> = [];
+    checks.push(x => x > 10);
+    checks.push(x => {
+        if x == 5 {
+            return true;
+        }
+        return false;
+    });
+    var i = 0;
+    while i < checks.len() {
+        let a: Bool = checks[i](42);
+        let b: Bool = checks[i](5);
+        if a { println("a"); } else { println("-"); }
+        if b { println("b"); } else { println("-"); }
+        i = i + 1;
+    }
+    return 0;
+}
+EOF
+run_test "lambda_list_indexed_call" "$TMP/t37.tnx" "$(printf 'a\n-\n-\nb')"
+
+# ── Test 38: Lokales Lambda ohne Captures aufrufen (Closure-Block-Konvention) ──
+cat >"$TMP/t38.tnx" <<'EOF'
+fn main() -> Int32
+{
+    let double = x => x * 2;
+    let offset = 10;
+    let addOff = x => x + offset;
+    println(double(21));
+    println(addOff(5));
+    return 0;
+}
+EOF
+run_test "lambda_local_call_with_without_capture" "$TMP/t38.tnx" "$(printf '42\n15')"
+
 echo
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ ${#ERRORS[@]} -gt 0 ]; then

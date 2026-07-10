@@ -3351,6 +3351,10 @@ impl CodeGen {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap(); c
                         } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap(); c
+                        } else if val_ty == "i64" && actual_ty == "i1" {
+                            // Indirect calls return Bool as i64 — take bit 0
+                            // (upper bits may be garbage at the ABI level).
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i1", c, v).unwrap(); c
                         } else if val_ty == "i1" && actual_ty == "i64" {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
                         } else if val_ty == "double" && actual_ty == "i64" {
@@ -3366,6 +3370,10 @@ impl CodeGen {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap(); c
                         } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap(); c
+                        } else if val_ty == "i64" && actual_ty == "i1" {
+                            // Indirect calls return Bool as i64 — take bit 0
+                            // (upper bits may be garbage at the ABI level).
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i1", c, v).unwrap(); c
                         } else if val_ty == "i1" && actual_ty == "i64" {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
                         } else if val_ty == "double" && actual_ty == "i64" {
@@ -3553,7 +3561,11 @@ impl CodeGen {
                         let c = self.temp();
                         writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap();
                         c
-                    } else if val_ty == "i1" && actual_ty == "i64" {
+                    } else if val_ty == "i64" && actual_ty == "i1" {
+                            // Indirect calls return Bool as i64 — take bit 0
+                            // (upper bits may be garbage at the ABI level).
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i1", c, v).unwrap(); c
+                        } else if val_ty == "i1" && actual_ty == "i64" {
                         let c = self.temp();
                         writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap();
                         c
@@ -4956,7 +4968,9 @@ impl CodeGen {
                         .map(|(r, _)| r.clone())
                         .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
                 } else {
-                    arg_types.first().cloned().unwrap_or_else(|| "i64".to_string())
+                    // Indirect call through a fn value (e.g. handlers[i](ctx)):
+                    // lambdas return their value as i64 at the ABI level.
+                    "i64".to_string()
                 };
                 let result = self.temp();
                 let is_local_fn = if let ExprKind::Ident(name) = &func.node {
@@ -4984,18 +4998,27 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call {} {}({}, i64* {})", result, ret_ty, casted_fn, args_str.trim(), env_val).unwrap();
                         }
                     } else {
-                        // Raw fn ptr stored as i64: inttoptr and call
+                        // Fn value stored as i64: address of a closure block
+                        // {fn_ptr, env} — load both and call fn_ptr(args..., env).
                         let fn_i64 = if fn_ty == "i64" { fn_val.clone() } else {
                             let c = self.temp();
                             writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, fn_ty, fn_val).unwrap();
                             c
                         };
+                        let block = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", block, fn_i64).unwrap();
+                        let fp_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64, i64* {}", fp_val, block).unwrap();
+                        let env_ptr = self.temp();
+                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_ptr, block).unwrap();
+                        let env_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64)*", casted_fn, fn_i64).unwrap();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
                         if ret_ty == "void" {
-                            writeln!(&mut self.ir, "call void {}({})", casted_fn, args_str).unwrap();
+                            writeln!(&mut self.ir, "call void {}({}, i64* {})", casted_fn, args_str.trim(), env_val).unwrap();
                         } else {
-                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, args_str).unwrap();
+                            writeln!(&mut self.ir, "{} = call {} {}({}, i64* {})", result, ret_ty, casted_fn, args_str.trim(), env_val).unwrap();
                         }
                     }
                 } else if is_local_fn {
@@ -5031,18 +5054,27 @@ impl CodeGen {
                         )
                         .unwrap();
                     } else {
+                        // Local holds a closure-block address as i64 —
+                        // same convention as every other fn value.
+                        let block = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", block, fn_ptr).unwrap();
+                        let fp_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64, i64* {}", fp_val, block).unwrap();
+                        let env_ptr = self.temp();
+                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_ptr, block).unwrap();
+                        let env_val = self.temp();
+                        writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
-                        let fn_type_str = format!("{} (i64)*", ret_ty);
                         writeln!(
                             &mut self.ir,
-                            "{} = inttoptr i64 {} to {}",
-                            casted_fn, fn_ptr, fn_type_str
+                            "{} = inttoptr i64 {} to i64 (i64, i64*)*",
+                            casted_fn, fp_val
                         )
                         .unwrap();
                         writeln!(
                             &mut self.ir,
-                            "{} = call {} {}({})",
-                            result, ret_ty, casted_fn, args_str
+                            "{} = call {} {}({}, i64* {})",
+                            result, ret_ty, casted_fn, args_str.trim(), env_val
                         )
                         .unwrap();
                     }
@@ -7532,47 +7564,46 @@ impl CodeGen {
             ptr_name, ret_ty, fn_type_str, fn_name
         )
         .unwrap();
-        let closure_ptr_name = if let Some(ref env_ptr) = env_ptr_name {
-            let closure_ptr = self.temp();
-            let closure_ptr_int = self.temp();
-            writeln!(
-                &mut self.ir,
-                "{} = call i8* @tinox_alloc(i64 16)",
-                closure_ptr
-            )
-            .unwrap();
-            writeln!(
-                &mut self.ir,
-                "{} = bitcast i8* {} to i64*",
-                closure_ptr_int, closure_ptr
-            )
-            .unwrap();
-            let fp_field = self.temp();
-            writeln!(
-                &mut self.ir,
-                "{} = getelementptr i64, ptr {}, i64 0",
-                fp_field, closure_ptr_int
-            )
-            .unwrap();
-            writeln!(&mut self.ir, "store i64 {}, i64* {}", ptr_name, fp_field).unwrap();
-            let env_field = self.temp();
-            let _env_ptr_clean = env_ptr.trim_start_matches('%');
-            writeln!(
-                &mut self.ir,
-                "{} = getelementptr i64, ptr {}, i64 1",
-                env_field, closure_ptr_int
-            )
-            .unwrap();
+        // Every lambda value is a closure block {fn_ptr: i64, env: i64*} —
+        // also without captures (env = null). A single representation lets
+        // every indirect call site (fn fields, List<fnc(...)> elements,
+        // locals) use the same convention; raw fn ptrs called through the
+        // closure path were dereferenced as data and crashed.
+        let closure_ptr = self.temp();
+        let closure_ptr_int = self.temp();
+        writeln!(
+            &mut self.ir,
+            "{} = call i8* @tinox_alloc(i64 16)",
+            closure_ptr
+        )
+        .unwrap();
+        writeln!(
+            &mut self.ir,
+            "{} = bitcast i8* {} to i64*",
+            closure_ptr_int, closure_ptr
+        )
+        .unwrap();
+        let fp_field = self.temp();
+        writeln!(
+            &mut self.ir,
+            "{} = getelementptr i64, ptr {}, i64 0",
+            fp_field, closure_ptr_int
+        )
+        .unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", ptr_name, fp_field).unwrap();
+        let env_field = self.temp();
+        writeln!(
+            &mut self.ir,
+            "{} = getelementptr i64, ptr {}, i64 1",
+            env_field, closure_ptr_int
+        )
+        .unwrap();
+        if let Some(ref env_ptr) = env_ptr_name {
             writeln!(&mut self.ir, "store i64* {}, i64* {}", env_ptr, env_field).unwrap();
-            Some(closure_ptr_int)
         } else {
-            None
-        };
-        if let Some(cptr) = closure_ptr_name {
-            Ok((cptr, "i64*".to_string()))
-        } else {
-            Ok((ptr_name, "i64".to_string()))
+            writeln!(&mut self.ir, "store i64* null, i64* {}", env_field).unwrap();
         }
+        Ok((closure_ptr_int, "i64*".to_string()))
     }
 
     fn is_float(ty: &str) -> bool {
