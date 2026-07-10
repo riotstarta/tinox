@@ -2773,14 +2773,18 @@ impl Parser {
         }
     }
 
-    /// Consume `>` closing a generic type. If the current token is `>>`,
-    /// split it: consume the `>>` but leave a synthetic `>` for the next close.
+    /// Consume `>` closing a generic type. If the current token is `>>` or
+    /// `>>>`, split it: consume one `>` and leave the rest as a synthetic
+    /// shorter token for the next close (List<List<List<Int64>>>).
     fn expect_generic_close(&mut self) -> Result<(), Error> {
         if self.check(TokenKind::Greater) {
             self.bump();
             Ok(())
         } else if self.check(TokenKind::GreaterGreater) {
             self.tokens[self.pos].kind = TokenKind::Greater;
+            Ok(())
+        } else if self.check(TokenKind::GreaterGreaterGreater) {
+            self.tokens[self.pos].kind = TokenKind::GreaterGreater;
             Ok(())
         } else {
             Err(self.error("expected '>'"))
@@ -4228,10 +4232,17 @@ mod tests {
     // ================================================================
 
     #[test]
-    fn test_type_nested_generic_three_levels_parse_bug() {
-        // BUG: `>>>` is ambiguous — parser fails to close three nested generics
-        assert!(parse_err("fn f(x: Array<Array<Array<Int64>>>) -> Nothing {}"),
-            "triple-nested generic currently fails to parse due to >> ambiguity");
+    fn test_type_nested_generic_three_levels() {
+        // `>>>` wird beim Schließen generischer Typen gesplittet (expect_generic_close)
+        let d = first_decl("fn f(x: Array<Array<Array<Int64>>>) -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        let Type::Generic { name, args } = &f.params[0].param_type else { panic!() };
+        assert_eq!(name, "Array");
+        let Type::Generic { name: n2, args: a2 } = &args[0] else { panic!() };
+        assert_eq!(n2, "Array");
+        let Type::Generic { name: n3, args: a3 } = &a2[0] else { panic!() };
+        assert_eq!(n3, "Array");
+        assert!(matches!(a3[0], Type::Int64));
     }
 
     #[test]

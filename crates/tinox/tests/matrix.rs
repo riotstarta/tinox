@@ -255,8 +255,10 @@ fn helper_module() -> String {
     s
 }
 
-fn generate_all() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tinox-matrix-{}", std::process::id()));
+fn generate_all(shard: usize) -> PathBuf {
+    // Pro Shard ein eigenes Verzeichnis — die Shards laufen als parallele
+    // Threads, ein gemeinsames Verzeichnis würde remove/rewrite-Races geben.
+    let dir = std::env::temp_dir().join(format!("tinox-matrix-{}-{shard}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir matrix dir");
     fs::write(dir.join("_matrix_mod.tnx"), helper_module()).expect("write helper");
@@ -271,7 +273,7 @@ fn generate_all() -> PathBuf {
 }
 
 fn run_shard(shard: usize, num_shards: usize) {
-    let dir = generate_all();
+    let dir = generate_all(shard);
     let mut names: Vec<String> = fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())

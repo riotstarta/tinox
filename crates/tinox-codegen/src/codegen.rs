@@ -3315,14 +3315,18 @@ impl CodeGen {
                         if self.defined_classes.contains(ann.as_str()) {
                             llvm_ty = "i64*".to_string();
                         }
-                    } else if let Some(Type::Map(_, _)) = ty {
-                        struct_name = Some("Map".to_string());
-                        llvm_ty = "i8*".to_string();
-                    } else if matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array")
-                        || matches!(ty, Some(Type::Generic { name, args }) if name == "List" && matches!(args.first(), Some(Type::String))) {
-                        struct_name = Some("Array:String".to_string());
-                        llvm_ty = "i64*".to_string();
+                    } else if let Some(ann_ty) = ty {
+                        // Container annotation → marker (Map, Array:String,
+                        // Array:Array:…, List:C, Array) aus der zentralen Quelle
+                        if let Some(m) = Self::container_marker(ann_ty) {
+                            if m == "Map" {
+                                struct_name = Some("Map".to_string());
+                                llvm_ty = "i8*".to_string();
+                            } else {
+                                struct_name = Some(m);
+                                llvm_ty = "i64*".to_string();
+                            }
+                        }
                     }
                 }
 
@@ -3548,14 +3552,18 @@ impl CodeGen {
                         if self.defined_classes.contains(ann.as_str()) {
                             llvm_ty = "i64*".to_string();
                         }
-                    } else if let Some(Type::Map(_, _)) = ty {
-                        struct_name = Some("Map".to_string());
-                        llvm_ty = "i8*".to_string();
-                    } else if matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                        || matches!(ty, Some(Type::Generic { name, .. }) if name == "Array")
-                        || matches!(ty, Some(Type::Generic { name, args }) if name == "List" && matches!(args.first(), Some(Type::String))) {
-                        struct_name = Some("Array:String".to_string());
-                        llvm_ty = "i64*".to_string();
+                    } else if let Some(ann_ty) = ty {
+                        // Container annotation → marker (Map, Array:String,
+                        // Array:Array:…, List:C, Array) aus der zentralen Quelle
+                        if let Some(m) = Self::container_marker(ann_ty) {
+                            if m == "Map" {
+                                struct_name = Some("Map".to_string());
+                                llvm_ty = "i8*".to_string();
+                            } else {
+                                struct_name = Some(m);
+                                llvm_ty = "i64*".to_string();
+                            }
+                        }
                     }
                 }
 

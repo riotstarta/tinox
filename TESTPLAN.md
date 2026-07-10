@@ -130,12 +130,21 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   KNOWN_FAILURES ist leer. Offen: Map-Value-Kontexte, Cross-Modul für
   weitere Typen, Float-Schleifenvariablen.
 
-### 1.4 Gedächtnis-/Grenzwert-Fälle
+### 1.4 Gedächtnis-/Grenzwert-Fälle — ✅ erledigt (2026-07-10)
 - Strings der Längen 0, 1, 7, 8, 15, 16, 17, 31, 32 (Heap-/Alignment-Grenzen;
   Bug 15 war nur bei 15–16 sichtbar), Umlaute/UTF-8, eingebettete `#`, `"`,
   `\n`, führende/abschließende Leerzeichen.
 - Leere Listen/Maps, 1-elementig, verschachtelt ≥3 Ebenen, Listen von Maps
   von Listen. Enum-Payloads verschachtelt (Bugs 9, 10).
+- **Stand:** `crates/tinox/tests/boundary.rs` (generiert, Ground truth vom
+  Rust-Host): String-Längen-Sweep 0…32 durch Literal/Fn-Return/split/Concat,
+  Sonderzeichen (#, Quotes, \n, \t, Umlaute, Leerzeichen), leere/
+  1-elementige Container, List<List<List<Int64>>>, List<Map>, Map mit
+  List-Values. Dabei gefunden und gefixt: `>>>` in
+  `List<List<List<…>>>` wurde als Shift-Token gelext (Parser splittet
+  jetzt), und der let/var-Annotations-Fallback markierte `Array<T>`
+  pauschal als Array:String (jetzt container_marker). Enum-Payload-
+  Verschachtelung deckt bug09/bug10 ab.
 
 ---
 
