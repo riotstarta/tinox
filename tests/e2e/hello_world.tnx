@@ -1,0 +1,7 @@
+// expect: Hello, World!
+
+fn main() -> Int32
+{
+    println("Hello, World!");
+    return 0;
+}

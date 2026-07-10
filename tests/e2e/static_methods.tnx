@@ -1,0 +1,20 @@
+// expect: 25
+// expect: 27
+
+class MathUtil
+{
+    fnc square(n: Int64) -> Int64
+    {
+        return n * n;
+    }
+    fnc cube(n: Int64) -> Int64
+    {
+        return n * n * n;
+    }
+}
+fn main() -> Int32
+{
+    println(MathUtil::square(5));
+    println(MathUtil::cube(3));
+    return 0;
+}

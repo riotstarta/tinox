@@ -1,0 +1,28 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Carol', 35), ('Charlie', 22);
+// expect: 2
+// expect: Carol
+
+import tinox.core.db;
+
+@Entity
+@Table("users")
+class User
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
+
+fn main() -> Int32
+{
+    let cs: List<User> = DB.of(User)
+        .filter(u => u.name.startsWith("C"))
+        .list();
+    println(cs.len());
+    println(cs[0].name);
+    return 0;
+}

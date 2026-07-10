@@ -1,0 +1,37 @@
+// Bug 9: verschachtelte Enum-Payloads wurden korrupt
+// expect: reduce
+// expect: acc
+// expect: a
+// expect: b
+enum Filter {
+    Identity,
+    FieldAccess(String),
+    Pipe(Filter, Filter),
+    Reduce(Filter, String, Filter, Filter),
+}
+
+fn main() -> Int32 {
+    let f = Filter::Reduce(Filter::Identity, "acc", Filter::Identity,
+        Filter::Pipe(Filter::FieldAccess("a"), Filter::FieldAccess("b")));
+    match f {
+        Reduce(gen, v, init, body) => {
+            println("reduce");
+            println(v);
+            match body {
+                Pipe(l, r) => {
+                    match l {
+                        FieldAccess(n1) => println(n1);
+                        _ => println("-");
+                    }
+                    match r {
+                        FieldAccess(n2) => println(n2);
+                        _ => println("-");
+                    }
+                }
+                _ => println("-");
+            }
+        }
+        _ => println("-");
+    }
+    return 0;
+}

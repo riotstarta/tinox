@@ -1,0 +1,12 @@
+// expect: 42
+
+fn apply(f: fnc(Int64) -> Int64, x: Int64) -> Int64
+{
+    return f(x);
+}
+fn main() -> Int32
+{
+    let double: fnc(Int64) -> Int64 = x => x * 2;
+    println(apply(double, 21));
+    return 0;
+}

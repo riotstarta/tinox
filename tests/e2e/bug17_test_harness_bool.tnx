@@ -1,0 +1,12 @@
+// Bug 17: Test-Harness las Bool-Rückgabe als i64 — fehlschlagende Tests wurden PASS
+// mode: test
+// expect-exit: 1
+// expect-contains: 1 failed
+class T {
+    @Test("must fail")
+    fn t() -> Bool {
+        var xs: List<Int64> = [];
+        xs.push(1);
+        return xs.len() == 999;
+    }
+}

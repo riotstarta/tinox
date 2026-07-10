@@ -982,6 +982,14 @@ impl CodeGen {
                         self.method_ret_class.insert(key.clone(), "Map".to_string());
                     } else if Self::is_string_list_type(&method.ret_type) {
                         self.method_ret_class.insert(key.clone(), "Array:String".to_string());
+                    } else if let Type::Generic { name, args } = &method.ret_type {
+                        if name == "List" || name == "Array" {
+                            if let Some(Type::Named(cls)) = args.first() {
+                                if self.defined_classes.contains(cls.as_str()) {
+                                    self.method_ret_class.insert(key.clone(), format!("List:{}", cls));
+                                }
+                            }
+                        }
                     }
                     let param_tys: Vec<tinox_parser::Type> = method.params.iter()
                         .map(|p| p.param_type.clone()).collect();
@@ -1020,8 +1028,27 @@ impl CodeGen {
                         let ret_ty = self.type_to_llvm_inst(&f.ret_type);
                         let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
                         self.fn_sigs.insert(fn_name.clone(), (ret_ty, param_tys));
+                        // Register return-class info for let-binding inference —
+                        // same rules as for methods (Bug 6: without this,
+                        // `let r = someModuleFn(); r.field` reads offset 0).
                         if Self::is_string_list_type(&f.ret_type) {
                             self.method_ret_class.insert(fn_name, "Array:String".to_string());
+                        } else if let Type::Named(ret_class) = &f.ret_type {
+                            if self.defined_classes.contains(ret_class.as_str())
+                                || self.struct_layouts.contains_key(ret_class.as_str())
+                            {
+                                self.method_ret_class.insert(fn_name, ret_class.clone());
+                            }
+                        } else if matches!(&f.ret_type, Type::Map(_, _)) {
+                            self.method_ret_class.insert(fn_name, "Map".to_string());
+                        } else if let Type::Generic { name, args } = &f.ret_type {
+                            if name == "List" || name == "Array" {
+                                if let Some(Type::Named(cls)) = args.first() {
+                                    if self.defined_classes.contains(cls.as_str()) {
+                                        self.method_ret_class.insert(fn_name, format!("List:{}", cls));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3215,8 +3242,14 @@ impl CodeGen {
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
                             || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
+                        let is_float_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::Float64 | Type::Float32))
+                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::Float64 | Type::Float32)).unwrap_or(false));
+                        let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
                         if is_str_ann || is_str_lit {
                             struct_name = Some("Array:String".to_string());
+                            llvm_ty = "i64*".to_string();
+                        } else if is_float_ann || is_float_lit {
+                            struct_name = Some("Array:Float".to_string());
                             llvm_ty = "i64*".to_string();
                         }
                         true
@@ -3440,8 +3473,14 @@ impl CodeGen {
                         let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
                             || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
+                        let is_float_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::Float64 | Type::Float32))
+                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::Float64 | Type::Float32)).unwrap_or(false));
+                        let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
                         if is_str_ann || is_str_lit {
                             struct_name = Some("Array:String".to_string());
+                            llvm_ty = "i64*".to_string();
+                        } else if is_float_ann || is_float_lit {
+                            struct_name = Some("Array:Float".to_string());
                             llvm_ty = "i64*".to_string();
                         }
                         true
@@ -5827,6 +5866,7 @@ impl CodeGen {
                     // fall back to struct field type info so elements are typed as strings.
                     .or_else(|| self.infer_struct_type(obj, ctx));
                 let is_str_arr = declared_elem_type.as_deref() == Some("Array:String");
+                let is_float_arr = declared_elem_type.as_deref() == Some("Array:Float");
                 let is_map = declared_elem_type.as_deref() == Some("Map");
 
                 let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
@@ -5888,6 +5928,11 @@ impl CodeGen {
                         let str_ptr = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", str_ptr, raw).unwrap();
                         Ok((str_ptr, "i8*".to_string()))
+                    } else if is_float_arr {
+                        // Elements of List<Float64> are stored as i64 bit patterns
+                        let f = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast i64 {} to double", f, raw).unwrap();
+                        Ok((f, "double".to_string()))
                     } else {
                         Ok((raw, "i64".to_string()))
                     }

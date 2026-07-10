@@ -227,7 +227,10 @@ fn build(args: &[String]) {
 
     match compile_file(&input_file, &output_name, opt) {
         Ok(_) => println!("Compiled successfully: {} ({:?})", output_name, opt),
-        Err(e) => eprintln!("Compilation failed: {}", e),
+        Err(e) => {
+            eprintln!("Compilation failed: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -651,7 +654,10 @@ fn run_file(args: &[String]) {
 
             std::process::exit(status.code().unwrap_or(1));
         }
-        Err(e) => eprintln!("Compilation failed: {}", e),
+        Err(e) => {
+            eprintln!("Compilation failed: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 

@@ -1,0 +1,16 @@
+// Bug 3: </> auf String-Parametern war Compilerfehler
+// expect: -1
+// expect: 1
+// expect: 0
+fn compare(a: String, b: String) -> Int64 {
+    if a < b { return -1; }
+    if a > b { return 1; }
+    return 0;
+}
+
+fn main() -> Int32 {
+    println(compare("apple", "banana"));
+    println(compare("pear", "apple"));
+    println(compare("kiwi", "kiwi"));
+    return 0;
+}

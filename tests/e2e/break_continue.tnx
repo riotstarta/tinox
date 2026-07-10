@@ -1,0 +1,16 @@
+// expect: 25
+
+fn main() -> Int32
+{
+    var n: Int64 = 0;
+    var i: Int64 = 0;
+    while i < 20
+    {
+        i = i + 1;
+        if i % 2 == 0 { continue; }
+        if i > 9 { break; }
+        n = n + i;
+    }
+    println(n);
+    return 0;
+}

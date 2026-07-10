@@ -9,10 +9,9 @@ check: test e2e dogfood
 test:
 	cargo test --release
 
-# End-to-End: kompilierte Programme ausführen und Ausgabe prüfen
+# End-to-End: Golden-Tests (tests/e2e/*.tnx) über den Cargo-Harness
 e2e:
-	cargo build --release
-	bash tests/runtime_tests.sh
+	cargo test --release -p tinox --test e2e
 
 # Dogfood: jgrep/ygrep bauen und deren Testsuiten laufen lassen (wenn ausgecheckt)
 dogfood:

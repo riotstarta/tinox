@@ -1,0 +1,17 @@
+// expect: 25
+
+class Point
+{
+    x: Int64;
+    y: Int64;
+}
+fn distance(p: Point) -> Int64
+{
+    return p.x * p.x + p.y * p.y;
+}
+fn main() -> Int32
+{
+    let p: Point = Point { x: 3, y: 4 };
+    println(distance(p));
+    return 0;
+}

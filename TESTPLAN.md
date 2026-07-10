@@ -64,7 +64,7 @@ bestehende Testsuite.
 
 ## Phase 1 — Ausführende E2E-Suite (der Kern, ~1 Woche)
 
-### 1.1 Golden-Test-Harness als Cargo-Test
+### 1.1 Golden-Test-Harness als Cargo-Test — ✅ erledigt (2026-07-10)
 - Verzeichnis `tests/e2e/*.tnx`; erwartete Ausgabe direkt in der Datei:
   ```tinox
   // expect-exit: 0
@@ -76,12 +76,23 @@ bestehende Testsuite.
   kompilieren → IR verifizieren → ausführen (Timeout) → stdout/stderr/Exit-Code
   vergleichen. Läuft unter `cargo test`, parallelisierbar, kein Bash.
 - `tests/runtime_tests.sh` (26 Fälle) einmalig migrieren, dann löschen.
+- **Stand:** `crates/tinox/tests/e2e.rs` (4 parallele Shards, Direktiven
+  `expect`/`expect-exit`/`expect-contains`/`args`/`db`/`mode: test`);
+  alle 38 Bash-Fälle migriert, runtime_tests.sh gelöscht, `make e2e` läuft
+  über Cargo. Beim Migrieren gefunden und gefixt: `tinox build/run`
+  exitete 0 bei Compilerfehlern.
 
-### 1.2 bugs.md → Regressionstests (16/16)
+### 1.2 bugs.md → Regressionstests — ✅ erledigt (2026-07-10)
 - Jeder Bug in bugs.md hat bereits eine Minimal-Repro — die wird 1:1 zu
   `tests/e2e/bug01_match_string_len.tnx` … `bug16_hash_string_literal.tnx`.
 - Neue Regel: **ein Bug gilt erst als gefixt, wenn sein E2E-Test existiert.**
   bugs.md bekommt pro Eintrag einen Verweis auf die Testdatei.
+- **Stand:** `tests/e2e/bug01…bug17` (Bug 11 war kein Tinox-Bug). Die Repros
+  fanden sofort vier weitere Fehler, alle gefixt: Rückgabeklassen von
+  Top-Level-Funktionen wurden nicht registriert (Bug-6-Klasse:
+  `let r = modFn(); r.feld` las Offset 0), `List<Float64>`-Elemente kamen
+  als i64-Bitmuster zurück, kein trailing comma in List-Literalen,
+  Build-Exit-Code (s. 1.1).
 
 ### 1.3 Kontext-Matrix (der eigentliche Hebel gegen die Bug-Klasse)
 Für jede Kern-Operation (`.len()`, `==`, `<`, `+`, `.substring()`,

@@ -1,0 +1,12 @@
+// expect: 15
+
+fn main() -> Int32
+{
+    var sum: Int64 = 0;
+    for i in 1..6
+    {
+        sum = sum + i;
+    }
+    println(sum);
+    return 0;
+}

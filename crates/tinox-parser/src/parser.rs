@@ -1950,6 +1950,10 @@ impl Parser {
                 if !self.check(TokenKind::RBracket) {
                     elements.push(self.parse_expr()?);
                     while self.consume(TokenKind::Comma) {
+                        // Allow a trailing comma before the closing bracket
+                        if self.check(TokenKind::RBracket) {
+                            break;
+                        }
                         elements.push(self.parse_expr()?);
                     }
                 }

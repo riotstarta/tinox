@@ -10,6 +10,8 @@ Fix them in order — later bugs may depend on earlier fixes being in place.
 
 **Status: GEFIXT (2026-07-05)** — Match-Bindings verwenden jetzt den echten LLVM-Typ aus der Enum-Deklaration (`bind_match_payload` + `enum_variant_payloads`-Pre-Pass in codegen.rs). String-Payloads werden als `i8*` gebunden, damit greift der normale String-Dispatch.
 
+**Regressionstest:** `tests/e2e/bug01_match_string_len.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -50,6 +52,8 @@ fn strLen(s: String) -> Int64 { return s.len(); }
 
 **Status: GEFIXT (2026-07-05)** — Durch denselben Fix wie Bug 1: String-Payloads sind jetzt `i8*`, `==` ruft `@tinox_string_equals` auf.
 
+**Regressionstest:** `tests/e2e/bug02_match_string_eq.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -86,6 +90,8 @@ fn strEq(a: String, b: String) -> Bool { return a == b; }
 
 **Status: GEFIXT (2026-07-05)** — Typecheck erlaubt jetzt `<`/`<=`/`>`/`>=` für String/String; Codegen emittiert `@tinox_string_compare` (neu in runtime.c) + icmp auf dem Ergebnis.
 
+**Regressionstest:** `tests/e2e/bug03_string_ordering.tnx`
+
 **Datei:** `crates/tinox-typecheck/src/lib.rs` oder `crates/tinox-parser/`
 
 **Problem:**
@@ -114,6 +120,8 @@ Zeichenweiser Vergleich via `fn strCmp(a: String, b: String) -> Int64` (implemen
 
 **Status: GEFIXT (2026-07-05)** — Basis-Float-Support (Literale, Arithmetik, Parameter, Vergleiche, `toString`) funktionierte bereits über die bestehenden bitcast-Pfade. Zwei verbliebene Fehler behoben: (a) `list.push(1.5)` emittierte ungültiges `i64 1.5` (double→i64-bitcast im push-Codegen ergänzt), (b) match-gebundene `Float64`-Payloads wurden als i64-Bitmuster behandelt (payload_kind "Float" → Bindung als `double` via bitcast). Hinweis: `toString()` formatiert 4.0 als "4" (wie jq).
 
+**Regressionstest:** `tests/e2e/bug04_float64.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -141,6 +149,8 @@ Dezimaldarstellung aus (z.B. `"3.14"`).
 ## Bug 5 — Match-gebundene List/Map-Referenzen sind korrupt
 
 **Status: GEFIXT (2026-07-05)** — Durch denselben Fix wie Bug 1: List-Payloads werden als `i64*` gebunden (Array-Dispatch + Iteration funktionieren), Map-Payloads als `i8*` mit `local_types = "Map"` (Map-Dispatch greift).
+
+**Regressionstest:** `tests/e2e/bug05_match_list_map.tnx`
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
@@ -187,6 +197,8 @@ Match-gebundene List/Map-Variablen sollen wie normale lokale List/Map-Variablen 
 
 **Status: GEFIXT (2026-07-05)** — Zwei Match-Codegen-Fehler: (a) No-Arg-Variant-Arme emittierten `icmp eq i64` auf einem `ptr`-typisierten Match-Subjekt (ungültige IR → "opt failed"), (b) Payload-Arme dereferenzierten ptr-typisierte Subjekte ohne 65535-Pointer-Guard (Segfault bei No-Arg-Werten). Alle drei Enum-Match-Pfade zu einem vereinheitlicht: Subjekt wird auf i64 normalisiert, Guard greift immer. Verifiziert mit Cross-Modul-Struct mit Str/Null/Integer-Enum-Feld.
 
+**Regressionstest:** `tests/e2e/bug06_cross_module_struct.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -222,6 +234,8 @@ Struct-Felder sollen über Modulsgrenzen korrekt erhalten bleiben.
 
 **Status: GEFIXT (2026-07-05)** — `dirList` gab laut Codegen `i8*` zurück (Fallback: Return-Typ = Typ des ersten Arguments) und wurde als String behandelt. Jetzt expliziter Builtin-Case im Call-Codegen (`i64*`-Rückgabe) + `local_types = "Array:String"` bei Let-Bindung. len/Index/Iteration funktionieren.
 
+**Regressionstest:** `tests/e2e/bug07_dirlist_elements.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs` oder `runtime/runtime.c`
 
 **Problem:**
@@ -252,6 +266,8 @@ let entries = copyStringList(dirList(path));
 
 **Status: GEFIXT (2026-07-05)** — Die Let-Binding-Inferenz kannte `Array:String` nur für `.split()`-Methodenaufrufe; `.keys()` fehlte. Iteration über das Ergebnis druckte Pointer-Werte statt Strings. Fix: `method == "keys"` in beiden MethodCall-Inferenz-Armen (let/var) ergänzt.
 
+**Regressionstest:** `tests/e2e/bug08_map_keys_typing.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -271,6 +287,8 @@ match v {
 ## Bug 9 — Verschachtelte Filter-Enum-Payloads werden korrupt
 
 **Status: GEFIXT (2026-07-05)** — Nicht mehr reproduzierbar nach dem Match-Binding-Fix (Bug 1/2/5/13/14). Die Korruption lag im Auslesen der Payloads per Match, nicht im Speichern. Verifiziert mit rekursivem `Pipe(Filter, Filter)`-Test.
+
+**Regressionstest:** `tests/e2e/bug09_nested_enum_payloads.tnx`
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
@@ -305,6 +323,8 @@ Verschachtelte Enum-Payloads sollen korrekt gespeichert und ausgelesen werden k�
 ## Bug 10 — List-Literal mit gemischten Enum-Werten ist korrupt
 
 **Status: GEFIXT (2026-07-05)** — Nicht mehr reproduzierbar nach dem Match-Binding-Fix. Verifiziert mit gemischtem List-Literal (`[Identity, LiteralStr("x"), FieldAccess("foo"), Identity]`) und List-Literal als Konstruktor-Argument (`FunctionCall("__reduce__", [...])`).
+
+**Regressionstest:** `tests/e2e/bug10_mixed_enum_list_literal.tnx`
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
@@ -362,6 +382,8 @@ Generator-Ausdruck verwenden.
 
 **Status: GEFIXT (2026-07-05)** — Lexer (`PlusEquals` etc.) und Parser konnten es bereits; die eigentlichen Fehler lagen woanders: (a) Codegen `gen_compound_assign` (Ident-Zweig) verwendete den rohen Variablennamen `%x` statt des versionierten Slots aus `ctx.local_slots` (→ "use of undefined value"), (b) der Statement-Parser kannte Compound-Assign nicht für Index-Targets (`lst[i] += v` war Parse-Fehler). Zusätzlich: Float-Compound-Assign emittiert jetzt fadd/fsub/… statt ungültigem `add double`, und `s += t` auf Strings konkateniert via `@tinox_string_concat`. Verifiziert mit Int/Float/String/List-Index. Hinweis: `//=` gibt es in Tinox nicht (`//` ist Kommentar) — das betrifft nur jgreps jq-Filter-Lexer.
 
+**Regressionstest:** `tests/e2e/bug12_compound_assign.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs` + `crates/tinox-parser/src/parser.rs` (~~`crates/tinox-lexer/`~~ war korrekt)
 
 **Problem:**
@@ -392,6 +414,8 @@ Compound-Assignment-Statements geparst werden.
 ## Bug 13 — `sv + bs` auf match-gebundenen Strings macht Integer-Addition
 
 **Status: GEFIXT (2026-07-05)** — Durch denselben Fix wie Bug 1: beide Operanden sind `i8*`, `+` emittiert String-Konkatenation.
+
+**Regressionstest:** `tests/e2e/bug13_match_string_concat.tnx`
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
@@ -426,6 +450,8 @@ fn strConcat(a: String, b: String) -> String { return a + b; }
 
 **Status: GEFIXT (2026-07-05)** — Durch denselben Fix wie Bug 1: `obj_ty` ist jetzt `i8*`, der Aufruf geht durch String-Dispatch statt Map-Dispatch.
 
+**Regressionstest:** `tests/e2e/bug14_match_string_contains.tnx`
+
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
 **Problem:**
@@ -455,6 +481,8 @@ fn strContains(haystack: String, needle: String) -> Bool { return haystack.conta
 ## Bug 15 — `.len()` auf List<String>-Elementen aus Funktionsergebnissen geht durch Map-Dispatch
 
 **Status: GEFIXT (2026-07-06)** — Entdeckt beim ygrep-Port (YAML-Parser in jgrep-tinox).
+
+**Regressionstest:** `tests/e2e/bug15_string_list_elem_typing.tnx`
 
 **Problem:**
 ```tinox
@@ -493,6 +521,8 @@ verschwanden (bei 15/16-Zeichen-Strings war das gelesene Längenfeld 0).
 
 **Status: GEFIXT (2026-07-06)** — Entdeckt beim ygrep-Port (YAML-Kommentar-Tests).
 
+**Regressionstest:** `tests/e2e/bug16_hash_string_literal.tnx`
+
 **Problem:**
 ```tinox
 let s = "# top\na: 1";   // \n bleibt als Backslash+n im String stehen
@@ -510,6 +540,8 @@ Zeichen `#` ist, verlor dadurch die komplette Escape-Verarbeitung.
 
 **Status: GEFIXT (2026-07-07)** — Entdeckt bei der jgrep-Performance-Arbeit; hatte
 in der jgrep-Suite zwei echte Fehlschläge verdeckt (`flatten(1)`, NDJSON-Recovery).
+
+**Regressionstest:** `tests/e2e/bug17_test_harness_bool.tnx`
 
 **Problem:**
 `emit_test_code()` rief die `@Test`-Methode als `call i64 @Class_method(...)` auf

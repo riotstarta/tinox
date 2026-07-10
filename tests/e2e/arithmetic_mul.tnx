@@ -1,0 +1,9 @@
+// expect: 42
+
+fn main() -> Int32
+{
+    let a: Int64 = 6;
+    let b: Int64 = 7;
+    println(a * b);
+    return 0;
+}

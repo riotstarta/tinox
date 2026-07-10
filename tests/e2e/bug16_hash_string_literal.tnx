@@ -1,0 +1,12 @@
+// Bug 16: String-Literal mit führendem # wurde als Raw-String gelext (Escapes kaputt)
+// expect: 2
+// expect: # top
+// expect: a: 1
+fn main() -> Int32 {
+    let s = "# top\na: 1";
+    let lines = s.split("\n");
+    println(lines.len());
+    println(lines[0]);
+    println(lines[1]);
+    return 0;
+}

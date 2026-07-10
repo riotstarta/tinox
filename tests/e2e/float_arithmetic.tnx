@@ -1,0 +1,9 @@
+// expect: 4
+
+fn main() -> Int32
+{
+    let x: Float64 = 1.5;
+    let y: Float64 = 2.5;
+    println(x + y);
+    return 0;
+}

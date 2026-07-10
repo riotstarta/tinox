@@ -1,0 +1,25 @@
+// Bug 15: .len() auf List<String>-Elementen aus Funktionen/Feldern ging durch Map-Dispatch
+// expect: 3
+// expect: 5
+// expect: 5
+class Holder {
+    var rawLines: List<String>;
+
+    fn firstLen() -> Int64 {
+        let raw = this.rawLines[0];
+        return raw.len();
+    }
+}
+
+fn splitLines(s: String) -> List<String> {
+    return s.split("|");
+}
+
+fn main() -> Int32 {
+    let lines = splitLines("one|two|three");
+    println(lines.len());
+    println(lines[2].len());
+    let h = Holder { rawLines: splitLines("abcde|x") };
+    println(h.firstLen());
+    return 0;
+}

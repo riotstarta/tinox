@@ -1,0 +1,23 @@
+// Bug 13: sv + bs auf match-gebundenen Strings machte Integer-Addition
+// expect: hello world
+enum JV {
+    Str(String),
+    Num(Int64),
+}
+
+fn cat(a: JV, b: JV) -> String {
+    match a {
+        Str(sv) => {
+            match b {
+                Str(bs) => return sv + bs;
+                _ => return "";
+            }
+        }
+        _ => return "";
+    }
+}
+
+fn main() -> Int32 {
+    println(cat(JV::Str("hello "), JV::Str("world")));
+    return 0;
+}

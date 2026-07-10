@@ -1,0 +1,16 @@
+module bug06mod;
+
+enum JVal {
+    SVal(String),
+    NullVal,
+    IVal(Int64),
+}
+
+class Wrapped {
+    var value: JVal;
+    var tag: Int64;
+}
+
+fn makeWrapped() -> Wrapped {
+    return Wrapped { value: JVal::SVal("hi"), tag: 42 };
+}

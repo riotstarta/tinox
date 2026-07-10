@@ -1,0 +1,18 @@
+// Bug 1: s.len() auf match-gebundenen Strings gab ASCII-Code zurück
+// expect: 5
+enum JV {
+    Str(String),
+    Num(Int64),
+}
+
+fn f(v: JV) -> Int64 {
+    match v {
+        Str(s) => return s.len();
+        _ => return 0;
+    }
+}
+
+fn main() -> Int32 {
+    println(f(JV::Str("hello")));
+    return 0;
+}
