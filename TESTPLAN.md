@@ -150,7 +150,7 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
 
 ## Phase 2 — Generative Tests (danach, inkrementell)
 
-### 2.1 Property-Tests auf Laufzeitebene
+### 2.1 Property-Tests auf Laufzeitebene — ✅ erledigt (2026-07-10)
 - Mit `proptest`: zufällige Strings/Listen generieren, daraus ein .tnx-Programm
   schreiben, das Identitäten prüft, z. B.
   `split(join(xs, sep), sep) == xs`, `s.substring(0, s.len()) == s`,
@@ -158,11 +158,24 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   Rust-Host, verglichen wird die Programmausgabe.
 - ~5 generische Templates reichen; Shrinking liefert automatisch die
   Minimal-Repro für bugs.md.
+- **Stand:** `crates/tinox/tests/properties.rs` — 8 Properties × 12
+  Instanzen gegen das Rust-Orakel (join/split-Roundtrip, substring,
+  concat-Länge+Inhalt, sort, reverse-Involution, push/pop-Modell,
+  contains/indexOf, replace). Deterministisch geseedet statt proptest
+  (Compile-Zeit dominiert; `TINOX_PROP_SEED` variiert, Seed steht im
+  Fehlerreport). Über 4 Seeds grün.
 
-### 2.2 Fuzzing des Frontends
+### 2.2 Fuzzing des Frontends — ✅ Basis erledigt (2026-07-10)
 - `cargo-fuzz` auf Lexer + Parser (nur Crash/Hang, kein Oracle nötig).
   Hätte Bug 16 (führendes `#` im String) vermutlich schnell gefunden.
 - Später: Fuzzing bis Codegen mit IR-Verifier als Oracle.
+- **Stand:** `crates/tinox-parser/tests/robustness.rs` (Pseudo-Fuzzing ohne
+  cargo-fuzz, deterministisch geseedet, Watchdog mit 10-s-Timeout pro
+  Input): 1500 Zufalls-Inputs, 1500 Mutationen eines validen Programms,
+  alle EOF-Präfixe. **Fand beim ersten Lauf einen echten Hänger:**
+  `catch e: S[ring` — der Array-Typ-Skip-Loop in parse_type drehte bei
+  EOF ohne `]` endlos (gefixt). Echtes cargo-fuzz mit Corpus bleibt
+  als Ausbau offen.
 
 ### 2.3 Sanitizer-Lauf
 - Wöchentlich (oder pre-release): E2E-Suite unter AddressSanitizer

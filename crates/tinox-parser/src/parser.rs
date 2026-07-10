@@ -673,6 +673,10 @@ impl Parser {
         while self.check(TokenKind::LBracket) {
             self.bump();
             while !self.check(TokenKind::RBracket) {
+                // EOF ohne ']' — bump() käme nicht mehr voran (Endlosschleife)
+                if self.is_at_end() {
+                    return Err(self.error("expected ']' in array type"));
+                }
                 self.bump();
             }
             self.bump();
