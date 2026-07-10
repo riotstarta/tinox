@@ -428,18 +428,57 @@ impl CodeGen {
         result
     }
 
+    /// Container marker for a declared type — the single source of truth for
+    /// element typing. Nested lists compose: `List<List<String>>` becomes
+    /// "Array:Array:String"; stripping one "Array:" layer yields the element
+    /// marker (see `elem_marker`). Plain lists of scalars are "Array".
+    fn container_marker(ty: &Type) -> Option<String> {
+        let inner = match ty {
+            Type::Array(inner) => inner.as_ref(),
+            Type::Generic { name, args } if name == "List" || name == "Array" => args.first()?,
+            Type::Map(_, _) => return Some("Map".to_string()),
+            Type::Mutable(inner) | Type::Ref(inner) => return Self::container_marker(inner),
+            _ => return None,
+        };
+        Some(match inner {
+            Type::String => "Array:String".to_string(),
+            Type::Float32 | Type::Float64 => "Array:Float".to_string(),
+            Type::Named(c) => format!("List:{}", c),
+            _ => match Self::container_marker(inner) {
+                Some(im) => format!("Array:{}", im),
+                None => "Array".to_string(),
+            },
+        })
+    }
+
+    /// Element marker for a container marker: what a value indexed/iterated
+    /// out of the container should be typed as (None = plain i64 scalar).
+    fn elem_marker(marker: &str) -> Option<String> {
+        if let Some(cls) = marker.strip_prefix("List:") {
+            return Some(cls.to_string());
+        }
+        match marker {
+            "Array:String" => Some("String".to_string()),
+            "Array:Float" => Some("Float".to_string()),
+            _ => marker.strip_prefix("Array:").map(|m| m.to_string()),
+        }
+    }
+
     /// Classify an enum variant payload type for match-binding purposes.
+    /// List payloads carry their full container marker so element access
+    /// inside the match arm dispatches correctly.
     fn payload_kind(ty: &Type) -> String {
         match ty {
-            Type::String => "String",
-            Type::Map(_, _) => "Map",
-            Type::Array(_) => "List",
-            Type::Generic { name, .. } if name == "List" => "List",
-            Type::Float32 | Type::Float64 => "Float",
-            Type::Mutable(inner) | Type::Ref(inner) => return Self::payload_kind(inner),
-            _ => "Other",
+            Type::String => "String".to_string(),
+            Type::Map(_, _) => "Map".to_string(),
+            Type::Array(_) => Self::container_marker(ty).unwrap_or_else(|| "Array".to_string()),
+            Type::Generic { name, .. } if name == "List" => {
+                Self::container_marker(ty).unwrap_or_else(|| "Array".to_string())
+            }
+            Type::Float32 | Type::Float64 => "Float".to_string(),
+            Type::Mutable(inner) | Type::Ref(inner) => Self::payload_kind(inner),
+            _ => "Other".to_string(),
         }
-        .to_string()
     }
 
     /// The payload map is keyed by variant name only; when two enums share a
@@ -479,8 +518,12 @@ impl CodeGen {
         let (llvm_ty, decl_ty): (&str, Option<&str>) = match kind.as_str() {
             "String" => ("i8*", None),
             "Map" => ("i8*", Some("Map")),
-            "List" => ("i64*", None),
             "Float" => ("double", None),
+            // List payloads: bind as handle, keep the container marker so
+            // element access inside the arm is typed (e.g. "Array:String").
+            k if k == "Array" || k.starts_with("Array:") || k.starts_with("List:") => {
+                ("i64*", Some(kind.as_str()))
+            }
             _ => ("i64", None),
         };
         let store_val = if llvm_ty == "i64" {
@@ -530,25 +573,14 @@ impl CodeGen {
 
     fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
         use tinox_parser::Type;
-        if Self::is_string_list_type(ty) {
-            return Some("Array:String".to_string());
+        // Containers (List/Array/Map, auch verschachtelt) → Marker
+        if let Some(m) = Self::container_marker(ty) {
+            return Some(m);
         }
         match ty {
             Type::Named(n) => Some(n.clone()),
-            // List<Class>/Array<Class> → "List:Class", so indexed element
-            // access (e.g. this.entries[i].name) knows the element type.
-            Type::Generic { name, args } if name == "List" || name == "Array" => {
-                if let Some(Type::Named(cls)) = args.first() {
-                    Some(format!("List:{}", cls))
-                } else {
-                    Some(name.clone())
-                }
-            }
             Type::Generic { name, .. } => Some(name.clone()),
-            Type::Map(_, _) => Some("Map".to_string()),
-            Type::Mutable(inner) | Type::Ref(inner) | Type::Array(inner) => {
-                Self::extract_class_type_name(inner)
-            }
+            Type::Mutable(inner) | Type::Ref(inner) => Self::extract_class_type_name(inner),
             _ => None,
         }
     }
@@ -566,16 +598,15 @@ impl CodeGen {
                 Some(ty.clone())
             }
             ExprKind::Index { obj, .. } => {
-                // For arr[i], infer the element struct type from the array variable
-                if let ExprKind::Ident(arr_name) = &obj.node {
-                    let ty = ctx.local_types.get(arr_name.as_str())?;
-                    // "List:ClassName" → element type is ClassName
-                    ty.strip_prefix("List:").map(|s| s.to_string())
+                // For arr[i], derive the element marker from the container marker
+                // ("List:C" → C, "Array:Array:String" → "Array:String", …).
+                let container = if let ExprKind::Ident(arr_name) = &obj.node {
+                    ctx.local_types.get(arr_name.as_str()).cloned()
                 } else {
-                    // e.g. this.entries[i] — container is a List<Class> field/call
+                    // e.g. this.entries[i], makeList()[i], nested xs[i][j]
                     self.infer_struct_type(obj, ctx)
-                        .and_then(|t| t.strip_prefix("List:").map(|s| s.to_string()))
-                }
+                };
+                container.as_deref().and_then(Self::elem_marker)
             }
             ExprKind::This => ctx.current_struct.clone(),
             ExprKind::FieldAccess { obj, field } => {
@@ -597,6 +628,27 @@ impl CodeGen {
                         let key = format!("{}_{}", obj_class, mc_method);
                         self.method_ret_class.get(&key).cloned()
                     })
+            }
+            ExprKind::Call { func, .. } => {
+                // Top-level function call with registered return class/marker
+                if let ExprKind::Ident(fname) = &func.node {
+                    self.method_ret_class.get(fname.as_str()).cloned()
+                } else {
+                    None
+                }
+            }
+            ExprKind::ArrayLiteral(elems) => {
+                // Infer the container marker from the first element
+                let first = elems.first()?;
+                Some(match &first.node {
+                    ExprKind::Literal(Literal::String(_)) => "Array:String".to_string(),
+                    ExprKind::Literal(Literal::Float(_)) => "Array:Float".to_string(),
+                    ExprKind::ArrayLiteral(_) => match self.infer_struct_type(first, ctx) {
+                        Some(im) => format!("Array:{}", im),
+                        None => "Array".to_string(),
+                    },
+                    _ => "Array".to_string(),
+                })
             }
             _ => None,
         }
@@ -978,18 +1030,13 @@ impl CodeGen {
                         if self.defined_classes.contains(ret_class.as_str()) || self.struct_layouts.contains_key(ret_class.as_str()) {
                             self.method_ret_class.insert(key.clone(), ret_class.clone());
                         }
-                    } else if matches!(&method.ret_type, Type::Map(_, _)) {
-                        self.method_ret_class.insert(key.clone(), "Map".to_string());
-                    } else if Self::is_string_list_type(&method.ret_type) {
-                        self.method_ret_class.insert(key.clone(), "Array:String".to_string());
-                    } else if let Type::Generic { name, args } = &method.ret_type {
-                        if name == "List" || name == "Array" {
-                            if let Some(Type::Named(cls)) = args.first() {
-                                if self.defined_classes.contains(cls.as_str()) {
-                                    self.method_ret_class.insert(key.clone(), format!("List:{}", cls));
-                                }
-                            }
-                        }
+                    } else if let Some(marker) = Self::container_marker(&method.ret_type) {
+                        // "List:C" only helps when C is a known class — downgrade otherwise
+                        let marker = match marker.strip_prefix("List:") {
+                            Some(cls) if !self.defined_classes.contains(cls) => "Array".to_string(),
+                            _ => marker,
+                        };
+                        self.method_ret_class.insert(key.clone(), marker);
                     }
                     let param_tys: Vec<tinox_parser::Type> = method.params.iter()
                         .map(|p| p.param_type.clone()).collect();
@@ -1031,24 +1078,18 @@ impl CodeGen {
                         // Register return-class info for let-binding inference —
                         // same rules as for methods (Bug 6: without this,
                         // `let r = someModuleFn(); r.field` reads offset 0).
-                        if Self::is_string_list_type(&f.ret_type) {
-                            self.method_ret_class.insert(fn_name, "Array:String".to_string());
-                        } else if let Type::Named(ret_class) = &f.ret_type {
+                        if let Type::Named(ret_class) = &f.ret_type {
                             if self.defined_classes.contains(ret_class.as_str())
                                 || self.struct_layouts.contains_key(ret_class.as_str())
                             {
                                 self.method_ret_class.insert(fn_name, ret_class.clone());
                             }
-                        } else if matches!(&f.ret_type, Type::Map(_, _)) {
-                            self.method_ret_class.insert(fn_name, "Map".to_string());
-                        } else if let Type::Generic { name, args } = &f.ret_type {
-                            if name == "List" || name == "Array" {
-                                if let Some(Type::Named(cls)) = args.first() {
-                                    if self.defined_classes.contains(cls.as_str()) {
-                                        self.method_ret_class.insert(fn_name, format!("List:{}", cls));
-                                    }
-                                }
-                            }
+                        } else if let Some(marker) = Self::container_marker(&f.ret_type) {
+                            let marker = match marker.strip_prefix("List:") {
+                                Some(cls) if !self.defined_classes.contains(cls) => "Array".to_string(),
+                                _ => marker,
+                            };
+                            self.method_ret_class.insert(fn_name, marker);
                         }
                     }
                 }
@@ -3239,18 +3280,20 @@ impl CodeGen {
                         } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
-                        let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
+                        // Container marker from the annotation, else from the first literal element
+                        let ann_marker = ty.as_ref().and_then(|t| Self::container_marker(t));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
-                        let is_float_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::Float64 | Type::Float32))
-                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::Float64 | Type::Float32)).unwrap_or(false));
                         let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
-                        if is_str_ann || is_str_lit {
+                        if let Some(m) = ann_marker {
+                            if m != "Array" {
+                                struct_name = Some(m);
+                            }
+                        } else if is_str_lit {
                             struct_name = Some("Array:String".to_string());
-                            llvm_ty = "i64*".to_string();
-                        } else if is_float_ann || is_float_lit {
+                        } else if is_float_lit {
                             struct_name = Some("Array:Float".to_string());
-                            llvm_ty = "i64*".to_string();
+                        } else if elems.first().map(|e| matches!(&e.node, ExprKind::ArrayLiteral(_))).unwrap_or(false) {
+                            struct_name = Some("Array:Array".to_string());
                         }
                         true
                     } else if matches!(&v.node, ExprKind::Tuple(_)) {
@@ -3470,18 +3513,20 @@ impl CodeGen {
                         } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
-                        let is_str_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::String))
-                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::String)).unwrap_or(false));
+                        // Container marker from the annotation, else from the first literal element
+                        let ann_marker = ty.as_ref().and_then(|t| Self::container_marker(t));
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
-                        let is_float_ann = matches!(ty, Some(Type::Array(inner)) if matches!(inner.as_ref(), Type::Float64 | Type::Float32))
-                            || matches!(ty, Some(Type::Generic { name, args }) if (name == "Array" || name == "List") && args.first().map(|a| matches!(a, Type::Float64 | Type::Float32)).unwrap_or(false));
                         let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
-                        if is_str_ann || is_str_lit {
+                        if let Some(m) = ann_marker {
+                            if m != "Array" {
+                                struct_name = Some(m);
+                            }
+                        } else if is_str_lit {
                             struct_name = Some("Array:String".to_string());
-                            llvm_ty = "i64*".to_string();
-                        } else if is_float_ann || is_float_lit {
+                        } else if is_float_lit {
                             struct_name = Some("Array:Float".to_string());
-                            llvm_ty = "i64*".to_string();
+                        } else if elems.first().map(|e| matches!(&e.node, ExprKind::ArrayLiteral(_))).unwrap_or(false) {
+                            struct_name = Some("Array:Array".to_string());
                         }
                         true
                     } else if matches!(&v.node, ExprKind::Tuple(_)) {
@@ -3782,9 +3827,14 @@ impl CodeGen {
             StmtKind::For { var, iter, body } => {
                 let is_range = matches!(iter.node, ExprKind::Range { .. })
                     || matches!(&iter.node, ExprKind::Ident(n) if ctx.range_vars.contains(n));
-                let is_str_arr = if let ExprKind::Ident(n) = &iter.node {
-                    ctx.local_types.get(n).map(|t| t == "Array:String").unwrap_or(false)
-                } else { false };
+                // Container marker of the iterable — from the local variable or
+                // inferred (fields, calls, literals, nested elements).
+                let iter_marker = if let ExprKind::Ident(n) = &iter.node {
+                    ctx.local_types.get(n).cloned()
+                } else {
+                    self.infer_struct_type(iter, ctx)
+                };
+                let is_str_arr = iter_marker.as_deref() == Some("Array:String");
                 let (iter_ptr, iter_ty) = self.gen_expr(iter, ctx)?;
                 let is_string = iter_ty == "i8*";
 
@@ -3865,12 +3915,17 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
                     let elem_raw = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", elem_raw, elem_ptr).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
                     if is_str_arr {
-                        // store the raw i64 (which holds a pointer), loop body casts via local_types
-                        writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
+                        // raw i64 holds a string pointer; loop body casts via local_types
                         ctx.local_types.insert(var.clone(), "Array:String:elem".to_string());
-                    } else {
-                        writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
+                    } else if let Some(em) = iter_marker.as_deref().and_then(Self::elem_marker) {
+                        // Elements that are containers or class instances keep
+                        // their marker so dispatch in the body works
+                        // (e.g. for v in List<List<Int64>> → v is "Array").
+                        if em != "Float" {
+                            ctx.local_types.insert(var.clone(), em);
+                        }
                     }
                 } else if let Some(sptr) = &str_ptr {
                     // Load byte at sptr[cur_idx], zext to i64, store to var
@@ -3894,9 +3949,7 @@ impl CodeGen {
 
                 // The elem marker is only valid inside the loop body — a later variable
                 // with the same name must not inherit it (local_types is function-flat).
-                if ctx.local_types.get(var.as_str()).map(|t| t == "Array:String:elem").unwrap_or(false) {
-                    ctx.local_types.remove(var.as_str());
-                }
+                ctx.local_types.remove(var.as_str());
 
                 ctx.break_target = old_break;
                 ctx.continue_target = old_continue;
@@ -5196,8 +5249,14 @@ impl CodeGen {
                     "first","last","find","filter","map","reduce","any","all","indexOf",
                     "clear","isEmpty","toList","unique","flatten","zip","unzip","take","skip",
                     "sortBy","groupBy","partition","sum","min","max","average","forEach"];
+                // A declared container marker ("Array", "Array:…") resolves the
+                // i64 ambiguity in favor of array dispatch (e.g. elements of
+                // nested lists: xs[0].len() on List<List<Int64>>).
+                let declared_is_array = declared_type.as_deref()
+                    .map(|t| t == "Array" || t.starts_with("Array:"))
+                    .unwrap_or(false);
                 let is_i64_array_method = obj_ty == "i64" && !is_known_struct
-                    && array_only_methods.contains(&method.as_str());
+                    && (array_only_methods.contains(&method.as_str()) || declared_is_array);
                 // Coerce i64 array pointer to i64* for array dispatch
                 let (obj_ptr, obj_ty) = if is_i64_array_method {
                     let c = self.temp();
@@ -5206,7 +5265,7 @@ impl CodeGen {
                 } else {
                     (obj_ptr, obj_ty)
                 };
-                let is_array_type = declared_type.as_deref().map(|t| t == "Array:String" || t == "Array").unwrap_or(false)
+                let is_array_type = declared_is_array
                     || (obj_ty == "i64*" && !is_known_struct);
                 if is_array_type && obj_ty != "i8*" {
                     let is_str = declared_type.as_deref() == Some("Array:String");

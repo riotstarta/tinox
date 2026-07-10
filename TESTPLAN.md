@@ -94,7 +94,7 @@ bestehende Testsuite.
   als i64-Bitmuster zurück, kein trailing comma in List-Literalen,
   Build-Exit-Code (s. 1.1).
 
-### 1.3 Kontext-Matrix (der eigentliche Hebel gegen die Bug-Klasse)
+### 1.3 Kontext-Matrix — ✅ erledigt (2026-07-10)
 Für jede Kern-Operation (`.len()`, `==`, `<`, `+`, `.substring()`,
 `.contains()`, Indexzugriff, `for`-Iteration, `println`) denselben Wert durch
 alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
@@ -117,6 +117,18 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   .tnx-Dateien), nicht von Hand gepflegt: ~10 Operationen × ~12 Kontexte ×
   3 Typen (String, List, Map) ≈ 350 Fälle aus einem Generator von ~200 Zeilen.
 - Hätte nachweislich Bugs 1, 2, 5, 6, 8, 13, 14, 15 gefangen.
+- **Stand:** `crates/tinox/tests/matrix.rs` generiert die Fälle zur Laufzeit
+  (String, List<Int64>, List<String> × 14 Kontexte, alle Ops pro Datei);
+  KNOWN_FAILURES-Liste erzwingt Pflege bei Fixes. Der erste Lauf fand
+  12 fehlschlagende Fälle (Element-Typisierung verschachtelter Listen,
+  for-in über Felder/Literale, ops auf Literalen/Call-Ausdrücken,
+  Match-Payload-Listen) — alle geschlossen durch ein einheitliches
+  Marker-System: `container_marker` (AST-Typ → "Array:String",
+  "Array:Array:…", "List:C", "Map") + `elem_marker` (eine Ebene strippen),
+  konsumiert von Index-Codegen, Methoden-Dispatch, for-in, let/var,
+  Match-Payload-Bindung und method_ret_class-Registrierung.
+  KNOWN_FAILURES ist leer. Offen: Map-Value-Kontexte, Cross-Modul für
+  weitere Typen, Float-Schleifenvariablen.
 
 ### 1.4 Gedächtnis-/Grenzwert-Fälle
 - Strings der Längen 0, 1, 7, 8, 15, 16, 17, 31, 32 (Heap-/Alignment-Grenzen;

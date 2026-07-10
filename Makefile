@@ -9,9 +9,9 @@ check: test e2e dogfood
 test:
 	cargo test --release
 
-# End-to-End: Golden-Tests (tests/e2e/*.tnx) über den Cargo-Harness
+# End-to-End: Golden-Tests (tests/e2e/*.tnx) + generierte Kontext-Matrix
 e2e:
-	cargo test --release -p tinox --test e2e
+	cargo test --release -p tinox --test e2e --test matrix
 
 # Dogfood: jgrep/ygrep bauen und deren Testsuiten laufen lassen (wenn ausgecheckt)
 dogfood:
