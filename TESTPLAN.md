@@ -260,6 +260,15 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
     Heuristiken (i64-Dispatch-Raten, array_only_methods,
     Array:String:elem) brauchen Tabellen-Anschluss weiterer
     Expression-Positionen — nächster Schritt.
+  - **Schritt 4 ✅ (2026-07-11):** `Array:String:elem` abgeschafft —
+    String-Schleifenvariablen sind echte i8*-Slots (Muster wie
+    Match-Payloads/Float-Loops), der Cast-bei-Nutzung-Sonderfall im
+    Ident-Codegen ist gelöscht; Marker ist schlicht "String".
+    Map-Index-Zuweisung (`m[k] = v`, auch `this.m[k]`) an
+    infer_struct_type/Tabelle angeschlossen. Verbleibende Heuristiken
+    array_only_methods + i64-Map-Methodenraten sind jetzt reine
+    Fallbacks für typecheck-Any-Werte (jq-artiger dynamischer Code) —
+    löschen erst, wenn Any-Verbreitung im Typecheck weiter sinkt.
 - **Scoping:** `local_types`/`locals` blockscoped statt funktionsflach
   (Bug 15.4 war ein Scoping-Leck). — Geprüft 2026-07-11: Typecheck
   verbietet verschachteltes Shadowing komplett („duplicate definition"),

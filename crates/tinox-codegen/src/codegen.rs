@@ -3491,7 +3491,7 @@ impl CodeGen {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {
                         // Re-binding a name without type info must clear any stale entry
-                        // (e.g. a former loop var's "Array:String:elem" marker).
+                        // (e.g. a former loop var's element marker).
                         ctx.local_types.remove(name.as_str());
                     }
                     // For List<ClassName> annotations, track element type for indexed field access
@@ -3722,7 +3722,7 @@ impl CodeGen {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {
                         // Re-binding a name without type info must clear any stale entry
-                        // (e.g. a former loop var's "Array:String:elem" marker).
+                        // (e.g. a former loop var's element marker).
                         ctx.local_types.remove(name.as_str());
                     }
                     writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
@@ -3985,6 +3985,10 @@ impl CodeGen {
                 // variable itself must be a double slot (like match payloads).
                 let is_float_elem = arr_ptr.is_some()
                     && iter_marker.as_deref().and_then(Self::elem_marker).as_deref() == Some("Float");
+                // String elements are stored as i64-encoded pointers; the loop
+                // variable is a real i8* slot (like match payloads) — no
+                // cast-at-use pseudo marker.
+                let is_string_elem = arr_ptr.is_some() && is_str_arr;
 
                 // Give loop variable a unique LLVM slot to avoid duplicate alloca on re-use
                 let var_slot = format!("{}_{}", var, self.temp_count);
@@ -3993,6 +3997,10 @@ impl CodeGen {
                     writeln!(&mut self.ir, "%{} = alloca double", var_slot).unwrap();
                     writeln!(&mut self.ir, "store double 0.0, double* %{}", var_slot).unwrap();
                     ctx.locals.insert(var.clone(), ("double".to_string(), ctx.locals.len()));
+                } else if is_string_elem {
+                    writeln!(&mut self.ir, "%{} = alloca i8*", var_slot).unwrap();
+                    writeln!(&mut self.ir, "store i8* null, i8** %{}", var_slot).unwrap();
+                    ctx.locals.insert(var.clone(), ("i8*".to_string(), ctx.locals.len()));
                 } else {
                     writeln!(&mut self.ir, "%{} = alloca i64", var_slot).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var_slot).unwrap();
@@ -4039,12 +4047,15 @@ impl CodeGen {
                         let f = self.temp();
                         writeln!(&mut self.ir, "{} = bitcast i64 {} to double", f, elem_raw).unwrap();
                         writeln!(&mut self.ir, "store double {}, double* %{}", f, var_slot).unwrap();
+                    } else if is_string_elem {
+                        let sp = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", sp, elem_raw).unwrap();
+                        writeln!(&mut self.ir, "store i8* {}, i8** %{}", sp, var_slot).unwrap();
                     } else {
                         writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
                     }
-                    if is_str_arr {
-                        // raw i64 holds a string pointer; loop body casts via local_types
-                        ctx.local_types.insert(var.clone(), "Array:String:elem".to_string());
+                    if is_string_elem {
+                        ctx.local_types.insert(var.clone(), "String".to_string());
                     } else if let Some(em) = iter_marker.as_deref().and_then(Self::elem_marker) {
                         // Elements that are containers or class instances keep
                         // their marker so dispatch in the body works
@@ -4274,7 +4285,12 @@ impl CodeGen {
                     // Detect Map type for map[key] = val → tinox_map_set
                     let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
                         ctx.local_types.get(n.as_str()).cloned()
-                    } else { None };
+                            // Fallback: Typecheck-Tabelle (ungestrippter Marker)
+                            .or_else(|| self.expr_markers.get(&obj.id).cloned())
+                    } else {
+                        // Felder/verschachtelte Ziele (this.m[k] = v)
+                        self.infer_struct_type(obj, ctx)
+                    };
                     let is_map = obj_declared_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
 
                     let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
@@ -4384,13 +4400,7 @@ impl CodeGen {
                     let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
                     let val = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
-                    if ctx.local_types.get(name).map(|t| t == "Array:String:elem").unwrap_or(false) {
-                        let str_ptr = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", str_ptr, val).unwrap();
-                        Ok((str_ptr, "i8*".to_string()))
-                    } else {
-                        Ok((val, ty))
-                    }
+                    Ok((val, ty))
                 } else {
                     Ok((format!("%{}", name), "i64".to_string()))
                 }
