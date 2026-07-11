@@ -687,11 +687,21 @@ impl CodeGen {
                 Some(match &first.node {
                     ExprKind::Literal(Literal::String(_)) => "Array:String".to_string(),
                     ExprKind::Literal(Literal::Float(_)) => "Array:Float".to_string(),
-                    ExprKind::ArrayLiteral(_) => match self.infer_struct_type(first, ctx) {
-                        Some(im) => format!("Array:{}", im),
-                        None => "Array".to_string(),
-                    },
+                    ExprKind::ArrayLiteral(_) | ExprKind::MapLiteral(_) => {
+                        match self.infer_struct_type(first, ctx) {
+                            Some(im) => format!("Array:{}", im),
+                            None => "Array".to_string(),
+                        }
+                    }
                     _ => "Array".to_string(),
+                })
+            }
+            ExprKind::MapLiteral(entries) => {
+                // Value marker from the first literal value
+                Some(match entries.first().map(|(_, v)| &v.node) {
+                    Some(ExprKind::Literal(Literal::String(_))) => "Map:String".to_string(),
+                    Some(ExprKind::Literal(Literal::Float(_))) => "Map:Float".to_string(),
+                    _ => "Map".to_string(),
                 })
             }
             _ => None,
@@ -3309,7 +3319,13 @@ impl CodeGen {
                         true
                     } else if let ExprKind::MapLiteral(_) = &v.node {
                         llvm_ty = "i8*".to_string();
-                        struct_name = Some("Map".to_string());
+                        // Value marker from the annotation, else from the first
+                        // literal entry ("Map:String"/"Map:Float"), else plain Map
+                        struct_name = ty
+                            .as_ref()
+                            .and_then(Self::container_marker)
+                            .or_else(|| self.infer_struct_type(v, ctx))
+                            .or_else(|| Some("Map".to_string()));
                         true
                     } else if let ExprKind::Call { func, .. } = &v.node {
                         if matches!(&func.node, ExprKind::Ident(n) if n == "open") {
@@ -3546,7 +3562,13 @@ impl CodeGen {
                         true
                     } else if let ExprKind::MapLiteral(_) = &v.node {
                         llvm_ty = "i8*".to_string();
-                        struct_name = Some("Map".to_string());
+                        // Value marker from the annotation, else from the first
+                        // literal entry ("Map:String"/"Map:Float"), else plain Map
+                        struct_name = ty
+                            .as_ref()
+                            .and_then(Self::container_marker)
+                            .or_else(|| self.infer_struct_type(v, ctx))
+                            .or_else(|| Some("Map".to_string()));
                         true
                     } else if let ExprKind::Call { func, .. } = &v.node {
                         if matches!(&func.node, ExprKind::Ident(n) if n == "open") {

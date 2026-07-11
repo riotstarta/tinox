@@ -84,6 +84,30 @@ const TYPES: &[TypeSpec] = &[
         ],
     },
     TypeSpec {
+        key: "mapint",
+        tnx: "Map<String, Int64>",
+        lit: r#"@{"a" => 1, "b" => 2}"#,
+        other: r#"@{"z" => 9}"#,
+        ops: &[
+            ("println({V}.len());", &["2"]),
+            (r#"println({V}.get("b"));"#, &["2"]),
+            (r#"if {V}.contains("a") { println("has"); } else { println("not"); }"#, &["has"]),
+            (r#"println({V}["a"]);"#, &["1"]),
+        ],
+    },
+    TypeSpec {
+        key: "mapstr",
+        tnx: "Map<String, String>",
+        lit: r#"@{"k" => "hello"}"#,
+        other: r#"@{"z" => "y"}"#,
+        ops: &[
+            ("println({V}.len());", &["1"]),
+            (r#"println({V}.get("k"));"#, &["hello"]),
+            (r#"println({V}.get("k").len());"#, &["5"]),
+            (r#"println({V}["k"]);"#, &["hello"]),
+        ],
+    },
+    TypeSpec {
         key: "listfloat",
         tnx: "List<Float64>",
         lit: "[1.5, 2.25]",

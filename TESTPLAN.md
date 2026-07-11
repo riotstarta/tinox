@@ -132,6 +132,10 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   (damit auch Float-Schleifenvariablen und Cross-Modul-Floats) — fand
   20 Fälle, geschlossen durch Map-Value-Marker ("Map:String"/"Map:Float"/
   "Map:<marker>") und double-Slots für Float-Schleifenvariablen.
+  Außerdem Maps als Subjekt-Typen (Map<String,Int64/String> als
+  @{…}-Literal durch alle 15 Kontexte) — dabei MapLiteral-let-Bindings
+  gefixt, die den Annotations-Marker verwarfen (Map<String,String>-Werte
+  waren Pointer-Müll). Matrix jetzt 7 Typen × 15 Kontexte.
 
 ### 1.4 Gedächtnis-/Grenzwert-Fälle — ✅ erledigt (2026-07-10)
 - Strings der Längen 0, 1, 7, 8, 15, 16, 17, 31, 32 (Heap-/Alignment-Grenzen;
