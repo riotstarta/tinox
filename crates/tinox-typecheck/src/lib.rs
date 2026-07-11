@@ -209,8 +209,10 @@ pub enum ValueType {
     Nothing,
     Never,
     Any,
-    Array,
-    Map,
+    /// Listen/Arrays mit Element-Typ (Any = unbekannt/typgelöscht)
+    Array(Box<ValueType>),
+    /// Maps mit Value-Typ (Keys sind immer String; Any = unbekannt)
+    Map(Box<ValueType>),
     Ref,
     Fn,
     Named(String),
@@ -221,6 +223,16 @@ pub enum ValueType {
 }
 
 impl ValueType {
+    /// Typgelöschtes Array (Element unbekannt) — für Builtin-Signaturen.
+    fn any_array() -> Self {
+        ValueType::Array(Box::new(ValueType::Any))
+    }
+
+    /// Typgelöschte Map (Value unbekannt) — für Builtin-Signaturen.
+    fn any_map() -> Self {
+        ValueType::Map(Box::new(ValueType::Any))
+    }
+
     fn from_parser_type(ty: &Type) -> Self {
         match ty {
             Type::Int8
@@ -240,17 +252,36 @@ impl ValueType {
             Type::Any => ValueType::Any,
             Type::Infer => ValueType::Any,
             Type::Named(name) => ValueType::Named(name.clone()),
-            Type::Generic { name, .. } if name == "Array" => ValueType::Array,
-            Type::Generic { name, .. } if name == "List" => ValueType::Array,
-            Type::Generic { name, .. } if name == "Map" => ValueType::Map,
+            Type::Generic { name, args } if name == "Array" || name == "List" => {
+                ValueType::Array(Box::new(
+                    args.first().map(Self::from_parser_type).unwrap_or(ValueType::Any),
+                ))
+            }
+            Type::Generic { name, args } if name == "Map" => ValueType::Map(Box::new(
+                args.get(1).map(Self::from_parser_type).unwrap_or(ValueType::Any),
+            )),
             Type::Generic { name, .. } => ValueType::Named(name.clone()),
-            Type::Array(_) => ValueType::Array,
-            Type::Map(_, _) => ValueType::Map,
+            Type::Array(inner) => ValueType::Array(Box::new(Self::from_parser_type(inner))),
+            Type::Map(_, v) => ValueType::Map(Box::new(Self::from_parser_type(v))),
             Type::Tuple(_) => ValueType::Tuple,
             Type::Mutable(_) => ValueType::Ref,
             Type::Ref(_) => ValueType::Ref,
             Type::Fn { .. } => ValueType::Fn,
             Type::Nullable(inner) => ValueType::Nullable(Box::new(ValueType::from_parser_type(inner))),
+        }
+    }
+
+    /// Anzeige für Fehlermeldungen — zeigt Element-/Value-Typen
+    /// ("List<String>", "Map<String, Int64>"). Nicht für Dispatch-Keys
+    /// verwenden, dafür ist to_string() da.
+    fn display(&self) -> String {
+        match self {
+            ValueType::Array(e) if **e != ValueType::Any => format!("List<{}>", e.display()),
+            ValueType::Map(v) if **v != ValueType::Any => {
+                format!("Map<String, {}>", v.display())
+            }
+            ValueType::Nullable(inner) => format!("{}?", inner.display()),
+            other => other.to_string(),
         }
     }
 
@@ -264,8 +295,10 @@ impl ValueType {
             ValueType::Nothing => "Nothing".to_string(),
             ValueType::Never => "Never".to_string(),
             ValueType::Any => "Any".to_string(),
-            ValueType::Array => "Array".to_string(),
-            ValueType::Map => "Map".to_string(),
+            // Bewusst typgelöscht: to_string() liefert Dispatch-Keys
+            // ("Array_len", "Map_get") — niemals Element-Typen anhängen.
+            ValueType::Array(_) => "Array".to_string(),
+            ValueType::Map(_) => "Map".to_string(),
             ValueType::Ref => "Ref".to_string(),
             ValueType::Fn => "Fn".to_string(),
             ValueType::Named(name) => name.clone(),
@@ -360,18 +393,18 @@ impl TypeChecker {
         for name in &["first", "last"] {
             symbols.functions.insert(
                 name.to_string(),
-                FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Int },
+                FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::Int },
             );
         }
         symbols.functions.insert(
             "slice".to_string(),
             FunctionSignature {
                 params: vec![
-                    ("arr".to_string(), ValueType::Array),
+                    ("arr".to_string(), ValueType::any_array()),
                     ("from".to_string(), ValueType::Int),
                     ("to".to_string(), ValueType::Int),
                 ],
-                return_type: ValueType::Array,
+                return_type: ValueType::any_array(),
             },
         );
         symbols.functions.insert(
@@ -395,17 +428,17 @@ impl TypeChecker {
             "push".to_string(),
             FunctionSignature {
                 params: vec![
-                    ("arr".to_string(), ValueType::Array),
+                    ("arr".to_string(), ValueType::any_array()),
                     ("val".to_string(), ValueType::Any),
                 ],
-                return_type: ValueType::Array,
+                return_type: ValueType::any_array(),
             },
         );
         symbols.functions.insert(
             "pop".to_string(),
             FunctionSignature {
-                params: vec![("arr".to_string(), ValueType::Array)],
-                return_type: ValueType::Array,
+                params: vec![("arr".to_string(), ValueType::any_array())],
+                return_type: ValueType::any_array(),
             },
         );
         symbols.functions.insert(
@@ -498,23 +531,23 @@ impl TypeChecker {
             symbols.functions.insert(
                 name.to_string(),
                 FunctionSignature {
-                    params: vec![("arr".to_string(), ValueType::Array)],
-                    return_type: ValueType::Array,
+                    params: vec![("arr".to_string(), ValueType::any_array())],
+                    return_type: ValueType::any_array(),
                 },
             );
         }
         // Array method builtins (MethodCall dispatch: Array_len, Array_push, etc.)
-        symbols.functions.insert("Array_len".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Int });
-        symbols.functions.insert("Array_push".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Array });
-        symbols.functions.insert("Array_pop".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
-        symbols.functions.insert("Array_first".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Any });
-        symbols.functions.insert("Array_last".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Any });
-        symbols.functions.insert("Array_sort".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
-        symbols.functions.insert("Array_reverse".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array)], return_type: ValueType::Array });
-        symbols.functions.insert("Array_contains".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Bool });
-        symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
-        symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::Array });
-        symbols.functions.insert("Array_insert".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)], return_type: ValueType::Nothing });
+        symbols.functions.insert("Array_len".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::Int });
+        symbols.functions.insert("Array_push".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("v".to_string(), ValueType::Any)], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_pop".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_first".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::Any });
+        symbols.functions.insert("Array_last".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::Any });
+        symbols.functions.insert("Array_sort".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_reverse".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array())], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_contains".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("v".to_string(), ValueType::Any)], return_type: ValueType::Bool });
+        symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
+        symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_insert".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)], return_type: ValueType::Nothing });
         // List<T> is the same as Array at runtime — mirror all Array_* builtins under List_*
         for (arr_key, sig) in symbols.functions.iter().filter(|(k, _)| k.starts_with("Array_")).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() {
             let list_key = arr_key.replacen("Array_", "List_", 1);
@@ -555,27 +588,27 @@ impl TypeChecker {
         }
         symbols.functions.insert("split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
-            return_type: ValueType::Array,
+            return_type: ValueType::any_array(),
         });
         symbols.functions.insert("String_split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
-            return_type: ValueType::Array,
+            return_type: ValueType::any_array(),
         });
         symbols.functions.insert("join".to_string(), FunctionSignature {
-            params: vec![("arr".to_string(), ValueType::Array), ("sep".to_string(), ValueType::String)],
+            params: vec![("arr".to_string(), ValueType::any_array()), ("sep".to_string(), ValueType::String)],
             return_type: ValueType::String,
         });
         symbols.functions.insert("Array_join".to_string(), FunctionSignature {
-            params: vec![("arr".to_string(), ValueType::Array), ("sep".to_string(), ValueType::String)],
+            params: vec![("arr".to_string(), ValueType::any_array()), ("sep".to_string(), ValueType::String)],
             return_type: ValueType::String,
         });
         // Map constructor
-        symbols.functions.insert("Map_new".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Map });
+        symbols.functions.insert("Map_new".to_string(), FunctionSignature { params: vec![], return_type: ValueType::any_map() });
         // Map builtins (method-call style: Map_get, Map_insert, etc.)
         symbols.functions.insert(
             "Map_get".to_string(),
             FunctionSignature {
-                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                params: vec![("m".to_string(), ValueType::any_map()), ("key".to_string(), ValueType::Any)],
                 return_type: ValueType::Any,
             },
         );
@@ -583,7 +616,7 @@ impl TypeChecker {
             "Map_insert".to_string(),
             FunctionSignature {
                 params: vec![
-                    ("m".to_string(), ValueType::Map),
+                    ("m".to_string(), ValueType::any_map()),
                     ("key".to_string(), ValueType::Any),
                     ("val".to_string(), ValueType::Any),
                 ],
@@ -593,34 +626,34 @@ impl TypeChecker {
         symbols.functions.insert(
             "Map_contains".to_string(),
             FunctionSignature {
-                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                params: vec![("m".to_string(), ValueType::any_map()), ("key".to_string(), ValueType::Any)],
                 return_type: ValueType::Bool,
             },
         );
         symbols.functions.insert(
             "Map_remove".to_string(),
             FunctionSignature {
-                params: vec![("m".to_string(), ValueType::Map), ("key".to_string(), ValueType::Any)],
+                params: vec![("m".to_string(), ValueType::any_map()), ("key".to_string(), ValueType::Any)],
                 return_type: ValueType::Nothing,
             },
         );
         symbols.functions.insert(
             "Map_len".to_string(),
             FunctionSignature {
-                params: vec![("m".to_string(), ValueType::Map)],
+                params: vec![("m".to_string(), ValueType::any_map())],
                 return_type: ValueType::Int,
             },
         );
         symbols.functions.insert("Map_keys".to_string(), FunctionSignature {
-            params: vec![("m".to_string(), ValueType::Map)],
-            return_type: ValueType::Array,
+            params: vec![("m".to_string(), ValueType::any_map())],
+            return_type: ValueType::any_array(),
         });
         symbols.functions.insert("Map_values".to_string(), FunctionSignature {
-            params: vec![("m".to_string(), ValueType::Map)],
-            return_type: ValueType::Array,
+            params: vec![("m".to_string(), ValueType::any_map())],
+            return_type: ValueType::any_array(),
         });
         symbols.functions.insert("Map_set".to_string(), FunctionSignature {
-            params: vec![("m".to_string(), ValueType::Map), ("k".to_string(), ValueType::Any), ("v".to_string(), ValueType::Any)],
+            params: vec![("m".to_string(), ValueType::any_map()), ("k".to_string(), ValueType::Any), ("v".to_string(), ValueType::Any)],
             return_type: ValueType::Nothing,
         });
         // Int / Float toString
@@ -701,11 +734,11 @@ impl TypeChecker {
         }
         // Array removeAt
         symbols.functions.insert("Array_removeAt".to_string(), FunctionSignature {
-            params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
+            params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int)],
             return_type: ValueType::Nothing,
         });
         symbols.functions.insert("List_removeAt".to_string(), FunctionSignature {
-            params: vec![("arr".to_string(), ValueType::Array), ("i".to_string(), ValueType::Int)],
+            params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int)],
             return_type: ValueType::Nothing,
         });
         // Time
@@ -723,7 +756,7 @@ impl TypeChecker {
         // Regex
         for name in &["regexIsMatch", "regexFindFirst", "regexFindAll", "regexReplaceAll", "regexSplit"] {
             let ret = if *name == "regexIsMatch" { ValueType::Bool }
-                      else if *name == "regexFindAll" || *name == "regexSplit" { ValueType::Array }
+                      else if *name == "regexFindAll" || *name == "regexSplit" { ValueType::any_array() }
                       else { ValueType::String };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)],
@@ -735,7 +768,7 @@ impl TypeChecker {
                 ("pattern".to_string(), ValueType::String), ("subject".to_string(), ValueType::String),
                 ("offset".to_string(), ValueType::Int), ("icase".to_string(), ValueType::Int),
             ],
-            return_type: ValueType::Array,
+            return_type: ValueType::any_array(),
         });
         // Env
         for name in &["envGet", "envSet", "envRemove", "envCurrentDir", "envSetCurrentDir"] {
@@ -747,7 +780,7 @@ impl TypeChecker {
         }
         // Process
         for name in &["processExit", "processId", "processArgs", "printStackTrace", "gcCollect", "memoryUsage"] {
-            let ret = if *name == "processArgs" { ValueType::Array }
+            let ret = if *name == "processArgs" { ValueType::any_array() }
                       else if *name == "processId" || *name == "memoryUsage" { ValueType::Int }
                       else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
@@ -791,7 +824,7 @@ impl TypeChecker {
             });
         }
         for name in &["dirList", "dirCreate", "dirDelete"] {
-            let ret = if *name == "dirList" { ValueType::Array } else { ValueType::Nothing };
+            let ret = if *name == "dirList" { ValueType::any_array() } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
@@ -866,11 +899,11 @@ impl TypeChecker {
             });
         }
         symbols.functions.insert("xmlChildren".to_string(), FunctionSignature {
-            params: vec![("node".to_string(), ValueType::Any)], return_type: ValueType::Array,
+            params: vec![("node".to_string(), ValueType::Any)], return_type: ValueType::any_array(),
         });
         // Zip
         for name in &["zipAddFile", "zipExtractFile", "zipListEntries", "zipRemoveFile"] {
-            let ret = if *name == "zipListEntries" { ValueType::Array } else { ValueType::Nothing };
+            let ret = if *name == "zipListEntries" { ValueType::any_array() } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
@@ -1568,8 +1601,8 @@ impl TypeChecker {
                         if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
-                                    expected: ann_ty.to_string(),
-                                    found: val_ty.to_string(),
+                                    expected: ann_ty.display(),
+                                    found: val_ty.display(),
                                     span: v.span,
                                 }
                                 .to_error(),
@@ -1621,8 +1654,8 @@ impl TypeChecker {
                 if !self.types_compatible(&target_ty, &value_ty) {
                     self.errors.push(
                         TypeError::TypeMismatch {
-                            expected: target_ty.to_string(),
-                            found: value_ty.to_string(),
+                            expected: target_ty.display(),
+                            found: value_ty.display(),
                             span: stmt.span,
                         }
                         .to_error(),
@@ -1650,7 +1683,7 @@ impl TypeChecker {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
-                            found: cond_ty.to_string(),
+                            found: cond_ty.display(),
                             span: cond.span,
                         }
                         .to_error(),
@@ -1670,7 +1703,7 @@ impl TypeChecker {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
-                            found: cond_ty.to_string(),
+                            found: cond_ty.display(),
                             span: cond.span,
                         }
                         .to_error(),
@@ -1687,7 +1720,7 @@ impl TypeChecker {
                 // The loop variable is always the element, not the container
                 let elem_ty = match iter_ty {
                     ValueType::Range => ValueType::Int,
-                    ValueType::Array => ValueType::Any,
+                    ValueType::Array(e) => *e,
                     ValueType::String => ValueType::String,
                     other => other,
                 };
@@ -1711,8 +1744,8 @@ impl TypeChecker {
                     if let Some(expected) = self.current_return_type.clone() {
                         if !self.types_compatible(&expected, &val_ty) {
                             self.errors.push(TypeError::TypeMismatch {
-                                expected: expected.to_string(),
-                                found: val_ty.to_string(),
+                                expected: expected.display(),
+                                found: val_ty.display(),
                                 span: expr.span,
                             }.to_error());
                         }
@@ -1807,7 +1840,7 @@ impl TypeChecker {
                         self.errors.push(
                             TypeError::TypeMismatch {
                                 expected: "Bool".to_string(),
-                                found: ty.to_string(),
+                                found: ty.display(),
                                 span: cond_expr.span,
                             }
                             .to_error(),
@@ -1877,8 +1910,8 @@ impl TypeChecker {
                             let arg_ty = self.infer_type(arg);
                             if !self.types_compatible(&expected_ty, &arg_ty) {
                                 self.errors.push(TypeError::TypeMismatch {
-                                    expected: expected_ty.to_string(),
-                                    found: arg_ty.to_string(),
+                                    expected: expected_ty.display(),
+                                    found: arg_ty.display(),
                                     span: arg.span,
                                 }.to_error());
                             }
@@ -1925,7 +1958,7 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
                 let valid_index = match &obj_ty {
-                    ValueType::Map => matches!(index_ty, ValueType::String | ValueType::Any),
+                    ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any),
                     ValueType::String => true,
                     ValueType::Any => true,
                     _ => matches!(index_ty, ValueType::Int | ValueType::Any),
@@ -1934,7 +1967,12 @@ impl TypeChecker {
                     self.errors
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
-                if obj_ty == ValueType::String { ValueType::String } else { ValueType::Any }
+                match obj_ty {
+                    ValueType::String => ValueType::String,
+                    ValueType::Array(e) => *e,
+                    ValueType::Map(v) => *v,
+                    _ => ValueType::Any,
+                }
             }
             ExprKind::FieldAccess { obj, field } => {
                 let obj_ty = self.infer_type(obj);
@@ -2032,8 +2070,8 @@ impl TypeChecker {
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
-                                expected: expected_ty.to_string(),
-                                found: arg_ty.to_string(),
+                                expected: expected_ty.display(),
+                                found: arg_ty.display(),
                                 span: arg.span,
                             }
                             .to_error(),
@@ -2078,7 +2116,7 @@ impl TypeChecker {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
-                            found: cond_ty.to_string(),
+                            found: cond_ty.display(),
                             span: cond.span,
                         }
                         .to_error(),
@@ -2098,7 +2136,7 @@ impl TypeChecker {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
-                            found: cond_ty.to_string(),
+                            found: cond_ty.display(),
                             span: cond.span,
                         }
                         .to_error(),
@@ -2281,17 +2319,29 @@ impl TypeChecker {
                 ValueType::Named(enum_name.clone())
             }
             ExprKind::ArrayLiteral(elements) => {
+                // Element-Typ als lub über alle Elemente (leer → Any)
+                let mut elem: Option<ValueType> = None;
                 for e in elements {
-                    self.infer_type(e);
+                    let t = self.infer_type(e);
+                    elem = Some(match elem {
+                        Some(acc) => Self::lub(&acc, &t),
+                        None => t,
+                    });
                 }
-                ValueType::Array
+                ValueType::Array(Box::new(elem.unwrap_or(ValueType::Any)))
             }
             ExprKind::MapLiteral(entries) => {
+                // Value-Typ als lub über alle Values (leer → Any)
+                let mut val: Option<ValueType> = None;
                 for (k, v) in entries {
                     self.infer_type(k);
-                    self.infer_type(v);
+                    let t = self.infer_type(v);
+                    val = Some(match val {
+                        Some(acc) => Self::lub(&acc, &t),
+                        None => t,
+                    });
                 }
-                ValueType::Map
+                ValueType::Map(Box::new(val.unwrap_or(ValueType::Any)))
             }
         }
     }
@@ -2341,8 +2391,8 @@ impl TypeChecker {
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
-                                expected: expected_ty.to_string(),
-                                found: arg_ty.to_string(),
+                                expected: expected_ty.display(),
+                                found: arg_ty.display(),
                                 span: arg.span,
                             }
                             .to_error(),
@@ -2605,8 +2655,10 @@ impl TypeChecker {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
-            // All Maps are compatible (Tinox has no generic Map type checking)
-            (ValueType::Map, ValueType::Map) => true,
+            // Container: kompatibel wenn Element-/Value-Typen kompatibel
+            // (Any-Elemente bleiben Wildcards — typgelöschte Quellen erlauben alles)
+            (ValueType::Array(a), ValueType::Array(b)) => self.types_compatible(a, b),
+            (ValueType::Map(a), ValueType::Map(b)) => self.types_compatible(a, b),
             // Null safety: null can only go into nullable types
             (ValueType::Nullable(_), ValueType::Null) => true,
             (_, ValueType::Null) => false,
@@ -2631,6 +2683,10 @@ impl TypeChecker {
             (ValueType::Int, ValueType::Float) | (ValueType::Float, ValueType::Int) => {
                 ValueType::Float
             }
+            (ValueType::Array(x), ValueType::Array(y)) => {
+                ValueType::Array(Box::new(Self::lub(x, y)))
+            }
+            (ValueType::Map(x), ValueType::Map(y)) => ValueType::Map(Box::new(Self::lub(x, y))),
             _ => ValueType::Any,
         }
     }
@@ -2694,6 +2750,69 @@ mod tests {
     fn test_simple_function() {
         let result = typecheck_code("fn main() -> Int32 { return 42; }");
         assert!(result.is_ok());
+    }
+
+    // Element-typisierte Container (TESTPLAN Phase 4): ValueType::Array/Map
+    // tragen Element-/Value-Typen; Mismatches werden elementgenau gefangen,
+    // typgelöschte Quellen (Any-Element) bleiben Wildcards.
+
+    #[test]
+    fn test_list_element_mismatch() {
+        err_contains(
+            "fn main() -> Int32 { let xs: List<String> = [1, 2]; return 0; }",
+            "expected List<String>, found List<Int64>",
+        );
+    }
+
+    #[test]
+    fn test_list_element_arg_mismatch() {
+        err_contains(
+            "fn f(xs: List<Int64>) -> Int64 { return xs.len(); }\nfn main() -> Int32 { let names: List<String> = [\"a\"]; f(names); return 0; }",
+            "expected List<Int64>, found List<String>",
+        );
+    }
+
+    #[test]
+    fn test_map_value_mismatch() {
+        err_contains(
+            "fn main() -> Int32 { let m: Map<String, Int64> = @{\"k\" => \"v\"}; return 0; }",
+            "expected Map<String, Int64>, found Map<String, String>",
+        );
+    }
+
+    #[test]
+    fn test_list_element_match_ok() {
+        ok("fn main() -> Int32 { let xs: List<Int64> = [1, 2]; let ys: List<String> = [\"a\"]; let m: Map<String, String> = @{\"k\" => \"v\"}; return 0; }");
+    }
+
+    #[test]
+    fn test_empty_list_stays_wildcard() {
+        // Leere Literale und typgelöschte Quellen (Any-Element) sind mit
+        // jedem Element-Typ kompatibel
+        ok("fn main() -> Int32 { let xs: List<String> = []; let m: Map<String, Int64> = @{}; return 0; }");
+    }
+
+    #[test]
+    fn test_index_yields_element_type() {
+        // xs[0] ist Int64 — String-Zuweisung elementgenau abgelehnt
+        err_contains(
+            "fn main() -> Int32 { let xs: List<Int64> = [1]; let s: String = xs[0]; return 0; }",
+            "expected String, found Int64",
+        );
+    }
+
+    #[test]
+    fn test_loop_var_yields_element_type() {
+        err_contains(
+            "fn main() -> Int32 { let xs: List<Int64> = [1]; for x in xs { let s: String = x; } return 0; }",
+            "expected String, found Int64",
+        );
+    }
+
+    #[test]
+    fn test_int_float_lists_compatible() {
+        // Int/Float-Koerzion gilt auch elementweise
+        ok("fn main() -> Int32 { let xs: List<Float64> = [1, 2]; return 0; }");
     }
 
     #[test]

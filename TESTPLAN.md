@@ -231,8 +231,19 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
   Codegen konsumiert nur noch (`expr.ty`), keine eigene Inferenz. Heuristiken
   (`is_map_dispatch`, `Array:String:elem`, Allowlists) schrittweise löschen —
   die Kontext-Matrix aus 1.3 ist dafür das Sicherheitsnetz.
+  - **Schritt 1 ✅ (2026-07-11):** `ValueType::Array(elem)`/`Map(val)`
+    strukturell statt typgelöscht; Literale/Index/Schleifenvariablen
+    inferieren elementgenau, `types_compatible`/`lub` rekursiv
+    (Any-Element = Wildcard, keine falschen Ablehnungen — Suite blieb
+    grün). Fängt jetzt `let xs: List<String> = [1,2]` u. Ä. zur
+    Compile-Zeit; Fehlermeldungen elementgenau via `display()`
+    (`to_string()` bleibt Dispatch-Key!). Nächster Schritt: Typen per
+    Side-Table an den Codegen exportieren, dann Heuristiken löschen.
 - **Scoping:** `local_types`/`locals` blockscoped statt funktionsflach
-  (Bug 15.4 war ein Scoping-Leck).
+  (Bug 15.4 war ein Scoping-Leck). — Geprüft 2026-07-11: Typecheck
+  verbietet verschachteltes Shadowing komplett („duplicate definition"),
+  Geschwister-Scope-Redeklaration funktioniert; kein beobachtbares Leck
+  konstruierbar. Niedrige Priorität.
 - **Debug-Modus mit Typ-Tags (optional):** `tinox build --checked` gibt
   Heap-Objekten ein Tag-Wort; Runtime-Funktionen prüfen es und brechen laut
   ab („map_len auf String bei x.tnx:12") statt still Müll zu lesen.
