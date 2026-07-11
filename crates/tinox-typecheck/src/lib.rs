@@ -271,6 +271,34 @@ impl ValueType {
         }
     }
 
+    /// Übersetzt einen ValueType in die Marker-Sprache des Codegen
+    /// (container_marker/elem_marker): "String", "Float", Klassenname,
+    /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Klasse",
+    /// "Map"/"Map:<marker>". None für Typen ohne Marker-Semantik
+    /// (Int, Bool, Any, …).
+    fn to_marker(&self) -> Option<String> {
+        match self {
+            ValueType::String => Some("String".to_string()),
+            ValueType::Float => Some("Float".to_string()),
+            ValueType::Named(c) => Some(c.clone()),
+            ValueType::Array(e) => Some(match e.as_ref() {
+                ValueType::String => "Array:String".to_string(),
+                ValueType::Float => "Array:Float".to_string(),
+                ValueType::Named(c) => format!("List:{}", c),
+                elem => match elem.to_marker() {
+                    Some(m) => format!("Array:{}", m),
+                    None => "Array".to_string(),
+                },
+            }),
+            ValueType::Map(v) => Some(match v.as_ref().to_marker() {
+                Some(m) => format!("Map:{}", m),
+                None => "Map".to_string(),
+            }),
+            ValueType::Nullable(inner) => inner.to_marker(),
+            _ => None,
+        }
+    }
+
     /// Anzeige für Fehlermeldungen — zeigt Element-/Value-Typen
     /// ("List<String>", "Map<String, Int64>"). Nicht für Dispatch-Keys
     /// verwenden, dafür ist to_string() da.
@@ -357,6 +385,10 @@ pub struct TypeChecker {
     current_return_type: Option<ValueType>,
     /// All class names defined in the program — allows passing a class as a value (e.g. DB.of(User)).
     known_class_names: HashSet<String>,
+    /// Inferierter Typ jeder besuchten Expression, gekeyed über die NodeId
+    /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
+    /// Export an den Codegen über expr_markers() — TESTPLAN Phase 4.
+    expr_types: HashMap<u32, ValueType>,
 }
 
 impl TypeChecker {
@@ -955,7 +987,17 @@ impl TypeChecker {
             type_param_scope: HashSet::new(),
             current_return_type: None,
             known_class_names: HashSet::new(),
+            expr_types: HashMap::new(),
         }
+    }
+
+    /// Marker-Tabelle für den Codegen: NodeId → Marker-String (nur
+    /// Expressions, deren Typ Marker-Semantik hat). Nach check() abrufen.
+    pub fn expr_markers(&self) -> HashMap<u32, String> {
+        self.expr_types
+            .iter()
+            .filter_map(|(id, ty)| ty.to_marker().map(|m| (*id, m)))
+            .collect()
     }
 
     pub fn check(&mut self, source: &SourceFile) -> Result<SourceFile, ErrorBag> {
@@ -1860,6 +1902,14 @@ impl TypeChecker {
     }
 
     fn infer_type(&mut self, expr: &Expr) -> ValueType {
+        let ty = self.infer_type_inner(expr);
+        if expr.id != 0 {
+            self.expr_types.insert(expr.id, ty.clone());
+        }
+        ty
+    }
+
+    fn infer_type_inner(&mut self, expr: &Expr) -> ValueType {
         match &expr.node {
             ExprKind::Literal(lit) => self.literal_type(lit),
             ExprKind::Ident(name) => {

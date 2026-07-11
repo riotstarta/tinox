@@ -190,6 +190,10 @@ pub struct CodeGen {
     metric_entries: Vec<MetricEntry>,
     /// ORM entity entries from @Entity / @Table annotations
     entity_entries: Vec<EntityEntry>,
+    /// Marker-Tabelle aus dem Typecheck (NodeId → Marker, TESTPLAN Phase 4):
+    /// Fallback für infer_struct_type, wenn die lokalen Heuristiken nichts
+    /// liefern. ID 0 (synthetische Knoten) hat nie einen Eintrag.
+    expr_markers: HashMap<u32, String>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
@@ -254,6 +258,7 @@ impl CodeGen {
             json_serializable_classes: Vec::new(),
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
+            expr_markers: HashMap::new(),
             db_url: None,
             metrics_path: None,
             test_entry: None,
@@ -299,6 +304,10 @@ impl CodeGen {
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
         self.metrics_path = path;
+    }
+
+    pub fn set_expr_markers(&mut self, markers: HashMap<u32, String>) {
+        self.expr_markers = markers;
     }
 
     pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
@@ -627,6 +636,13 @@ impl CodeGen {
 
     /// Infer the struct/class type name for an expression (for nested field access).
     fn infer_struct_type<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
+        self.infer_struct_type_local(expr, ctx)
+            // Fallback: Marker aus dem Typecheck (expr_markers) — greift nur,
+            // wenn die lokalen Heuristiken nichts wissen, und überstimmt sie nie
+            .or_else(|| self.expr_markers.get(&expr.id).cloned())
+    }
+
+    fn infer_struct_type_local<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         use tinox_parser::ExprKind;
         match &expr.node {
             ExprKind::Ident(name) => {
@@ -3467,6 +3483,8 @@ impl CodeGen {
                             }
                             _ => None,
                         }
+                        // Fallback: Marker aus der Typecheck-Tabelle (Phase 4)
+                        .or_else(|| self.expr_markers.get(&val.id).cloned())
                     } else { struct_name.clone() };
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
@@ -3701,6 +3719,8 @@ impl CodeGen {
                             }
                             _ => None,
                         }
+                        // Fallback: Marker aus der Typecheck-Tabelle (Phase 4)
+                        .or_else(|| self.expr_markers.get(&val.id).cloned())
                     } else { struct_name.clone() };
                     // If the declared type annotation is an interface, use it for vtable dispatch.
                     let effective_type = if let Some(Type::Named(ann)) = ty {
@@ -3931,6 +3951,9 @@ impl CodeGen {
                 // inferred (fields, calls, literals, nested elements).
                 let iter_marker = if let ExprKind::Ident(n) = &iter.node {
                     ctx.local_types.get(n).cloned()
+                        // Fallback: Typecheck-Tabelle (unggestrippter Marker,
+                        // deshalb nicht infer_struct_type — das strippt List:)
+                        .or_else(|| self.expr_markers.get(&iter.id).cloned())
                 } else {
                     self.infer_struct_type(iter, ctx)
                 };
@@ -5413,7 +5436,9 @@ impl CodeGen {
                 let (obj_ptr, obj_ty) = self.gen_expr(obj, ctx)?;
 
                 let declared_type = match &obj.node {
-                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
+                        // Fallback: Typecheck-Tabelle (ungestrippter Marker)
+                        .or_else(|| self.expr_markers.get(&obj.id).cloned()),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
                 };

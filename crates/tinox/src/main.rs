@@ -1405,6 +1405,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
     let dep_dirs = load_dep_dirs();
     resolve_imports(&mut ast, &base, &mut visited, &dep_dirs)?;
+    tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = tinox_typecheck::TypeChecker::new();
     tc.check(&ast).map_err(|e| format!("type error:\n{e}"))?;
@@ -1457,6 +1458,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     }).collect();
 
     let mut cg = CodeGen::new();
+    cg.set_expr_markers(tc.expr_markers());
     cg.set_interface_info(iface, impls);
     let do_not_serialize_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann.do_not_serialize_fields
         .iter()
@@ -1631,6 +1633,8 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     let dep_dirs = load_dep_dirs();
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs)
         .map_err(|e| format!("Import error: {}", e))?;
+    // NodeIds für die Typ-Tabelle (Typecheck → Codegen, TESTPLAN Phase 4)
+    tinox_parser::assign_node_ids(&mut ast);
 
     let mut typechecker = tinox_typecheck::TypeChecker::new();
     typechecker
@@ -1681,6 +1685,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .collect();
 
     let mut codegen = CodeGen::new();
+    codegen.set_expr_markers(typechecker.expr_markers());
     codegen.set_interface_info(iface_methods, class_implements);
     let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
         .iter()

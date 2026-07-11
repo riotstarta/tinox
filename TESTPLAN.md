@@ -237,8 +237,17 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
     (Any-Element = Wildcard, keine falschen Ablehnungen — Suite blieb
     grün). Fängt jetzt `let xs: List<String> = [1,2]` u. Ä. zur
     Compile-Zeit; Fehlermeldungen elementgenau via `display()`
-    (`to_string()` bleibt Dispatch-Key!). Nächster Schritt: Typen per
-    Side-Table an den Codegen exportieren, dann Heuristiken löschen.
+    (`to_string()` bleibt Dispatch-Key!).
+  - **Schritt 2 ✅ (2026-07-11):** Typleitung Typecheck→Codegen steht.
+    `Spanned` trägt NodeIds (`assign_node_ids` nach Import-Resolve;
+    ID 0 = synthetisch/unbekannt), der Typecheck füllt `expr_types`
+    (NodeId → ValueType), Export als Marker-Tabelle (`expr_markers()`,
+    ValueType→Marker-Sprache). Codegen konsultiert sie als **Fallback**
+    (nie Override): `infer_struct_type`, let/var-Bindings, for-in-
+    Iterables, Methoden-Dispatch. Schließt Fälle ohne Heuristik-Arm
+    (z. B. `match` als Wert → `tests/e2e/typed_ast_expr_table.tnx`).
+    Nächster Schritt: Tabelle primär schalten und Heuristiken löschen
+    (Allowlists split/keys, dirList/processArgs-Sonderfälle, …).
 - **Scoping:** `local_types`/`locals` blockscoped statt funktionsflach
   (Bug 15.4 war ein Scoping-Leck). — Geprüft 2026-07-11: Typecheck
   verbietet verschachteltes Shadowing komplett („duplicate definition"),

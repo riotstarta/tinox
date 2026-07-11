@@ -65,17 +65,23 @@ impl fmt::Display for Span {
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
+    /// Eindeutige Knoten-ID, vergeben durch tinox_parser::assign_node_ids
+    /// nach dem Import-Resolve. 0 = nicht vergeben (synthetische Knoten,
+    /// Pfade ohne Nummerierung) — Konsumenten müssen 0 als "unbekannt"
+    /// behandeln.
+    pub id: u32,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span }
+        Self { node, span, id: 0 }
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
         Spanned {
             node: f(self.node),
             span: self.span,
+            id: self.id,
         }
     }
 }
