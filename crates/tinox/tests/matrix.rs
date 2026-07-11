@@ -72,6 +72,28 @@ const TYPES: &[TypeSpec] = &[
             ("for x in {V} { println(x.len()); }", &["2", "3"]),
         ],
     },
+    TypeSpec {
+        key: "float",
+        tnx: "Float64",
+        lit: "1.5",
+        other: "9.0",
+        ops: &[
+            ("println({V}.toString());", &["1.5"]),
+            ("println(({V} + 1.25).toString());", &["2.75"]),
+            (r#"if {V} < 2.0 { println("lt"); } else { println("ge"); }"#, &["lt"]),
+        ],
+    },
+    TypeSpec {
+        key: "listfloat",
+        tnx: "List<Float64>",
+        lit: "[1.5, 2.25]",
+        other: "[9.0]",
+        ops: &[
+            ("println({V}.len());", &["2"]),
+            ("println({V}[1].toString());", &["2.25"]),
+            ("var s = 0.0;\n    for x in {V} { s += x; }\n    println(s.toString());", &["3.75"]),
+        ],
+    },
 ];
 
 /// Wie der Wert an die Operation kommt. Liefert (Präambel-Decls,
@@ -151,6 +173,14 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
             // Sonderfall: Ops laufen im Schleifenkörper
             "v".into(),
         ),
+        // Map-Value: Wert steckt als Value in einer Map<String, T>
+        "map_value" => (
+            String::new(),
+            format!(
+                "var m: Map<String, {t}> = Map::new();\n    m.insert(\"k\", {lit});"
+            ),
+            r#"m.get("k")"#.into(),
+        ),
         // Cross-Modul: Wert kommt aus einer Funktion eines anderen Moduls
         "cross_module" => (
             "import _matrix_mod;\n".to_string(),
@@ -175,6 +205,7 @@ const CONTEXTS: &[&str] = &[
     "field_list_elem",
     "match_payload",
     "loop_var",
+    "map_value",
     "cross_module",
 ];
 

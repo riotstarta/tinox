@@ -444,7 +444,19 @@ impl CodeGen {
         let inner = match ty {
             Type::Array(inner) => inner.as_ref(),
             Type::Generic { name, args } if name == "List" || name == "Array" => args.first()?,
-            Type::Map(_, _) => return Some("Map".to_string()),
+            // Maps carry their value marker ("Map:String", "Map:Float",
+            // "Map:Array:…", "Map:C"); plain scalar values stay "Map".
+            Type::Map(_, v) => {
+                return Some(match v.as_ref() {
+                    Type::String => "Map:String".to_string(),
+                    Type::Float32 | Type::Float64 => "Map:Float".to_string(),
+                    Type::Named(c) => format!("Map:{}", c),
+                    val => match Self::container_marker(val) {
+                        Some(vm) => format!("Map:{}", vm),
+                        None => "Map".to_string(),
+                    },
+                });
+            }
             Type::Mutable(inner) | Type::Ref(inner) => return Self::container_marker(inner),
             _ => return None,
         };
@@ -465,11 +477,45 @@ impl CodeGen {
         if let Some(cls) = marker.strip_prefix("List:") {
             return Some(cls.to_string());
         }
+        if let Some(vm) = Self::map_val_marker(marker) {
+            // m[key] yields the map's value
+            return Some(vm);
+        }
         match marker {
             "Array:String" => Some("String".to_string()),
             "Array:Float" => Some("Float".to_string()),
             _ => marker.strip_prefix("Array:").map(|m| m.to_string()),
         }
+    }
+
+    /// True for any map marker ("Map" or "Map:<valmarker>").
+    fn is_map_marker(marker: &str) -> bool {
+        marker == "Map" || marker.starts_with("Map:")
+    }
+
+    /// Coerce a raw i64 from tinox_map_get to the LLVM type implied by the
+    /// map's value marker. Container/class values stay i64 handles — their
+    /// marker propagates via infer_struct_type.
+    fn coerce_map_value(&mut self, raw: String, map_marker: Option<&str>) -> (String, String) {
+        match map_marker.and_then(Self::map_val_marker).as_deref() {
+            Some("String") => {
+                let p = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", p, raw).unwrap();
+                (p, "i8*".to_string())
+            }
+            Some("Float") => {
+                let f = self.temp();
+                writeln!(&mut self.ir, "{} = bitcast i64 {} to double", f, raw).unwrap();
+                (f, "double".to_string())
+            }
+            _ => (raw, "i64".to_string()),
+        }
+    }
+
+    /// Value marker of a map marker ("Map:String" → "String");
+    /// None = plain "Map" (i64 scalar values) or no map at all.
+    fn map_val_marker(marker: &str) -> Option<String> {
+        marker.strip_prefix("Map:").map(|m| m.to_string())
     }
 
     /// Classify an enum variant payload type for match-binding purposes.
@@ -478,7 +524,7 @@ impl CodeGen {
     fn payload_kind(ty: &Type) -> String {
         match ty {
             Type::String => "String".to_string(),
-            Type::Map(_, _) => "Map".to_string(),
+            Type::Map(_, _) => Self::container_marker(ty).unwrap_or_else(|| "Map".to_string()),
             Type::Array(_) => Self::container_marker(ty).unwrap_or_else(|| "Array".to_string()),
             Type::Generic { name, .. } if name == "List" => {
                 Self::container_marker(ty).unwrap_or_else(|| "Array".to_string())
@@ -525,7 +571,7 @@ impl CodeGen {
         self.temp_count += 1;
         let (llvm_ty, decl_ty): (&str, Option<&str>) = match kind.as_str() {
             "String" => ("i8*", None),
-            "Map" => ("i8*", Some("Map")),
+            k if Self::is_map_marker(k) => ("i8*", Some(kind.as_str())),
             "Float" => ("double", None),
             // List payloads: bind as handle, keep the container marker so
             // element access inside the arm is typed (e.g. "Array:String").
@@ -616,12 +662,16 @@ impl CodeGen {
                 self.method_ret_class.get(&key).cloned()
             }
             ExprKind::MethodCall { obj: mc_obj, method: mc_method, .. } => {
+                let obj_class = self.infer_struct_type(mc_obj, ctx)?;
+                // m.get(k) on a typed map yields the map's value marker
+                if mc_method == "get" {
+                    if let Some(vm) = Self::map_val_marker(&obj_class) {
+                        return Some(vm);
+                    }
+                }
                 // Instance method call returning a known class
-                self.infer_struct_type(mc_obj, ctx)
-                    .and_then(|obj_class| {
-                        let key = format!("{}_{}", obj_class, mc_method);
-                        self.method_ret_class.get(&key).cloned()
-                    })
+                let key = format!("{}_{}", obj_class, mc_method);
+                self.method_ret_class.get(&key).cloned()
             }
             ExprKind::Call { func, .. } => {
                 // Top-level function call with registered return class/marker
@@ -3325,8 +3375,8 @@ impl CodeGen {
                         // Container annotation → marker (Map, Array:String,
                         // Array:Array:…, List:C, Array) aus der zentralen Quelle
                         if let Some(m) = Self::container_marker(ann_ty) {
-                            if m == "Map" {
-                                struct_name = Some("Map".to_string());
+                            if Self::is_map_marker(&m) {
+                                struct_name = Some(m);
                                 llvm_ty = "i8*".to_string();
                             } else {
                                 struct_name = Some(m);
@@ -3562,8 +3612,8 @@ impl CodeGen {
                         // Container annotation → marker (Map, Array:String,
                         // Array:Array:…, List:C, Array) aus der zentralen Quelle
                         if let Some(m) = Self::container_marker(ann_ty) {
-                            if m == "Map" {
-                                struct_name = Some("Map".to_string());
+                            if Self::is_map_marker(&m) {
+                                struct_name = Some(m);
                                 llvm_ty = "i8*".to_string();
                             } else {
                                 struct_name = Some(m);
@@ -3900,12 +3950,23 @@ impl CodeGen {
                     ("0".to_string(), len_val, Some(data_ptr), None)
                 };
 
+                // Float-list elements are stored as i64 bit patterns; the loop
+                // variable itself must be a double slot (like match payloads).
+                let is_float_elem = arr_ptr.is_some()
+                    && iter_marker.as_deref().and_then(Self::elem_marker).as_deref() == Some("Float");
+
                 // Give loop variable a unique LLVM slot to avoid duplicate alloca on re-use
                 let var_slot = format!("{}_{}", var, self.temp_count);
                 self.temp_count += 1;
-                writeln!(&mut self.ir, "%{} = alloca i64", var_slot).unwrap();
-                writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var_slot).unwrap();
-                ctx.locals.insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
+                if is_float_elem {
+                    writeln!(&mut self.ir, "%{} = alloca double", var_slot).unwrap();
+                    writeln!(&mut self.ir, "store double 0.0, double* %{}", var_slot).unwrap();
+                    ctx.locals.insert(var.clone(), ("double".to_string(), ctx.locals.len()));
+                } else {
+                    writeln!(&mut self.ir, "%{} = alloca i64", var_slot).unwrap();
+                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", start_val, var_slot).unwrap();
+                    ctx.locals.insert(var.clone(), ("i64".to_string(), ctx.locals.len()));
+                }
                 ctx.local_slots.insert(var.clone(), var_slot.clone());
 
                 let needs_separate_idx = arr_ptr.is_some() || str_ptr.is_some();
@@ -3943,14 +4004,21 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, aptr, cur_idx).unwrap();
                     let elem_raw = self.temp();
                     writeln!(&mut self.ir, "{} = load i64, i64* {}", elem_raw, elem_ptr).unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
+                    if is_float_elem {
+                        let f = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast i64 {} to double", f, elem_raw).unwrap();
+                        writeln!(&mut self.ir, "store double {}, double* %{}", f, var_slot).unwrap();
+                    } else {
+                        writeln!(&mut self.ir, "store i64 {}, i64* %{}", elem_raw, var_slot).unwrap();
+                    }
                     if is_str_arr {
                         // raw i64 holds a string pointer; loop body casts via local_types
                         ctx.local_types.insert(var.clone(), "Array:String:elem".to_string());
                     } else if let Some(em) = iter_marker.as_deref().and_then(Self::elem_marker) {
                         // Elements that are containers or class instances keep
                         // their marker so dispatch in the body works
-                        // (e.g. for v in List<List<Int64>> → v is "Array").
+                        // (e.g. for v in List<List<Int64>> → v is "Array");
+                        // floats are fully typed by their double slot already.
                         if em != "Float" {
                             ctx.local_types.insert(var.clone(), em);
                         }
@@ -4176,7 +4244,7 @@ impl CodeGen {
                     let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
                         ctx.local_types.get(n.as_str()).cloned()
                     } else { None };
-                    let is_map = obj_declared_type.as_deref() == Some("Map");
+                    let is_map = obj_declared_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
 
                     let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
                     let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
@@ -5521,9 +5589,13 @@ impl CodeGen {
                     }
                 }
 
-                // Map method dispatch — also handle i64 objects that may be ptrtoint'd Map pointers
-                let is_map_dispatch = declared_type.as_deref() == Some("Map")
-                    || (obj_ty == "i64" && matches!(method.as_str(), "get" | "insert" | "contains" | "keys" | "values" | "remove" | "len"));
+                // Map method dispatch — also handle i64 objects that may be ptrtoint'd
+                // Map pointers, but only when no other declared type claims the object.
+                let is_map_dispatch = match declared_type.as_deref() {
+                    Some(t) => Self::is_map_marker(t),
+                    None => obj_ty == "i64"
+                        && matches!(method.as_str(), "get" | "insert" | "contains" | "keys" | "values" | "remove" | "len"),
+                };
                 if is_map_dispatch {
                     let map_obj_ptr = if obj_ty == "i64" {
                         let c = self.temp();
@@ -5542,7 +5614,8 @@ impl CodeGen {
                             };
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_obj_ptr, key_i8).unwrap();
-                            return Ok((result, "i64".to_string()));
+                            // Type the value by the map's value marker
+                            return Ok(self.coerce_map_value(result, declared_type.as_deref()));
                         }
                         "insert" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
@@ -6068,7 +6141,7 @@ impl CodeGen {
                     .or_else(|| self.infer_struct_type(obj, ctx));
                 let is_str_arr = declared_elem_type.as_deref() == Some("Array:String");
                 let is_float_arr = declared_elem_type.as_deref() == Some("Array:Float");
-                let is_map = declared_elem_type.as_deref() == Some("Map");
+                let is_map = declared_elem_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
 
                 let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
                 let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
@@ -6101,7 +6174,7 @@ impl CodeGen {
                     };
                     let result = self.temp();
                     writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_i8, key_i8).unwrap();
-                    Ok((result, "i64".to_string()))
+                    Ok(self.coerce_map_value(result, declared_elem_type.as_deref()))
                 } else if base_ty == "i8*" {
                     // String indexing → return byte as i64
                     let ptr_name = self.temp();
@@ -8214,6 +8287,14 @@ impl CodeGen {
                 Type::Generic { name: "List".into(), args: vec![Type::Int64] }
             }
             "Map" => Type::Map(Box::new(Type::String), Box::new(Type::Int64)),
+            m if m.starts_with("Map:") => {
+                let val_ty = match &m[4..] {
+                    "String" => Type::String,
+                    "Float" => Type::Float64,
+                    vm => Self::marker_to_type(vm),
+                };
+                Type::Map(Box::new(Type::String), Box::new(val_ty))
+            }
             cls => Type::Named(cls.to_string()),
         }
     }

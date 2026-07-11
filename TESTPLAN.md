@@ -127,8 +127,11 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   "Array:Array:…", "List:C", "Map") + `elem_marker` (eine Ebene strippen),
   konsumiert von Index-Codegen, Methoden-Dispatch, for-in, let/var,
   Match-Payload-Bindung und method_ret_class-Registrierung.
-  KNOWN_FAILURES ist leer. Offen: Map-Value-Kontexte, Cross-Modul für
-  weitere Typen, Float-Schleifenvariablen.
+  KNOWN_FAILURES ist leer. Nachtrag 2026-07-11: Map-Value-Kontext
+  (`m.get(k)` für alle Typen) plus Typen Float64/List<Float64> ergänzt
+  (damit auch Float-Schleifenvariablen und Cross-Modul-Floats) — fand
+  20 Fälle, geschlossen durch Map-Value-Marker ("Map:String"/"Map:Float"/
+  "Map:<marker>") und double-Slots für Float-Schleifenvariablen.
 
 ### 1.4 Gedächtnis-/Grenzwert-Fälle — ✅ erledigt (2026-07-10)
 - Strings der Längen 0, 1, 7, 8, 15, 16, 17, 31, 32 (Heap-/Alignment-Grenzen;
