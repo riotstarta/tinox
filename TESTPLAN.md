@@ -246,8 +246,20 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
     (nie Override): `infer_struct_type`, let/var-Bindings, for-in-
     Iterables, Methoden-Dispatch. Schließt Fälle ohne Heuristik-Arm
     (z. B. `match` als Wert → `tests/e2e/typed_ast_expr_table.tnx`).
-    Nächster Schritt: Tabelle primär schalten und Heuristiken löschen
-    (Allowlists split/keys, dirList/processArgs-Sonderfälle, …).
+  - **Schritt 3 ✅ (2026-07-11):** Erste Heuristiken gelöscht, Quelle
+    präzisiert. Builtin-Signaturen elementtypisiert (String_split,
+    Map_keys, regexFindAll/Split, dirList, processArgs → List<String>);
+    receiver-abhängige Ergebnistypen im MethodCall-Arm (get/values auf
+    Map<_,V>, first/last/find/min/max/pop/sort/… auf List<E>) — nach
+    check_call, Validierung bleibt. Damit gelöscht: split/keys-Allowlist
+    (let+var) und dirList/processArgs-Sonderfall im Codegen. Dabei
+    gefunden: `var` ignorierte seine Typ-Annotation komplett (ungeprüft,
+    Wert-Typ gewann) — jetzt Let-Regel; und die Tabelle muss letzte
+    Präzedenz sein (Annotation > lokale Inferenz > Tabelle), sonst
+    überstimmt typgelöschtes Map::new die Annotation. Verbleibende
+    Heuristiken (i64-Dispatch-Raten, array_only_methods,
+    Array:String:elem) brauchen Tabellen-Anschluss weiterer
+    Expression-Positionen — nächster Schritt.
 - **Scoping:** `local_types`/`locals` blockscoped statt funktionsflach
   (Bug 15.4 war ein Scoping-Leck). — Geprüft 2026-07-11: Typecheck
   verbietet verschachteltes Shadowing komplett („duplicate definition"),

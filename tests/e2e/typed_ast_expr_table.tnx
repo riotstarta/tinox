@@ -1,10 +1,16 @@
-// Typecheck→Codegen-Typtabelle (TESTPLAN Phase 4, Schritt 2): Container aus
-// Ausdrücken ohne Codegen-Heuristik (match als Wert) sind elementgenau
-// typisiert — Index-Zugriff und for-in liefern Strings, keine i64-Bitmuster.
+// Typecheck→Codegen-Typtabelle (TESTPLAN Phase 4, Schritt 2+3): Container aus
+// Ausdrücken ohne Codegen-Heuristik (match als Wert, let-gebundenes m.get,
+// split/keys/first ohne Allowlist) sind elementgenau typisiert.
 // expect: 3
 // expect: 2
 // expect: 3
 // expect: 5
+// expect: 2
+// expect: aa
+// expect: bbb
+// expect: 4
+// expect: cd
+// expect: k
 fn main() -> Int32 {
     let n = 1;
     let xs = match n { 1 => ["aa", "bbb"], _ => ["z"] };
@@ -12,5 +18,17 @@ fn main() -> Int32 {
     for s in xs { println(s.len()); }
     let m = @{"k" => "hello"};
     println(m.get("k").len());
+    // let-gebundenes m.get auf Map mit Container-Value (Marker via Tabelle,
+    // Annotation gewinnt gegen typgelöschtes Map::new)
+    var lm: Map<String, List<String>> = Map::new();
+    lm.insert("k", ["aa", "bbb"]);
+    let vals = lm.get("k");
+    println(vals.len());
+    for s in vals { println(s); }
+    // split/keys/first ohne Codegen-Allowlist (Marker aus Signaturen/Override)
+    let parts = "ab,cd".split(",");
+    println(parts[0].len() + parts.first().len());
+    println(parts.last());
+    println(lm.keys()[0]);
     return 0;
 }

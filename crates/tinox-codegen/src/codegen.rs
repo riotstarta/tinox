@@ -3360,12 +3360,6 @@ impl CodeGen {
                             llvm_ty = "i64*".to_string();
                             true
                         } else { false }
-                    } else if let ExprKind::MethodCall { method, .. } = &v.node {
-                        if method == "split" || method == "keys" {
-                            llvm_ty = "i64*".to_string();
-                            struct_name = Some("Array:String".to_string());
-                            true
-                        } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         // Container marker from the annotation, else from the first literal element
@@ -3460,9 +3454,6 @@ impl CodeGen {
                             }
                             ExprKind::Call { func, .. } => {
                                 match &func.node {
-                                    ExprKind::Ident(fname) if fname == "dirList" || fname == "processArgs" => {
-                                        Some("Array:String".to_string())
-                                    }
                                     ExprKind::Ident(fname) => {
                                         self.method_ret_class.get(fname.as_str()).cloned()
                                     }
@@ -3483,8 +3474,6 @@ impl CodeGen {
                             }
                             _ => None,
                         }
-                        // Fallback: Marker aus der Typecheck-Tabelle (Phase 4)
-                        .or_else(|| self.expr_markers.get(&val.id).cloned())
                     } else { struct_name.clone() };
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
@@ -3494,7 +3483,10 @@ impl CodeGen {
                         }
                     } else {
                         inferred_struct.clone().or_else(|| struct_name.clone())
-                    };
+                    }
+                    // Letzter Fallback: Typecheck-Tabelle (Phase 4) — nie
+                    // präziser als Annotation/lokale Inferenz, daher zuletzt
+                    .or_else(|| self.expr_markers.get(&val.id).cloned());
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {
@@ -3605,12 +3597,6 @@ impl CodeGen {
                             llvm_ty = "i64*".to_string();
                             true
                         } else { false }
-                    } else if let ExprKind::MethodCall { method, .. } = &v.node {
-                        if method == "split" || method == "keys" {
-                            llvm_ty = "i64*".to_string();
-                            struct_name = Some("Array:String".to_string());
-                            true
-                        } else { false }
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         // Container marker from the annotation, else from the first literal element
@@ -3719,8 +3705,6 @@ impl CodeGen {
                             }
                             _ => None,
                         }
-                        // Fallback: Marker aus der Typecheck-Tabelle (Phase 4)
-                        .or_else(|| self.expr_markers.get(&val.id).cloned())
                     } else { struct_name.clone() };
                     // If the declared type annotation is an interface, use it for vtable dispatch.
                     let effective_type = if let Some(Type::Named(ann)) = ty {
@@ -3731,7 +3715,9 @@ impl CodeGen {
                         }
                     } else {
                         inferred_struct_var.clone().or_else(|| struct_name.clone())
-                    };
+                    }
+                    // Letzter Fallback: Typecheck-Tabelle (Phase 4)
+                    .or_else(|| self.expr_markers.get(&val.id).cloned());
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {

@@ -620,11 +620,11 @@ impl TypeChecker {
         }
         symbols.functions.insert("split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
-            return_type: ValueType::any_array(),
+            return_type: ValueType::Array(Box::new(ValueType::String)),
         });
         symbols.functions.insert("String_split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
-            return_type: ValueType::any_array(),
+            return_type: ValueType::Array(Box::new(ValueType::String)),
         });
         symbols.functions.insert("join".to_string(), FunctionSignature {
             params: vec![("arr".to_string(), ValueType::any_array()), ("sep".to_string(), ValueType::String)],
@@ -678,7 +678,7 @@ impl TypeChecker {
         );
         symbols.functions.insert("Map_keys".to_string(), FunctionSignature {
             params: vec![("m".to_string(), ValueType::any_map())],
-            return_type: ValueType::any_array(),
+            return_type: ValueType::Array(Box::new(ValueType::String)),
         });
         symbols.functions.insert("Map_values".to_string(), FunctionSignature {
             params: vec![("m".to_string(), ValueType::any_map())],
@@ -788,7 +788,7 @@ impl TypeChecker {
         // Regex
         for name in &["regexIsMatch", "regexFindFirst", "regexFindAll", "regexReplaceAll", "regexSplit"] {
             let ret = if *name == "regexIsMatch" { ValueType::Bool }
-                      else if *name == "regexFindAll" || *name == "regexSplit" { ValueType::any_array() }
+                      else if *name == "regexFindAll" || *name == "regexSplit" { ValueType::Array(Box::new(ValueType::String)) }
                       else { ValueType::String };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)],
@@ -812,7 +812,7 @@ impl TypeChecker {
         }
         // Process
         for name in &["processExit", "processId", "processArgs", "printStackTrace", "gcCollect", "memoryUsage"] {
-            let ret = if *name == "processArgs" { ValueType::any_array() }
+            let ret = if *name == "processArgs" { ValueType::Array(Box::new(ValueType::String)) }
                       else if *name == "processId" || *name == "memoryUsage" { ValueType::Int }
                       else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
@@ -856,7 +856,7 @@ impl TypeChecker {
             });
         }
         for name in &["dirList", "dirCreate", "dirDelete"] {
-            let ret = if *name == "dirList" { ValueType::any_array() } else { ValueType::Nothing };
+            let ret = if *name == "dirList" { ValueType::Array(Box::new(ValueType::String)) } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
@@ -1675,12 +1675,28 @@ impl TypeChecker {
                     self.errors
                         .push(TypeError::DuplicateDefinition(name.clone(), stmt.span).to_error());
                 }
-                let inferred_type = if let Some(v) = value {
-                    Some(self.infer_type(v))
-                } else if let Some(t) = ty {
-                    Some(Self::type_to_value(t))
-                } else {
-                    None
+                // Wie bei Let: Annotation ist der Vertrag — sie gewinnt und
+                // wird gegen den Wert geprüft (vorher wurde sie bei
+                // vorhandenem Wert komplett ignoriert, ungeprüft).
+                let inferred_type = match (value, ty) {
+                    (Some(v), Some(t)) => {
+                        let val_ty = self.infer_type(v);
+                        let ann_ty = Self::type_to_value(t);
+                        if !self.types_compatible(&ann_ty, &val_ty) {
+                            self.errors.push(
+                                TypeError::TypeMismatch {
+                                    expected: ann_ty.display(),
+                                    found: val_ty.display(),
+                                    span: v.span,
+                                }
+                                .to_error(),
+                            );
+                        }
+                        Some(ann_ty)
+                    }
+                    (Some(v), None) => Some(self.infer_type(v)),
+                    (None, Some(t)) => Some(Self::type_to_value(t)),
+                    (None, None) => None,
                 };
                 if let Some(t) = inferred_type {
                     self.symbols.variables.insert(name.clone(), (t, *mutable));
@@ -2002,7 +2018,26 @@ impl TypeChecker {
                 let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().map(|e| e.clone()));
-                self.check_call(&func_expr, &call_args, expr.span)
+                let generic_ret = self.check_call(&func_expr, &call_args, expr.span);
+                // Receiver-abhängige Ergebnistypen, die statische Signaturen
+                // nicht ausdrücken können: erst check_call (validiert die
+                // Argumente), dann nur das Ergebnis verfeinern.
+                match (&obj_ty, method.as_str()) {
+                    (ValueType::Map(v), "get") => (**v).clone(),
+                    (ValueType::Map(v), "values") => ValueType::Array(v.clone()),
+                    (ValueType::Array(e), "first" | "last" | "find" | "max" | "min")
+                        if **e != ValueType::Any =>
+                    {
+                        (**e).clone()
+                    }
+                    (ValueType::Array(e), "pop" | "sort" | "reverse" | "slice" | "unique"
+                        | "take" | "skip" | "toList")
+                        if **e != ValueType::Any =>
+                    {
+                        ValueType::Array(e.clone())
+                    }
+                    _ => generic_ret,
+                }
             }
             ExprKind::Index { obj, index } => {
                 let obj_ty = self.infer_type(obj);
@@ -2863,6 +2898,39 @@ mod tests {
     fn test_int_float_lists_compatible() {
         // Int/Float-Koerzion gilt auch elementweise
         ok("fn main() -> Int32 { let xs: List<Float64> = [1, 2]; return 0; }");
+    }
+
+    #[test]
+    fn test_var_annotation_checked() {
+        // var ignorierte die Annotation bei vorhandenem Wert komplett —
+        // seit Phase 4 gilt die Let-Regel auch hier
+        err_contains(
+            "fn main() -> Int32 { var x: String = 5; return 0; }",
+            "expected String, found Int64",
+        );
+    }
+
+    #[test]
+    fn test_var_annotation_wins_over_erased_value() {
+        // Annotation ist der Vertrag: Map<String, List<String>> bleibt
+        // erhalten, auch wenn Map::new() nur Map(Any) liefert
+        ok("fn main() -> Int32 { var m: Map<String, List<String>> = Map::new(); m.insert(\"k\", [\"a\"]); let v: List<String> = m.get(\"k\"); return 0; }");
+    }
+
+    #[test]
+    fn test_receiver_dependent_first() {
+        err_contains(
+            "fn main() -> Int32 { let xs: List<Int64> = [1]; let s: String = xs.first(); return 0; }",
+            "expected String, found Int64",
+        );
+    }
+
+    #[test]
+    fn test_map_get_yields_value_type() {
+        err_contains(
+            "fn main() -> Int32 { var m: Map<String, Int64> = Map::new(); let s: String = m.get(\"k\"); return 0; }",
+            "expected String, found Int64",
+        );
     }
 
     #[test]
