@@ -593,6 +593,33 @@ Weiterhin offen (unverändert): `tinox_string_substring` und
 zeichenweise über einen großen Quellstring laufen, müssen die Länge cachen und
 `charAt` (O(1), ohne strlen) statt `substring(i, i+1)` benutzen.
 
+## Bug 18 — Klassen-Payloads aus match-Bindungen: Feldzugriff las Offset 0
+
+**Status: GEFIXT (2026-07-11)** — Gefunden beim Testen der typisierten
+Match-Payload-Bindungen (TESTPLAN Phase 4); die Kontext-Matrix hatte keine
+Klasseninstanzen als Subjekt-Typ (inzwischen ergänzt: TypeSpec `user`).
+
+**Regressionstest:** `tests/e2e/bug18_class_payload_field.tnx`
+
+**Problem:**
+```tinox
+enum Res { Ok(User), Err(String) }
+match r {
+    Ok(u) => println(u.name);  // druckte 7 (die id) statt "Alice"
+    ...
+}
+```
+`payload_kind()` klassifiziert Klassen-Payloads als "Other" —
+`bind_match_payload` bindet `u` als nacktes i64 ohne `local_types`-Marker.
+Der FieldAccess-Codegen fand keinen Klassennamen, fiel auf Offset 0 mit
+i64-Typisierung zurück: `u.name` las das erste Feld (id) und druckte es
+als Zahl. Methodenaufrufe (`u.greet()`) waren aus demselben Grund kaputt.
+
+**Fix:** Der FieldAccess-Arm konsultiert als Fallback die
+Typecheck-Tabelle (`expr_markers`), die seit den typisierten
+Match-Payload-Bindungen den Klassennamen kennt (Ident-Fallback im
+Methoden-Dispatch existierte schon). Kein neuer Codegen-Sonderfall.
+
 ---
 
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)

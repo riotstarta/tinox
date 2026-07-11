@@ -29,6 +29,8 @@ struct TypeSpec {
     other: &'static str,
     /// Operationen: Statement-Template mit {V} als Wert-Ausdruck + erwartete Zeilen
     ops: &'static [(&'static str, &'static [&'static str])],
+    /// Typ-eigene Präambel (z. B. Klassen-Deklaration), in jede Datei emittiert
+    prelude: &'static str,
 }
 
 const TYPES: &[TypeSpec] = &[
@@ -45,6 +47,7 @@ const TYPES: &[TypeSpec] = &[
             (r#"if {V}.contains("ell") { println("has"); } else { println("not"); }"#, &["has"]),
             ("println({V}.substring(1, 3));", &["el"]),
         ],
+        prelude: "",
     },
     TypeSpec {
         key: "listint",
@@ -59,6 +62,7 @@ const TYPES: &[TypeSpec] = &[
             ("println({V}.first());", &["10"]),
             ("println({V}.last());", &["30"]),
         ],
+        prelude: "",
     },
     TypeSpec {
         key: "liststr",
@@ -71,6 +75,7 @@ const TYPES: &[TypeSpec] = &[
             ("println({V}[1].len());", &["3"]),
             ("for x in {V} { println(x.len()); }", &["2", "3"]),
         ],
+        prelude: "",
     },
     TypeSpec {
         key: "float",
@@ -82,6 +87,7 @@ const TYPES: &[TypeSpec] = &[
             ("println(({V} + 1.25).toString());", &["2.75"]),
             (r#"if {V} < 2.0 { println("lt"); } else { println("ge"); }"#, &["lt"]),
         ],
+        prelude: "",
     },
     TypeSpec {
         key: "mapint",
@@ -94,6 +100,7 @@ const TYPES: &[TypeSpec] = &[
             (r#"if {V}.contains("a") { println("has"); } else { println("not"); }"#, &["has"]),
             (r#"println({V}["a"]);"#, &["1"]),
         ],
+        prelude: "",
     },
     TypeSpec {
         key: "mapstr",
@@ -106,6 +113,20 @@ const TYPES: &[TypeSpec] = &[
             (r#"println({V}.get("k").len());"#, &["5"]),
             (r#"println({V}["k"]);"#, &["hello"]),
         ],
+        prelude: "",
+    },
+    TypeSpec {
+        key: "user",
+        tnx: "User",
+        lit: r#"User { id: 7, name: "Alice" }"#,
+        other: r#"User { id: 1, name: "z" }"#,
+        ops: &[
+            ("println({V}.name);", &["Alice"]),
+            ("println({V}.id);", &["7"]),
+            ("println({V}.name.len());", &["5"]),
+            ("println({V}.greet());", &["Hi Alice"]),
+        ],
+        prelude: "class User {\n    var id: Int64;\n    var name: String;\n    fn greet() -> String {\n        return \"Hi \" + this.name;\n    }\n}\n",
     },
     TypeSpec {
         key: "listfloat",
@@ -117,6 +138,7 @@ const TYPES: &[TypeSpec] = &[
             ("println({V}[1].toString());", &["2.25"]),
             ("var s = 0.0;\n    for x in {V} { s += x; }\n    println(s.toString());", &["3.75"]),
         ],
+        prelude: "",
     },
 ];
 
@@ -205,12 +227,20 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
             ),
             r#"m.get("k")"#.into(),
         ),
-        // Cross-Modul: Wert kommt aus einer Funktion eines anderen Moduls
-        "cross_module" => (
-            "import _matrix_mod;\n".to_string(),
-            format!("let v = mk_{}();", ty.key),
-            "v".into(),
-        ),
+        // Cross-Modul: Wert kommt aus einer Funktion eines anderen Moduls.
+        // Typen mit eigener Präambel (Klassen) sind ausgenommen — die Klasse
+        // kann nicht in beiden Modulen deklariert sein (Cross-Modul-Klassen
+        // deckt bug06 ab).
+        "cross_module" => {
+            if !ty.prelude.is_empty() {
+                return None;
+            }
+            (
+                "import _matrix_mod;\n".to_string(),
+                format!("let v = mk_{}();", ty.key),
+                "v".into(),
+            )
+        }
         _ => return None,
     })
 }
@@ -288,6 +318,10 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String)> {
         src.push_str(&format!("// expect: {e}\n"));
     }
     src.push('\n');
+    if !ty.prelude.is_empty() {
+        src.push_str(ty.prelude);
+        src.push('\n');
+    }
     src.push_str(&prelude);
     if !prelude.is_empty() {
         src.push('\n');
@@ -299,7 +333,7 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String)> {
 
 fn helper_module() -> String {
     let mut s = String::from("module matrixmod;\n\n");
-    for ty in TYPES {
+    for ty in TYPES.iter().filter(|t| t.prelude.is_empty()) {
         s.push_str(&format!(
             "fn mk_{key}() -> {t} {{\n    return {lit};\n}}\n\n",
             key = ty.key,

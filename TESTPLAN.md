@@ -269,6 +269,15 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
     array_only_methods + i64-Map-Methodenraten sind jetzt reine
     Fallbacks für typecheck-Any-Werte (jq-artiger dynamischer Code) —
     löschen erst, wenn Any-Verbreitung im Typecheck weiter sinkt.
+  - **Schritt 5 ✅ (2026-07-11):** Match-Payload-Bindungen typisiert.
+    Typecheck registriert Payload-Typen pro Variante
+    (enum_variant_payloads, "Enum::Variant"), bind_pattern_vars bindet
+    mit Scrutinee-/Payload-Typ statt Any (nacktes Pattern: Variantenname
+    steht in enum_name!). Fand Bug 18: Klassen-Payloads waren im Codegen
+    "Other"/ungetypt — u.name im match-Arm las Offset 0 (die id, als
+    Zahl). Fix: FieldAccess-Fallback auf die Tabelle. Matrix um
+    Klasseninstanzen als Subjekt-Typ erweitert (TypeSpec-prelude,
+    8 Typen × 15 Kontexte; cross_module für Klassen ausgenommen).
 - **Scoping:** `local_types`/`locals` blockscoped statt funktionsflach
   (Bug 15.4 war ein Scoping-Leck). — Geprüft 2026-07-11: Typecheck
   verbietet verschachteltes Shadowing komplett („duplicate definition"),

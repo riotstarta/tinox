@@ -372,6 +372,8 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
+    /// "Enum::Variant" -> Payload-Typen — für typisierte Match-Bindungen
+    enum_variant_payloads: HashMap<String, Vec<ValueType>>,
     interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
@@ -977,6 +979,7 @@ impl TypeChecker {
             errors: Vec::new(),
             symbols,
             enums: HashMap::new(),
+            enum_variant_payloads: HashMap::new(),
             interfaces: HashMap::new(),
             interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
@@ -1100,6 +1103,10 @@ impl TypeChecker {
                         e.variants.iter().map(|v| v.name.clone()).collect();
                     self.enums.insert(e.name.clone(), variant_names.clone());
                     for variant in &e.variants {
+                        self.enum_variant_payloads.insert(
+                            format!("{}::{}", e.name, variant.name),
+                            variant.args.iter().map(Self::type_to_value).collect(),
+                        );
                         let ty = ValueType::Named(format!("{}.{}", e.name, variant.name));
                         self.symbols
                             .variables
@@ -2241,11 +2248,11 @@ impl TypeChecker {
                 ValueType::Never
             }
             ExprKind::Match { expr, cases } => {
-                self.infer_type(expr);
+                let scrutinee_ty = self.infer_type(expr);
                 let mut result_types = Vec::new();
                 for case in cases {
                     let saved = self.symbols.enter_scope();
-                    self.bind_pattern_vars(&case.pattern);
+                    self.bind_pattern_vars(&case.pattern, &scrutinee_ty);
                     let case_ty = self.infer_type(&case.body);
                     self.symbols.exit_scope(saved);
                     result_types.push(case_ty);
@@ -2518,17 +2525,43 @@ impl TypeChecker {
         ValueType::Any
     }
 
-    fn bind_pattern_vars(&mut self, pattern: &Pattern) {
+    /// Bindet Pattern-Variablen mit dem Typ des gematchten Werts:
+    /// Enum-Payload-Argumente bekommen die deklarierten Payload-Typen
+    /// (aus enum_variant_payloads), Top-Level-Idents den Scrutinee-Typ.
+    /// Unbekanntes bleibt Any.
+    fn bind_pattern_vars(&mut self, pattern: &Pattern, scrutinee: &ValueType) {
         match pattern {
             Pattern::Ident(name, inner, _) => {
-                self.symbols.variables.insert(name.clone(), (ValueType::Any, false));
-                if let Some(inner) = inner { self.bind_pattern_vars(inner); }
+                self.symbols
+                    .variables
+                    .insert(name.clone(), (scrutinee.clone(), false));
+                if let Some(inner) = inner {
+                    self.bind_pattern_vars(inner, scrutinee);
+                }
             }
-            Pattern::EnumVariant { args, .. } => {
-                for arg in args { self.bind_pattern_vars(arg); }
+            Pattern::EnumVariant { enum_name, variant, args, .. } => {
+                // Nacktes Pattern `Arr(xs)`: Variantenname steht in enum_name,
+                // variant ist leer; qualifiziert `JV::Arr(xs)` ist beides gesetzt.
+                let variant_name = if variant.is_empty() { enum_name } else { variant };
+                let payloads = match scrutinee {
+                    ValueType::Named(e) => self
+                        .enum_variant_payloads
+                        .get(&format!("{}::{}", e, variant_name))
+                        .cloned(),
+                    _ => None,
+                };
+                for (i, arg) in args.iter().enumerate() {
+                    let arg_ty = payloads
+                        .as_ref()
+                        .and_then(|ps| ps.get(i).cloned())
+                        .unwrap_or(ValueType::Any);
+                    self.bind_pattern_vars(arg, &arg_ty);
+                }
             }
             Pattern::Tuple(pats, _) => {
-                for p in pats { self.bind_pattern_vars(p); }
+                for p in pats {
+                    self.bind_pattern_vars(p, &ValueType::Any);
+                }
             }
             Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
         }
@@ -2923,6 +2956,21 @@ mod tests {
             "fn main() -> Int32 { let xs: List<Int64> = [1]; let s: String = xs.first(); return 0; }",
             "expected String, found Int64",
         );
+    }
+
+    #[test]
+    fn test_match_payload_binding_typed() {
+        // Payload-Variablen tragen den deklarierten Variantentyp
+        err_contains(
+            "enum Box { Val(Int64), Nix }\nfn main() -> Int32 { let b = Box::Val(5); match b { Val(n) => { let s: String = n; } _ => println(\"-\"); } return 0; }",
+            "expected String, found Int64",
+        );
+    }
+
+    #[test]
+    fn test_match_payload_binding_container() {
+        // Container-Payloads bleiben elementgenau (List<String> → String)
+        ok("enum Box { Val(List<String>), Nix }\nfn main() -> Int32 { let b = Box::Val([\"a\"]); match b { Val(xs) => { let s: String = xs[0]; } _ => println(\"-\"); } return 0; }");
     }
 
     #[test]

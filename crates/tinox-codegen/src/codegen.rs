@@ -6325,7 +6325,11 @@ impl CodeGen {
 
                 // Find the struct type and field offset
                 let struct_name = match &obj.node {
-                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned(),
+                    ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
+                        // Fallback: Typecheck-Tabelle — z. B. Klassen-Payloads
+                        // aus match-Bindungen, die bind_match_payload als
+                        // "Other" (ungetypt) bindet
+                        .or_else(|| self.expr_markers.get(&obj.id).cloned()),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
                 };
