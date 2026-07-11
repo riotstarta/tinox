@@ -2255,6 +2255,7 @@ impl TypeChecker {
             ExprKind::EnumValue {
                 enum_name,
                 variant,
+                type_args: _,
                 args,
             } => {
                 // Check if this is actually a static method call: ClassName::method(args)

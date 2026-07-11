@@ -16,12 +16,6 @@ ok()   { echo "OK"; }
 bad()  { echo "FAIL"; FAIL=1; }
 
 echo "== Dogfood: examples bauen =="
-# Bekannt kaputte Beispiele (vorbestehend, siehe TESTPLAN Phase 3):
-#   rest_with_mini.tnx  — Json::deserialize<T>: der Parser verwirft die
-#     expliziten Typargumente (parser.rs "Skip optional generic type args"),
-#     und generische Methoden (fnc serialize<T>/deserialize<T> in json.tnx)
-#     werden nie monomorphisiert → Call auf undefiniertes @Json_deserialize.
-#     Braucht: type_args im EnumValue-AST + Methoden-Monomorphisierung.
 GOOD_EXAMPLES=(
     examples/examples.tnx
     examples/cli_test.tnx
@@ -32,6 +26,7 @@ GOOD_EXAMPLES=(
     examples/modules/main.tnx
     examples/modules/multi_import.tnx
     examples/interface_extends.tnx
+    examples/rest_with_mini.tnx
 )
 for f in "${GOOD_EXAMPLES[@]}"; do
     step "$f"

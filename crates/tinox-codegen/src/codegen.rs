@@ -147,6 +147,12 @@ pub struct CodeGen {
     spawn_counter: usize,
     /// Generic function AST nodes (not directly compiled, monomorphized on demand)
     generic_fns: HashMap<String, tinox_parser::Function>,
+    /// Generische Methoden nicht-generischer Klassen, Key "Class_method" —
+    /// werden am Call-Site monomorphisiert (Json::deserialize<User>).
+    generic_methods: HashMap<String, tinox_parser::Method>,
+    /// Aktive Typparameter-Bindungen während der Emission einer
+    /// Spezialisierung: "T" -> "User" (löst T::fromJson auf).
+    type_param_aliases: HashMap<String, String>,
     /// Generic class AST nodes (not directly compiled, monomorphized on demand)
     generic_classes: HashMap<String, tinox_parser::Class>,
     /// Already-generated specializations (mangled_name already emitted)
@@ -228,6 +234,8 @@ impl CodeGen {
             fn_sigs: HashMap::new(),
             spawn_counter: 0,
             generic_fns: HashMap::new(),
+            generic_methods: HashMap::new(),
+            type_param_aliases: HashMap::new(),
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
             known_enum_variants: HashSet::new(),
@@ -557,20 +565,6 @@ impl CodeGen {
         }
     }
 
-    /// True for declared return/field types `List<String>` and `Array<String>` —
-    /// used to type such values as "Array:String" so element access yields strings.
-    fn is_string_list_type(ty: &tinox_parser::Type) -> bool {
-        use tinox_parser::Type;
-        match ty {
-            Type::Array(inner) => matches!(inner.as_ref(), Type::String),
-            Type::Generic { name, args } => {
-                (name == "List" || name == "Array")
-                    && matches!(args.first(), Some(Type::String))
-            }
-            _ => false,
-        }
-    }
-
     fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
         use tinox_parser::Type;
         // Containers (List/Array/Map, auch verschachtelt) → Marker
@@ -758,6 +752,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_list_serialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
@@ -1021,6 +1016,12 @@ impl CodeGen {
 
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
+                    if !method.type_params.is_empty() {
+                        // Monomorphisierung am Call-Site; keine normale
+                        // Registrierung (die würde T als i64* einloggen)
+                        self.generic_methods.insert(key, method.clone());
+                        continue;
+                    }
                     self.method_impl.insert(key.clone(), key.clone());
                     self.method_ret_types.insert(
                         format!("{}_{}", c.name, method.name),
@@ -1724,13 +1725,13 @@ impl CodeGen {
             ctx.locals.insert(p.name.clone(), (llvm_ty.clone(), i));
             ctx.params.insert(p.name.clone());
 
-            // Track parameter types for struct/class types and arrays
+            // Track parameter types for struct/class types and containers
             if let Type::Named(class_name) = &p.param_type {
                 ctx.local_types.insert(p.name.clone(), class_name.clone());
-            } else if matches!(&p.param_type, Type::Array(inner) if matches!(inner.as_ref(), Type::String))
-                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array")
-                || matches!(&p.param_type, Type::Generic { name, args } if name == "List" && matches!(args.first(), Some(Type::String))) {
-                ctx.local_types.insert(p.name.clone(), "Array:String".to_string());
+            } else if let Some(marker) = Self::container_marker(&p.param_type) {
+                if marker != "Array" {
+                    ctx.local_types.insert(p.name.clone(), marker);
+                }
             }
         }
 
@@ -1849,10 +1850,10 @@ impl CodeGen {
             ctx.params.insert(p.name.clone());
             if let Type::Named(cn) = &p.param_type {
                 ctx.local_types.insert(p.name.clone(), cn.clone());
-            } else if matches!(&p.param_type, Type::Array(inner) if matches!(inner.as_ref(), Type::String))
-                || matches!(&p.param_type, Type::Generic { name, .. } if name == "Array")
-                || matches!(&p.param_type, Type::Generic { name, args } if name == "List" && matches!(args.first(), Some(Type::String))) {
-                ctx.local_types.insert(p.name.clone(), "Array:String".to_string());
+            } else if let Some(marker) = Self::container_marker(&p.param_type) {
+                if marker != "Array" {
+                    ctx.local_types.insert(p.name.clone(), marker);
+                }
             }
         }
 
@@ -5327,6 +5328,30 @@ impl CodeGen {
                     _ => self.infer_struct_type(obj, ctx),
                 };
 
+                // toJson auf List<C> (@JsonSerializable): Elemente über die
+                // generierte C_toJson serialisieren (Runtime-Helper mit fn-ptr).
+                if method == "toJson" && args.is_empty() {
+                    if let Some(cls) = declared_type.as_deref().and_then(|t| t.strip_prefix("List:")) {
+                        if self.json_serializable_classes.iter().any(|c| c == cls) {
+                            let handle = if obj_ty == "i64" {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                                c
+                            } else {
+                                obj_ptr.clone()
+                            };
+                            let result = self.temp();
+                            writeln!(
+                                &mut self.ir,
+                                "{} = call i8* @tinox_json_list_serialize(i64* {}, ptr @{}_toJson)",
+                                result, handle, cls
+                            )
+                            .unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                    }
+                }
+
                 // Array method dispatch: only trigger for explicit Array types or when declared type is
                 // unknown (None) and obj_ty is i64* — never trigger for known struct instances.
                 // Also trigger for i64 objects (ptrtoint'd array pointers) with known array methods.
@@ -6413,8 +6438,17 @@ impl CodeGen {
             ExprKind::EnumValue {
                 enum_name,
                 variant,
+                type_args,
                 args,
             } => {
+                // Typparameter-Alias auflösen: innerhalb einer Spezialisierung
+                // ist `T::fromJson` ein Call auf die gebundene Klasse.
+                let enum_name = &self
+                    .type_param_aliases
+                    .get(enum_name)
+                    .cloned()
+                    .unwrap_or_else(|| enum_name.clone());
+
                 // Special built-in constructors
                 if enum_name == "Map" && variant == "new" {
                     let result = self.temp();
@@ -6422,8 +6456,11 @@ impl CodeGen {
                     return Ok((result, "i8*".to_string()));
                 }
 
-                // If this is actually a static method call (ClassName::method(args)), dispatch to it
+                // Generische statische Methode: am Call-Site monomorphisieren
                 let static_key = format!("{}_{}", enum_name, variant);
+                if let Some(gm) = self.generic_methods.get(&static_key).cloned() {
+                    return self.gen_generic_method_call(&static_key, &gm, type_args, args, ctx);
+                }
                 if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
                     let mut args_parts: Vec<String> = Vec::new();
                     // Instance methods (fn) have an implicit self param — pass null.
@@ -8163,6 +8200,173 @@ impl CodeGen {
     }
 
     /// Produce a mangled name like `identity__i64__double` for a generic instantiation.
+    /// Marker aus infer_struct_type zurück in einen Parser-Typ übersetzen
+    /// (für die Inferenz generischer Typargumente aus Call-Argumenten).
+    fn marker_to_type(marker: &str) -> tinox_parser::Type {
+        use tinox_parser::Type;
+        if let Some(cls) = marker.strip_prefix("List:") {
+            return Type::Generic { name: "List".into(), args: vec![Type::Named(cls.to_string())] };
+        }
+        match marker {
+            "Array:String" => Type::Generic { name: "List".into(), args: vec![Type::String] },
+            "Array:Float" => Type::Generic { name: "List".into(), args: vec![Type::Float64] },
+            m if m == "Array" || m.starts_with("Array:") => {
+                Type::Generic { name: "List".into(), args: vec![Type::Int64] }
+            }
+            "Map" => Type::Map(Box::new(Type::String), Box::new(Type::Int64)),
+            cls => Type::Named(cls.to_string()),
+        }
+    }
+
+    /// Mangling-Suffix aus einem Parser-Typ (behält Klassennamen, anders als
+    /// mangle_generic_name, das über LLVM-Typen geht und Klassen verliert).
+    fn type_suffix(ty: &tinox_parser::Type) -> String {
+        use tinox_parser::Type;
+        match ty {
+            Type::Named(n) => n.clone(),
+            Type::String => "String".into(),
+            Type::Int64 => "Int64".into(),
+            Type::Float64 => "Float64".into(),
+            Type::Bool => "Bool".into(),
+            Type::Generic { name, args } => {
+                let inner: Vec<String> = args.iter().map(Self::type_suffix).collect();
+                format!("{}_{}", name, inner.join("_"))
+            }
+            Type::Array(inner) => format!("List_{}", Self::type_suffix(inner)),
+            Type::Map(_, _) => "Map".into(),
+            _ => "T".into(),
+        }
+    }
+
+    /// Monomorphisiert eine generische statische Methode am Call-Site und
+    /// ruft die Spezialisierung auf. Typargumente kommen explizit
+    /// (Json::deserialize<User>) oder werden aus den Argumenten inferiert
+    /// (Json::serialize(users) über infer_struct_type-Marker).
+    fn gen_generic_method_call(
+        &mut self,
+        static_key: &str,
+        gm: &tinox_parser::Method,
+        type_args: &[tinox_parser::Type],
+        args: &[tinox_parser::Expr],
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        use tinox_parser::Type;
+        // Bindungen: Typparameter -> konkreter Parser-Typ
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        for (i, tp) in gm.type_params.iter().enumerate() {
+            let bound = if let Some(t) = type_args.get(i) {
+                t.clone()
+            } else {
+                // Inferenz: erstes Argument, dessen deklarierter Typ genau
+                // der Typparameter ist, liefert den Marker
+                let mut inferred = None;
+                for (pi, param) in gm.params.iter().enumerate() {
+                    if matches!(&param.param_type, Type::Named(n) if n == tp) {
+                        if let Some(arg) = args.get(pi) {
+                            // Roh-Marker: der Ident-Arm von infer_struct_type
+                            // strippt "List:" (Legacy) — hier brauchen wir den
+                            // Container-Typ selbst, nicht den Elementtyp.
+                            let marker = if let ExprKind::Ident(n) = &arg.node {
+                                ctx.local_types.get(n.as_str()).cloned()
+                            } else {
+                                None
+                            }
+                            .or_else(|| self.infer_struct_type(arg, ctx));
+                            if let Some(marker) = marker {
+                                inferred = Some(Self::marker_to_type(&marker));
+                            }
+                        }
+                        break;
+                    }
+                }
+                inferred.unwrap_or(Type::Int64)
+            };
+            subst.insert(tp.clone(), bound);
+        }
+
+        let suffix: Vec<String> = gm
+            .type_params
+            .iter()
+            .map(|tp| Self::type_suffix(subst.get(tp).unwrap()))
+            .collect();
+        let mangled = format!("{}__{}", static_key, suffix.join("__"));
+
+        let ret_type = Self::substitute_type(&gm.ret_type, &subst);
+        let ret_llvm = Self::type_to_llvm(&ret_type);
+
+        if !self.generated_specializations.contains(&mangled) {
+            self.generated_specializations.insert(mangled.clone());
+            let specialized = tinox_parser::Function {
+                name: mangled.clone(),
+                type_params: vec![],
+                params: gm
+                    .params
+                    .iter()
+                    .map(|prm| tinox_parser::Param {
+                        name: prm.name.clone(),
+                        param_type: Self::substitute_type(&prm.param_type, &subst),
+                        span: prm.span,
+                    })
+                    .collect(),
+                ret_type: ret_type.clone(),
+                body: gm.body.clone(),
+                span: gm.span,
+                is_async: gm.is_async,
+                doc: None,
+                annotations: vec![],
+            };
+            // Signatur + Ret-Klasse registrieren, damit Inferenz am Call-Site greift
+            let param_llvm: Vec<String> = specialized
+                .params
+                .iter()
+                .map(|prm| Self::type_to_llvm(&prm.param_type))
+                .collect();
+            self.fn_sigs.insert(mangled.clone(), (ret_llvm.clone(), param_llvm));
+            if let Type::Named(cls) = &ret_type {
+                if self.defined_classes.contains(cls.as_str()) {
+                    self.method_ret_class.insert(mangled.clone(), cls.clone());
+                }
+            } else if let Some(m) = Self::container_marker(&ret_type) {
+                self.method_ret_class.insert(mangled.clone(), m);
+            }
+            // Emission mit aktiven Aliassen (T::fromJson -> User_fromJson);
+            // in lambda_ir, damit die laufende Funktion nicht zerrissen wird.
+            let saved_aliases = std::mem::take(&mut self.type_param_aliases);
+            for (tp, ty) in &subst {
+                if let Type::Named(cls) = ty {
+                    self.type_param_aliases.insert(tp.clone(), cls.clone());
+                }
+            }
+            let saved_ir = std::mem::take(&mut self.ir);
+            let saved_temp = self.temp_count;
+            self.temp_count = 0;
+            self.gen_fn(&specialized)?;
+            let spec_ir = std::mem::take(&mut self.ir);
+            self.ir = saved_ir;
+            self.temp_count = saved_temp;
+            self.lambda_ir.push_str(&spec_ir);
+            self.type_param_aliases = saved_aliases;
+        }
+
+        // Aufruf der Spezialisierung (fnc = static, kein self)
+        let mut args_parts: Vec<String> = Vec::new();
+        if !gm.static_ {
+            args_parts.push("i64* null".to_string());
+        }
+        for arg in args.iter() {
+            let (v, t) = self.gen_expr(arg, ctx)?;
+            args_parts.push(format!("{} {}", t, v));
+        }
+        let result = self.temp();
+        if ret_llvm == "void" {
+            writeln!(&mut self.ir, "call void @{}({})", mangled, args_parts.join(", ")).unwrap();
+            Ok(("0".to_string(), "void".to_string()))
+        } else {
+            writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_llvm, mangled, args_parts.join(", ")).unwrap();
+            Ok((result, ret_llvm))
+        }
+    }
+
     fn mangle_generic_name(name: &str, type_params: &[String], bindings: &HashMap<String, String>) -> String {
         let suffix: Vec<String> = type_params
             .iter()

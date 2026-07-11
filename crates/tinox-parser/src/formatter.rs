@@ -422,7 +422,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
                     .collect();
                 format!("{} {{ {} }}", name, fs.join(", "))
             }
-            ExprKind::EnumValue { enum_name, variant, args } => {
+            ExprKind::EnumValue { enum_name, variant, args, .. } => {
                 if args.is_empty() {
                     format!("{}::{}", enum_name, variant)
                 } else {

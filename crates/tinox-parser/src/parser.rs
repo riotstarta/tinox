@@ -1052,7 +1052,7 @@ impl Parser {
                             }
                             let span_e = expr.span;
                             expr = Spanned::new(
-                                ExprKind::EnumValue { enum_name: match &expr.node { ExprKind::Ident(n) => n.clone(), _ => method.clone() }, variant: method, args },
+                                ExprKind::EnumValue { enum_name: match &expr.node { ExprKind::Ident(n) => n.clone(), _ => method.clone() }, variant: method, type_args: vec![], args },
                                 span_e,
                             );
                             // Handle chained . after ::
@@ -1757,6 +1757,7 @@ impl Parser {
                         ExprKind::EnumValue {
                             enum_name,
                             variant: name,
+                            type_args: vec![],
                             args,
                         },
                         span,
@@ -1823,18 +1824,15 @@ impl Parser {
                     self.bump(); // consume ::
                     let variant = self.parse_method_name()?;
                     let span = expr.span;
-                    // Skip optional generic type args: `Class::method<T>(args)`
+                    // Explizite generische Typargumente: `Class::method<T>(args)`
+                    let mut type_args = Vec::new();
                     if self.is_generic_method_call() {
                         self.bump(); // consume `<`
-                        let mut depth = 1i32;
-                        while depth > 0 && !self.is_at_end() {
-                            match self.peek().kind {
-                                TokenKind::Less => { self.bump(); depth += 1; }
-                                TokenKind::Greater => { self.bump(); depth -= 1; }
-                                TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
-                                _ => { self.bump(); }
-                            }
+                        type_args.push(self.parse_type()?);
+                        while self.consume(TokenKind::Comma) {
+                            type_args.push(self.parse_type()?);
                         }
+                        self.expect_generic_close()?;
                     }
 
                     let mut args = Vec::new();
@@ -1853,6 +1851,7 @@ impl Parser {
                         ExprKind::EnumValue {
                             enum_name: enum_name.clone(),
                             variant,
+                            type_args,
                             args,
                         },
                         span,
@@ -4415,7 +4414,7 @@ mod tests {
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
-        let ExprKind::EnumValue { enum_name, variant, args } = &e.node else { panic!() };
+        let ExprKind::EnumValue { enum_name, variant, args, .. } = &e.node else { panic!() };
         assert_eq!(enum_name, "Color");
         assert_eq!(variant, "Red");
         assert!(args.is_empty());

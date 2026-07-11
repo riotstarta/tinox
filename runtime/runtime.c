@@ -177,6 +177,31 @@ int64_t* tinox_array_pop(int64_t* h) {
     return h;
 }
 
+// Serialize a list of @JsonSerializable objects: "[" + toJson(elem) joined
+// with "," + "]". to_json is the class's generated ClassName_toJson.
+char* tinox_json_list_serialize(int64_t* h, char* (*to_json)(void*)) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t n = a ? a->len : 0;
+    char** parts = (char**)malloc(sizeof(char*) * (n > 0 ? (size_t)n : 1));
+    size_t total = 2; // "[" + "]"
+    for (int64_t i = 0; i < n; i++) {
+        parts[i] = to_json((void*)(uintptr_t)a->data[i]);
+        total += strlen(parts[i]) + 1; // + ","
+    }
+    char* out = (char*)malloc(total + 1);
+    size_t pos = 0;
+    out[pos++] = '[';
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) out[pos++] = ',';
+        size_t l = strlen(parts[i]);
+        memcpy(out + pos, parts[i], l);
+        pos += l;
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    return out;
+}
+
 // Insert val at index idx (clamped to [0, len]), shifting the tail right.
 int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
     TinoxArray* a = (TinoxArray*)h;

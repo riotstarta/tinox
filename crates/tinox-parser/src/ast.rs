@@ -205,6 +205,8 @@ pub enum ExprKind {
     EnumValue {
         enum_name: Ident,
         variant: Ident,
+        /// Explizite Typargumente: `Json::deserialize<User>(...)`
+        type_args: Vec<Type>,
         args: Vec<Expr>,
     },
 }
