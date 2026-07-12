@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: tinox
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: subnix-work/jgrep-tinox
           path: jgrep-tinox
