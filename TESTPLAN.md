@@ -45,7 +45,9 @@ bestehende Testsuite.
   jgrep-Dogfood (Build + 170 Tests). Suite ist komplett grün: annotations-Test
   gefixt (@Produces/@Consumes mit String-Literal), hpack-Tests gefixt
   (`insert()` auf Listen, `fromCharCode`, Element-Typinferenz für
-  `List<Class>`-Felder). Git-Hook/CI steht noch aus.
+  `List<Class>`-Felder). Pre-push-Hook seit Phase 3; CI seit 2026-07-12:
+  `.github/workflows/check.yml` läuft volles `make check` bei Push/PR,
+  jgrep-tinox wird als Geschwister-Checkout geklont (öffentliches Repo).
 
 ### 0.2 LLVM-IR-Verifier-Gate — ✅ erledigt (2026-07-09)
 - Jedes generierte `.ll` in Tests und optional bei `tinox build` durch

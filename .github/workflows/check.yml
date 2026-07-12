@@ -1,0 +1,52 @@
+# CI-Gate (TESTPLAN 0.1): volles `make check` bei jedem Push/PR —
+# dieselbe Prüfung wie der lokale pre-push-Hook, inklusive Dogfood.
+#
+# Dogfood braucht ein jgrep-tinox-Checkout: lokal liegt es unter
+# ../jgrep-tinox, hier wird es als Geschwister-Verzeichnis ausgecheckt
+# (Repo ist öffentlich, kein Token nötig) und DOGFOOD_DIR zeigt darauf
+# (Makefile-Default ../jgrep-tinox passt zum Layout unten).
+#
+# Toolchain: der Tinox-Compiler ruft llc/opt (llvm), cc (clang/gcc) auf
+# und linkt gegen Boehm-GC (libgc-dev); die ORM-E2E-Tests brauchen die
+# sqlite3-CLI (Fixtures) und libsqlite3-dev (-lsqlite3), sonst würden
+# sie geskippt.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tinox
+
+      - uses: actions/checkout@v4
+        with:
+          repository: subnix-work/jgrep-tinox
+          path: jgrep-tinox
+
+      - name: System-Toolchain installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev sqlite3
+
+      - name: llc/opt verfügbar?
+        run: |
+          llc --version | head -2
+          opt --version | head -2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tinox
+
+      - name: make check
+        run: make -C tinox check
