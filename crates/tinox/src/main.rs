@@ -210,9 +210,27 @@ fn resolve_entry_file(args: &[String]) -> Option<String> {
     None
 }
 
+/// `--checked` (TESTPLAN Phase 4): Runtime mit Heap-Kind-Registry bauen —
+/// Array-/Map-Funktionen prüfen ihre Pointer und brechen bei
+/// Dispatch-Bugs laut ab, statt still Müll zu lesen. Implementiert über
+/// TINOX_CFLAGS, das compile_ll_to_exe an beide cc-Aufrufe durchreicht.
+fn apply_checked_flag(args: &[String]) {
+    if args.iter().any(|a| a == "--checked") {
+        let mut flags = std::env::var("TINOX_CFLAGS").unwrap_or_default();
+        if !flags.contains("-DTINOX_CHECKED") {
+            if !flags.is_empty() {
+                flags.push(' ');
+            }
+            flags.push_str("-DTINOX_CHECKED");
+            std::env::set_var("TINOX_CFLAGS", flags);
+        }
+    }
+}
+
 fn build(args: &[String]) {
     let release = args.iter().any(|a| a == "--release");
     let debug   = args.iter().any(|a| a == "--debug");
+    apply_checked_flag(args);
     let opt = if release { OptLevel::Release } else if debug { OptLevel::Debug } else { OptLevel::Release };
 
     let input_file = match resolve_entry_file(args) {
@@ -643,6 +661,7 @@ fn run_file(args: &[String]) {
     let exe_name = format!(".tinox_tmp_{}", std::process::id());
 
     let opt = if args.iter().any(|a| a == "--debug") { OptLevel::Debug } else { OptLevel::Release };
+    apply_checked_flag(args);
     match compile_file(&input_file, &exe_name, opt) {
         Ok(_) => {
             let status = Command::new(&format!("./{}", exe_name))

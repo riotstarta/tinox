@@ -97,6 +97,95 @@ typedef struct {
     int64_t* data;
 } TinoxArray;
 
+// ---- --checked: Heap-Kind-Registry (TESTPLAN Phase 4) ----
+// Arrays/Maps entstehen ausschließlich über ihre Konstruktoren; in
+// checked-Builds (-DTINOX_CHECKED, via `tinox build --checked`)
+// registrieren die den Pointer, und jede Array-/Map-Runtime-Funktion
+// prüft ihn. Ein Dispatch-Bug (map_len auf einem String, array_push auf
+// einer Map) bricht dann laut ab, statt still Heap-Müll zu lesen
+// (Bug-15-Klasse). Kein ABI-/Layout-Unterschied zum normalen Build —
+// die Registry ist eine Seitentabelle (plain malloc, GC-unsichtbar;
+// Adress-Wiederverwendung wird durch Neuregistrierung im Konstruktor
+// aktualisiert).
+#ifdef TINOX_CHECKED
+#define TINOX_KIND_ARRAY 1
+#define TINOX_KIND_MAP 2
+
+static pthread_mutex_t _tinox_ck_mu = PTHREAD_MUTEX_INITIALIZER;
+static uintptr_t* _tinox_ck_keys = NULL;
+static unsigned char* _tinox_ck_kinds = NULL;
+static size_t _tinox_ck_cap = 0;
+static size_t _tinox_ck_len = 0;
+
+static void _tinox_ck_insert_raw(uintptr_t key, unsigned char kind) {
+    size_t i = (key >> 4) & (_tinox_ck_cap - 1);
+    while (_tinox_ck_keys[i] != 0 && _tinox_ck_keys[i] != key) {
+        i = (i + 1) & (_tinox_ck_cap - 1);
+    }
+    if (_tinox_ck_keys[i] == 0) _tinox_ck_len++;
+    _tinox_ck_keys[i] = key;
+    _tinox_ck_kinds[i] = kind;
+}
+
+static void tinox_checked_register(const void* p, unsigned char kind) {
+    if (!p) return;
+    pthread_mutex_lock(&_tinox_ck_mu);
+    if (_tinox_ck_len * 2 >= _tinox_ck_cap) {
+        size_t new_cap = _tinox_ck_cap ? _tinox_ck_cap * 2 : 1024;
+        uintptr_t* old_keys = _tinox_ck_keys;
+        unsigned char* old_kinds = _tinox_ck_kinds;
+        size_t old_cap = _tinox_ck_cap;
+        _tinox_ck_keys = (uintptr_t*)calloc(new_cap, sizeof(uintptr_t));
+        _tinox_ck_kinds = (unsigned char*)calloc(new_cap, 1);
+        _tinox_ck_cap = new_cap;
+        _tinox_ck_len = 0;
+        for (size_t i = 0; i < old_cap; i++) {
+            if (old_keys[i]) _tinox_ck_insert_raw(old_keys[i], old_kinds[i]);
+        }
+        free(old_keys);
+        free(old_kinds);
+    }
+    _tinox_ck_insert_raw((uintptr_t)p, kind);
+    pthread_mutex_unlock(&_tinox_ck_mu);
+}
+
+static const char* _tinox_ck_kind_name(unsigned char kind) {
+    switch (kind) {
+        case TINOX_KIND_ARRAY: return "Array";
+        case TINOX_KIND_MAP: return "Map";
+        default: return "unregistriert (String/Objekt?)";
+    }
+}
+
+static void tinox_checked_expect(const void* p, unsigned char kind, const char* op) {
+    if (!p) return;
+    unsigned char found = 0;
+    pthread_mutex_lock(&_tinox_ck_mu);
+    if (_tinox_ck_cap) {
+        uintptr_t key = (uintptr_t)p;
+        size_t i = (key >> 4) & (_tinox_ck_cap - 1);
+        while (_tinox_ck_keys[i] != 0) {
+            if (_tinox_ck_keys[i] == key) { found = _tinox_ck_kinds[i]; break; }
+            i = (i + 1) & (_tinox_ck_cap - 1);
+        }
+    }
+    pthread_mutex_unlock(&_tinox_ck_mu);
+    if (found != kind) {
+        fprintf(stderr,
+            "tinox --checked: %s auf %s-Pointer %p (erwartet: %s) — "
+            "Codegen-Dispatch-Bug, bitte mit Quelldatei melden\n",
+            op, _tinox_ck_kind_name(found), p, _tinox_ck_kind_name(kind));
+        abort();
+    }
+}
+
+#define TINOX_CK_REG(p, k) tinox_checked_register((p), (k))
+#define TINOX_CK_EXPECT(p, k, op) tinox_checked_expect((p), (k), (op))
+#else
+#define TINOX_CK_REG(p, k) ((void)0)
+#define TINOX_CK_EXPECT(p, k, op) ((void)0)
+#endif
+
 int64_t* tinox_array_new(int64_t len, int64_t cap) {
     if (cap < len) cap = len;
     if (cap < 4) cap = 4;
@@ -104,6 +193,7 @@ int64_t* tinox_array_new(int64_t len, int64_t cap) {
     a->len = len;
     a->cap = cap;
     a->data = (int64_t*)GC_malloc((size_t)cap * sizeof(int64_t));
+    TINOX_CK_REG(a, TINOX_KIND_ARRAY);
     return (int64_t*)a;
 }
 
@@ -148,6 +238,7 @@ char* tinox_float_to_string(double val) {
 }
 
 int64_t* tinox_array_slice(int64_t* h, int64_t from, int64_t to) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_slice");
     TinoxArray* a = (TinoxArray*)h;
     if (from < 0) from = 0;
     if (to > a->len) to = a->len;
@@ -159,6 +250,7 @@ int64_t* tinox_array_slice(int64_t* h, int64_t from, int64_t to) {
 }
 
 int64_t* tinox_array_push(int64_t* h, int64_t val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_push");
     TinoxArray* a = (TinoxArray*)h;
     if (a->len == a->cap) {
         int64_t ncap = a->cap < 4 ? 4 : a->cap * 2;
@@ -172,6 +264,7 @@ int64_t* tinox_array_push(int64_t* h, int64_t val) {
 }
 
 int64_t* tinox_array_pop(int64_t* h) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_pop");
     TinoxArray* a = (TinoxArray*)h;
     if (a->len > 0) a->len--;
     return h;
@@ -204,6 +297,7 @@ char* tinox_json_list_serialize(int64_t* h, char* (*to_json)(void*)) {
 
 // Insert val at index idx (clamped to [0, len]), shifting the tail right.
 int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_insert");
     TinoxArray* a = (TinoxArray*)h;
     if (idx < 0) idx = 0;
     if (idx > a->len) idx = a->len;
@@ -374,6 +468,7 @@ static void sort_i64_range(int64_t* arr, int64_t lo, int64_t hi) {
 }
 
 int64_t* tinox_array_sort(int64_t* h) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_sort");
     TinoxArray* a = (TinoxArray*)h;
     int64_t len = a->len;
     int64_t* nh = tinox_array_new(len, 0);
@@ -384,6 +479,7 @@ int64_t* tinox_array_sort(int64_t* h) {
 }
 
 int64_t* tinox_array_reverse(int64_t* h) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_reverse");
     TinoxArray* a = (TinoxArray*)h;
     int64_t len = a->len;
     int64_t* nh = tinox_array_new(len, 0);
@@ -393,18 +489,21 @@ int64_t* tinox_array_reverse(int64_t* h) {
 }
 
 int64_t tinox_array_contains(int64_t* h, int64_t val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_contains");
     TinoxArray* a = (TinoxArray*)h;
     for (int64_t i = 0; i < a->len; i++) if (a->data[i] == val) return 1;
     return 0;
 }
 
 int64_t tinox_array_index_of(int64_t* h, int64_t val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_indexOf");
     TinoxArray* a = (TinoxArray*)h;
     for (int64_t i = 0; i < a->len; i++) if (a->data[i] == val) return i;
     return -1;
 }
 
 int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_removeAt");
     TinoxArray* a = (TinoxArray*)h;
     if (idx < 0 || idx >= a->len) return h;
     for (int64_t i = idx; i < a->len - 1; i++) a->data[i] = a->data[i + 1];
@@ -522,6 +621,7 @@ static void map_rehash(TinoxMap* m); // forward declaration
 
 // Reset a map without freeing keys/entries (for static maps with borrowed_keys=1)
 static void tinox_map_reset(TinoxMap* m) {
+    TINOX_CK_REG(m, TINOX_KIND_MAP);
     m->len = 0;
     memset(m->entries, 0, m->cap * sizeof(TinoxMapEntry));
 }
@@ -567,10 +667,12 @@ void* tinox_map_create(void) {
     m->len          = 0;
     m->entries      = calloc(m->cap, sizeof(TinoxMapEntry));
     m->borrowed_keys = 0;
+    TINOX_CK_REG(m, TINOX_KIND_MAP);
     return m;
 }
 
 void tinox_map_set(void* map, const char* key, int64_t value) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_set");
     TinoxMap* m = (TinoxMap*)map;
     if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM)
         map_rehash(m);
@@ -592,6 +694,7 @@ void tinox_map_set(void* map, const char* key, int64_t value) {
 }
 
 int64_t tinox_map_get(void* map, const char* key) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_get");
     TinoxMap* m = (TinoxMap*)map;
     size_t idx = map_hash(key, m->cap);
     while (1) {
@@ -603,6 +706,7 @@ int64_t tinox_map_get(void* map, const char* key) {
 }
 
 int64_t tinox_map_contains(void* map, const char* key) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_contains");
     TinoxMap* m = (TinoxMap*)map;
     size_t idx = map_hash(key, m->cap);
     while (1) {
@@ -614,6 +718,7 @@ int64_t tinox_map_contains(void* map, const char* key) {
 }
 
 void tinox_map_remove(void* map, const char* key) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_remove");
     TinoxMap* m = (TinoxMap*)map;
     size_t idx = map_hash(key, m->cap);
     while (1) {
@@ -630,10 +735,12 @@ void tinox_map_remove(void* map, const char* key) {
 }
 
 int64_t tinox_map_len(void* map) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_len");
     return (int64_t)((TinoxMap*)map)->len;
 }
 
 int64_t* tinox_map_keys(void* map) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_keys");
     TinoxMap* m = (TinoxMap*)map;
     int64_t* nh = tinox_array_new((int64_t)m->len, 0);
     int64_t* nd = ((TinoxArray*)nh)->data;
@@ -647,6 +754,7 @@ int64_t* tinox_map_keys(void* map) {
 }
 
 int64_t* tinox_map_values(void* map) {
+    TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_values");
     TinoxMap* m = (TinoxMap*)map;
     int64_t* nh = tinox_array_new((int64_t)m->len, 0);
     int64_t* nd = ((TinoxArray*)nh)->data;
@@ -1306,6 +1414,7 @@ static TinoxMap* make_static_map(TinoxMap* m, size_t cap) {
     m->cap          = cap;
     m->len          = 0;
     m->borrowed_keys = 1;
+    TINOX_CK_REG(m, TINOX_KIND_MAP);
     return m;
 }
 
@@ -1679,6 +1788,7 @@ static void* json_obj_map_create(void) {
     m->entries = (TinoxMapEntry*)json_arena_alloc(4 * sizeof(TinoxMapEntry));
     memset(m->entries, 0, 4 * sizeof(TinoxMapEntry));
     m->borrowed_keys = 1;
+    TINOX_CK_REG(m, TINOX_KIND_MAP);
     return m;
 }
 

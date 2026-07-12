@@ -5,7 +5,7 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan
+.PHONY: check test e2e dogfood install-hooks asan checked
 
 check: test e2e dogfood
 
@@ -31,6 +31,15 @@ asan:
 	cargo build --release
 	TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" \
 	ASAN_OPTIONS="detect_leaks=0" \
+	cargo test --release -p tinox --test e2e --test boundary
+
+# Checked-Lauf (TESTPLAN Phase 4): E2E- + Grenzwert-Suite mit
+# Heap-Kind-Registry (-DTINOX_CHECKED, siehe `tinox build --checked`).
+# Array-/Map-Runtime-Funktionen prüfen ihre Pointer — Dispatch-Bugs
+# brechen laut ab. Grün = keine False Positives im gesamten Testbestand.
+checked:
+	cargo build --release
+	TINOX_CFLAGS="-DTINOX_CHECKED" \
 	cargo test --release -p tinox --test e2e --test boundary
 
 # Git-Hooks aktivieren (pre-push führt `make check` aus)

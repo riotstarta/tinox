@@ -288,6 +288,19 @@ Map-Heuristik) erzeugen systematisch die Bug-Klasse aus bugs.md.
 - **Debug-Modus mit Typ-Tags (optional):** `tinox build --checked` gibt
   Heap-Objekten ein Tag-Wort; Runtime-Funktionen prüfen es und brechen laut
   ab („map_len auf String bei x.tnx:12") statt still Müll zu lesen.
+  — ✅ umgesetzt 2026-07-12 als Heap-Kind-Registry statt Tag-Wort (kein
+  ABI-Unterschied: Seitentabelle, Strings/Literale bleiben nackte char*).
+  Array-/Map-Konstruktoren (tinox_array_new, tinox_map_create,
+  make_static_map, json_obj_map_create) registrieren, alle Array-/Map-
+  Runtime-Funktionen prüfen und abort()en mit klarer Meldung.
+  `tinox build/run --checked` (via TINOX_CFLAGS -DTINOX_CHECKED),
+  `make checked` = E2E+Grenzwerte im Checked-Modus. Validiert: E2E,
+  Matrix und kompletter Dogfood (jgrep, Any-lastig) ohne False
+  Positives; ein Arena-Map-Konstruktor im JSON-Parser wurde dabei als
+  dritter Registrierungspunkt gefunden. Demo: map_get über ungetypte
+  Lambda-Param auf einem String → sofortiger Abbruch mit
+  „map_get auf unregistriert (String/Objekt?)-Pointer" statt stillem
+  Absturz.
 
 ---
 
