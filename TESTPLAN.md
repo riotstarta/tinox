@@ -195,6 +195,9 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   (plain calloc, Leaks Absicht, detect_leaks=0); `TINOX_CFLAGS` wird vom
   Compiler an beide cc-Aufrufe durchgereicht. Erster Lauf: sauber.
   Bewusst nicht Teil von `make check` (Laufzeit); wöchentlich/pre-release.
+  Seit 2026-07-15 als `.github/workflows/deep-checks.yml` scharf: Cron
+  montags 04:17 UTC + `workflow_dispatch`, Matrix `asan`/`checked`
+  (letzteres = Phase-4-Heap-Kind-Registry, s. u.).
 
 ---
 
@@ -211,14 +214,13 @@ institutionalisieren:
   Situation aus dem ygrep-Port (Array:String-Fix brach den Evaluator) wäre
   damit vor dem Commit sichtbar gewesen, nicht danach.
 - **Stand:** `scripts/dogfood.sh` (via `make dogfood`, Teil von
-  `make check`): 6 examples bauen + 3 Smoke-Runs mit Soll-Ausgabe,
-  3 benchmarks kompilieren, jgrep bauen + 5 Suiten (170 Tests);
-  `DOGFOOD_DIR` konfigurierbar. Pre-push-Hook: `.githooks/pre-push`
-  führt `make check` aus, aktiviert per `make install-hooks`
-  (core.hooksPath). Bekannt kaputte Beispiele (vorbestehend, im Skript
-  dokumentiert): examples.tnx (Int32/Int64-Mix), interface_extends +
-  mini_http (Library ohne main), rest_with_mini (@Json_deserialize
-  fehlt), modules/multi_import (alte `::`-Importsyntax).
+  `make check`): 10 examples bauen + 5 Smoke-Runs mit Soll-Ausgabe,
+  3 benchmarks kompilieren, jgrep bauen + 5 Suiten; `DOGFOOD_DIR`
+  konfigurierbar. Pre-push-Hook: `.githooks/pre-push` führt `make check`
+  aus, aktiviert per `make install-hooks` (core.hooksPath). Die früher
+  hier vermerkten „bekannt kaputten" Beispiele (examples.tnx,
+  interface_extends, mini_http, rest_with_mini, modules/multi_import)
+  bauen inzwischen alle sauber (geprüft 2026-07-15) — Vermerk entfernt.
 
 ---
 
