@@ -129,7 +129,7 @@ fn module_names_from_imports(source: &tinox_parser::ast::SourceFile) -> Vec<Stri
     use tinox_parser::ast::DeclKind;
     source.decls.iter().filter_map(|d| {
         if let DeclKind::Import(imp) = &d.node {
-            imp.path.last().map(|s| s.clone())
+            imp.path.last().cloned()
         } else {
             None
         }
@@ -432,7 +432,7 @@ fn completions_generic() -> Vec<tower_lsp::lsp_types::CompletionItem> {
 async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(|client| Backend::new(client));
+    let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 

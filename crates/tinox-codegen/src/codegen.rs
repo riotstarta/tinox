@@ -421,7 +421,7 @@ impl CodeGen {
         for f in &c.fields {
             if let tinox_parser::Type::Fn { params, ret } = &f.field_type {
                 let ret_ty = Self::type_to_llvm(ret);
-                let param_tys: Vec<String> = params.iter().map(|p| Self::type_to_llvm(p)).collect();
+                let param_tys: Vec<String> = params.iter().map(Self::type_to_llvm).collect();
                 result.insert(f.name.clone(), (ret_ty, param_tys));
             }
         }
@@ -635,14 +635,14 @@ impl CodeGen {
     }
 
     /// Infer the struct/class type name for an expression (for nested field access).
-    fn infer_struct_type<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
+    fn infer_struct_type(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         self.infer_struct_type_local(expr, ctx)
             // Fallback: Marker aus dem Typecheck (expr_markers) — greift nur,
             // wenn die lokalen Heuristiken nichts wissen, und überstimmt sie nie
             .or_else(|| self.expr_markers.get(&expr.id).cloned())
     }
 
-    fn infer_struct_type_local<'a>(&'a self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
+    fn infer_struct_type_local(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         use tinox_parser::ExprKind;
         match &expr.node {
             ExprKind::Ident(name) => {
@@ -1037,7 +1037,7 @@ impl CodeGen {
                 .filter_map(|f| {
                     if let tinox_parser::Type::Fn { params, ret } = &f.param_type {
                         let r = Self::type_to_llvm(ret);
-                        let ps: Vec<String> = params.iter().map(|p| Self::type_to_llvm(p)).collect();
+                        let ps: Vec<String> = params.iter().map(Self::type_to_llvm).collect();
                         Some((f.name.clone(), (r, ps)))
                     } else { None }
                 })
@@ -1855,7 +1855,7 @@ impl CodeGen {
 
         self.gen_stmt_body(&f.body, &mut ctx)?;
 
-        let has_terminator = self.ir.lines().last().map_or(false, |l| {
+        let has_terminator = self.ir.lines().last().is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -1974,7 +1974,7 @@ impl CodeGen {
 
         self.gen_stmt_body(&method.body, &mut ctx)?;
 
-        let has_terminator = self.ir.lines().last().map_or(false, |l| {
+        let has_terminator = self.ir.lines().last().is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -2337,7 +2337,7 @@ impl CodeGen {
                 };
                 obj_class.and_then(|cn| {
                     ctx.local_types.get(&format!("{}.{}", cn, field)).cloned()
-                        .or_else(|| None)
+                        .or(None)
                 })
             }
             _ => None,
@@ -2393,9 +2393,7 @@ impl CodeGen {
         for class_name in &affected {
             let key = format!("{}_toString", class_name);
             // Only register if the user hasn't already defined toString()
-            if !self.method_ret_types.contains_key(&key) {
-                self.method_ret_types.insert(key, "i8*".to_string());
-            }
+            self.method_ret_types.entry(key).or_insert_with(|| "i8*".to_string());
         }
     }
 
@@ -2519,9 +2517,7 @@ impl CodeGen {
         let class_names: Vec<String> = self.json_serializable_classes.clone();
         for class_name in &class_names {
             let key = format!("{}_toJson", class_name);
-            if !self.method_ret_types.contains_key(&key) {
-                self.method_ret_types.insert(key, "i8*".to_string());
-            }
+            self.method_ret_types.entry(key).or_insert_with(|| "i8*".to_string());
         }
     }
 
@@ -2529,13 +2525,9 @@ impl CodeGen {
         let class_names: Vec<String> = self.json_serializable_classes.clone();
         for class_name in &class_names {
             let key = format!("{}_fromJson", class_name);
-            if !self.fn_sigs.contains_key(&key) {
-                self.fn_sigs.insert(key, ("i64*".to_string(), vec!["i64*".to_string()]));
-            }
+            self.fn_sigs.entry(key).or_insert_with(|| ("i64*".to_string(), vec!["i64*".to_string()]));
             let ret_key = format!("{}_fromJson", class_name);
-            if !self.method_ret_types.contains_key(&ret_key) {
-                self.method_ret_types.insert(ret_key, "i64*".to_string());
-            }
+            self.method_ret_types.entry(ret_key).or_insert_with(|| "i64*".to_string());
         }
     }
 
@@ -3271,8 +3263,7 @@ impl CodeGen {
             StmtKind::Return(Some(expr)) => {
                 let stmts_to_run: Vec<_> = ctx
                     .defer_stack
-                    .last()
-                    .map(|s| s.clone())
+                    .last().cloned()
                     .unwrap_or_default();
                 for stmt in stmts_to_run.into_iter().rev() {
                     self.gen_stmt_body(&Box::new(stmt), ctx)?;
@@ -3363,7 +3354,7 @@ impl CodeGen {
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         // Container marker from the annotation, else from the first literal element
-                        let ann_marker = ty.as_ref().and_then(|t| Self::container_marker(t));
+                        let ann_marker = ty.as_ref().and_then(Self::container_marker);
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
                         let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
                         if let Some(m) = ann_marker {
@@ -3600,7 +3591,7 @@ impl CodeGen {
                     } else if let ExprKind::ArrayLiteral(elems) = &v.node {
                         llvm_ty = "i64*".to_string();
                         // Container marker from the annotation, else from the first literal element
-                        let ann_marker = ty.as_ref().and_then(|t| Self::container_marker(t));
+                        let ann_marker = ty.as_ref().and_then(Self::container_marker);
                         let is_str_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::String(_)))).unwrap_or(false);
                         let is_float_lit = elems.first().map(|e| matches!(&e.node, ExprKind::Literal(Literal::Float(_)))).unwrap_or(false);
                         if let Some(m) = ann_marker {
@@ -5406,25 +5397,24 @@ impl CodeGen {
                             let _ = param_tys; // static confirmed via fn_sigs absence of self
                         }
                         // Only treat as static if the class name is not a local variable
-                        if !ctx.locals.contains_key(class_name.as_str()) && !ctx.params.contains(class_name.as_str()) {
-                            if self.struct_layouts.contains_key(class_name.as_str()) {
-                                let mut args_str = String::new();
-                                for (i, arg) in args.iter().enumerate() {
-                                    if i > 0 { args_str.push_str(", "); }
-                                    let (v, t) = self.gen_expr(arg, ctx)?;
-                                    args_str.push_str(&format!("{} {}", t, v));
-                                }
-                                let ret_ty = self.method_ret_types.get(&method_key).cloned()
-                                    .unwrap_or_else(|| "i64".to_string());
-                                if ret_ty == "void" {
-                                    writeln!(&mut self.ir, "call void @{}({})", method_key, args_str).unwrap();
-                                    return Ok(("0".to_string(), "void".to_string()));
-                                }
-                                let result = self.temp();
-                                writeln!(&mut self.ir, "{} = call {} @{}({})",
-                                    result, ret_ty, method_key, args_str).unwrap();
-                                return Ok((result, ret_ty));
+                        if !ctx.locals.contains_key(class_name.as_str()) && !ctx.params.contains(class_name.as_str())
+                            && self.struct_layouts.contains_key(class_name.as_str()) {
+                            let mut args_str = String::new();
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { args_str.push_str(", "); }
+                                let (v, t) = self.gen_expr(arg, ctx)?;
+                                args_str.push_str(&format!("{} {}", t, v));
                             }
+                            let ret_ty = self.method_ret_types.get(&method_key).cloned()
+                                .unwrap_or_else(|| "i64".to_string());
+                            if ret_ty == "void" {
+                                writeln!(&mut self.ir, "call void @{}({})", method_key, args_str).unwrap();
+                                return Ok(("0".to_string(), "void".to_string()));
+                            }
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call {} @{}({})",
+                                result, ret_ty, method_key, args_str).unwrap();
+                            return Ok((result, ret_ty));
                         }
                     }
                 }
@@ -5620,16 +5610,11 @@ impl CodeGen {
                 }
 
                 // String method dispatch for split
-                if obj_ty == "i8*" {
-                    match method.as_str() {
-                        "split" => {
-                            let (delim, _) = self.gen_expr(&args[0], ctx)?;
-                            let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_split(i8* {}, i8* {})", result, obj_ptr, delim).unwrap();
-                            return Ok((result, "i64*".to_string()));
-                        }
-                        _ => {}
-                    }
+                if obj_ty == "i8*" && method.as_str() == "split" {
+                    let (delim, _) = self.gen_expr(&args[0], ctx)?;
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64* @tinox_string_split(i8* {}, i8* {})", result, obj_ptr, delim).unwrap();
+                    return Ok((result, "i64*".to_string()));
                 }
 
                 // Map method dispatch — also handle i64 objects that may be ptrtoint'd
@@ -7922,7 +7907,7 @@ impl CodeGen {
             &Spanned::new(StmtKind::Return(Some(body.clone())), Span::dummy()),
             &mut lambda_ctx,
         )?;
-        let has_terminator = self.ir.lines().last().map_or(false, |l| {
+        let has_terminator = self.ir.lines().last().is_some_and(|l| {
             l.trim().starts_with("ret ") || l.trim().starts_with("br ")
         });
         if !has_terminator {

@@ -892,7 +892,8 @@ impl TypeChecker {
                 params: vec![("v".to_string(), ValueType::Any)], return_type: ret,
             });
         }
-        for name in &["HttpResponse_statusCode"] {
+        {
+            let name = &"HttpResponse_statusCode";
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string()))],
                 return_type: ValueType::Int,
@@ -1854,7 +1855,7 @@ impl TypeChecker {
                     self.check_stmt(&catch.body);
                 }
                 if let Some(finally_body) = finally {
-                    self.check_stmt(&finally_body);
+                    self.check_stmt(finally_body);
                 }
                 false
             }
@@ -1981,7 +1982,7 @@ impl TypeChecker {
                         }
                         for (arg, (_, expected_ty)) in args.iter().zip(expected_params.iter()) {
                             let arg_ty = self.infer_type(arg);
-                            if !self.types_compatible(&expected_ty, &arg_ty) {
+                            if !self.types_compatible(expected_ty, &arg_ty) {
                                 self.errors.push(TypeError::TypeMismatch {
                                     expected: expected_ty.display(),
                                     found: arg_ty.display(),
@@ -2024,7 +2025,7 @@ impl TypeChecker {
 
                 let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
                 let mut call_args = vec![(**obj).clone()];
-                call_args.extend(args.iter().map(|e| e.clone()));
+                call_args.extend(args.iter().cloned());
                 let generic_ret = self.check_call(&func_expr, &call_args, expr.span);
                 // Receiver-abhängige Ergebnistypen, die statische Signaturen
                 // nicht ausdrücken können: erst check_call (validiert die
@@ -2315,7 +2316,7 @@ impl TypeChecker {
                 // Return statements in the lambda body belong to the lambda,
                 // not the enclosing function: check them against the lambda's
                 // annotated return type, or not at all if unannotated.
-                let lambda_ret = ret_type.as_ref().map(|t| Self::type_to_value(t));
+                let lambda_ret = ret_type.as_ref().map(Self::type_to_value);
                 let saved_return_type =
                     std::mem::replace(&mut self.current_return_type, lambda_ret);
                 let body_ty = self.infer_type(body);
@@ -2323,7 +2324,7 @@ impl TypeChecker {
                 self.symbols.exit_scope(saved_vars);
                 let _ret = ret_type
                     .as_ref()
-                    .map(|t| Self::type_to_value(t))
+                    .map(Self::type_to_value)
                     .unwrap_or(body_ty);
                 ValueType::Fn
             }

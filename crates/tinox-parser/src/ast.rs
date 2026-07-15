@@ -379,18 +379,15 @@ pub struct Method {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum Visibility {
+    #[default]
     Public,
     Private,
     Protected,
     Package,
 }
 
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Public
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct FieldDef {

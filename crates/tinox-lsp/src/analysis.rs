@@ -820,7 +820,7 @@ fn clone_class_info(src: &ClassInfo) -> ClassInfo {
 /// Extracts the dot-receiver chain from the text ending with `.` or `.partial_ident`.
 /// e.g. `"ctx."` → `["ctx"]`, `"ctx.re"` → `["ctx"]`, `"ctx.response."` → `["ctx", "response"]`
 fn extract_dot_chain(text: &str) -> Option<Vec<String>> {
-    let trimmed = text.trim_end_matches(|c: char| c == ' ' || c == '\t');
+    let trimmed = text.trim_end_matches([' ', '\t']);
     // strip partial identifier the user may have started typing after the last dot
     let trimmed = trimmed.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
     if !trimmed.ends_with('.') {
@@ -1098,11 +1098,7 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             })
         }
         DeclKind::Class(c) => {
-            let detail = if let Some(doc) = &c.doc {
-                Some(format_doc(doc))
-            } else {
-                None
-            };
+            let detail = c.doc.as_ref().map(|doc| format_doc(doc));
             let children: Vec<_> = c
                 .methods
                 .iter()
@@ -1136,20 +1132,12 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             })
         }
         DeclKind::Enum(e) => {
-            let detail = if let Some(doc) = &e.doc {
-                Some(format_doc(doc))
-            } else {
-                None
-            };
+            let detail = e.doc.as_ref().map(|doc| format_doc(doc));
             let children: Vec<_> = e
                 .variants
                 .iter()
                 .map(|v| {
-                    let variant_detail = if let Some(doc) = &v.doc {
-                        Some(format_doc(doc))
-                    } else {
-                        None
-                    };
+                    let variant_detail = v.doc.as_ref().map(|doc| format_doc(doc));
                     DocumentSymbol {
                         name: v.name.clone(),
                         detail: variant_detail,
@@ -1174,11 +1162,7 @@ fn decl_to_symbol(decl: &Decl) -> Option<tower_lsp::lsp_types::DocumentSymbol> {
             })
         }
         DeclKind::Interface(i) => {
-            let detail = if let Some(doc) = &i.doc {
-                Some(format_doc(doc))
-            } else {
-                None
-            };
+            let detail = i.doc.as_ref().map(|doc| format_doc(doc));
             Some(DocumentSymbol {
                 name: i.name.clone(),
                 detail,

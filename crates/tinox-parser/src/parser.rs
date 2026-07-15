@@ -1724,7 +1724,7 @@ impl Parser {
                 // `TypeName.Variant` → enum variant only when:
                 //   (a) no parens: `Direction.North`
                 //   (b) named-arg parens: `Direction.Diagonal(dx: 1, dy: 1)`
-                let is_type_access = matches!(&expr.node, ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase()));
+                let is_type_access = matches!(&expr.node, ExprKind::Ident(n) if n.chars().next().is_some_and(|c| c.is_uppercase()));
                 let has_named_args = self.check(TokenKind::LParen)
                     && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Ident(_)))
                     && matches!(self.peek_ahead(2).map(|t| t.kind), Some(TokenKind::Colon));
@@ -2010,7 +2010,7 @@ impl Parser {
                         ),
                         InterpPart::Expr(src) => {
                             // Re-lex and re-parse the expression source
-                            let inner_expr = Parser::parse_expr_str(&src, span)?;
+                            let inner_expr = Parser::parse_expr_str(src, span)?;
                             // Wrap in toString(inner_expr)
                             Spanned::new(
                                 ExprKind::Call {
@@ -2138,8 +2138,8 @@ impl Parser {
                 Ok(Spanned::new(ExprKind::Channel, token.span))
             }
             TokenKind::Backslash => self.parse_lambda(),
-            TokenKind::Keyword(Keyword::Fnc) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fnc_lambda(),
-            TokenKind::Keyword(Keyword::Fn) if self.peek_ahead(1).map_or(false, |t| matches!(t.kind, TokenKind::LParen)) => self.parse_fn_lambda(),
+            TokenKind::Keyword(Keyword::Fnc) if self.peek_ahead(1).is_some_and(|t| matches!(t.kind, TokenKind::LParen)) => self.parse_fnc_lambda(),
+            TokenKind::Keyword(Keyword::Fn) if self.peek_ahead(1).is_some_and(|t| matches!(t.kind, TokenKind::LParen)) => self.parse_fn_lambda(),
             TokenKind::LParen => {
                 // Peek ahead: `(ident :` → typed lambda params
                 let is_typed_lambda = matches!(
@@ -2151,7 +2151,7 @@ impl Parser {
                     let ty_name = self.peek_ahead(1).and_then(|t| if let TokenKind::Ident(s) = &t.kind { Some(s.clone()) } else { None });
                     let after_ty = self.peek_ahead(2).map(|t| t.kind.clone());
                     let after_rparen = self.peek_ahead(3).map(|t| t.kind.clone());
-                    let is_primitive = ty_name.as_deref().map_or(false, |s| matches!(s,
+                    let is_primitive = ty_name.as_deref().is_some_and(|s| matches!(s,
                         "Int8"|"Int16"|"Int32"|"Int64"|"UInt8"|"UInt16"|"UInt32"|"UInt64"|"Float32"|"Float64"|"Bool"|"Char"|"String"
                     ));
                     let after_is_rparen = matches!(after_ty, Some(TokenKind::RParen));
@@ -3331,6 +3331,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 testet Float-Parsing, nicht PI
     fn test_expr_float_literal() {
         let d = first_decl("fn f() { let x = 3.14; }");
         let DeclKind::Function(f) = d else { panic!() };

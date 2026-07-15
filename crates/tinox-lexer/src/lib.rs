@@ -716,7 +716,7 @@ impl<'a> Lexer<'a> {
             'x' => {
                 let d1 = self.read_hex_digit()?;
                 let d2 = self.read_hex_digit()?;
-                let code = (d1 * 16 + d2) as u32;
+                let code = d1 * 16 + d2 ;
                 char::from_u32(code).ok_or_else(|| Error::new(self.mk_span(), "invalid hex escape"))
             }
             'u' => {
@@ -725,7 +725,7 @@ impl<'a> Lexer<'a> {
                 let mut count = 0;
                 while self.peek() != '}' && count < 6 {
                     let d = self.read_hex_digit()?;
-                    value = value * 16 + d as u32;
+                    value = value * 16 + d;
                     count += 1;
                 }
                 self.expect_char('}')?;
@@ -735,7 +735,7 @@ impl<'a> Lexer<'a> {
             'U' => {
                 let mut value = 0u32;
                 for _ in 0..8 {
-                    value = value * 16 + self.read_hex_digit()? as u32;
+                    value = value * 16 + self.read_hex_digit()?;
                 }
                 char::from_u32(value)
                     .ok_or_else(|| Error::new(self.mk_span(), "invalid unicode escape"))
@@ -1336,6 +1336,7 @@ mod tests {
     // --- Float literals ---
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 testet Float-Lexing, nicht PI
     fn test_float_basic() {
         let toks = lex_kinds("3.14");
         assert!(matches!(toks[0], TokenKind::Float(f) if (f - 3.14).abs() < 1e-10));
@@ -1970,6 +1971,7 @@ mod tests {
     // ================================================================
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 testet Float-Lexing, nicht PI
     fn test_float_no_suffix() {
         let toks = lex_kinds("3.14");
         assert!(matches!(toks[0], TokenKind::Float(f) if (f - 3.14).abs() < 0.001));

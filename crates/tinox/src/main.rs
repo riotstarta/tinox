@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tinox_codegen::CodeGen;
-use tinox_common;
 use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
@@ -118,7 +117,7 @@ fn new_project(args: &[String]) {
 
     if !write_file(&root.join("tinox.toml"), &toml) { return; }
     if !write_file(&root.join("tinox.yaml"), &yaml) { return; }
-    if !write_file(&root.join(".gitignore"), &gitignore) { return; }
+    if !write_file(&root.join(".gitignore"), gitignore) { return; }
     if !write_file(&src_dir.join("main.tnx"), &main_tnx) { return; }
     if !write_file(&tests_dir.join("main_test.tnx"), &test_tnx) { return; }
 
@@ -449,7 +448,7 @@ fn repl() {
             open_braces == close_braces
         } else {
             // No braces yet: submit only if the line doesn't look like it needs more input
-            let first = input_buf.trim().split_whitespace().next().unwrap_or("");
+            let first = input_buf.split_whitespace().next().unwrap_or("");
             !matches!(first, "fn" | "class" | "interface" | "enum" | "trait"
                            | "if" | "while" | "for" | "loop"
                            | "let" | "var") // let/var need explicit submit (empty line)
@@ -664,7 +663,7 @@ fn run_file(args: &[String]) {
     apply_checked_flag(args);
     match compile_file(&input_file, &exe_name, opt) {
         Ok(_) => {
-            let status = Command::new(&format!("./{}", exe_name))
+            let status = Command::new(format!("./{}", exe_name))
                 .status()
                 .expect("Failed to run executable");
 
@@ -996,13 +995,10 @@ fn run_tests_once(args: &[String]) {
             total += 1;
             let exe = format!(".tinox_test_{}_{}", std::process::id(), total);
             let result = compile_test_exe(source_path, &t.class_name, &t.method_name, &exe);
-            match result {
-                Err(e) => {
-                    println!("  FAIL  {} — compile error: {}", t.description, e);
-                    failed += 1;
-                    continue;
-                }
-                Ok(_) => {}
+            if let Err(e) = result {
+                println!("  FAIL  {} — compile error: {}", t.description, e);
+                failed += 1;
+                continue;
             }
             let status = Command::new(format!("./{exe}")).status();
             let _ = fs::remove_file(&exe);
@@ -1853,7 +1849,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     if opt_available {
         let bc_path = format!("{}.opt.bc", output_name);
         let opt_status = Command::new("opt")
-            .args(&[opt_flag, "-o", &bc_path, ir_path])
+            .args([opt_flag, "-o", &bc_path, ir_path])
             .status()
             .map_err(|e| format!("opt failed: {}", e))?;
         if !opt_status.success() {
@@ -1867,7 +1863,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     }
 
     let llc_status = Command::new("llc")
-        .args(&[
+        .args([
             llc_opt_flag,
             "-march=x86-64",
             "-filetype=obj",
