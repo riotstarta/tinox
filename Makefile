@@ -5,9 +5,14 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan checked
+.PHONY: check test e2e dogfood install-hooks asan checked clippy
 
-check: test e2e dogfood
+check: clippy test e2e dogfood
+
+# Lint-Gate: 0 Warnings über den ganzen Workspace (Fehler + Tests).
+# Bewusste Ausnahmen stehen als #[allow(...)] mit Begründung im Code.
+clippy:
+	cargo clippy --release --workspace --all-targets -- -D warnings
 
 # Rust-Unit-Tests (Lexer, Parser, Typecheck, Codegen, …)
 test:
