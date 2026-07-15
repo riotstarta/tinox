@@ -147,14 +147,14 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         for field in &c.fields {
             let field_ann = self.fmt_annotations(&field.annotations);
             let field_doc = self.fmt_doc(&field.doc);
-            body.push_str(&format!("{}{}{}{}{}{}{};\n",
+            body.push_str(&format!("{}{}{}{}{}{}: {};\n",
                 field_ann,
                 field_doc,
                 self.ind(),
                 fmt_visibility(&field.visibility),
                 if field.mutable { "var " } else { "" },
                 field.name,
-                format!(": {}", self.fmt_type(&field.field_type))
+                self.fmt_type(&field.field_type)
             ));
         }
         if !c.fields.is_empty() && !c.methods.is_empty() {

@@ -10,6 +10,7 @@ pub use codegen::CliCommandInfo;
 pub use codegen::CliOptionInfo;
 pub use codegen::CliArgumentInfo;
 pub use codegen::LogMaskFieldInfo;
+pub use codegen::AnnotationInfo;
 pub use codegen::MetricEntry;
 pub use codegen::MetricKind;
 pub use codegen::EntityEntry;

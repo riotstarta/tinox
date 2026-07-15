@@ -19,6 +19,7 @@ pub struct Case {
     pub test_mode: bool,
 }
 
+#[allow(dead_code)] // nur von e2e.rs genutzt — andere Test-Binaries teilen sich dieses Modul
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

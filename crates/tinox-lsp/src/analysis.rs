@@ -789,7 +789,7 @@ fn annotation_items() -> Vec<CompletionItem> {
             detail: Some(format!("@{} — {} [{}]", a.name, a.detail, a.target)),
             insert_text: Some(insert_text),
             insert_text_format: Some(tower_lsp::lsp_types::InsertTextFormat::SNIPPET),
-            documentation: Some(mk_doc(&a.doc.to_string())),
+            documentation: Some(mk_doc(a.doc)),
             ..Default::default()
         }
     }).collect()
@@ -847,8 +847,8 @@ fn extract_dot_chain(text: &str) -> Option<Vec<String>> {
         chain.push(ident.to_string());
 
         let before = rest_trimmed[..start].trim_end();
-        if before.ends_with('.') {
-            rest = &before[..before.len() - 1];
+        if let Some(stripped) = before.strip_suffix('.') {
+            rest = stripped;
         } else {
             break;
         }
@@ -945,7 +945,7 @@ fn member_completions(info: &ClassInfo) -> Vec<CompletionItem> {
             label: f.name.clone(),
             kind: Some(CompletionItemKind::FIELD),
             detail: Some(f.type_name.clone()),
-            documentation: f.doc.as_ref().map(mk_doc),
+            documentation: f.doc.as_deref().map(mk_doc),
             ..Default::default()
         });
     }
@@ -954,17 +954,17 @@ fn member_completions(info: &ClassInfo) -> Vec<CompletionItem> {
             label: m.name.clone(),
             kind: Some(CompletionItemKind::METHOD),
             detail: Some(m.signature.clone()),
-            documentation: m.doc.as_ref().map(mk_doc),
+            documentation: m.doc.as_deref().map(mk_doc),
             ..Default::default()
         });
     }
     items
 }
 
-fn mk_doc(d: &String) -> Documentation {
+fn mk_doc(d: &str) -> Documentation {
     Documentation::MarkupContent(MarkupContent {
         kind: MarkupKind::Markdown,
-        value: d.clone(),
+        value: d.to_owned(),
     })
 }
 

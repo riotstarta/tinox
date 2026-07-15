@@ -1029,7 +1029,6 @@ fn run_tests_once(args: &[String]) {
     }
 }
 
-/// Parse a file and return all @Test entries without compiling.
 // ─── tinox doc ────────────────────────────────────────────────────────────────
 
 fn gen_docs(args: &[String]) {
@@ -1387,6 +1386,7 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// Parse a file and return all @Test entries without compiling.
 fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInfo>, String> {
     let source = fs::read_to_string(path)
         .map_err(|e| format!("cannot read: {e}"))?;
@@ -1482,9 +1482,20 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
             field_name: f.field_name.clone(),
         })
         .collect();
-    cg.set_annotation_info(ann.inline_functions, ann.inline_methods, route_entries,
-        di_components, ann.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields,
-        do_not_serialize_fields, ann.json_serializable_classes, vec![]);
+    cg.set_annotation_info(tinox_codegen::AnnotationInfo {
+        inline_fns: ann.inline_functions,
+        inline_meths: ann.inline_methods,
+        routes: route_entries,
+        di_components,
+        log_classes: ann.log_classes,
+        config_fields,
+        cli_commands,
+        sensitive_fields,
+        masked_fields,
+        do_not_serialize_fields,
+        json_serializable_classes: ann.json_serializable_classes,
+        metric_entries: vec![],
+    });
     let entity_entries_test: Vec<tinox_codegen::EntityEntry> = ann.entity_entries
         .iter()
         .map(|e| tinox_codegen::EntityEntry {
@@ -1768,7 +1779,20 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             fn_name:     m.fn_name.clone(),
         })
         .collect();
-    codegen.set_annotation_info(ann_result.inline_functions, ann_result.inline_methods, route_entries, di_components, ann_result.log_classes, config_fields, cli_commands, sensitive_fields, masked_fields, do_not_serialize_fields, ann_result.json_serializable_classes, metric_entries);
+    codegen.set_annotation_info(tinox_codegen::AnnotationInfo {
+        inline_fns: ann_result.inline_functions,
+        inline_meths: ann_result.inline_methods,
+        routes: route_entries,
+        di_components,
+        log_classes: ann_result.log_classes,
+        config_fields,
+        cli_commands,
+        sensitive_fields,
+        masked_fields,
+        do_not_serialize_fields,
+        json_serializable_classes: ann_result.json_serializable_classes,
+        metric_entries,
+    });
     codegen.set_metrics_config(read_metrics_config());
     let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
         .iter()

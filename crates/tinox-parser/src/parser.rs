@@ -409,9 +409,9 @@ impl Parser {
             Visibility::Private
         } else if self.consume_keyword(Keyword::Protected) {
             Visibility::Protected
-        } else if self.consume_keyword(Keyword::Package) {
-            Visibility::Package
         } else {
+            // Explicit `package` or no keyword at all — both default here.
+            self.consume_keyword(Keyword::Package);
             Visibility::Package
         }
     }

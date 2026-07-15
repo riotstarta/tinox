@@ -313,8 +313,13 @@ impl ValueType {
         }
     }
 
-    fn to_string(&self) -> String {
-        match self {
+}
+
+impl std::fmt::Display for ValueType {
+    // Bewusst typgelöscht: liefert Dispatch-Keys ("Array_len", "Map_get") —
+    // niemals Element-Typen anhängen. Für Fehlermeldungen s. display().
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
             ValueType::Int => "Int64".to_string(),
             ValueType::Float => "Float64".to_string(),
             ValueType::Bool => "Bool".to_string(),
@@ -323,8 +328,6 @@ impl ValueType {
             ValueType::Nothing => "Nothing".to_string(),
             ValueType::Never => "Never".to_string(),
             ValueType::Any => "Any".to_string(),
-            // Bewusst typgelöscht: to_string() liefert Dispatch-Keys
-            // ("Array_len", "Map_get") — niemals Element-Typen anhängen.
             ValueType::Array(_) => "Array".to_string(),
             ValueType::Map(_) => "Map".to_string(),
             ValueType::Ref => "Ref".to_string(),
@@ -332,9 +335,10 @@ impl ValueType {
             ValueType::Named(name) => name.clone(),
             ValueType::Tuple => "Tuple".to_string(),
             ValueType::Range => "Range".to_string(),
-            ValueType::Nullable(inner) => format!("{}?", inner.to_string()),
+            ValueType::Nullable(inner) => format!("{}?", inner),
             ValueType::Null => "null".to_string(),
-        }
+        };
+        write!(f, "{}", s)
     }
 }
 
@@ -1426,11 +1430,7 @@ impl TypeChecker {
 
                         // Walk the ancestor chain and collect inherited fields/methods.
                         let mut ancestor = parent_name.clone();
-                        loop {
-                            let Some(pc) = class_map.get(&ancestor) else {
-                                break;
-                            };
-
+                        while let Some(pc) = class_map.get(&ancestor) {
                             for field in &pc.fields {
                                 if child_own_fields.contains(&field.name) {
                                     continue;
@@ -1604,7 +1604,7 @@ impl TypeChecker {
                                         c.span,
                                         format!(
                                             "method '{}' param {} type mismatch in class {}: expected {}, found {}",
-                                            method_name, i, c.name, req_ty.to_string(), class_ty.to_string()
+                                            method_name, i, c.name, req_ty, class_ty
                                         ),
                                     ));
                                 }
@@ -1614,7 +1614,7 @@ impl TypeChecker {
                                     c.span,
                                     format!(
                                         "method '{}' return type mismatch in class {}: expected {}, found {}",
-                                        method_name, c.name, required_sig.return_type.to_string(), class_sig.return_type.to_string()
+                                        method_name, c.name, required_sig.return_type, class_sig.return_type
                                     ),
                                 ));
                             }
@@ -2365,7 +2365,7 @@ impl TypeChecker {
                 if !matches!(start_ty, ValueType::Int) || !matches!(end_ty, ValueType::Int) {
                     self.errors.push(
                         TypeError::InvalidRangeType(
-                            format!("{}..{}", start_ty.to_string(), end_ty.to_string()),
+                            format!("{}..{}", start_ty, end_ty),
                             expr.span,
                         )
                         .to_error(),

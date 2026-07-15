@@ -232,7 +232,7 @@ pub enum Keyword {
 }
 
 impl Keyword {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn lookup(s: &str) -> Option<Self> {
         match s {
             "if" => Some(Keyword::If),
             "else" => Some(Keyword::Else),
@@ -858,17 +858,15 @@ impl<'a> Lexer<'a> {
                 }
             }
 
-            // Check for float suffix
-            let suffix = self.read_float_suffix();
-            
+            // Check for float suffix (f32/f64) — consumed for compatibility, but
+            // TokenKind::Float only carries f64; a distinct Float32 representation
+            // is not yet modeled downstream.
+            let _suffix = self.read_float_suffix();
+
             let text: String = self.chars[start..self.pos].iter().filter(|c| **c != '_').collect();
             let value: f64 = text.parse().unwrap_or(0.0);
-            
-            return Ok(if suffix == FloatType::Float64 {
-                Token::new(TokenKind::Float(value), self.mk_span())
-            } else {
-                Token::new(TokenKind::Float(value), self.mk_span())
-            });
+
+            return Ok(Token::new(TokenKind::Float(value), self.mk_span()));
         }
 
         // Check for integer suffix
@@ -990,7 +988,7 @@ impl<'a> Lexer<'a> {
             return Token::new(TokenKind::Bool(false), self.mk_span());
         }
 
-        if let Some(keyword) = Keyword::from_str(&text) {
+        if let Some(keyword) = Keyword::lookup(&text) {
             return Token::new(TokenKind::Keyword(keyword), self.mk_span());
         }
 

@@ -99,6 +99,24 @@ pub struct MetricEntry {
     pub fn_name: String,
 }
 
+/// Bündelt die Annotation-Metadaten aus dem Typecheck für set_annotation_info —
+/// vermeidet eine 12-Parameter-Signatur (clippy::too_many_arguments).
+#[derive(Default)]
+pub struct AnnotationInfo {
+    pub inline_fns: HashSet<String>,
+    pub inline_meths: HashSet<(String, String)>,
+    pub routes: Vec<RouteEntry>,
+    pub di_components: Vec<DiComponentInfo>,
+    pub log_classes: HashSet<String>,
+    pub config_fields: Vec<ConfigFieldInfo>,
+    pub cli_commands: Vec<CliCommandInfo>,
+    pub sensitive_fields: Vec<LogMaskFieldInfo>,
+    pub masked_fields: Vec<LogMaskFieldInfo>,
+    pub do_not_serialize_fields: Vec<LogMaskFieldInfo>,
+    pub json_serializable_classes: Vec<String>,
+    pub metric_entries: Vec<MetricEntry>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -273,33 +291,19 @@ impl CodeGen {
     }
 
     /// Provide annotation metadata from the type checker annotation processing.
-    pub fn set_annotation_info(
-        &mut self,
-        inline_fns: HashSet<String>,
-        inline_meths: HashSet<(String, String)>,
-        routes: Vec<RouteEntry>,
-        di_components: Vec<DiComponentInfo>,
-        log_classes: HashSet<String>,
-        config_fields: Vec<ConfigFieldInfo>,
-        cli_commands: Vec<CliCommandInfo>,
-        sensitive_fields: Vec<LogMaskFieldInfo>,
-        masked_fields: Vec<LogMaskFieldInfo>,
-        do_not_serialize_fields: Vec<LogMaskFieldInfo>,
-        json_serializable_classes: Vec<String>,
-        metric_entries: Vec<MetricEntry>,
-    ) {
-        self.inline_functions = inline_fns;
-        self.inline_methods = inline_meths;
-        self.route_entries = routes;
-        self.di_components = di_components;
-        self.log_classes = log_classes;
-        self.config_fields = config_fields;
-        self.cli_commands = cli_commands;
-        self.sensitive_fields = sensitive_fields;
-        self.masked_fields = masked_fields;
-        self.do_not_serialize_fields = do_not_serialize_fields;
-        self.json_serializable_classes = json_serializable_classes;
-        self.metric_entries = metric_entries;
+    pub fn set_annotation_info(&mut self, info: AnnotationInfo) {
+        self.inline_functions = info.inline_fns;
+        self.inline_methods = info.inline_meths;
+        self.route_entries = info.routes;
+        self.di_components = info.di_components;
+        self.log_classes = info.log_classes;
+        self.config_fields = info.config_fields;
+        self.cli_commands = info.cli_commands;
+        self.sensitive_fields = info.sensitive_fields;
+        self.masked_fields = info.masked_fields;
+        self.do_not_serialize_fields = info.do_not_serialize_fields;
+        self.json_serializable_classes = info.json_serializable_classes;
+        self.metric_entries = info.metric_entries;
     }
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
@@ -731,17 +735,13 @@ impl CodeGen {
         class_map: &HashMap<String, tinox_parser::Class>,
     ) -> String {
         let mut current = class.to_string();
-        loop {
-            if let Some(c) = class_map.get(&current) {
-                if c.methods.iter().any(|m| m.name == method) {
-                    return format!("{}_{}", current, method);
-                }
-                match &c.extends {
-                    Some(parent) => current = parent.clone(),
-                    None => break,
-                }
-            } else {
-                break;
+        while let Some(c) = class_map.get(&current) {
+            if c.methods.iter().any(|m| m.name == method) {
+                return format!("{}_{}", current, method);
+            }
+            match &c.extends {
+                Some(parent) => current = parent.clone(),
+                None => break,
             }
         }
         format!("{}_{}", class, method)
@@ -3339,11 +3339,7 @@ impl CodeGen {
                             llvm_ty = "i8*".to_string();
                             struct_name = Some("File".to_string());
                             true
-                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split") {
-                            llvm_ty = "i64*".to_string();
-                            struct_name = Some("Array:String".to_string());
-                            true
-                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexFindAll" || n == "regexSplit") {
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split" || n == "regexFindAll" || n == "regexSplit") {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
@@ -3369,10 +3365,7 @@ impl CodeGen {
                             struct_name = Some("Array:Array".to_string());
                         }
                         true
-                    } else if matches!(&v.node, ExprKind::Tuple(_)) {
-                        llvm_ty = "i64*".to_string();
-                        true
-                    } else if matches!(&v.node, ExprKind::Lambda { .. }) {
+                    } else if matches!(&v.node, ExprKind::Tuple(_) | ExprKind::Lambda { .. }) {
                         llvm_ty = "i64*".to_string();
                         true
                     } else {
@@ -3495,26 +3488,9 @@ impl CodeGen {
                             }
                         }
                     }
-                    if is_heap_ptr {
-                        writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
-                        // Coerce value to actual slot type
-                        let store_val = if val_ty == actual_ty || val_ty.is_empty() || actual_ty.is_empty() {
-                            v.clone()
-                        } else if val_ty == "i64" && (actual_ty.ends_with('*') || actual_ty == "ptr") {
-                            let c = self.temp(); writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, v, actual_ty).unwrap(); c
-                        } else if (val_ty.ends_with('*') || val_ty == "ptr") && actual_ty == "i64" {
-                            let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, v).unwrap(); c
-                        } else if val_ty == "i64" && actual_ty == "i1" {
-                            // Indirect calls return Bool as i64 — take bit 0
-                            // (upper bits may be garbage at the ABI level).
-                            let c = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i1", c, v).unwrap(); c
-                        } else if val_ty == "i1" && actual_ty == "i64" {
-                            let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
-                        } else if val_ty == "double" && actual_ty == "i64" {
-                            let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap(); c
-                        } else { v.clone() };
-                        writeln!(&mut self.ir, "store {} {}, {}* %{}", actual_ty, store_val, actual_ty, slot_name).unwrap();
-                    } else {
+                    {
+                        // Heap and non-heap locals share the same alloca/coerce/store here
+                        // (is_heap_ptr already steered actual_ty above).
                         writeln!(&mut self.ir, "%{} = alloca {}", slot_name, actual_ty).unwrap();
                         // Coerce value to actual slot type
                         let store_val = if val_ty == actual_ty || val_ty.is_empty() || actual_ty.is_empty() {
@@ -3576,11 +3552,7 @@ impl CodeGen {
                             llvm_ty = "i8*".to_string();
                             struct_name = Some("File".to_string());
                             true
-                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split") {
-                            llvm_ty = "i64*".to_string();
-                            struct_name = Some("Array:String".to_string());
-                            true
-                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "regexFindAll" || n == "regexSplit") {
+                        } else if matches!(&func.node, ExprKind::Ident(n) if n == "split" || n == "regexFindAll" || n == "regexSplit") {
                             llvm_ty = "i64*".to_string();
                             struct_name = Some("Array:String".to_string());
                             true
@@ -3606,10 +3578,7 @@ impl CodeGen {
                             struct_name = Some("Array:Array".to_string());
                         }
                         true
-                    } else if matches!(&v.node, ExprKind::Tuple(_)) {
-                        llvm_ty = "i64*".to_string();
-                        true
-                    } else if matches!(&v.node, ExprKind::Lambda { .. }) {
+                    } else if matches!(&v.node, ExprKind::Tuple(_) | ExprKind::Lambda { .. }) {
                         llvm_ty = "i64*".to_string();
                         true
                     } else {
@@ -6420,8 +6389,6 @@ impl CodeGen {
                         let cast = self.temp();
                         if val_ty == "ptr" {
                             writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", cast, val).unwrap();
-                        } else if val_ty.ends_with('*') {
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
                         } else {
                             writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
                         }
@@ -7575,9 +7542,8 @@ impl CodeGen {
                     )
                     .unwrap();
                     let (rhs_raw, rhs_ty) = self.gen_expr(value, ctx)?;
-                    let rhs = if ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add) {
-                        rhs_raw
-                    } else if rhs_ty == ty || rhs_ty.is_empty() {
+                    let rhs = if (ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add))
+                        || rhs_ty == ty || rhs_ty.is_empty() {
                         rhs_raw
                     } else if rhs_ty == "i64" && ty == "double" {
                         let c = self.temp();
@@ -8100,7 +8066,7 @@ impl CodeGen {
 
     fn gen_try_stmt(
         &mut self,
-        body: &Box<Stmt>,
+        body: &Stmt,
         catches: &[CatchClause],
         finally: Option<&Stmt>,
         ctx: &mut GenCtx,
@@ -10790,11 +10756,11 @@ mod tests {
         let m_fields = masked.into_iter().map(|(c, f)| LogMaskFieldInfo {
             class_name: c.to_string(), field_name: f.to_string(),
         }).collect();
-        cg.set_annotation_info(
-            Default::default(), Default::default(), vec![], vec![],
-            Default::default(), vec![], vec![], s_fields, m_fields,
-            vec![], vec![], vec![],
-        );
+        cg.set_annotation_info(AnnotationInfo {
+            sensitive_fields: s_fields,
+            masked_fields: m_fields,
+            ..Default::default()
+        });
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
     }
@@ -10812,13 +10778,11 @@ mod tests {
         let dns_fields = do_not_serialize.into_iter().map(|(c, f)| LogMaskFieldInfo {
             class_name: c.to_string(), field_name: f.to_string(),
         }).collect();
-        cg.set_annotation_info(
-            Default::default(), Default::default(), vec![], vec![],
-            Default::default(), vec![], vec![], vec![], vec![],
-            dns_fields,
-            json_classes.into_iter().map(|s| s.to_string()).collect(),
-            vec![],
-        );
+        cg.set_annotation_info(AnnotationInfo {
+            do_not_serialize_fields: dns_fields,
+            json_serializable_classes: json_classes.into_iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        });
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
     }
@@ -10901,12 +10865,10 @@ mod tests {
         let tokens = lexer.tokenize().expect("lex");
         let ast = Parser::new(tokens).parse().expect("parse");
         let mut cg = CodeGen::new();
-        cg.set_annotation_info(
-            Default::default(), Default::default(), vec![], vec![],
-            Default::default(), vec![], vec![],
-            vec![LogMaskFieldInfo { class_name: "User".to_string(), field_name: "password".to_string() }],
-            vec![], vec![], vec![], vec![],
-        );
+        cg.set_annotation_info(AnnotationInfo {
+            sensitive_fields: vec![LogMaskFieldInfo { class_name: "User".to_string(), field_name: "password".to_string() }],
+            ..Default::default()
+        });
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
         assert!(ir.contains("define i8* @User_toString"), "User_toString function must be emitted");
@@ -11028,13 +10990,10 @@ mod tests {
         let tokens = lexer.tokenize().expect("lex");
         let ast = Parser::new(tokens).parse().expect("parse");
         let mut cg = CodeGen::new();
-        cg.set_annotation_info(
-            Default::default(), Default::default(), vec![], vec![],
-            Default::default(), vec![], vec![], vec![], vec![],
-            vec![],
-            vec!["User".to_string()],
-            vec![],
-        );
+        cg.set_annotation_info(AnnotationInfo {
+            json_serializable_classes: vec!["User".to_string()],
+            ..Default::default()
+        });
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
         assert!(ir.contains("define i8* @User_toJson"), "User_toJson function must be emitted");
@@ -11049,15 +11008,12 @@ mod tests {
         let tokens = lexer.tokenize().expect("lex");
         let ast = Parser::new(tokens).parse().expect("parse");
         let mut cg = CodeGen::new();
-        cg.set_annotation_info(
-            Default::default(), Default::default(), vec![], vec![],
-            Default::default(), vec![], vec![],
-            vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "password".to_string() }],
-            vec![],
-            vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "internalId".to_string() }],
-            vec!["Record".to_string()],
-            vec![],
-        );
+        cg.set_annotation_info(AnnotationInfo {
+            sensitive_fields: vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "password".to_string() }],
+            do_not_serialize_fields: vec![LogMaskFieldInfo { class_name: "Record".to_string(), field_name: "internalId".to_string() }],
+            json_serializable_classes: vec!["Record".to_string()],
+            ..Default::default()
+        });
         cg.gen(&ast).expect("codegen");
         let ir = cg.into_ir();
         assert!(ir.contains("Record_toString"), "toString should be emitted for @Sensitive field");
