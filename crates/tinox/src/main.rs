@@ -509,7 +509,7 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
     let is_multi_line = lines.len() > 1;
     let starts_with_stmt = matches!(first_token, "let" | "var" | "println" | "print" | "return");
 
-    let is_stmt_block = is_multi_line || (has_semicolons && starts_with_stmt) || starts_with_stmt;
+    let is_stmt_block = is_multi_line || has_semicolons || starts_with_stmt;
 
     if is_stmt_block {
         // Ensure each statement line ends with ; (normalize)
