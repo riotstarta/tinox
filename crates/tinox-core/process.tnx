@@ -11,7 +11,7 @@ namespace tinox.core.process
 
         fn sleep(ms: Int64) -> Nothing
         {
-            sleep(ms);
+            sleep_ms(ms);
         }
 
         fn pid() -> Int64

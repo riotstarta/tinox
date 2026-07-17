@@ -26,9 +26,8 @@ use std::path::PathBuf;
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
     // Ghost-Builtins: Modul ruft Funktionen, die weder Runtime noch Codegen kennen
-    "base64", "crypto", "debug", "fs", "http", "jwt", "process", "random",
-    "regex", "rest", "socket", "string", "time", "uri", "uuid", "xml", "zip",
-    "io", "mathf", "metrics",
+    "crypto", "http", "jwt",
+    "rest", "socket", "xml", "zip",
     // Codegen: ungültige Casts (ptr→i64/double) in Modul-Klassen
     "complex", "cron", "decimal", "fmt", "toml",
     // Codegen: Lambda-/Handler-Typen (i64 vs ptr), Block-Layout
@@ -36,7 +35,7 @@ const KNOWN_BROKEN: &[&str] = &[
     // Frontend: Parse-/Typecheck-Fehler im Modul selbst
     "http2_server", "ini",
     // Laufzeit-Fehlverhalten (falsche Werte, leere Ausgabe, Crash)
-    "asm", "graph", "heap", "hex", "iter", "queue", "ratelimit", "set",
+    "asm", "graph", "heap", "iter", "queue", "ratelimit", "set",
     // Modul-Bug: Pool<T>.factory wird benutzt (pool.acquire()), aber nie als
     // Feld deklariert — surfaced erst durch den Generics-Fix (Bug 20.2), da
     // Pool<T> vorher nie erfolgreich spezialisiert wurde (siehe bugs.md Bug 21)

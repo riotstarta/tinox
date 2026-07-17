@@ -37,9 +37,9 @@ namespace tinox.core.hex
         {
             if n < 10
             {
-                return (n + 48).toString();
+                return fromCharCode(n + 48);
             }
-            return (n + 87).toString();
+            return fromCharCode(n + 87);
         }
 
         fn charToNibble(c: String) -> Int64

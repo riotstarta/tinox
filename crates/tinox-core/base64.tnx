@@ -6,24 +6,122 @@ namespace tinox.core.base64
     {
         fn encode(data: String) -> String
         {
-            return base64Encode(data);
+            let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            var result: String = "";
+            var i: Int64 = 0;
+            let len: Int64 = data.len();
+            while i < len
+            {
+                let b0: Int64 = data.charCodeAt(i);
+                let hasB1: Bool = i + 1 < len;
+                let b1: Int64 = hasB1 ? data.charCodeAt(i + 1) : 0;
+                let hasB2: Bool = i + 2 < len;
+                let b2: Int64 = hasB2 ? data.charCodeAt(i + 2) : 0;
+
+                let c0: Int64 = (b0 >> 2) & 63;
+                let c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
+                let c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
+                let c3: Int64 = b2 & 63;
+
+                result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
+                if hasB1
+                {
+                    result = result + alphabet.substring(c2, c2 + 1);
+                }
+                else
+                {
+                    result = result + "=";
+                }
+                if hasB2
+                {
+                    result = result + alphabet.substring(c3, c3 + 1);
+                }
+                else
+                {
+                    result = result + "=";
+                }
+
+                i = i + 3;
+            }
+            return result;
         }
 
         fn decode(encoded: String) -> String
         {
-            return base64Decode(encoded);
+            var result: String = "";
+            var i: Int64 = 0;
+            let len: Int64 = encoded.len();
+            while i + 4 <= len
+            {
+                let c0: String = encoded.substring(i, i + 1);
+                let c1: String = encoded.substring(i + 1, i + 2);
+                let c2: String = encoded.substring(i + 2, i + 3);
+                let c3: String = encoded.substring(i + 3, i + 4);
+
+                let v0: Int64 = Base64::charToValue(c0);
+                let v1: Int64 = Base64::charToValue(c1);
+                let v2: Int64 = Base64::charToValue(c2);
+                let v3: Int64 = Base64::charToValue(c3);
+
+                let b0: Int64 = ((v0 << 2) | (v1 >> 4)) & 255;
+                result = result + fromCharCode(b0);
+
+                if c2 != "="
+                {
+                    let b1: Int64 = ((v1 << 4) | (v2 >> 2)) & 255;
+                    result = result + fromCharCode(b1);
+                }
+                if c3 != "="
+                {
+                    let b2: Int64 = ((v2 << 6) | v3) & 255;
+                    result = result + fromCharCode(b2);
+                }
+
+                i = i + 4;
+            }
+            return result;
+        }
+
+        fn charToValue(c: String) -> Int64
+        {
+            if c == "="
+            {
+                return 0;
+            }
+            let code: Int64 = c.charCodeAt(0);
+            if code >= 65 && code <= 90
+            {
+                return code - 65;
+            }
+            if code >= 97 && code <= 122
+            {
+                return code - 97 + 26;
+            }
+            if code >= 48 && code <= 57
+            {
+                return code - 48 + 52;
+            }
+            if code == 43
+            {
+                return 62;
+            }
+            if code == 47
+            {
+                return 63;
+            }
+            return 0;
         }
 
         fn encodeBytes(data: List<Int64>) -> String
         {
-            var result: String = "";
+            var raw: String = "";
             var i: Int64 = 0;
             while i < data.len()
             {
-                result = result + base64EncodeChar(data[i]);
+                raw = raw + fromCharCode(data[i]);
                 i = i + 1;
             }
-            return result;
+            return Base64::encode(raw);
         }
     }
 }

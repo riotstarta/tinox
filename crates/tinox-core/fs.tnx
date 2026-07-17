@@ -22,7 +22,7 @@ namespace tinox.core.fs
 
         fn deleteFile(path: String) -> Nothing
         {
-            fileDelete(path);
+            deleteFile(path);
         }
 
         fn copyFile(src: String, dest: String) -> Nothing

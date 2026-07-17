@@ -29,7 +29,7 @@ namespace tinox.core.time
          */
         fn sleep(ms: Int64) -> Nothing
         {
-            sleep(ms);
+            sleep_ms(ms);
         }
 
         /**

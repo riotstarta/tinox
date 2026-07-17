@@ -788,6 +788,12 @@ impl TypeChecker {
         symbols.functions.insert("sleep".to_string(), FunctionSignature {
             params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
         });
+        // sleep_ms statt sleep im Runtime-Symbolnamen — libc exportiert
+        // bereits ein `sleep(unsigned int seconds)` mit anderer Signatur;
+        // ein eigenes `sleep` würde am Link-Symbol kollidieren.
+        symbols.functions.insert("sleep_ms".to_string(), FunctionSignature {
+            params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
         symbols.functions.insert("Time_toString".to_string(), FunctionSignature {
             params: vec![("t".to_string(), ValueType::Any)], return_type: ValueType::String,
         });
@@ -825,6 +831,25 @@ impl TypeChecker {
                 params: vec![], return_type: ret,
             });
         }
+        // Metrics (manual API, MetricsRegistry/Stopwatch — @Timed/@Counted
+        // auto-instrumentation injects the same calls directly in codegen)
+        symbols.functions.insert("tinox_counter_inc".to_string(), FunctionSignature {
+            params: vec![("name".to_string(), ValueType::String)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("tinox_histogram_record".to_string(), FunctionSignature {
+            params: vec![("name".to_string(), ValueType::String), ("ns".to_string(), ValueType::Int)],
+            return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("tinox_gauge_set".to_string(), FunctionSignature {
+            params: vec![("name".to_string(), ValueType::String), ("value".to_string(), ValueType::Int)],
+            return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("tinox_metrics_prometheus".to_string(), FunctionSignature {
+            params: vec![], return_type: ValueType::String,
+        });
+        symbols.functions.insert("tinox_clock_nanos".to_string(), FunctionSignature {
+            params: vec![], return_type: ValueType::Int,
+        });
         // Random
         symbols.functions.insert("randomInt".to_string(), FunctionSignature {
             params: vec![("min".to_string(), ValueType::Int), ("max".to_string(), ValueType::Int)],
@@ -948,7 +973,7 @@ impl TypeChecker {
             });
         }
         // float math builtins
-        for name in &["log", "exp", "fabs", "mathTgamma", "mathLgamma", "mathCbrt", "mathTrunc", "mathRint", "mathLogb",
+        for name in &["log", "exp", "fabs", "sin", "cos", "tan", "log10", "mathTgamma", "mathLgamma", "mathCbrt", "mathTrunc", "mathRint", "mathLogb",
                       "mathLog2", "mathLog10", "mathExp2", "mathExp10"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Float,
@@ -2424,16 +2449,18 @@ impl TypeChecker {
                 type_args: _,
                 args,
             } => {
-                // Check if this is actually a static method call: ClassName::method(args)
+                // Check if this is actually a static method call: ClassName::method(args).
+                // Also covers non-static (`fn`) methods called this way with an implicit
+                // self (the codegen convention throughout the stdlib, e.g. Debug::
+                // memoryUsage()) — skip the synthetic leading "self" param the same way
+                // the MethodCall arm below does, instead of falling through to the
+                // enum-variant fallback (which misread every zero-arg instance method
+                // called via `::` as a bare enum-variant construction returning
+                // Named(ClassName): "expected Int64, found Debug").
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(sig) = self.symbols.functions.get(&static_key).cloned() {
-                    let is_static = sig.params.first()
-                        .map(|(n, _)| n != "self")
-                        .unwrap_or(true);
-                    if is_static {
-                        for arg in args { self.infer_type(arg); }
-                        return sig.return_type.clone();
-                    }
+                    for arg in args { self.infer_type(arg); }
+                    return sig.return_type.clone();
                 }
                 // Type check all arguments
                 for arg in args {

@@ -123,27 +123,27 @@ namespace tinox.core.mathf
 
         fn sin(x: Float64) -> Float64
         {
-            return sinf(x);
+            return sin(x);
         }
 
         fn cos(x: Float64) -> Float64
         {
-            return cosf(x);
+            return cos(x);
         }
 
         fn tan(x: Float64) -> Float64
         {
-            return tanf(x);
+            return tan(x);
         }
 
         fn log(x: Float64) -> Float64
         {
-            return logf(x);
+            return log(x);
         }
 
         fn log10(x: Float64) -> Float64
         {
-            return log10f(x);
+            return log10(x);
         }
     }
 }

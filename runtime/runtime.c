@@ -19,6 +19,9 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <time.h>
+#ifdef __GLIBC__
+#include <execinfo.h>
+#endif
 
 #ifdef TINOX_NO_GC
 // Sanitizer-Modus (make asan): plain malloc statt Boehm-GC, damit ASan
@@ -384,6 +387,25 @@ int64_t tinox_string_contains(const char* haystack, const char* needle) {
 int64_t tinox_string_index_of(const char* haystack, const char* needle) {
     const char* pos = strstr(haystack, needle);
     return pos ? (int64_t)(pos - haystack) : -1;
+}
+
+int64_t tinox_string_last_index_of(const char* haystack, const char* needle) {
+    size_t hlen = strlen(haystack);
+    size_t nlen = strlen(needle);
+    if (nlen > hlen) return -1;
+    for (size_t i = hlen - nlen + 1; i-- > 0; ) {
+        if (memcmp(haystack + i, needle, nlen) == 0) return (int64_t)i;
+    }
+    return -1;
+}
+
+char* tinox_string_reverse(const char* s) {
+    size_t len = strlen(s);
+    char* result = malloc(len + 1);
+    for (size_t i = 0; i < len; i++)
+        result[i] = s[len - 1 - i];
+    result[len] = '\0';
+    return result;
 }
 
 char* tinox_string_to_upper(const char* s) {
@@ -1032,6 +1054,49 @@ int64_t* processArgs(void) {
     return nh;
 }
 
+int64_t processId(void) {
+    return (int64_t)getpid();
+}
+
+static void tinox_random_seed_once(void) {
+    static int seeded = 0;
+    if (!seeded) {
+        srandom((unsigned int)(time(NULL) ^ getpid()));
+        seeded = 1;
+    }
+}
+
+// [min, max) — matches the tinox.core.random Random class convention.
+int64_t randomInt(int64_t min, int64_t max) {
+    tinox_random_seed_once();
+    if (max <= min) return min;
+    return min + (int64_t)(random() % (max - min));
+}
+
+double randomFloat(void) {
+    tinox_random_seed_once();
+    // random() returns [0, 2^31-1] per POSIX, independent of RAND_MAX.
+    return (double)random() / 2147483648.0;
+}
+
+void gcCollect(void) {
+    GC_gcollect();
+}
+
+int64_t memoryUsage(void) {
+    return (int64_t)GC_get_heap_size();
+}
+
+void printStackTrace(void) {
+#ifdef __GLIBC__
+    void* frames[64];
+    int n = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, n, fileno(stderr));
+#else
+    fprintf(stderr, "<stack trace unavailable on this platform>\n");
+#endif
+}
+
 char* envGet(const char* name) {
     char* v = getenv(name);
     return v ? GC_strdup(v) : GC_strdup("");
@@ -1138,6 +1203,84 @@ int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replaceme
 
 int64_t regexSplit(int64_t pattern_i64, int64_t subject_i64) {
     return regexFindAll(pattern_i64, subject_i64); // simplified
+}
+
+// First match, or "" if none / bad pattern.
+int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
+    const char* pattern = (const char*)pattern_i64;
+    const char* subject = (const char*)subject_i64;
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)GC_strdup("");
+    regmatch_t m;
+    if (regexec(&re, subject, 1, &m, 0) != 0) {
+        regfree(&re);
+        return (int64_t)GC_strdup("");
+    }
+    int mlen = m.rm_eo - m.rm_so;
+    char* match_str = (char*)GC_malloc(mlen + 1);
+    memcpy(match_str, subject + m.rm_so, mlen);
+    match_str[mlen] = '\0';
+    regfree(&re);
+    return (int64_t)match_str;
+}
+
+// Replace every non-overlapping match of `pattern` in `subject` with
+// `replacement` (literal, no backreferences — same as regexReplace).
+int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+    const char* pattern = (const char*)pattern_i64;
+    const char* subject = (const char*)subject_i64;
+    const char* replacement = (const char*)replacement_i64;
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+
+    size_t rep_len = strlen(replacement);
+    size_t cap = strlen(subject) + rep_len + 16;
+    char* result = (char*)GC_malloc(cap);
+    size_t out = 0;
+    const char* s = subject;
+    regmatch_t m;
+    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+        size_t pre = (size_t)m.rm_so;
+        size_t needed = out + pre + rep_len + 1;
+        if (needed > cap) {
+            cap = needed * 2;
+            char* grown = (char*)GC_malloc(cap);
+            memcpy(grown, result, out);
+            result = grown;
+        }
+        memcpy(result + out, s, pre);
+        out += pre;
+        memcpy(result + out, replacement, rep_len);
+        out += rep_len;
+        size_t adv = (size_t)m.rm_eo;
+        if (adv == 0) {
+            // Empty match — copy one char to avoid an infinite loop.
+            if (s[0] == '\0') break;
+            size_t needed2 = out + 2;
+            if (needed2 > cap) {
+                cap = needed2 * 2;
+                char* grown = (char*)GC_malloc(cap);
+                memcpy(grown, result, out);
+                result = grown;
+            }
+            result[out++] = s[0];
+            adv = 1;
+        }
+        s += adv;
+    }
+    size_t tail = strlen(s);
+    size_t needed = out + tail + 1;
+    if (needed > cap) {
+        cap = needed;
+        char* grown = (char*)GC_malloc(cap);
+        memcpy(grown, result, out);
+        result = grown;
+    }
+    memcpy(result + out, s, tail);
+    out += tail;
+    result[out] = '\0';
+    regfree(&re);
+    return (int64_t)result;
 }
 
 // First match at/after byte offset. Returns Tinox i64-array
@@ -3096,6 +3239,19 @@ char* envDump(void) {
 
 // Time
 int64_t currentTimeSecs(void) { return (int64_t)time(NULL); }
+
+int64_t now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+void sleep_ms(int64_t ms) {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000LL;
+    nanosleep(&ts, NULL);
+}
 
 char* strftimeStr(const char* fmt, int64_t t) {
     time_t ts = (time_t)t;

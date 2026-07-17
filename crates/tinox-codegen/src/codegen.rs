@@ -819,6 +819,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_compare(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_last_index_of(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_reverse(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_lower(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_starts_with(i8*, i8*)").unwrap();
@@ -869,6 +871,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @regexFindAll(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @regexReplace(i64, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @regexSplit(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @regexFindFirst(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @regexReplaceAll(i64, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @regexMatchGroups(i8*, i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_remove_at(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_insert(i64*, i64, i64)").unwrap();
@@ -908,6 +912,9 @@ impl CodeGen {
         // float math builtins
         writeln!(&mut self.ir, "declare double @log(double)").unwrap();
         writeln!(&mut self.ir, "declare double @exp(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @sin(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @cos(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @tan(double)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mathIsNan(double)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mathIsInfinite(double)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mathIsNormal(double)").unwrap();
@@ -930,6 +937,14 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @fromdateStr(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @printStderr(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
+        writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
+        writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @now()").unwrap();
+        writeln!(&mut self.ir, "declare void @sleep_ms(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @randomInt(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.
@@ -4899,6 +4914,18 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        "randomInt" => {
+                            let (min_v, _) = self.gen_expr(&args[0], ctx)?;
+                            let (max_v, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @randomInt(i64 {}, i64 {})", result, min_v, max_v).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "randomFloat" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @randomFloat()", result).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "log" => {
                             let (val, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
@@ -5183,6 +5210,50 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @{}(i64 {}, i64 {})", result, name, pat_i64, subj_i64).unwrap();
                             return Ok((result, "i64*".to_string()));
+                        }
+                        "regexFindFirst" => {
+                            let (pat, pat_ty) = self.gen_expr(&args[0], ctx)?;
+                            let pat_i64 = if pat_ty == "i64" { pat.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, pat_ty, pat).unwrap();
+                                c
+                            };
+                            let (subj, subj_ty) = self.gen_expr(&args[1], ctx)?;
+                            let subj_i64 = if subj_ty == "i64" { subj.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, subj_ty, subj).unwrap();
+                                c
+                            };
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @regexFindFirst(i64 {}, i64 {})", raw, pat_i64, subj_i64).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", result, raw).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "regexReplaceAll" => {
+                            let (pat, pat_ty) = self.gen_expr(&args[0], ctx)?;
+                            let pat_i64 = if pat_ty == "i64" { pat.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, pat_ty, pat).unwrap();
+                                c
+                            };
+                            let (subj, subj_ty) = self.gen_expr(&args[1], ctx)?;
+                            let subj_i64 = if subj_ty == "i64" { subj.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, subj_ty, subj).unwrap();
+                                c
+                            };
+                            let (rep, rep_ty) = self.gen_expr(&args[2], ctx)?;
+                            let rep_i64 = if rep_ty == "i64" { rep.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, rep_ty, rep).unwrap();
+                                c
+                            };
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @regexReplaceAll(i64 {}, i64 {}, i64 {})", raw, pat_i64, subj_i64, rep_i64).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", result, raw).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         }
                         "regexMatchGroups" => {
                             let (pat, pat_ty) = self.gen_expr(&args[0], ctx)?;
@@ -5876,6 +5947,22 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
                             return Ok((result, "i64".to_string()));
+                        }
+                        "lastIndexOf" => {
+                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_last_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
+                        "reverse" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_reverse(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i8*".to_string()));
                         }
                         "charAt" => {
                             let (arg, _) = self.gen_expr(&args[0], ctx)?;

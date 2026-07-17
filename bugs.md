@@ -664,24 +664,25 @@ mangels Generics-Infrastruktur nie erfolgreich spezialisiert wurde — der
 eigentliche Modul-Bug (`pool.factory()` ohne deklariertes Feld) war
 unerreichbar. Siehe Bug 22.
 
-**Grün verifiziert (22):** array, bitmap, cache, collections, csv, encoding,
-env, format, hash, hpack, http_server, json, math, mathx, option, result,
-semaphore, sort, tpl, trie, validation, yaml.
+Klasse 1 (Ghost-Builtins) ist teilweise gefixt — siehe Bug 23 (13 Module:
+mathf, debug, process, fs, time, string, io, metrics, random, regex,
+base64, uri, uuid). `hex` (Klasse 6) fiel dabei mit, gleiches Bug-Muster.
+Verbleibend: crypto, http, socket, xml, zip, jwt, rest.
 
-**Fehlerklassen (39 kaputt):**
+**Grün verifiziert (35):** array, base64, bitmap, cache, collections, csv,
+debug, encoding, env, format, fs, hash, hex, hpack, http_server, io, json,
+math, mathf, mathx, metrics, option, process, random, regex, result,
+semaphore, sort, string, time, tpl, trie, uri, uuid, validation, yaml.
+
+**Fehlerklassen (26 kaputt):**
 
 1. **Ghost-Builtins** — Modul ruft Funktionen, die weder in `runtime/runtime.c`
-   existieren noch im Codegen deklariert sind → ICE „use of undefined value":
+   existieren noch im Codegen deklariert sind → ICE „use of undefined value".
+   Erste Runde gefixt, siehe Bug 23. Verbleibend:
    - http: `httpGet/httpPost/httpPut/httpDelete/httpPatch/httpSetHeader/httpClearHeaders/httpStatusCode/httpBody/httpHeader`
    - socket: `socketConnect/socketBind/socketListen/socketSend/socketReceive/socketClose`
-   - base64: `base64Encode/base64Decode` · crypto: `md5Hash/sha256Hash/hmacSha256Hash`
-   - uuid: `uuidGenerate` · uri: `uriEncode/uriDecode/uriEncodeComponent/uriDecodeComponent`
+   - crypto: `md5Hash/sha256Hash/hmacSha256Hash` (echte Hash-Algorithmen nötig)
    - xml: `xmlTagName/xmlAttr/xmlChildren/xmlTextContent` · zip: `zipListEntries/zipExtractFile/zipAddFile/zipRemoveFile`
-   - regex: `regexFindFirst/regexReplaceAll` (isMatch/findAll/split existieren)
-   - fs: `fileDelete` · process: `processId` · time: `now` · debug: `gcCollect`
-   - random: `randomInt/randomFloat` · mathf: `cosf/sinf/tanf/logf/log10f` (float-libm nie deklariert)
-   - string: `String_reverse` · io: `String_lastIndexOf` (String-Methoden ohne Codegen-Dispatch)
-   - metrics: `__tinox_counter_inc/__tinox_histogram_record/…` (Typecheck-Fehler; Runtime hat `tinox_counter_inc` ohne Unterstriche)
    - jwt, rest: transitiv kaputt (crypto- bzw. http-Ghosts)
 2. ~~**Generics**~~ — **gefixt, siehe Bug 21.**
 3. **Ungültige Casts** — `ptr → i64/double` (z. B. `sitofp i8* %value to double`)
@@ -690,9 +691,9 @@ semaphore, sort, tpl, trie, validation, yaml.
    Typ-Mismatch (logger), „unable to create block named 'entry'" (rest_framework).
 5. **Frontend** — http2_server.tnx parst nicht (Zeile 770, „expected
    Semicolon, found Equals"); ini.tnx Typecheck-Fehler (`Map == null`).
-6. **Laufzeit-Fehlverhalten** — kompiliert, rechnet falsch: hex (falsche
-   Ausgabe), heap/set (Pointer statt Wert), iter (`repeat(7,3).len()` → 7),
-   graph (961 statt 1), queue (leere Ausgabe), asm/ratelimit (Crash, Exit -1).
+6. **Laufzeit-Fehlverhalten** — kompiliert, rechnet falsch: heap/set
+   (Pointer statt Wert), iter (`repeat(7,3).len()` → 7), graph (961 statt 1),
+   queue (leere Ausgabe), asm/ratelimit (Crash, Exit -1). (hex gefixt, s. Bug 23.)
 7. **Modul-Bug, durch Bug 21 aufgedeckt** — pool (siehe Bug 22).
 
 **Empfohlene Reihenfolge:** Klasse 3–4 sind Compiler-Bugs (fixen), Klasse 1
@@ -796,6 +797,60 @@ Feldzugriff als regulären, nie registrierten Klassenmethodenaufruf).
 `newWithFactory(maxSize: Int64, factory: fnc() -> T) -> Pool<T>` mit
 `var factory: fnc() -> T;`-Feld, oder `acquire()` muss ohne Factory
 auskommen (z. B. `throw` statt Aufruf, wenn der Pool leer und voll ist).
+
+---
+
+## Bug 23 — Ghost-Builtins Klasse 1: erste Runde (12 Module gefixt)
+
+**Status: TEILWEISE GEFIXT (2026-07-17)** — Bug 20 Klasse 1 (Ghost-Builtins)
+abgearbeitet für: mathf, debug, process, fs, time, string, io, metrics,
+random, regex, base64, uri, uuid. Zwei Muster, je nach Modul:
+
+1. **Reine Namens-/Signatur-Mismatches** — die Runtime-Funktion existierte
+   bereits, das `.tnx`-Modul rief nur den falschen Namen oder die falsche
+   Arity: `fileDelete` → `deleteFile`, `__tinox_counter_inc` →
+   `tinox_counter_inc` (metrics.tnx, vier Fälle), `sleep(ms)` → `sleep_ms(ms)`
+   (`sleep` kollidiert mit libc), `randomInt(max)` → `randomInt(0, max)`
+   (Runtime erwartet `[min, max)`).
+2. **Echte Lücke, C-Runtime ergänzt** (`runtime/runtime.c` +
+   `crates/tinox-codegen/src/codegen.rs`-Declares): `processId`, `gcCollect`,
+   `memoryUsage`, `printStackTrace` (Boehm-GC/glibc-Backtrace), `now`
+   (epoch-Millisekunden, `currentTimeSecs` gab nur Sekunden — jwt.tnx
+   dividiert `Time::now() / 1000` und hätte sonst falsch gerechnet),
+   `sleep_ms`, `randomInt`/`randomFloat` (POSIX `random()`, einmalig
+   geseedet), `tinox_string_reverse`, `tinox_string_last_index_of`,
+   `regexFindFirst`, `regexReplaceAll` (Replace-Loop mit Wachstum,
+   `regexReplace` konnte nur den ersten Treffer).
+3. **Pure Tinox statt Runtime-Funktion** (Vorbild `hex.tnx`, das den ganzen
+   Algorithmus schon in `.tnx` hatte): `base64.tnx` (Encode/Decode komplett
+   neu geschrieben, 3-Byte-Gruppen), `uri.tnx` (`encode`/`decode`/
+   `*Component` — RFC-3986-Prozent-Encoding, `parse()` war schon pure Tinox),
+   `uuid.tnx` (v4 via `Random::nextInt`, Version-/Variant-Nibbles gesetzt).
+   Kein Runtime-Risiko, sofort end-to-end testbar.
+
+**Nebenfunde, mitgefixt:**
+- `hex.tnx` (Klasse 6, „Laufzeit-Fehlverhalten"): `nibbleToChar` benutzte
+  `(n + 48).toString()` statt `fromCharCode(n + 48)` — stringifiziert die
+  ASCII-Codezahl selbst statt das Zeichen zu erzeugen (`encode("A")` gab
+  Müll statt `"41"`). Genau dasselbe Bug-Muster tauchte beim ERSTEN
+  Schreiben von `uri.tnx` auf und wurde dort vor dem Commit gefangen.
+- `cache.tnx`-Klasse „fehlende Felder" wiederholt sich: `Stopwatch` in
+  metrics.tnx hatte `startNs` nie deklariert; `Uuid` hatte `value` nie
+  deklariert. Beide nachgetragen.
+- **Typecheck-Bug, unabhängig von Ghost-Builtins:** `ClassName::method()`
+  für eine NICHT-statische (`fn`) Methode ohne explizite Argumente wurde in
+  `infer_type`s `ExprKind::EnumValue`-Arm als Enum-Variantenkonstruktion
+  fehlgedeutet (`is_static`-Heuristik prüfte nur `sig.params.first() !=
+  Some("self")` und hatte für den `!is_static`-Fall keinen Rückgabepfad —
+  fiel durch zur Enum-Fallback-Logik). `Debug::memoryUsage()` lieferte so
+  `Named("Debug")` statt `Int64`: „expected Int64, found Debug". Betraf
+  jeden zukünftigen Aufruf eines zero-arg-Instanzmethoden-Aufrufs im
+  `Klasse::methode()`-Stil — nicht nur Debug/Process. Fix: die Signatur wird
+  jetzt immer verwendet, sobald sie gefunden ist (kein `is_static`-Gate mehr).
+
+**Noch offen (Bug 20 Klasse 1):** crypto (md5/sha256/hmacSha256 — echte
+Hash-Algorithmen), http/socket (echte Netzwerk-Syscalls), xml/zip
+(Parser/Containerformat), jwt/rest (transitiv über crypto/http).
 
 ---
 

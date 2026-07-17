@@ -6,7 +6,7 @@ namespace tinox.core.random
     {
         fn nextInt(max: Int64) -> Int64
         {
-            return randomInt(max);
+            return randomInt(0, max);
         }
 
         fn nextFloat() -> Float64
@@ -16,7 +16,7 @@ namespace tinox.core.random
 
         fn nextBool() -> Bool
         {
-            return randomInt(2) == 1;
+            return randomInt(0, 2) == 1;
         }
 
         fn pickOne<T>(list: List<T>) -> T
