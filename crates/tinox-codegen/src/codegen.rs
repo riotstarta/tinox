@@ -945,6 +945,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @sleep_ms(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @randomInt(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
+        writeln!(&mut self.ir, "declare i8* @md5Hash(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @sha256Hash(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @hmacSha256Hash(i8*, i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.

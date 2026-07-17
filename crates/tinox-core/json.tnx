@@ -61,6 +61,8 @@ namespace tinox.core.json
     extern fn jsonIsObject(value: JsonValue) -> Bool;
     extern fn jsonIsArray(value: JsonValue) -> Bool;
     extern fn jsonGetField(obj: JsonValue, key: String) -> JsonValue;
+    extern fn jsonGetObject(value: JsonValue) -> Map<String, JsonValue>;
+    extern fn jsonFromMap(map: Map<String, JsonValue>) -> JsonValue;
     extern fn jsonIntArrayFromJson(arr: JsonValue) -> List<Int64>;
     extern fn jsonIntArrayToString(arr: List<Int64>) -> String;
     extern fn jsonIntArrayWrap(key: String, arr: List<Int64>) -> String;
@@ -80,6 +82,14 @@ namespace tinox.core.json
         fnc getField(obj: JsonValue, key: String) -> JsonValue
         {
             return jsonGetField(obj, key);
+        }
+
+        // Wraps an existing Map<String, JsonValue> (e.g. built by hand with
+        // Map::new()/insert) as a JsonValue object — the counterpart to
+        // JsonValue::asTable().
+        fnc fromMap(map: Map<String, JsonValue>) -> JsonValue
+        {
+            return jsonFromMap(map);
         }
 
         fnc intArrayFromJson(arr: JsonValue) -> List<Int64>
@@ -119,6 +129,18 @@ namespace tinox.core.json
         fn getInt() -> Int64
         {
             return jsonGetInt(this);
+        }
+
+        // Alias used by modules (e.g. jwt.tnx) that read a JsonValue field
+        // and expect an Int-flavored accessor named like the others below.
+        fn asInt() -> Int64
+        {
+            return jsonGetInt(this);
+        }
+
+        fn asTable() -> Map<String, JsonValue>
+        {
+            return jsonGetObject(this);
         }
 
         fn getFloat() -> Float64

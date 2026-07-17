@@ -664,26 +664,26 @@ mangels Generics-Infrastruktur nie erfolgreich spezialisiert wurde — der
 eigentliche Modul-Bug (`pool.factory()` ohne deklariertes Feld) war
 unerreichbar. Siehe Bug 22.
 
-Klasse 1 (Ghost-Builtins) ist teilweise gefixt — siehe Bug 23 (13 Module:
+Klasse 1 (Ghost-Builtins) ist größtenteils gefixt — siehe Bug 23 (13 Module:
 mathf, debug, process, fs, time, string, io, metrics, random, regex,
-base64, uri, uuid). `hex` (Klasse 6) fiel dabei mit, gleiches Bug-Muster.
-Verbleibend: crypto, http, socket, xml, zip, jwt, rest.
+base64, uri, uuid) und Bug 24 (crypto, jwt). `hex` (Klasse 6) fiel bei
+Bug 23 mit, gleiches Bug-Muster. Verbleibend: http, socket, xml, zip, rest.
 
-**Grün verifiziert (35):** array, base64, bitmap, cache, collections, csv,
-debug, encoding, env, format, fs, hash, hex, hpack, http_server, io, json,
-math, mathf, mathx, metrics, option, process, random, regex, result,
-semaphore, sort, string, time, tpl, trie, uri, uuid, validation, yaml.
+**Grün verifiziert (37):** array, base64, bitmap, cache, collections,
+crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
+http_server, io, json, jwt, math, mathf, mathx, metrics, option, process,
+random, regex, result, semaphore, sort, string, time, tpl, trie, uri,
+uuid, validation, yaml.
 
-**Fehlerklassen (26 kaputt):**
+**Fehlerklassen (24 kaputt):**
 
 1. **Ghost-Builtins** — Modul ruft Funktionen, die weder in `runtime/runtime.c`
    existieren noch im Codegen deklariert sind → ICE „use of undefined value".
-   Erste Runde gefixt, siehe Bug 23. Verbleibend:
+   Größtenteils gefixt, siehe Bug 23/24. Verbleibend:
    - http: `httpGet/httpPost/httpPut/httpDelete/httpPatch/httpSetHeader/httpClearHeaders/httpStatusCode/httpBody/httpHeader`
    - socket: `socketConnect/socketBind/socketListen/socketSend/socketReceive/socketClose`
-   - crypto: `md5Hash/sha256Hash/hmacSha256Hash` (echte Hash-Algorithmen nötig)
    - xml: `xmlTagName/xmlAttr/xmlChildren/xmlTextContent` · zip: `zipListEntries/zipExtractFile/zipAddFile/zipRemoveFile`
-   - jwt, rest: transitiv kaputt (crypto- bzw. http-Ghosts)
+   - rest: transitiv kaputt (http-Ghosts)
 2. ~~**Generics**~~ — **gefixt, siehe Bug 21.**
 3. **Ungültige Casts** — `ptr → i64/double` (z. B. `sitofp i8* %value to double`)
    in Modul-Klassen mit String/Float-Feldern: complex, cron, decimal, fmt, toml.
@@ -848,9 +848,77 @@ random, regex, base64, uri, uuid. Zwei Muster, je nach Modul:
   `Klasse::methode()`-Stil — nicht nur Debug/Process. Fix: die Signatur wird
   jetzt immer verwendet, sobald sie gefunden ist (kein `is_static`-Gate mehr).
 
-**Noch offen (Bug 20 Klasse 1):** crypto (md5/sha256/hmacSha256 — echte
-Hash-Algorithmen), http/socket (echte Netzwerk-Syscalls), xml/zip
-(Parser/Containerformat), jwt/rest (transitiv über crypto/http).
+**Noch offen (Bug 20 Klasse 1):** http/socket (echte Netzwerk-Syscalls),
+xml/zip (Parser/Containerformat), rest (transitiv über http).
+
+---
+
+## Bug 24 — Ghost-Builtins Klasse 1: crypto + jwt (2 weitere Module)
+
+**Status: GEFIXT (2026-07-17)** — `crypto` brauchte echte Hash-Algorithmen
+(keine Namens-Mismatches wie bei Bug 23), `jwt` brauchte zusätzlich zwei
+JSON-API-Lücken.
+
+**crypto.tnx:** `md5Hash`/`sha256Hash`/`hmacSha256Hash` in `runtime.c` neu
+implementiert — MD5 (RFC 1321), SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104),
+komplett selbstständig ohne OpenSSL-Abhängigkeit (passend zum Rest der
+Runtime, die externe Libs nur opt-in über `tinox.toml` einbindet). Gegen
+Standard-Testvektoren verifiziert: `md5("") = d41d8cd9…`, `md5("abc") =
+900150983c…`, `sha256("") = e3b0c442…`, `sha256("abc") = ba7816bf…`,
+HMAC-SHA256("The quick brown fox…", key="key") `= f7bc83f4…` — alle exakt
+match.
+
+`aesEncrypt`/`aesDecrypt` bewusst NICHT implementiert: ein XOR- oder
+sonstiger Platzhalter unter dem Namen „AES" wäre eine stille
+Sicherheitslücke (der Methodenname verspricht echte Verschlüsselung, ein
+schwacher Ersatz würde das verdecken). Beide werfen jetzt klar
+`"Crypto::aesEncrypt ist nicht implementiert"` statt vorzutäuschen.
+`Crypto::pbkdf2` bleibt unangetastet — iteriertes `sha256(sha256(...))`
+ist kein echtes PBKDF2 (kein HMAC pro Runde), aber das ist ein
+Qualitäts-, kein Ghost-Builtin-Problem, außerhalb dieses Scopes.
+
+**jwt.tnx:** fehlte komplett ohne `import`-Zeilen (gleiches Muster wie
+Bug 21s Cache-Fund) — `base64`/`crypto`/`json`/`time` ergänzt. Rief
+außerdem zwei nie existierende `JsonValue`-Methoden auf:
+- `JsonValue::asTable() -> Map<String, JsonValue>` und
+  `JsonValue::asInt() -> Int64` (Alias zu `getInt()`) in `json.tnx` ergänzt,
+  über den neuen `extern fn jsonGetObject(...)`-Ghost-Fund (existierte
+  schon in `runtime.c` als `jsonGetObject`, war nur nie deklariert).
+- `Jwt::encode` reichte `Map<String, JsonValue>` direkt an
+  `Json::stringify(value: JsonValue)` durch — beide haben zur Laufzeit
+  unterschiedliche Speicherlayouts (`TinoxMap*` vs. `TinoxJsonValue*`),
+  hätte Datenmüll gelesen. Neue Gegenstück-Funktion `Json::fromMap(map)`
+  (→ `jsonFromMap` in `runtime.c`) wrappt eine bestehende Map als
+  JSON_OBJECT-JsonValue — beide Maptypen (`tinox_map_create`,
+  `json_obj_map_create`) teilen sich dieselbe `TinoxMap`-Struct, nur der
+  Allokator unterscheidet sich, daher direkt wiederverwendbar.
+
+**Wichtiger Fund dabei, NICHT gefixt (Scope-Grenze):** `Json::parse()`
+liefert `JsonValue`-Zeiger in einen **`__thread`-lokalen Arena-Puffer, der
+bei jedem `jsonParse()`-Aufruf zurückgesetzt wird** (Kommentar im Code:
+„valid until the next call"). Ein Payload, der aus mehreren einzelnen
+`Json::parse(...)`-Aufrufen zusammengebaut wird (z. B. pro Feld je ein
+Parse), korrumpiert bereits gespeicherte `JsonValue`s beim nächsten Parse —
+beobachtet als leerer String bei `decoded["sub"].getString()`, sobald
+danach `Json::parse("9999999999")` für ein zweites Feld lief. **Kein**
+Problem für den Hauptpfad (`Jwt::decode`/`extractPayload` parsen den
+kompletten Payload in einem einzigen Aufruf — verifiziert, funktioniert
+korrekt) oder für `Json::parse(vollständigerJsonString)` generell. Ist ein
+generisches Lebensdauer-Risiko der gesamten `tinox.core.json`-API, nicht
+JWT-spezifisch — verdient einen eigenen, gründlichen Fix (Arena
+abschaffen oder GC-Heap-Fallback), nicht im Rahmen von „Ghost-Builtins"
+nebenbei erledigt.
+
+**Entdeckungsweg (Werkzeugkoffer für zukünftige `extern fn`-Fälle):** Tinox
+unterstützt getypte Extern-Deklarationen (`extern fn name(args) -> Ret;`,
+körperlose `fn`), die `gen_fn` automatisch in ein korrekt typisiertes
+`declare` übersetzen — die von Bug 23 benutzten manuellen
+`writeln!(...,"declare ...")`-Zeilen in `codegen.rs` sind ein Workaround
+für Fälle ohne diesen Mechanismus. Für Klasse-1-Fixes ist `extern fn` im
+`.tnx`-Modul selbst der sauberere Weg (typsicher, kein Rückgabetyp-Rateraten
+über `arg_types.first()`) — bei `json.tnx`s bereits bestehenden
+`extern fn jsonGetInt(...)` etc. entdeckt, für `jsonGetObject`/`jsonFromMap`
+so verwendet.
 
 ---
 

@@ -19,14 +19,18 @@ namespace tinox.core.crypto
             return hmacSha256Hash(data, key);
         }
 
+        // AES ist nicht implementiert. Ein Platzhalter (z. B. XOR-Stream)
+        // waere hier gefaehrlich: der Methodenname verspricht echte
+        // Verschluesselung, ein schwacher Ersatz wuerde das stillschweigend
+        // untergraben. Lieber laut scheitern als falsche Sicherheit bieten.
         fn aesEncrypt(data: String, key: String) -> String
         {
-            return aesEncrypt(data, key);
+            throw "Crypto::aesEncrypt ist nicht implementiert";
         }
 
         fn aesDecrypt(data: String, key: String) -> String
         {
-            return aesDecrypt(data, key);
+            throw "Crypto::aesDecrypt ist nicht implementiert";
         }
 
         fn generateKey(length: Int64) -> String

@@ -26,7 +26,7 @@ use std::path::PathBuf;
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
     // Ghost-Builtins: Modul ruft Funktionen, die weder Runtime noch Codegen kennen
-    "crypto", "http", "jwt",
+    "http",
     "rest", "socket", "xml", "zip",
     // Codegen: ungültige Casts (ptr→i64/double) in Modul-Klassen
     "complex", "cron", "decimal", "fmt", "toml",

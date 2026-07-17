@@ -1,5 +1,10 @@
 module tinox.core.jwt;
 
+import tinox.core.base64;
+import tinox.core.crypto;
+import tinox.core.json;
+import tinox.core.time;
+
 namespace tinox.core.jwt
 {
     class Jwt
@@ -7,7 +12,7 @@ namespace tinox.core.jwt
         fn encode(payload: Map<String, JsonValue>, secret: String) -> String
         {
             let header: String = Base64::encode("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
-            let payloadJson: String = Json::stringify(payload);
+            let payloadJson: String = Json::stringify(Json::fromMap(payload));
             let payloadB64: String = Base64::encode(payloadJson);
             let message: String = header + "." + payloadB64;
             let signature: String = Crypto::hmacSha256(message, secret);
