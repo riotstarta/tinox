@@ -18,9 +18,10 @@ clippy:
 test:
 	cargo test --release
 
-# End-to-End: Golden-Tests (tests/e2e/*.tnx) + generierte Kontext-Matrix + Grenzwerte
+# End-to-End: Golden-Tests (tests/e2e/*.tnx) + generierte Kontext-Matrix
+# + Grenzwerte + Stdlib-Smoke-Gate (jedes tinox-core-Modul einmal benutzen)
 e2e:
-	cargo test --release -p tinox --test e2e --test matrix --test boundary
+	cargo test --release -p tinox --test e2e --test matrix --test boundary --test stdlib_smoke
 
 # Dogfood: examples/ + benchmarks/ bauen, jgrep/ygrep bauen und testen
 # (jgrep-Checkout via DOGFOOD_DIR konfigurierbar)

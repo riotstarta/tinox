@@ -1,0 +1,21 @@
+// Bug 19: Class::method(obj, …) auf einer Nothing-Methode emittierte
+// "%tmp.N = call void …" — benannte void-Calls sind ungültiges IR.
+// Gefunden vom Stdlib-Smoke-Gate (Trie::insert, Env::setVar, …).
+// expect: 5
+// expect: ok
+
+class C {
+    fn mk() -> C {
+        return C {};
+    }
+    fn voidy(c: C, x: Int64) -> Nothing {
+        println(x);
+    }
+}
+
+fn main() -> Int32 {
+    let c: C = C::mk();
+    C::voidy(c, 5);
+    println("ok");
+    return 0;
+}

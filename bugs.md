@@ -622,6 +622,81 @@ Methoden-Dispatch existierte schon). Kein neuer Codegen-Sonderfall.
 
 ---
 
+## Bug 19 — `Class::method(obj, …)` auf Nothing-Methoden: benannter void-Call
+
+**Status: GEFIXT (2026-07-17)** — Gefunden vom neuen Stdlib-Smoke-Gate
+(`crates/tinox/tests/stdlib_smoke.rs`); blockierte allein ~8 Stdlib-Module
+(Trie, Env, Bitmap, Debug, Logger, …).
+
+**Regressionstest:** `tests/e2e/bug19_static_void_call.tnx`
+
+**Datei:** `crates/tinox-codegen/src/codegen.rs` (EnumValue-Static-Call-Pfad)
+
+**Problem:**
+```tinox
+class C {
+    fn voidy(c: C, x: Int64) -> Nothing { println(x); }
+}
+C::voidy(c, 5);   // ICE: "instructions returning void cannot have a name"
+```
+Der Static-Dispatch-Pfad (`ExprKind::EnumValue` mit `method_ret_types`)
+emittierte immer `%tmp.N = call <ret> @Class_method(...)` — bei `void`
+ist das ungültiges IR. Der generische Pfad (`gen_generic_method_call`)
+hatte den void-Sonderfall bereits.
+
+**Fix:** `ret_ty == "void"` → unbenannter Call, Rückgabe `("0", "void")`.
+
+---
+
+## Bug 20 — Stdlib-Großbefund: 42 von 61 Modulen kompilieren nicht oder rechnen falsch
+
+**Status: OFFEN (2026-07-17)** — Befund des neuen Stdlib-Smoke-Gates
+(`crates/tinox/tests/stdlib_smoke.rs`, Teil von `make e2e`). Kein Test hatte
+diese Module je importiert; da ein Import das ganze Modul codegen't, reichte
+ein minimaler Aufruf pro Modul, um alles Folgende aufzudecken. Die exakte
+Liste steht in `KNOWN_BROKEN` im Test — jedes gefixte Modul MUSS dort
+ausgetragen werden (sonst „stale entry"), jedes neue Modul braucht einen
+Smoke-Fall (Vollständigkeits-Test).
+
+**Grün verifiziert (19):** array, bitmap, csv, encoding, env, format, hash,
+hpack, http_server, json, math, mathx, pool, semaphore, sort, tpl, trie,
+validation, yaml.
+
+**Fehlerklassen (42 kaputt):**
+
+1. **Ghost-Builtins** — Modul ruft Funktionen, die weder in `runtime/runtime.c`
+   existieren noch im Codegen deklariert sind → ICE „use of undefined value":
+   - http: `httpGet/httpPost/httpPut/httpDelete/httpPatch/httpSetHeader/httpClearHeaders/httpStatusCode/httpBody/httpHeader`
+   - socket: `socketConnect/socketBind/socketListen/socketSend/socketReceive/socketClose`
+   - base64: `base64Encode/base64Decode` · crypto: `md5Hash/sha256Hash/hmacSha256Hash`
+   - uuid: `uuidGenerate` · uri: `uriEncode/uriDecode/uriEncodeComponent/uriDecodeComponent`
+   - xml: `xmlTagName/xmlAttr/xmlChildren/xmlTextContent` · zip: `zipListEntries/zipExtractFile/zipAddFile/zipRemoveFile`
+   - regex: `regexFindFirst/regexReplaceAll` (isMatch/findAll/split existieren)
+   - fs: `fileDelete` · process: `processId` · time: `now` · debug: `gcCollect`
+   - random: `randomInt/randomFloat` · mathf: `cosf/sinf/tanf/logf/log10f` (float-libm nie deklariert)
+   - string: `String_reverse` · io: `String_lastIndexOf` (String-Methoden ohne Codegen-Dispatch)
+   - metrics: `__tinox_counter_inc/__tinox_histogram_record/…` (Typecheck-Fehler; Runtime hat `tinox_counter_inc` ohne Unterstriche)
+   - jwt, rest: transitiv kaputt (crypto- bzw. http-Ghosts)
+2. **Generics** — Instanzmethoden generischer Klassen werden nicht
+   emittiert/gebunden: `Option_unwrap`/`Result_unwrap` undefined;
+   `Stack<Int64>`-Annotation bindet T nicht (`expected T, found Int64`).
+   Betroffen: option, result, cache, collections.
+3. **Ungültige Casts** — `ptr → i64/double` (z. B. `sitofp i8* %value to double`)
+   in Modul-Klassen mit String/Float-Feldern: complex, cron, decimal, fmt, toml.
+4. **Lambda-/Handler-Codegen** — `%handler` i64 vs. ptr (events),
+   Typ-Mismatch (logger), „unable to create block named 'entry'" (rest_framework).
+5. **Frontend** — http2_server.tnx parst nicht (Zeile 770, „expected
+   Semicolon, found Equals"); ini.tnx Typecheck-Fehler (`Map == null`).
+6. **Laufzeit-Fehlverhalten** — kompiliert, rechnet falsch: hex (falsche
+   Ausgabe), heap/set (Pointer statt Wert), iter (`repeat(7,3).len()` → 7),
+   graph (961 statt 1), queue (leere Ausgabe), asm/ratelimit (Crash, Exit -1).
+
+**Empfohlene Reihenfolge:** Klasse 2–4 sind Compiler-Bugs (fixen), Klasse 1
+ist eine Produktentscheidung pro Modul (Runtime-Funktion implementieren oder
+Modul streichen), Klasse 5–6 sind Modul-Bugs im .tnx-Code.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

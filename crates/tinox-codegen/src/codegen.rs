@@ -6546,6 +6546,10 @@ impl CodeGen {
                         args_parts.push(format!("{} {}", t, v));
                     }
                     let args_str = args_parts.join(", ");
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void @{}({})", static_key, args_str).unwrap();
+                        return Ok(("0".to_string(), "void".to_string()));
+                    }
                     let result = self.temp();
                     writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, static_key, args_str).unwrap();
                     return Ok((result, ret_ty));

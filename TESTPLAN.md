@@ -155,6 +155,19 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   pauschal als Array:String (jetzt container_marker). Enum-Payload-
   Verschachtelung deckt bug09/bug10 ab.
 
+### 1.5 Stdlib-Smoke-Gate — ✅ erledigt (2026-07-17)
+- Jedes Modul in `crates/tinox-core` einmal importieren und minimal benutzen;
+  ein Import codegen't das ganze Modul, der IR-Verifier meldet damit jede
+  Referenz auf nicht existierende Builtins.
+- **Stand:** `crates/tinox/tests/stdlib_smoke.rs` (generiert, 4 Shards,
+  Teil von `make e2e`). Vollständigkeits-Test erzwingt Smoke-Fall für jedes
+  neue Modul; `KNOWN_BROKEN` mit Stale-Entry-Zwang wie bei der Matrix.
+  **Erster Lauf: 42 von 61 Modulen kaputt** (bugs.md Bug 20 — Ghost-Builtins,
+  Generics-Instanzmethoden, ptr-Casts, 2 Module parsen/typechecken nicht,
+  8 rechnen falsch). Dabei Bug 19 gefunden und gefixt (benannter void-Call
+  im Static-Dispatch). Lehre wie bei 1.3: die Suite testete nur, was
+  jgrep/examples benutzen — 19 Module sind jetzt grün verifiziert.
+
 ---
 
 ## Phase 2 — Generative Tests (danach, inkrementell)
