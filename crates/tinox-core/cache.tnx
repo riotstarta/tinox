@@ -1,9 +1,15 @@
 module tinox.core.cache;
 
+import tinox.core.option;
+
 namespace tinox.core.cache
 {
     class Cache<K, V>
     {
+        var data: Map<K, V>;
+        var maxSize: Int64;
+        var accessOrder: List<K>;
+
         fn new(maxSize: Int64) -> Cache<K, V>
         {
             return Cache<K, V> { data: Map::new(), maxSize: maxSize, accessOrder: [] };
@@ -82,6 +88,8 @@ namespace tinox.core.cache
 
     class LruCache<K, V>
     {
+        var cache: Cache<K, V>;
+
         fn new(maxSize: Int64) -> LruCache<K, V>
         {
             return LruCache<K, V> { cache: Cache::new(maxSize) };

@@ -3315,6 +3315,43 @@ impl CodeGen {
             } => {
                 let mut llvm_ty = Self::type_to_llvm(ty.as_ref().unwrap_or(&Type::Int64));
                 let mut struct_name: Option<String> = None;
+
+                // Generische Klasse mit expliziter Annotation (`let o:
+                // Option<Int64> = …;`): eager spezialisieren und den lokalen
+                // Marker auf die mangled Klasse setzen — unabhängig davon,
+                // woher der Wert kommt (`Option::some(5)` direkt, oder z. B.
+                // `Cache::get(c, k)`, dessen Rückgabetyp `Option<V>` erst zur
+                // Aufrufzeit in der SPEZIALISIERTEN Cache-Methode aufgelöst
+                // wird). Ruft der Wert-Ausdruck direkt dieselbe Klasse auf,
+                // wird die Konstruktor-Call zusätzlich per Alias umgeleitet
+                // (Bug 20.2 — sonst wird nie eine Instanzmethode einer
+                // generischen Klasse emittiert, weil die Vorabregistrierung
+                // generische Klassen komplett ausklammert).
+                let mut generic_let_alias: Option<String> = None;
+                if let Some(Type::Generic { name: ann_name, args: ann_targs }) = ty.as_ref() {
+                    if let Some(gc) = self.generic_classes.get(ann_name.as_str()).cloned() {
+                        let bindings: HashMap<String, String> = gc
+                            .type_params
+                            .iter()
+                            .zip(ann_targs.iter())
+                            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                            .collect();
+                        let mangled = self
+                            .ensure_generic_class_specialization_with_bindings(ann_name, &bindings)?;
+                        struct_name = Some(mangled.clone());
+                        let matches_ctor = value.as_ref().is_some_and(|v| {
+                            matches!(
+                                &v.node,
+                                ExprKind::EnumValue { enum_name: ev_name, .. } if ev_name == ann_name
+                            )
+                        });
+                        if matches_ctor {
+                            self.type_param_aliases.insert(ann_name.clone(), mangled);
+                            generic_let_alias = Some(ann_name.clone());
+                        }
+                    }
+                }
+
                 let is_heap_ptr = if let Some(v) = value {
                     if let ExprKind::StructLiteral { name: n, .. } = &v.node {
                         llvm_ty = "i64*".to_string();
@@ -3398,6 +3435,9 @@ impl CodeGen {
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
+                    if let Some(cls) = generic_let_alias.take() {
+                        self.type_param_aliases.remove(&cls);
+                    }
                     let actual_ty = if matches!(&val.node, ExprKind::Lambda { .. }) {
                         val_ty.clone()
                     } else if is_heap_ptr {
@@ -6534,25 +6574,82 @@ impl CodeGen {
                     return self.gen_generic_method_call(&static_key, &gm, type_args, args, ctx);
                 }
                 if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
-                    let mut args_parts: Vec<String> = Vec::new();
-                    // Instance methods (fn) have an implicit self param — pass null.
-                    // Static methods (fnc) do not have self — don't add null.
-                    let is_static = self.static_method_keys.contains(&static_key);
-                    if self.method_param_types.contains_key(&static_key) && !is_static {
-                        args_parts.push("i64* null".to_string());
+                    return self.emit_static_dispatch_call(&static_key, &ret_ty, args, ctx);
+                }
+
+                // Generische Klasse, deren Spezialisierung noch nicht (unter
+                // diesem Namen) bekannt ist — Bindungen ableiten und bei
+                // Bedarf jetzt spezialisieren (Bug 20.2). Deckt zwei Muster:
+                // Instanz-Stil-Aufrufe (`Cache::set(cache, …)` — K/V aus dem
+                // bereits spezialisierten Empfänger-Marker von `cache`) und
+                // Fabrikaufrufe tief in einer ANDEREN generischen Klasse
+                // (`Option::some(value)` in Cache::get — T nur aus dem
+                // tatsächlichen LLVM-Typ von `value` ableitbar, keine
+                // `let`-Annotation vorhanden). Argumente werden dafür einmalig
+                // generiert und für den eigentlichen Call wiederverwendet.
+                if let Some(gc) = self.generic_classes.get(enum_name.as_str()).cloned() {
+                    if let Some(method) = gc.methods.iter().find(|m| m.name == *variant).cloned() {
+                        let mut arg_vals: Vec<(String, String)> = Vec::with_capacity(args.len());
+                        for arg in args.iter() {
+                            arg_vals.push(self.gen_expr(arg, ctx)?);
+                        }
+                        let mut bindings: HashMap<String, String> = HashMap::new();
+                        for (tp, ta) in gc.type_params.iter().zip(type_args.iter()) {
+                            bindings.insert(tp.clone(), Self::type_to_llvm(ta));
+                        }
+                        for tp in &gc.type_params {
+                            if bindings.contains_key(tp) {
+                                continue;
+                            }
+                            for (pi, param) in method.params.iter().enumerate() {
+                                let Some((_, arg_llvm)) = arg_vals.get(pi) else { continue };
+                                match &param.param_type {
+                                    // Direkt T-typisierter Param (Option::some(value: T))
+                                    Type::Named(n) if n == tp => {
+                                        bindings.insert(tp.clone(), arg_llvm.clone());
+                                        break;
+                                    }
+                                    // Empfänger-Stil-Param derselben Klasse (Cache::
+                                    // set(cache: Cache<K,V>, …)) — Marker des Arguments
+                                    // (mangled Klassenname) in Bindungen zurückzerlegen.
+                                    Type::Generic { name: pname, .. } if pname == enum_name.as_str() => {
+                                        if let Some(arg_expr) = args.get(pi) {
+                                            if let Some(marker) = self.infer_struct_type(arg_expr, ctx) {
+                                                if let Some(rest) = marker.strip_prefix(&format!("{}__", enum_name)) {
+                                                    for (itp, part) in gc.type_params.iter().zip(rest.split("__")) {
+                                                        bindings.entry(itp.clone()).or_insert_with(|| part.replace('P', "*"));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            bindings.entry(tp.clone()).or_insert_with(|| "i64".to_string());
+                        }
+                        let mangled = self.ensure_generic_class_specialization_with_bindings(enum_name, &bindings)?;
+                        let mangled_key = format!("{}_{}", mangled, variant);
+                        if let Some(ret_ty) = self.method_ret_types.get(&mangled_key).cloned() {
+                            let mut args_parts: Vec<String> = Vec::new();
+                            let is_static = self.static_method_keys.contains(&mangled_key);
+                            if self.method_param_types.contains_key(&mangled_key) && !is_static {
+                                args_parts.push("i64* null".to_string());
+                            }
+                            for (v, t) in &arg_vals {
+                                args_parts.push(format!("{} {}", t, v));
+                            }
+                            let args_str = args_parts.join(", ");
+                            if ret_ty == "void" {
+                                writeln!(&mut self.ir, "call void @{}({})", mangled_key, args_str).unwrap();
+                                return Ok(("0".to_string(), "void".to_string()));
+                            }
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, mangled_key, args_str).unwrap();
+                            return Ok((result, ret_ty));
+                        }
                     }
-                    for arg in args.iter() {
-                        let (v, t) = self.gen_expr(arg, ctx)?;
-                        args_parts.push(format!("{} {}", t, v));
-                    }
-                    let args_str = args_parts.join(", ");
-                    if ret_ty == "void" {
-                        writeln!(&mut self.ir, "call void @{}({})", static_key, args_str).unwrap();
-                        return Ok(("0".to_string(), "void".to_string()));
-                    }
-                    let result = self.temp();
-                    writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, static_key, args_str).unwrap();
-                    return Ok((result, ret_ty));
                 }
 
                 // For simplicity, we represent enum values as:
@@ -8504,6 +8601,286 @@ impl CodeGen {
         }
     }
 
+    /// Collapse any occurrence of the class's own (generic) name in a Type
+    /// to the concrete mangled name — see `substitute_class` for why.
+    fn rename_self_type(ty: &tinox_parser::Type, self_rename: (&str, &str)) -> tinox_parser::Type {
+        use tinox_parser::Type;
+        match ty {
+            Type::Named(n) if n == self_rename.0 => Type::Named(self_rename.1.to_string()),
+            Type::Generic { name, .. } if name == self_rename.0 => Type::Named(self_rename.1.to_string()),
+            Type::Generic { name, args } => Type::Generic {
+                name: name.clone(),
+                args: args.iter().map(|a| Self::rename_self_type(a, self_rename)).collect(),
+            },
+            Type::Array(inner) => Type::Array(Box::new(Self::rename_self_type(inner, self_rename))),
+            Type::Ref(inner) => Type::Ref(Box::new(Self::rename_self_type(inner, self_rename))),
+            Type::Mutable(inner) => Type::Mutable(Box::new(Self::rename_self_type(inner, self_rename))),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| Self::rename_self_type(p, self_rename)).collect(),
+                ret: Box::new(Self::rename_self_type(ret, self_rename)),
+            },
+            Type::Nullable(inner) => Type::Nullable(Box::new(Self::rename_self_type(inner, self_rename))),
+            other => other.clone(),
+        }
+    }
+
+    /// Deep-substitute Type-Annotationen in einem Stmt-Baum (Bug 20.2):
+    /// `substitute_class`/`substitute_fn` ersetzten bisher nur Feld-/Param-/
+    /// Rückgabetypen, der Methoden-BODY wurde unverändert geklont. Ein
+    /// `let value: V = ...;` im Body (z. B. Cache::get) behielt so den
+    /// nackten Typparameter — `type_to_llvm(Named("V"))` fällt auf "i64*"
+    /// zurück, unabhängig davon, ob V tatsächlich Int64 ist. Wandert einmal
+    /// über den ganzen Baum, wenn eine generische Klasse monomorphisiert wird.
+    /// `self_rename` is (original class name, mangled name): generic-class
+    /// methods often self-construct via `ClassName<T> { field: … }`
+    /// (StructLiteral — the AST has no type_args there, so the class name
+    /// itself is the only substitution point) or recursively via
+    /// `ClassName<T>::factory()`. Left unrenamed, the specialized method
+    /// body would allocate/dispatch against the UNMANGLED class — which has
+    /// no registered struct_layout (generic classes are skipped from the
+    /// normal pre-pass) and silently allocates a 0-byte struct (Bug 20.2:
+    /// Result::ok returned a corrupted value from exactly this).
+    fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, Type>, self_rename: (&str, &str)) -> Stmt {
+        let node = match &stmt.node {
+            StmtKind::Expr(e) => StmtKind::Expr(Self::substitute_expr(e, subst, self_rename)),
+            StmtKind::Let { name, ty, value } => StmtKind::Let {
+                name: name.clone(),
+                ty: ty.as_ref().map(|t| Self::substitute_type(t, subst)),
+                value: value.as_ref().map(|v| Self::substitute_expr(v, subst, self_rename)),
+            },
+            StmtKind::Var { name, ty, value, mutable } => StmtKind::Var {
+                name: name.clone(),
+                ty: ty.as_ref().map(|t| Self::substitute_type(t, subst)),
+                value: value.as_ref().map(|v| Self::substitute_expr(v, subst, self_rename)),
+                mutable: *mutable,
+            },
+            StmtKind::Assignment { target, value } => StmtKind::Assignment {
+                target: Self::substitute_expr(target, subst, self_rename),
+                value: Self::substitute_expr(value, subst, self_rename),
+            },
+            StmtKind::If { cond, then_branch, else_branch } => StmtKind::If {
+                cond: Self::substitute_expr(cond, subst, self_rename),
+                then_branch: Box::new(Self::substitute_stmt(then_branch, subst, self_rename)),
+                else_branch: else_branch.as_ref().map(|b| Box::new(Self::substitute_stmt(b, subst, self_rename))),
+            },
+            StmtKind::While { cond, body } => StmtKind::While {
+                cond: Self::substitute_expr(cond, subst, self_rename),
+                body: Box::new(Self::substitute_stmt(body, subst, self_rename)),
+            },
+            StmtKind::For { var, iter, body } => StmtKind::For {
+                var: var.clone(),
+                iter: Self::substitute_expr(iter, subst, self_rename),
+                body: Box::new(Self::substitute_stmt(body, subst, self_rename)),
+            },
+            StmtKind::ForC { init, cond, update, body } => StmtKind::ForC {
+                init: init.as_ref().map(|s| Box::new(Self::substitute_stmt(s, subst, self_rename))),
+                cond: cond.as_ref().map(|e| Self::substitute_expr(e, subst, self_rename)),
+                update: update.as_ref().map(|e| Self::substitute_expr(e, subst, self_rename)),
+                body: Box::new(Self::substitute_stmt(body, subst, self_rename)),
+            },
+            StmtKind::Loop { body } => StmtKind::Loop { body: Box::new(Self::substitute_stmt(body, subst, self_rename)) },
+            StmtKind::Return(e) => StmtKind::Return(e.as_ref().map(|e| Self::substitute_expr(e, subst, self_rename))),
+            StmtKind::Break => StmtKind::Break,
+            StmtKind::Continue => StmtKind::Continue,
+            StmtKind::Throw(e) => StmtKind::Throw(Self::substitute_expr(e, subst, self_rename)),
+            StmtKind::Try { body, catches, finally } => StmtKind::Try {
+                body: Box::new(Self::substitute_stmt(body, subst, self_rename)),
+                catches: catches
+                    .iter()
+                    .map(|c| CatchClause {
+                        param: c.param.clone(),
+                        ty: Self::substitute_type(&c.ty, subst),
+                        body: Self::substitute_stmt(&c.body, subst, self_rename),
+                        span: c.span,
+                    })
+                    .collect(),
+                finally: finally.as_ref().map(|b| Box::new(Self::substitute_stmt(b, subst, self_rename))),
+            },
+            StmtKind::Defer(s) => StmtKind::Defer(Box::new(Self::substitute_stmt(s, subst, self_rename))),
+            StmtKind::Block(stmts) => {
+                StmtKind::Block(stmts.iter().map(|s| Self::substitute_stmt(s, subst, self_rename)).collect())
+            }
+            StmtKind::Select { arms, default } => StmtKind::Select {
+                arms: arms
+                    .iter()
+                    .map(|a| tinox_parser::SelectArm {
+                        channel: Self::substitute_expr(&a.channel, subst, self_rename),
+                        var: a.var.clone(),
+                        body: Self::substitute_stmt(&a.body, subst, self_rename),
+                        span: a.span,
+                    })
+                    .collect(),
+                default: default.as_ref().map(|b| Box::new(Self::substitute_stmt(b, subst, self_rename))),
+            },
+            StmtKind::Empty => StmtKind::Empty,
+        };
+        Spanned { node, span: stmt.span, id: stmt.id }
+    }
+
+    /// Gegenstück zu `substitute_stmt` für Expr-Knoten (siehe dort für `self_rename`).
+    fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>, self_rename: (&str, &str)) -> Expr {
+        let rename = |n: &String| -> String {
+            if n == self_rename.0 { self_rename.1.to_string() } else { n.clone() }
+        };
+        let node = match &expr.node {
+            ExprKind::Literal(l) => ExprKind::Literal(l.clone()),
+            ExprKind::ArrayLiteral(es) => {
+                ExprKind::ArrayLiteral(es.iter().map(|e| Self::substitute_expr(e, subst, self_rename)).collect())
+            }
+            ExprKind::MapLiteral(entries) => ExprKind::MapLiteral(
+                entries
+                    .iter()
+                    .map(|(k, v)| (Self::substitute_expr(k, subst, self_rename), Self::substitute_expr(v, subst, self_rename)))
+                    .collect(),
+            ),
+            ExprKind::Ident(n) => ExprKind::Ident(n.clone()),
+            ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+                op: op.clone(),
+                lhs: Box::new(Self::substitute_expr(lhs, subst, self_rename)),
+                rhs: Box::new(Self::substitute_expr(rhs, subst, self_rename)),
+            },
+            ExprKind::Unary { op, operand } => ExprKind::Unary {
+                op: op.clone(),
+                operand: Box::new(Self::substitute_expr(operand, subst, self_rename)),
+            },
+            ExprKind::Call { func, args } => ExprKind::Call {
+                func: Box::new(Self::substitute_expr(func, subst, self_rename)),
+                args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
+            },
+            ExprKind::MethodCall { obj, method, args } => ExprKind::MethodCall {
+                obj: Box::new(Self::substitute_expr(obj, subst, self_rename)),
+                method: method.clone(),
+                args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
+            },
+            ExprKind::Index { obj, index } => ExprKind::Index {
+                obj: Box::new(Self::substitute_expr(obj, subst, self_rename)),
+                index: Box::new(Self::substitute_expr(index, subst, self_rename)),
+            },
+            ExprKind::FieldAccess { obj, field } => ExprKind::FieldAccess {
+                obj: Box::new(Self::substitute_expr(obj, subst, self_rename)),
+                field: field.clone(),
+            },
+            ExprKind::This => ExprKind::This,
+            ExprKind::SuperCall { method, args } => ExprKind::SuperCall {
+                method: method.clone(),
+                args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
+            },
+            ExprKind::New { class, type_args, args } => ExprKind::New {
+                class: rename(class),
+                type_args: type_args.iter().map(|t| Self::substitute_type(t, subst)).collect(),
+                args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
+            },
+            ExprKind::StructLiteral { name, fields } => ExprKind::StructLiteral {
+                name: rename(name),
+                fields: fields
+                    .iter()
+                    .map(|(n, v)| (n.clone(), Self::substitute_expr(v, subst, self_rename)))
+                    .collect(),
+            },
+            ExprKind::Block(stmts) => {
+                ExprKind::Block(stmts.iter().map(|s| Self::substitute_stmt(s, subst, self_rename)).collect())
+            }
+            ExprKind::If { cond, then_branch, else_branch } => ExprKind::If {
+                cond: Box::new(Self::substitute_expr(cond, subst, self_rename)),
+                then_branch: Box::new(Self::substitute_expr(then_branch, subst, self_rename)),
+                else_branch: else_branch.as_ref().map(|b| Box::new(Self::substitute_expr(b, subst, self_rename))),
+            },
+            ExprKind::While { cond, body } => ExprKind::While {
+                cond: Box::new(Self::substitute_expr(cond, subst, self_rename)),
+                body: Box::new(Self::substitute_expr(body, subst, self_rename)),
+            },
+            ExprKind::For { var, iter, body } => ExprKind::For {
+                var: var.clone(),
+                iter: Box::new(Self::substitute_expr(iter, subst, self_rename)),
+                body: Box::new(Self::substitute_expr(body, subst, self_rename)),
+            },
+            ExprKind::Loop { body } => ExprKind::Loop { body: Box::new(Self::substitute_expr(body, subst, self_rename)) },
+            ExprKind::Match { expr: scrutinee, cases } => ExprKind::Match {
+                expr: Box::new(Self::substitute_expr(scrutinee, subst, self_rename)),
+                cases: cases
+                    .iter()
+                    .map(|c| tinox_parser::MatchCase {
+                        pattern: c.pattern.clone(),
+                        guard: c.guard.as_ref().map(|g| Self::substitute_expr(g, subst, self_rename)),
+                        body: Self::substitute_expr(&c.body, subst, self_rename),
+                        span: c.span,
+                    })
+                    .collect(),
+            },
+            ExprKind::Return(e) => ExprKind::Return(e.as_ref().map(|e| Box::new(Self::substitute_expr(e, subst, self_rename)))),
+            ExprKind::Break => ExprKind::Break,
+            ExprKind::Continue => ExprKind::Continue,
+            ExprKind::Throw(e) => ExprKind::Throw(Box::new(Self::substitute_expr(e, subst, self_rename))),
+            ExprKind::Try { body, catches, finally } => ExprKind::Try {
+                body: Box::new(Self::substitute_expr(body, subst, self_rename)),
+                catches: catches
+                    .iter()
+                    .map(|c| CatchClause {
+                        param: c.param.clone(),
+                        ty: Self::substitute_type(&c.ty, subst),
+                        body: Self::substitute_stmt(&c.body, subst, self_rename),
+                        span: c.span,
+                    })
+                    .collect(),
+                finally: finally.as_ref().map(|b| Box::new(Self::substitute_expr(b, subst, self_rename))),
+            },
+            ExprKind::Assign { target, value } => ExprKind::Assign {
+                target: Box::new(Self::substitute_expr(target, subst, self_rename)),
+                value: Box::new(Self::substitute_expr(value, subst, self_rename)),
+            },
+            ExprKind::CompoundAssign { op, target, value } => ExprKind::CompoundAssign {
+                op: op.clone(),
+                target: Box::new(Self::substitute_expr(target, subst, self_rename)),
+                value: Box::new(Self::substitute_expr(value, subst, self_rename)),
+            },
+            ExprKind::Lambda { params, ret_type, body } => ExprKind::Lambda {
+                params: params
+                    .iter()
+                    .map(|p| tinox_parser::Param {
+                        name: p.name.clone(),
+                        param_type: Self::substitute_type(&p.param_type, subst),
+                        span: p.span,
+                    })
+                    .collect(),
+                ret_type: ret_type.as_ref().map(|t| Self::substitute_type(t, subst)),
+                body: Box::new(Self::substitute_expr(body, subst, self_rename)),
+            },
+            ExprKind::Spawn(e) => ExprKind::Spawn(Box::new(Self::substitute_expr(e, subst, self_rename))),
+            ExprKind::Await(e) => ExprKind::Await(Box::new(Self::substitute_expr(e, subst, self_rename))),
+            ExprKind::Channel => ExprKind::Channel,
+            ExprKind::Send { channel, value } => ExprKind::Send {
+                channel: Box::new(Self::substitute_expr(channel, subst, self_rename)),
+                value: Box::new(Self::substitute_expr(value, subst, self_rename)),
+            },
+            ExprKind::Recv(e) => ExprKind::Recv(Box::new(Self::substitute_expr(e, subst, self_rename))),
+            ExprKind::Cast { expr: inner, ty } => ExprKind::Cast {
+                expr: Box::new(Self::substitute_expr(inner, subst, self_rename)),
+                ty: Self::substitute_type(ty, subst),
+            },
+            ExprKind::Is { expr: inner, ty } => ExprKind::Is {
+                expr: Box::new(Self::substitute_expr(inner, subst, self_rename)),
+                ty: Self::substitute_type(ty, subst),
+            },
+            ExprKind::Range { start, end, inclusive } => ExprKind::Range {
+                start: Box::new(Self::substitute_expr(start, subst, self_rename)),
+                end: Box::new(Self::substitute_expr(end, subst, self_rename)),
+                inclusive: *inclusive,
+            },
+            ExprKind::Tuple(es) => ExprKind::Tuple(es.iter().map(|e| Self::substitute_expr(e, subst, self_rename)).collect()),
+            ExprKind::TupleIndex { tuple, index } => ExprKind::TupleIndex {
+                tuple: Box::new(Self::substitute_expr(tuple, subst, self_rename)),
+                index: *index,
+            },
+            ExprKind::EnumValue { enum_name, variant, type_args, args } => ExprKind::EnumValue {
+                enum_name: rename(enum_name),
+                variant: variant.clone(),
+                type_args: type_args.iter().map(|t| Self::substitute_type(t, subst)).collect(),
+                args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
+            },
+        };
+        Spanned { node, span: expr.span, id: expr.id }
+    }
+
     /// Create a monomorphic copy of a generic function with substituted types and a mangled name.
     fn substitute_fn(f: &tinox_parser::Function, mangled_name: &str, bindings: &HashMap<String, String>) -> tinox_parser::Function {
         // Build a Type substitution map: "T" -> Type::Int64 etc.
@@ -8544,6 +8921,36 @@ impl CodeGen {
         }
     }
 
+    /// Emit a `ClassName_method(args...)`-style static-dispatch call — shared
+    /// by the plain static-call path and the generic-class receiver-marker
+    /// fallback (see `ExprKind::EnumValue`). Instance methods (`fn`) get an
+    /// implicit `i64* null` self; static methods (`fnc`) don't.
+    fn emit_static_dispatch_call(
+        &mut self,
+        key: &str,
+        ret_ty: &str,
+        args: &[tinox_parser::Expr],
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let mut args_parts: Vec<String> = Vec::new();
+        let is_static = self.static_method_keys.contains(key);
+        if self.method_param_types.contains_key(key) && !is_static {
+            args_parts.push("i64* null".to_string());
+        }
+        for arg in args.iter() {
+            let (v, t) = self.gen_expr(arg, ctx)?;
+            args_parts.push(format!("{} {}", t, v));
+        }
+        let args_str = args_parts.join(", ");
+        if ret_ty == "void" {
+            writeln!(&mut self.ir, "call void @{}({})", key, args_str).unwrap();
+            return Ok(("0".to_string(), "void".to_string()));
+        }
+        let result = self.temp();
+        writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, key, args_str).unwrap();
+        Ok((result, ret_ty.to_string()))
+    }
+
     /// If `class` is a known generic class, monomorphize it with `type_args` and return the
     /// mangled name. Otherwise return the class name unchanged. Emits the specialized methods
     /// into `lambda_ir` the first time a given instantiation is requested.
@@ -8560,25 +8967,92 @@ impl CodeGen {
             .zip(type_args.iter())
             .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
             .collect();
-        let mangled = Self::mangle_generic_name(class, &gc.type_params, &bindings);
+        self.ensure_generic_class_specialization_with_bindings(class, &bindings)
+    }
+
+    /// Kern von `ensure_generic_class_specialization`, aber mit bereits
+    /// aufgelösten Typparameter-Bindungen (llvm-Typ-Strings statt Parser-
+    /// `Type`s) — Aufrufer sind `New`/explizite Typargumente (via der
+    /// öffentlichen Variante oben) und statische Instanzaufrufe generischer
+    /// Klassen (`Cache::set(cache, …)`, `Option::some(5)`), die Bindungen
+    /// aus Call-Site-Argumenten bzw. der `let`-Annotation ableiten (Bug 20.2
+    /// — Instanzmethoden generischer Klassen wurden nie emittiert, weil die
+    /// Klassen-Vorabregistrierung sie komplett überspringt).
+    fn ensure_generic_class_specialization_with_bindings(
+        &mut self,
+        class: &str,
+        bindings: &HashMap<String, String>,
+    ) -> Result<String, ErrorBag> {
+        let Some(gc) = self.generic_classes.get(class).cloned() else {
+            return Ok(class.to_string());
+        };
+        let mangled = Self::mangle_generic_name(class, &gc.type_params, bindings);
         if !self.generated_specializations.contains(&mangled) {
             self.generated_specializations.insert(mangled.clone());
-            let specialized = Self::substitute_class(&gc, &mangled, &bindings);
-            // Register struct layout (field names, in order)
+            let specialized = Self::substitute_class(&gc, &mangled, bindings);
+            // Register struct layout (field names, in order) + field type info
+            // (mirrors the non-generic class pre-pass — needed for correct
+            // String/class field ptrtoint/inttoptr casts on FieldAccess).
             let fields: Vec<String> = specialized.fields.iter().map(|f| f.name.clone()).collect();
             self.struct_layouts.insert(mangled.clone(), fields);
-            // Register method signatures for dispatch
+            let one_class_map: HashMap<String, tinox_parser::Class> =
+                [(mangled.clone(), specialized.clone())].into_iter().collect();
+            self.struct_field_class_types.insert(
+                mangled.clone(),
+                Self::collect_field_class_types(&mangled, &one_class_map),
+            );
+            self.struct_field_llvm_types.insert(
+                mangled.clone(),
+                Self::collect_field_llvm_types(&mangled, &one_class_map),
+            );
+            // Fn-typed fields (callback fields, e.g. Pool<T>.factory) — the
+            // MethodCall dispatch for calling-a-field-as-a-function consults
+            // this table by struct name; without it, `pool.factory()` is
+            // misread as a regular class method and ICEs ("undefined value
+            // @Pool__i64_factory").
+            self.fn_field_sigs.insert(
+                mangled.clone(),
+                Self::collect_fn_field_sigs(&mangled, &one_class_map),
+            );
+            // Register method signatures for dispatch — ret type, param types
+            // (for the static-call self-null convention below) and static-ness.
+            // Methods with their OWN type params (`fn map<U>(...)`) are still
+            // generic after the class-level substitution — defer them to the
+            // existing call-site monomorphization (generic_methods), mirroring
+            // the non-generic class pre-pass. Emitting them here would bake in
+            // an unresolved `U` (fnc(T) -> U params/return, wrong LLVM types).
+            let mut emit_now: Vec<tinox_parser::Method> = Vec::new();
             for method in &specialized.methods {
                 let fn_name = format!("{}_{}", mangled, method.name);
+                if !method.type_params.is_empty() {
+                    self.generic_methods.insert(fn_name, method.clone());
+                    continue;
+                }
+                // Lambda-typisierte Parameter (`fnc(T) -> U`, z. B. Option::
+                // orElse) brauchen mehr als die Signatur-Übersetzung, die
+                // gen_class_method hier leistet — nicht eagerly emittieren,
+                // sonst ungültiges IR bei einem nicht benutzten Call-through.
+                // Selten reachable in den 4 Zielmodulen, kein Regressions-
+                // risiko (vorher war die ganze Klasse unerreichbar).
+                if method.params.iter().any(|p| matches!(p.param_type, Type::Fn { .. })) {
+                    continue;
+                }
                 let ret_ty = Self::type_to_llvm(&method.ret_type);
                 self.method_ret_types.insert(fn_name.clone(), ret_ty);
-                self.method_impl.insert(fn_name.clone(), fn_name);
+                self.method_impl.insert(fn_name.clone(), fn_name.clone());
+                if method.static_ {
+                    self.static_method_keys.insert(fn_name.clone());
+                }
+                let param_tys: Vec<tinox_parser::Type> =
+                    method.params.iter().map(|p| p.param_type.clone()).collect();
+                self.method_param_types.insert(fn_name, param_tys);
+                emit_now.push(method.clone());
             }
             // Generate method IR into lambda_ir so it doesn't interrupt current function
             let saved_ir = std::mem::take(&mut self.ir);
             let saved_temp = self.temp_count;
             self.temp_count = 0;
-            for method in &specialized.methods {
+            for method in &emit_now {
                 self.gen_class_method(&mangled, method)?;
             }
             let spec_ir = std::mem::take(&mut self.ir);
@@ -8598,6 +9072,16 @@ impl CodeGen {
         let subst: HashMap<String, tinox_parser::Type> = bindings.iter()
             .map(|(tp, llvm_ty)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm_ty)))
             .collect();
+        // (Klassenname, mangled Name) — Param-/Feld-/Rückgabetypen, die den
+        // eigenen generischen Klassennamen nennen (`cache: Cache<K,V>`,
+        // z. B. das Instanz-Pendant zu `this`), werden auf den konkreten
+        // mangled Named-Typ kollabiert. Sonst bleibt so ein Param nach der
+        // Substitution ein `Type::Generic{"Cache",[String,Int64]}` — dafür
+        // hat `gen_class_method`s Param-Typisierung (nur `Type::Named` setzt
+        // den local_types-Marker) keinen Fall, und Feldzugriffe/Methoden auf
+        // dem Parameter (`cache.accessOrder.removeAt(…)`) landen unmarkiert
+        // im Nirgendwo (Bug 20.2 — Folgefund nach dem StructLiteral-Rename).
+        let self_rename = (c.name.as_str(), mangled_name);
         tinox_parser::Class {
             name: mangled_name.to_string(),
             type_params: vec![],
@@ -8605,7 +9089,7 @@ impl CodeGen {
             implements: c.implements.clone(),
             fields: c.fields.iter().map(|f| tinox_parser::FieldDef {
                 name: f.name.clone(),
-                field_type: Self::substitute_type(&f.field_type, &subst),
+                field_type: Self::rename_self_type(&Self::substitute_type(&f.field_type, &subst), self_rename),
                 visibility: f.visibility.clone(),
                 mutable: f.mutable,
                 span: f.span,
@@ -8617,11 +9101,11 @@ impl CodeGen {
                 type_params: m.type_params.clone(),
                 params: m.params.iter().map(|p| tinox_parser::Param {
                     name: p.name.clone(),
-                    param_type: Self::substitute_type(&p.param_type, &subst),
+                    param_type: Self::rename_self_type(&Self::substitute_type(&p.param_type, &subst), self_rename),
                     span: p.span,
                 }).collect(),
-                ret_type: Self::substitute_type(&m.ret_type, &subst),
-                body: m.body.clone(),
+                ret_type: Self::rename_self_type(&Self::substitute_type(&m.ret_type, &subst), self_rename),
+                body: Self::substitute_stmt(&m.body, &subst, self_rename),
                 static_: m.static_,
                 visibility: m.visibility.clone(),
                 span: m.span,

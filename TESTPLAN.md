@@ -167,6 +167,22 @@ alle **Herkunfts-Kontexte** schleusen und identisches Verhalten verlangen:
   8 rechnen falsch). Dabei Bug 19 gefunden und gefixt (benannter void-Call
   im Static-Dispatch). Lehre wie bei 1.3: die Suite testete nur, was
   jgrep/examples benutzen — 19 Module sind jetzt grün verifiziert.
+- **Nachtrag 2026-07-17 (Bug 21):** Generics-Klasse komplett gefixt —
+  generische Klassen (`class Foo<T>`) bekommen jetzt echte Instanzmethoden
+  am Call-Site monomorphisiert, auch im Stdlib-üblichen `Foo::method(args)`-
+  Stil (nicht nur `new Foo<T>(...)`), inklusive Body-Typsubstitution und
+  Selbstreferenz-Umbenennung (`ClassName<T>{...}` im eigenen Methoden-Body).
+  Dieselbe Erasure-Lücke (nur methoden-eigene, nie klassen-eigene
+  Typparameter wurden zu `Any` erased) steckte doppelt in der
+  Signaturregistrierung und einmal im Body-Check von typecheck — alle drei
+  gefixt. option/result/cache/collections jetzt grün (22 Module gesamt).
+  Dabei `pool` neu kaputt: `Pool<T>` wurde vorher mangels Infrastruktur nie
+  spezialisiert, der Modul-Bug (`pool.factory()` ohne Feld, Bug 22) war
+  unerreichbar. Bewusst nicht mitgefixt: Methoden mit eigenen Typparametern
+  (`map<U>`) und Lambda-Parametern werden bei der Spezialisierung
+  übersprungen (keins der 4 Zielmodule braucht sie am Smoke-Pfad) —
+  `gen_generic_method_call` hat dieselbe Body-Substitutions-Lücke wie
+  ursprünglich `substitute_class`, absichtlich nicht angefasst.
 
 ---
 

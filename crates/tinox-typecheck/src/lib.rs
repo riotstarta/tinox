@@ -1071,15 +1071,28 @@ impl TypeChecker {
                         } else {
                             vec![("self".to_string(), ValueType::Named(c.name.clone()))]
                         };
+                        // Erase both the method's own type params (`fn map<U>`)
+                        // AND the enclosing class's (`class Stack<T>`) — only
+                        // the former was erased before, so any instance method
+                        // whose param/return type names the CLASS param
+                        // directly (`push(value: T)`) registered a literal
+                        // `Named("T")` signature and failed typecheck on every
+                        // real call ("expected T, found Int64").
+                        let erase_params: Vec<String> = c
+                            .type_params
+                            .iter()
+                            .chain(method.type_params.iter())
+                            .cloned()
+                            .collect();
                         params.extend(
                             method
                                 .params
                                 .iter()
-                                .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &method.type_params))),
+                                .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &erase_params))),
                         );
                         let sig = FunctionSignature {
                             params,
-                            return_type: Self::type_to_value_erasing(&method.ret_type, &method.type_params),
+                            return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
                         };
                         let key = format!("{}_{}", c.name, method.name);
                         self.symbols.functions.insert(key.clone(), sig);
@@ -1202,13 +1215,23 @@ impl TypeChecker {
                                 } else {
                                     vec![("self".to_string(), ValueType::Named(c.name.clone()))]
                                 };
+                                // Erase class-level AND method-level type params
+                                // (see the top-level DeclKind::Class arm above —
+                                // Stack<T>::push(value: T) lives in a namespace,
+                                // same "expected T, found Int64" bug).
+                                let erase_params: Vec<String> = c
+                                    .type_params
+                                    .iter()
+                                    .chain(method.type_params.iter())
+                                    .cloned()
+                                    .collect();
                                 params.extend(
                                     method.params.iter()
-                                        .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &method.type_params))),
+                                        .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &erase_params))),
                                 );
                                 let sig = FunctionSignature {
                                     params,
-                                    return_type: Self::type_to_value_erasing(&method.ret_type, &method.type_params),
+                                    return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
                                 };
                                 let key = format!("{}_{}", c.name, method.name);
                                 self.symbols.functions.insert(key.clone(), sig);
@@ -1551,6 +1574,18 @@ impl TypeChecker {
             for tp in &method.type_params {
                 self.type_param_scope.insert(tp.clone());
             }
+            // Erase class-level type params too, not just the method's own
+            // (see the DeclKind::Class signature-registration arms) — a
+            // method BODY referencing a class param directly (`cache.data[key]`
+            // with `key: K`, `Cache<K,V>`) needs `key`'s registered type to be
+            // Any for the Map-index-validity check, else every generic-class
+            // method body with T-typed indexing/comparison spuriously errors.
+            let erase_params: Vec<String> = c
+                .type_params
+                .iter()
+                .chain(method.type_params.iter())
+                .cloned()
+                .collect();
             self.symbols.variables.insert(
                 "self".to_string(),
                 (ValueType::Named(c.name.clone()), false),
@@ -1558,10 +1593,10 @@ impl TypeChecker {
             for param in &method.params {
                 self.symbols.variables.insert(
                     param.name.clone(),
-                    (Self::type_to_value_erasing(&param.param_type, &method.type_params), false),
+                    (Self::type_to_value_erasing(&param.param_type, &erase_params), false),
                 );
             }
-            let expected = Self::type_to_value_erasing(&method.ret_type, &method.type_params);
+            let expected = Self::type_to_value_erasing(&method.ret_type, &erase_params);
             let saved_return_type = self.current_return_type.replace(expected.clone());
             let has_return = self.check_stmt(&method.body);
             self.current_return_type = saved_return_type;

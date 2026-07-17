@@ -650,7 +650,7 @@ hatte den void-Sonderfall bereits.
 
 ## Bug 20 — Stdlib-Großbefund: 42 von 61 Modulen kompilieren nicht oder rechnen falsch
 
-**Status: OFFEN (2026-07-17)** — Befund des neuen Stdlib-Smoke-Gates
+**Status: TEILWEISE GEFIXT** — Befund des neuen Stdlib-Smoke-Gates
 (`crates/tinox/tests/stdlib_smoke.rs`, Teil von `make e2e`). Kein Test hatte
 diese Module je importiert; da ein Import das ganze Modul codegen't, reichte
 ein minimaler Aufruf pro Modul, um alles Folgende aufzudecken. Die exakte
@@ -658,11 +658,17 @@ Liste steht in `KNOWN_BROKEN` im Test — jedes gefixte Modul MUSS dort
 ausgetragen werden (sonst „stale entry"), jedes neue Modul braucht einen
 Smoke-Fall (Vollständigkeits-Test).
 
-**Grün verifiziert (19):** array, bitmap, csv, encoding, env, format, hash,
-hpack, http_server, json, math, mathx, pool, semaphore, sort, tpl, trie,
-validation, yaml.
+Klasse 2 (Generics) ist seit 2026-07-17 gefixt — siehe Bug 21. Dabei ist
+`pool` neu in KNOWN_BROKEN gelandet: es war vorher nur „grün", weil `Pool<T>`
+mangels Generics-Infrastruktur nie erfolgreich spezialisiert wurde — der
+eigentliche Modul-Bug (`pool.factory()` ohne deklariertes Feld) war
+unerreichbar. Siehe Bug 22.
 
-**Fehlerklassen (42 kaputt):**
+**Grün verifiziert (22):** array, bitmap, cache, collections, csv, encoding,
+env, format, hash, hpack, http_server, json, math, mathx, option, result,
+semaphore, sort, tpl, trie, validation, yaml.
+
+**Fehlerklassen (39 kaputt):**
 
 1. **Ghost-Builtins** — Modul ruft Funktionen, die weder in `runtime/runtime.c`
    existieren noch im Codegen deklariert sind → ICE „use of undefined value":
@@ -677,10 +683,7 @@ validation, yaml.
    - string: `String_reverse` · io: `String_lastIndexOf` (String-Methoden ohne Codegen-Dispatch)
    - metrics: `__tinox_counter_inc/__tinox_histogram_record/…` (Typecheck-Fehler; Runtime hat `tinox_counter_inc` ohne Unterstriche)
    - jwt, rest: transitiv kaputt (crypto- bzw. http-Ghosts)
-2. **Generics** — Instanzmethoden generischer Klassen werden nicht
-   emittiert/gebunden: `Option_unwrap`/`Result_unwrap` undefined;
-   `Stack<Int64>`-Annotation bindet T nicht (`expected T, found Int64`).
-   Betroffen: option, result, cache, collections.
+2. ~~**Generics**~~ — **gefixt, siehe Bug 21.**
 3. **Ungültige Casts** — `ptr → i64/double` (z. B. `sitofp i8* %value to double`)
    in Modul-Klassen mit String/Float-Feldern: complex, cron, decimal, fmt, toml.
 4. **Lambda-/Handler-Codegen** — `%handler` i64 vs. ptr (events),
@@ -690,10 +693,109 @@ validation, yaml.
 6. **Laufzeit-Fehlverhalten** — kompiliert, rechnet falsch: hex (falsche
    Ausgabe), heap/set (Pointer statt Wert), iter (`repeat(7,3).len()` → 7),
    graph (961 statt 1), queue (leere Ausgabe), asm/ratelimit (Crash, Exit -1).
+7. **Modul-Bug, durch Bug 21 aufgedeckt** — pool (siehe Bug 22).
 
-**Empfohlene Reihenfolge:** Klasse 2–4 sind Compiler-Bugs (fixen), Klasse 1
+**Empfohlene Reihenfolge:** Klasse 3–4 sind Compiler-Bugs (fixen), Klasse 1
 ist eine Produktentscheidung pro Modul (Runtime-Funktion implementieren oder
-Modul streichen), Klasse 5–6 sind Modul-Bugs im .tnx-Code.
+Modul streichen), Klasse 5–7 sind Modul-Bugs im .tnx-Code.
+
+---
+
+## Bug 21 — Generische Klassen: Instanzmethoden nie emittiert/gebunden
+
+**Status: GEFIXT (2026-07-17)** — Teilfund von Bug 20 (Klasse 2), eigener
+Eintrag wegen Umfang. Betraf jede generische Klasse (`class Foo<T>`) mit
+mehr als trivialen Fabrikmethoden — vier Fehlerquellen, alle im selben
+Mechanismus (`ensure_generic_class_specialization*` in codegen.rs) bzw. in
+der typecheck-Signaturregistrierung:
+
+1. **Codegen: generische Klassen wurden komplett aus der normalen
+   Methoden-Vorabregistrierung ausgeklammert** (`if !c.type_params.is_empty()
+   { continue; }`) und nur über `New`-Ausdrücke (`new Foo<Int64>(...)`)
+   monomorphisiert — nie über den in der Stdlib tatsächlich verwendeten
+   Stil `Foo::method(args)` (`Option::some(5)`, `Cache::set(cache, k, v)`).
+   Fix: `ExprKind::EnumValue`-Codegen leitet Typbindungen jetzt aus (a) der
+   `let`-Annotation des Empfängers, (b) dem tatsächlichen Argumenttyp für
+   `T`-typisierte Parameter, (c) dem Marker eines bereits spezialisierten
+   Empfänger-Arguments (`cache: Cache<K,V>`) ab und monomorphisiert bei
+   Bedarf on demand (`ensure_generic_class_specialization_with_bindings`,
+   `emit_static_dispatch_call`).
+2. **Codegen: Methoden-BODIES wurden nie typsubstituiert**, nur Feld-/
+   Param-/Rückgabetypen (`substitute_class`). Ein `let value: V = ...;` im
+   Body (z. B. `Cache::get`) behielt den nackten Typparameter — `V` fiel im
+   Codegen auf `i64*` zurück, unabhängig vom tatsächlichen Bindungstyp.
+   Fix: `substitute_stmt`/`substitute_expr` (neu) laufen einmal über den
+   ganzen Methoden-Body jeder Spezialisierung.
+3. **Codegen: Selbstreferenzen blieben unmangled.** `ClassName<T> { … }`
+   (StructLiteral — hat kein `type_args`-Feld) und
+   `cache: Cache<K,V>`-Parameter referenzierten weiter den unspezialisierten
+   Klassennamen. `Result::ok(5)` allozierte dadurch eine 0-Byte-Struktur
+   (`struct_layouts.get("Result")` war leer, da generisch → nie registriert)
+   und lieferte Datenmüll (`0` statt `5`); `cache.accessOrder.removeAt(0)`
+   auf einem `Cache<K,V>`-Parameter fand keinen Klassennamen und rief eine
+   nicht existierende globale Funktion `@removeAt` auf. Fix: `rename_self_type`
+   kollabiert jede Erwähnung des generischen Klassennamens (in Feld-/Param-/
+   Rückgabetypen UND im Body — StructLiteral, New, EnumValue) auf den
+   konkreten mangled Namen.
+4. **Typecheck: nur methoden-eigene Typparameter wurden zu `Any` erased**,
+   nie die der umschließenden Klasse. `push(value: T)` in `class Stack<T>`
+   registrierte ein Signatur-Param `Named("T")` statt `Any` — jeder reale
+   Aufruf `s.push(7)` schlug mit „expected T, found Int64" fehl. Dieselbe
+   Lücke existierte doppelt (Top-Level- und Namespace-Klassenregistrierung)
+   und ein drittes Mal in `check_class` (Body-Check: `cache.data[key]` mit
+   `key: K` scheiterte an der Map-Index-Gültigkeitsprüfung, die `String`
+   oder `Any` verlangt). Fix: alle drei Stellen erasen jetzt
+   `c.type_params.chain(method.type_params)`.
+
+**Regressionstest:** `crates/tinox/tests/stdlib_smoke.rs` (option, result,
+cache, collections aus `KNOWN_BROKEN` entfernt — jeder erneute Fehlschlag
+ist eine echte Regression). Kein dediziertes `tests/e2e/bugNN_*.tnx`, da der
+Smoke-Test bereits die Minimalfälle abdeckt.
+
+**Verbleibende Lücken (bewusst nicht mitgefixt, kein Regressionsrisiko für
+die 4 Zielmodule):** Methoden mit `fnc(T) -> U`-Lambda-Parametern
+(`Option::orElse`) und Methoden mit eigenen Typparametern (`Option::map<U>`)
+werden bei der Spezialisierung übersprungen statt eagerly emittiert — beide
+brauchen mehr als reine Signatur-Übersetzung und sind in keinem der vier
+Module am Smoke-Pfad. `gen_generic_method_call` (Methoden-eigene Generics,
+z. B. `Json::serialize<T>`) hat dieselbe Body-Substitutions-Lücke wie
+ursprünglich `substitute_class` — absichtlich nicht angefasst, um die
+bestehenden, bereits grünen Tests dafür nicht zu risikieren.
+
+---
+
+## Bug 22 — `Pool<T>.factory()` ohne deklariertes Feld
+
+**Status: OFFEN (2026-07-17)** — Modul-Bug in `crates/tinox-core/pool.tnx`,
+aufgedeckt durch Bug 21 (`Pool<T>` wurde vorher nie erfolgreich
+spezialisiert, der Fehler war unerreichbar).
+
+**Problem:**
+```tinox
+class Pool<T> {
+    fn new(maxSize: Int64) -> Pool<T> {
+        return Pool<T> { available: [], inUse: [], maxSize: maxSize };
+    }
+    fn acquire(pool: Pool<T>) -> T {
+        ...
+        let obj: T = pool.factory();   // "factory" ist nirgends deklariert
+        ...
+    }
+}
+```
+Weder als `var factory: fnc() -> T;`-Feld noch im StructLiteral von `new()`
+gesetzt. `acquire()` kompiliert nur, wenn `Pool<T>` spezialisiert wird —
+seit Bug 21 der Fall — und bricht dann mit „use of undefined value
+@Pool__i64_factory" ab (der Method-Call-Codegen behandelt den unbekannten
+Feldzugriff als regulären, nie registrierten Klassenmethodenaufruf).
+
+**Workaround:** `pool` steht in `KNOWN_BROKEN`
+(`crates/tinox/tests/stdlib_smoke.rs`).
+
+**Erwartetes Verhalten:** `Pool<T>` braucht entweder ein
+`newWithFactory(maxSize: Int64, factory: fnc() -> T) -> Pool<T>` mit
+`var factory: fnc() -> T;`-Feld, oder `acquire()` muss ohne Factory
+auskommen (z. B. `throw` statt Aufruf, wenn der Pool leer und voll ist).
 
 ---
 
