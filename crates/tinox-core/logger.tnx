@@ -1,9 +1,14 @@
 module tinox.core.logger;
 
+import tinox.core.time;
+
 namespace tinox.core.logger
 {
     class Logger
     {
+        var name: String;
+        var level: Int64;
+
         fn new(name: String) -> Logger
         {
             return Logger { name: name, level: LogLevel::Info };
@@ -41,7 +46,7 @@ namespace tinox.core.logger
             }
         }
 
-        fn setLevel(logger: Logger, level: LogLevel) -> Nothing
+        fn setLevel(logger: Logger, level: Int64) -> Nothing
         {
             logger.level = level;
         }
@@ -60,11 +65,13 @@ namespace tinox.core.logger
         }
     }
 
+    // Log-Level als Int64-Konstanten (numerisch vergleichbar). Kein Wrapper-
+    // Objekt: `logger.level <= LogLevel::Debug` ist ein Int-Vergleich.
     class LogLevel
     {
-        fn Debug() -> LogLevel { return LogLevel { value: 0 }; }
-        fn Info() -> LogLevel { return LogLevel { value: 1 }; }
-        fn Warn() -> LogLevel { return LogLevel { value: 2 }; }
-        fn Error() -> LogLevel { return LogLevel { value: 3 }; }
+        fn Debug() -> Int64 { return 0; }
+        fn Info() -> Int64 { return 1; }
+        fn Warn() -> Int64 { return 2; }
+        fn Error() -> Int64 { return 3; }
     }
 }

@@ -670,9 +670,9 @@ base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
 xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
 Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
-und pool sind seit Bug 27 gefixt, `ini` seit Bug 28. Stand: 57/61 grün.
-Verbleibende KNOWN_BROKEN (4): Klasse 4 (Lambda/Handler)
-events/logger/rest_framework, Klasse 5 (Frontend) http2_server.
+und pool sind seit Bug 27 gefixt, `ini` seit Bug 28, `logger` seit Bug 29.
+Stand: 58/61 grün. Verbleibende KNOWN_BROKEN (3): events/rest_framework
+(Lambda/Handler), http2_server (Frontend/Parser).
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1122,6 +1122,32 @@ Sektions-Maps korrekt an (`if sectionMap == null` feuert im richtigen Fall).
 **Verbleibende KNOWN_BROKEN (4):** events/logger/rest_framework (Lambda/
 Handler-Typen), http2_server (Parser: verschachtelte Lvalue-Zuweisung
 `map[key].field = val`).
+
+---
+
+## Bug 29 — logger: LogLevel-Wrapper-Objekte statt Int-Konstanten
+
+**Status: GEFIXT (2026-07-18)** — reiner Modul-Fix. Stand: 57/61 → 58/61
+(KNOWN_BROKEN 4 → 3).
+
+`LogLevel::Debug()` etc. gaben Wrapper-Objekte (`LogLevel { value: 0 }`, also
+`i64*`) zurück, wurden aber mit `<=` verglichen (`logger.level <=
+LogLevel::Debug`) — `icmp sle i64 <feld>, <ptr>` = ungültiges IR. Außerdem
+hatte `Logger` keine Felddeklarationen und rief `Time::now()` ohne Import.
+
+Fix (analog zur grünen `asm`-`Ops`-Klasse mit Int-Konstanten):
+- `LogLevel`-Methoden geben jetzt `Int64` (0..3) statt Wrapper zurück —
+  Levels sind numerisch vergleichbar.
+- `Logger` bekam `var name: String; var level: Int64;`, `setLevel`-Parameter
+  `LogLevel` → `Int64`.
+- `import tinox.core.time` ergänzt.
+
+Verifiziert: Level-Filterung korrekt (debug unterdrückt bei level=Info,
+`setLevel(Error)` unterdrückt danach info, error kommt durch), Zeitstempel
+echt.
+
+**Verbleibende KNOWN_BROKEN (3):** events/rest_framework (Lambda/Handler-
+Typen), http2_server (Parser: verschachtelte Lvalue-Zuweisung).
 
 ---
 
