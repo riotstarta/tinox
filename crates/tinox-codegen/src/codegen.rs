@@ -944,6 +944,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @fromdateStr(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @printStderr(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @isStdoutTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();

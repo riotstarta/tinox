@@ -1010,6 +1010,9 @@ impl TypeChecker {
         symbols.functions.insert("isStdinTty".to_string(), FunctionSignature {
             params: vec![], return_type: ValueType::Int,
         });
+        symbols.functions.insert("isStdoutTty".to_string(), FunctionSignature {
+            params: vec![], return_type: ValueType::Int,
+        });
         Self {
             errors: Vec::new(),
             symbols,

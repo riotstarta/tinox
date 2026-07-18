@@ -3974,3 +3974,5 @@ int64_t fromdateStr(const char* s) {
 void printStderr(const char* msg) { fputs(msg, stderr); fputc('\n', stderr); }
 
 int64_t isStdinTty(void) { return isatty(STDIN_FILENO) ? 1 : 0; }
+
+int64_t isStdoutTty(void) { return isatty(STDOUT_FILENO) ? 1 : 0; }
