@@ -1264,6 +1264,39 @@ verschachteltes Lvalue im Parser (32).
 
 ---
 
+## Bug 33 — Closure-Repräsentation vereinheitlicht: pool.factory nutzbar
+
+**Status: GEFIXT (2026-07-18)** — die in Bug 27/30 dokumentierte offene
+Closure-Lücke. `pool`s `newWithFactory`/`acquire`-über-`factory`-Pfad
+funktioniert jetzt (Callback-Feld auf einer generischen Klasse).
+
+**Codegen-Fix 1 — Argumentliste beim indirekten Closure-Aufruf.** Alle
+Closure-Call-Stellen (lokale fnc-Werte, `arr[i](...)`, fn-Felder) bauten die
+Argliste als `"{args}, i64* {env}"`. Bei einem 0-Argument-Closure war `args`
+leer → `call i64 %fp(, i64* %env)` (führendes Komma) = ungültiges IR. Neuer
+Helper `closure_call_args` fügt das Komma nur bei nicht-leeren Args ein; die
+`is_local_fn`-Zweige bekamen zusätzlich fehlende void-Rückgabe-Behandlung.
+
+**Codegen-Fix 2 — generische Klassenmethoden mit `fnc`-Parametern werden
+emittiert.** Die Spezialisierung übersprang Methoden mit einem `fnc`-Parameter
+komplett (alter Punt aus der Zeit vor der einheitlichen Closure-Darstellung) —
+`Pool::newWithFactory(f: fnc()->T)` landete dadurch im Enum-Variant-Fallback
+und konstruierte Datenmüll (Feld 0 = Zeichensumme des Methodennamens, „940"/
+„1470"). Da Methoden mit EIGENEN Typparametern (`fn map<U>(fnc(T)->U)`) schon
+vorher übersprungen werden (`method.type_params`), sind die verbleibenden
+`fnc`-Parameter voll konkret — die normale Signatur-Übersetzung (`fnc → i64`,
+wie bei nicht-generischen Klassen) genügt. Skip entfernt.
+
+Verifiziert: `Pool::newWithFactory(2, fnc()->Int64{return 7;})` →
+`acquire()` == 7 (full cycle acquire/release/re-acquire == 42/42); minimaler
+generischer Fall `Wrap::withMaker(fnc…)` == 55. pool-Smoke übt jetzt den
+Factory-Pfad. `make check` voll grün.
+
+**Damit ist auch die letzte bewusst offene Baustelle aus dem Bug-20-Komplex
+geschlossen.**
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

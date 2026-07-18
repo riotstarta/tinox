@@ -312,8 +312,10 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "pool",
         imports: &["tinox.core.pool"],
-        body: "let p: Pool<Int64> = Pool::new(2);\n    Pool::release(p, 1);\n    println(\"ok\");",
-        expects: &["ok"],
+        // Exercises the factory-callback path (fnc field on a generic class):
+        // acquire() calls pool.factory() when nothing is pooled.
+        body: "let p: Pool<Int64> = Pool::newWithFactory(2, fnc() -> Int64 { return 7; });\n    println(Pool::acquire(p).toString());",
+        expects: &["7"],
         contains: &[],
     },
     Smoke {

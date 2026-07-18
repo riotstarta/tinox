@@ -5419,10 +5419,11 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
+                        let call_args = Self::closure_call_args(&args_str, &env_val);
                         if ret_ty == "void" {
-                            writeln!(&mut self.ir, "call void {}({}, i64* {})", casted_fn, args_str.trim(), env_val).unwrap();
+                            writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
                         } else {
-                            writeln!(&mut self.ir, "{} = call {} {}({}, i64* {})", result, ret_ty, casted_fn, args_str.trim(), env_val).unwrap();
+                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
                         }
                     } else {
                         // Fn value stored as i64: address of a closure block
@@ -5442,10 +5443,11 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
+                        let call_args = Self::closure_call_args(&args_str, &env_val);
                         if ret_ty == "void" {
-                            writeln!(&mut self.ir, "call void {}({}, i64* {})", casted_fn, args_str.trim(), env_val).unwrap();
+                            writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
                         } else {
-                            writeln!(&mut self.ir, "{} = call {} {}({}, i64* {})", result, ret_ty, casted_fn, args_str.trim(), env_val).unwrap();
+                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
                         }
                     }
                 } else if is_local_fn {
@@ -5470,16 +5472,12 @@ impl CodeGen {
                             casted_fn, fp_val
                         )
                         .unwrap();
-                        writeln!(
-                            &mut self.ir,
-                            "{} = call {} {}({}, i64* {})",
-                            result,
-                            ret_ty,
-                            casted_fn,
-                            args_str.trim(),
-                            env_val
-                        )
-                        .unwrap();
+                        let call_args = Self::closure_call_args(&args_str, &env_val);
+                        if ret_ty == "void" {
+                            writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
+                        }
                     } else {
                         // Local holds a closure-block address as i64 —
                         // same convention as every other fn value.
@@ -5498,12 +5496,12 @@ impl CodeGen {
                             casted_fn, fp_val
                         )
                         .unwrap();
-                        writeln!(
-                            &mut self.ir,
-                            "{} = call {} {}({}, i64* {})",
-                            result, ret_ty, casted_fn, args_str.trim(), env_val
-                        )
-                        .unwrap();
+                        let call_args = Self::closure_call_args(&args_str, &env_val);
+                        if ret_ty == "void" {
+                            writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
+                        } else {
+                            writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
+                        }
                     }
                 } else if ret_ty == "void" {
                     writeln!(
@@ -8254,6 +8252,19 @@ impl CodeGen {
         ty == "float" || ty == "double"
     }
 
+    /// Assemble the argument list for an indirect closure call: the user args
+    /// (already a `", "`-joined, typed string) followed by the trailing
+    /// `i64* <env>`. A 0-arg closure has an empty `args_str` — without this
+    /// the format string would emit a leading comma (`(, i64* %env)`).
+    fn closure_call_args(args_str: &str, env_val: &str) -> String {
+        let a = args_str.trim();
+        if a.is_empty() {
+            format!("i64* {}", env_val)
+        } else {
+            format!("{}, i64* {}", a, env_val)
+        }
+    }
+
     fn llvm_type_str(ty: &str) -> String {
         ty.to_string()
     }
@@ -9244,15 +9255,13 @@ impl CodeGen {
                     self.generic_methods.insert(fn_name, method.clone());
                     continue;
                 }
-                // Lambda-typisierte Parameter (`fnc(T) -> U`, z. B. Option::
-                // orElse) brauchen mehr als die Signatur-Übersetzung, die
-                // gen_class_method hier leistet — nicht eagerly emittieren,
-                // sonst ungültiges IR bei einem nicht benutzten Call-through.
-                // Selten reachable in den 4 Zielmodulen, kein Regressions-
-                // risiko (vorher war die ganze Klasse unerreichbar).
-                if method.params.iter().any(|p| matches!(p.param_type, Type::Fn { .. })) {
-                    continue;
-                }
+                // Methoden mit `fnc`-Parametern (`newWithFactory(f: fnc()->T)`)
+                // werden jetzt emittiert: seit der Closure-Repräsentation
+                // einheitlich ist (jedes Lambda ist ein Closure-Block
+                // {fn_ptr, env}), reicht die Signatur-Übersetzung von
+                // gen_class_method (fnc → i64, wie bei nicht-generischen
+                // Klassen). Method-eigene Typparameter (`fn map<U>(fnc(T)->U)`)
+                // sind oben (type_params) schon abgefangen.
                 let ret_ty = Self::type_to_llvm(&method.ret_type);
                 self.method_ret_types.insert(fn_name.clone(), ret_ty);
                 self.method_impl.insert(fn_name.clone(), fn_name.clone());
