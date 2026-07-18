@@ -670,9 +670,9 @@ base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
 xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
 Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
-und pool sind seit Bug 27 gefixt, `ini` seit Bug 28, `logger` seit Bug 29.
-Stand: 58/61 grün. Verbleibende KNOWN_BROKEN (3): events/rest_framework
-(Lambda/Handler), http2_server (Frontend/Parser).
+und pool sind seit Bug 27 gefixt, `ini` seit Bug 28, `logger` seit Bug 29,
+`events` seit Bug 30. Stand: 59/61 grün. Verbleibende KNOWN_BROKEN (2):
+rest_framework (doppelter entry-Block), http2_server (Frontend/Parser).
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1148,6 +1148,45 @@ echt.
 
 **Verbleibende KNOWN_BROKEN (3):** events/rest_framework (Lambda/Handler-
 Typen), http2_server (Parser: verschachtelte Lvalue-Zuweisung).
+
+---
+
+## Bug 30 — events: Closure-Capture von Params + void-Lambda-Return
+
+**Status: GEFIXT (2026-07-18)** — zwei allgemeine Codegen-Bugs bei
+Closures/Lambdas + fehlende Felddeklaration. Stand: 58/61 → 59/61
+(KNOWN_BROKEN 3 → 2).
+
+**Codegen-Grundfix 1 — Capture eines by-value-Parameters.** Beim Bau des
+Closure-Env lud der Codegen jede erfasste Variable per `load {ty}, {ty}*
+%name`. Das stimmt für lokale Allocas, aber Funktionsparameter leben als
+direkte SSA-Werte (`%handler`), nicht als Alloca — `load i64, i64* %handler`
+auf einem i64-SSA-Wert = ungültiges IR. Fix: den Ident-Read spiegeln — ist die
+erfasste Variable ein Param (`ctx.params`), den SSA-Wert `%name` direkt ins Env
+speichern, sonst wie bisher aus dem Alloca laden. (`EventEmitter::once` fängt
+`handler` in einem Wrapper-Lambda ein.)
+
+**Codegen-Grundfix 2 — `return <void-Ausdruck>`.** Ein Lambda-Body `{ f(); }`,
+dessen Schwanz ein void-Call ist, wurde als `Return(block)` emittiert und
+erzeugte `ret void 0` (bzw. nach Teil-Fix `ret void` in einer i64-Funktion).
+Lambdas nutzen eine uniforme i64-Return-ABI (Default ohne Annotation). Fix in
+der Return-Codegen: (a) ist die Funktion selbst void → `ret void`; (b) ist der
+Ausdruck void, die Funktion aber nicht → Dummy des Zieltyps zurückgeben
+(`ret i64 0` / `ret <ptr> null`); dazu der Default-Terminator konsistent
+(`ret void` nur bei void-Funktion, sonst `ret {ty} 0`).
+
+**Modul-Fix:** `EventEmitter` bekam `var listeners: Map<String,
+List<fnc(JsonValue) -> Nothing>>`.
+
+Verifiziert: `on`/`emit`-Kette (2 Handler feuern), `once`-Wrapper mit Capture
+feuert, `listenerCount` korrekt.
+
+**Zusammenhang mit pool (Bug 27, offen):** verwandt, aber NICHT dasselbe — die
+pool-`factory`-Lücke ist die Lambda-**als-Argument**-Repräsentation (nackter
+fn-Zeiger statt Closure-Struct), die diese Fixes nicht berühren. Bleibt offen.
+
+**Verbleibende KNOWN_BROKEN (2):** rest_framework (doppelter `entry:`-Block),
+http2_server (Parser: verschachtelte Lvalue-Zuweisung `map[key].field = val`).
 
 ---
 

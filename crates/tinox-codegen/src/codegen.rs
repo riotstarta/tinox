@@ -3325,6 +3325,20 @@ impl CodeGen {
                 }
                 let (val, ty) = self.gen_expr(expr, ctx)?;
                 let expected = &ctx.ret_type.clone();
+                // A void function returns nothing. A void *expression* returned
+                // from a non-void function (e.g. a lambda body `{ f(); }` whose
+                // tail is a void call, under the uniform i64 closure ABI) must
+                // yield a dummy of the expected type — never `ret void 0`.
+                if expected.as_str() == "void" {
+                    writeln!(&mut self.ir, "ret void").unwrap();
+                    return Ok(());
+                }
+                if ty == "void" {
+                    let rt = if expected.is_empty() { "i64" } else { expected.as_str() };
+                    let z = if rt.ends_with('*') { "null" } else { "0" };
+                    writeln!(&mut self.ir, "ret {} {}", rt, z).unwrap();
+                    return Ok(());
+                }
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
                     let cast_op = match (ty.as_str(), expected.as_str()) {
                         (from, to) if from.ends_with('*') && to.ends_with('*') => "bitcast",
@@ -8098,9 +8112,18 @@ impl CodeGen {
                         field_ptr, env_typed, i
                     )
                     .unwrap();
-                    let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
-                    let val = self.temp();
-                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
+                    // Params live as direct SSA values (`%name`), locals in an
+                    // alloca — mirror the Ident read: load only for allocas,
+                    // otherwise capture the value directly (sonst `load i64,
+                    // i64* %param` auf einem i64-SSA-Wert = ungültiges IR).
+                    let val = if ctx.params.contains(name) {
+                        format!("%{}", name)
+                    } else {
+                        let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
+                        let v = self.temp();
+                        writeln!(&mut self.ir, "{} = load {}, {}* %{}", v, ty, ty, slot).unwrap();
+                        v
+                    };
                     writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, field_ptr).unwrap();
                 }
             }
@@ -8155,7 +8178,11 @@ impl CodeGen {
             l.trim().starts_with("ret ") || l.trim().starts_with("br ")
         });
         if !has_terminator {
-            writeln!(&mut self.ir, "ret {} 0", ret_ty).unwrap();
+            if ret_ty == "void" {
+                writeln!(&mut self.ir, "ret void").unwrap();
+            } else {
+                writeln!(&mut self.ir, "ret {} 0", ret_ty).unwrap();
+            }
         }
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();

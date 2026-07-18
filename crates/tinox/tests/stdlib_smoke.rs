@@ -26,7 +26,7 @@ use std::path::PathBuf;
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
     // Codegen: Lambda-/Handler-Typen (i64 vs ptr), Block-Layout
-    "events", "rest_framework",
+    "rest_framework",
     // Frontend: Parse-Fehler im Modul selbst (verschachtelte Lvalue-Zuweisung)
     "http2_server",
 ];

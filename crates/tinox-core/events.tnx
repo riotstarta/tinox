@@ -4,6 +4,8 @@ namespace tinox.core.events
 {
     class EventEmitter
     {
+        var listeners: Map<String, List<fnc(JsonValue) -> Nothing>>;
+
         fn new() -> EventEmitter
         {
             return EventEmitter { listeners: Map::new() };
