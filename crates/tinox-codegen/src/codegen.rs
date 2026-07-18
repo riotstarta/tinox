@@ -1435,7 +1435,7 @@ impl CodeGen {
                 .unwrap_or(8);
 
             writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
 
             // ── @Auth guard ──────────────────────────────────────────────────────
@@ -1585,7 +1585,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
             writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
             writeln!(&mut self.lambda_ir, "define void @__metrics_shim(i64 %ctx_i64) {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
             // HttpContext[1] = response ptr (i64*)
             writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
@@ -1622,7 +1622,7 @@ impl CodeGen {
 
         // ── __tinox_register_routes ─────────────────────────────────────────────
         writeln!(&mut self.lambda_ir, "define void @__tinox_register_routes(i64* %server) {{").unwrap();
-        writeln!(&mut self.lambda_ir, "entry:").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
@@ -1659,7 +1659,7 @@ impl CodeGen {
                 .and_then(|s| s.parse::<u16>().ok())
                 .unwrap_or(8080);
             writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {port})").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
@@ -1694,7 +1694,7 @@ impl CodeGen {
             match comp.scope {
                 DiScope::Application | DiScope::Startup => {
                     writeln!(&mut self.lambda_ir, "define i64* @{name}_di_get() {{").unwrap();
-                    writeln!(&mut self.lambda_ir, "entry:").unwrap();
+                    writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst_raw = load i8*, i8** @{name}_di_instance").unwrap();
                     writeln!(&mut self.lambda_ir, "  %is_null = icmp eq i8* %inst_raw, null").unwrap();
                     writeln!(&mut self.lambda_ir, "  br i1 %is_null, label %create, label %done").unwrap();
@@ -1731,7 +1731,7 @@ impl CodeGen {
                 }
                 DiScope::HttpRequest => {
                     writeln!(&mut self.lambda_ir, "define i64* @{name}_di_create() {{").unwrap();
-                    writeln!(&mut self.lambda_ir, "entry:").unwrap();
+                    writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
 
@@ -1763,7 +1763,7 @@ impl CodeGen {
         let has_startup = components.iter().any(|c| matches!(c.scope, DiScope::Startup));
         if has_startup {
             writeln!(&mut self.lambda_ir, "define void @tinox_di_startup() {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry:").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             for comp in components.iter().filter(|c| matches!(c.scope, DiScope::Startup)) {
                 writeln!(&mut self.lambda_ir, "  call i64* @{}_di_get()", comp.class_name).unwrap();
             }
@@ -1881,7 +1881,7 @@ impl CodeGen {
             linkage, ret_type, fn_name, params_str
         )
         .unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
 
         // @Counted — increment call counter at function entry
         let counted_metric = self.metric_entries.iter().find(|m| {
@@ -1996,7 +1996,7 @@ impl CodeGen {
             linkage, ret_type, fn_name, params_str
         )
         .unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
 
         // @Counted — increment call counter at method entry
         let counted_metric = self.metric_entries.iter().find(|m| {
@@ -2059,7 +2059,7 @@ impl CodeGen {
             .collect();
 
         writeln!(&mut self.ir, "define i64* @{class_name}_new({}) {{", params_str.join(", ")).unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
         writeln!(&mut self.ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
         writeln!(&mut self.ir, "  %ptr = bitcast i8* %raw to i64*").unwrap();
 
@@ -2223,7 +2223,7 @@ impl CodeGen {
 
         // ── tinox_main ───────────────────────────────────────────────────────
         writeln!(&mut body, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut body, "entry:").unwrap();
+        writeln!(&mut body, "entry.tnx:").unwrap();
 
         // Check --help / -h
         gep(&mut body, "%help_long",  "__cli_help_long",  7);
@@ -2490,7 +2490,7 @@ impl CodeGen {
                 continue;
             }
             writeln!(&mut self.ir, "define i8* @{}_toString(i64* %self) {{", class_name).unwrap();
-            writeln!(&mut self.ir, "entry:").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
 
             // Start with "ClassName{"
             let prefix = format!("{}{{", class_name);
@@ -2609,7 +2609,7 @@ impl CodeGen {
                 .collect();
 
             writeln!(&mut self.ir, "define i8* @{}_toJson(i64* %self) {{", class_name).unwrap();
-            writeln!(&mut self.ir, "entry:").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
             let builder = self.temp();
             writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
 
@@ -2685,7 +2685,7 @@ impl CodeGen {
             let has_vtable = layout.first().map(|f| f == "__vtable__").unwrap_or(false);
 
             writeln!(&mut self.ir, "define i64* @{}_fromJson(i64* %json_val) {{", class_name).unwrap();
-            writeln!(&mut self.ir, "entry:").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
             let raw  = self.temp();
             let self_ = self.temp();
             writeln!(&mut self.ir, "  {raw}   = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
@@ -3061,7 +3061,7 @@ impl CodeGen {
             let escaped = Self::escape_llvm_string(&url);
             writeln!(&mut self.ir, "@__db_url = private constant [{url_len} x i8] c\"{escaped}\\00\"").unwrap();
             writeln!(&mut self.ir, "define void @__tinox_db_init() {{").unwrap();
-            writeln!(&mut self.ir, "entry:").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %url = getelementptr [{url_len} x i8], [{url_len} x i8]* @__db_url, i64 0, i64 0").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_connect(i8* %url)").unwrap();
             writeln!(&mut self.ir, "  ret void").unwrap();
@@ -3119,7 +3119,7 @@ impl CodeGen {
         let len = sql.len() + 1;
         let ptr = self.temp();
         writeln!(&mut self.ir, "define i8* @{fn_name}() {{").unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
         writeln!(&mut self.ir, "  {ptr} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
         writeln!(&mut self.ir, "  ret i8* {ptr}").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
@@ -3130,7 +3130,7 @@ impl CodeGen {
         let n = fields.len();
         let alloc_size = n as i64 * 8;
         writeln!(&mut self.ir, "define i8* @{class_name}_fromRow(i8* %result, i64 %row_idx) {{").unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
         let raw = self.temp();
         let ptr = self.temp();
         writeln!(&mut self.ir, "  {raw} = call i8* @tinox_alloc(i64 {alloc_size})").unwrap();
@@ -3167,7 +3167,7 @@ impl CodeGen {
             .collect();
         let n = ins_fields.len();
         writeln!(&mut self.ir, "define i8** @{class_name}_toParams(i64* %entity, i64* %out_n) {{").unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
         let arr = self.temp();
         writeln!(&mut self.ir, "  {arr} = call i8** @tinox_params_alloc(i64 {n})").unwrap();
         for (param_idx, (slot_idx, field)) in ins_fields.iter().enumerate() {
@@ -3368,7 +3368,17 @@ impl CodeGen {
                 if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
                     self.emit_histogram_record(label, start_reg);
                 }
-                writeln!(&mut self.ir, "ret void").unwrap();
+                // A bare `return;` in a non-void function (e.g. inside a lambda
+                // under the uniform i64 return ABI) must still yield a value of
+                // the expected type — otherwise `ret void` mismatches.
+                let expected = ctx.ret_type.as_str();
+                if expected.is_empty() || expected == "void" {
+                    writeln!(&mut self.ir, "ret void").unwrap();
+                } else if expected.ends_with('*') {
+                    writeln!(&mut self.ir, "ret {} null", expected).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "ret {} 0", expected).unwrap();
+                }
             }
             StmtKind::Expr(expr) => {
                 self.gen_expr(expr, ctx)?;
@@ -8147,7 +8157,7 @@ impl CodeGen {
             ret_ty, fn_name, params_str
         )
         .unwrap();
-        writeln!(&mut self.ir, "entry:").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
         if let Some(ref env) = env_ptr_name {
             for (i, (name, ty)) in captured.iter().enumerate() {
                 writeln!(&mut self.ir, "%{} = alloca {}", name, ty).unwrap();
@@ -9377,7 +9387,7 @@ impl CodeGen {
         }
 
         writeln!(&mut w, "define i8* @{}(i8* %raw) {{", name).unwrap();
-        writeln!(&mut w, "entry:").unwrap();
+        writeln!(&mut w, "entry.tnx:").unwrap();
 
         let ap = wt!();
         writeln!(&mut w, "  {} = bitcast i8* %raw to [{} x i64]*", ap, n_slots).unwrap();

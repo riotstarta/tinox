@@ -671,8 +671,9 @@ xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
 Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
 und pool sind seit Bug 27 gefixt, `ini` seit Bug 28, `logger` seit Bug 29,
-`events` seit Bug 30. Stand: 59/61 grün. Verbleibende KNOWN_BROKEN (2):
-rest_framework (doppelter entry-Block), http2_server (Frontend/Parser).
+`events` seit Bug 30, `rest_framework` seit Bug 31. Stand: 60/61 grün.
+Verbleibende KNOWN_BROKEN (1): http2_server (Frontend/Parser: verschachtelte
+Lvalue-Zuweisung).
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1187,6 +1188,41 @@ fn-Zeiger statt Closure-Struct), die diese Fixes nicht berühren. Bleibt offen.
 
 **Verbleibende KNOWN_BROKEN (2):** rest_framework (doppelter `entry:`-Block),
 http2_server (Parser: verschachtelte Lvalue-Zuweisung `map[key].field = val`).
+
+---
+
+## Bug 31 — rest_framework: entry-Block-Kollision + Return(None) + Import + Lambda-Typ
+
+**Status: GEFIXT (2026-07-18)** — vier Ursachen (zwei allgemeine Codegen-Bugs +
+zwei Modul-Fixes). Stand: 59/61 → 60/61 (KNOWN_BROKEN 2 → 1).
+
+**Codegen-Grundfix 1 — Basisblock `entry` kollidiert mit Param `entry`.** Eine
+Methode `RestApi::wrapHandler(entry: RouteEntry)` erzeugte `define ...
+@...(i64* %entry) { entry: ... }` — LLVM benennt das Label `entry:` implizit
+`%entry`, was mit dem Param `%entry` kollidiert („unable to create block named
+'entry'"). Nichts verzweigt je auf `%entry`, also den Entry-Block projektweit
+in `entry.tnx` umbenannt (Punkt → kann kein Tinox-Identifier/Param je treffen).
+
+**Codegen-Grundfix 2 — bare `return;` in non-void-Funktion.** `Return(None)`
+emittierte immer `ret void`; in einem Lambda mit uniformer i64-Return-ABI
+(mehrere frühe `return;` in `wrapHandler`s Wrapper) = ungültig. Jetzt am
+Funktions-Rückgabetyp ausgerichtet: void → `ret void`, sonst Dummy
+(`ret i64 0` / `ret <ptr> null`). Ergänzt Bug 30 (dort `Return(Some(void))`).
+
+**Modul-Fix 1:** `import tinox.core.http_server` fehlte — `HttpServer::new`/
+`.get`/`.delete` etc. waren Geister (`@HttpServer_delete` undefined).
+
+**Modul-Fix 2:** der zurückgegebene Wrapper `return ctx => { … }` hatte einen
+inferierten Param-Typ, der sich nicht auf `ctx.request.getHeader(…)` fortpflanzt
+(Rückgabeposition hat keine Argument-basierte Lambda-Param-Inferenz →
+`@getHeader` undefined). Auf die getypte Form `fnc(ctx: HttpContext) -> Nothing
+{ … }` umgestellt (Argument-Position-Lambdas wie `server.use(ctx => …)` bleiben
+über Argument-Inferenz grün).
+
+Verifiziert: `GET::new("/x")`, `g.path == "/x"`.
+
+**Verbleibende KNOWN_BROKEN (1):** http2_server (Parser: verschachtelte
+Lvalue-Zuweisung `map[key].field = val`).
 
 ---
 

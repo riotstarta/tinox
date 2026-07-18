@@ -25,9 +25,8 @@ use std::path::PathBuf;
 /// Beim Fixen: Eintrag entfernen, sonst schlägt der Test mit "stale entry"
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
-    // Codegen: Lambda-/Handler-Typen (i64 vs ptr), Block-Layout
-    "rest_framework",
-    // Frontend: Parse-Fehler im Modul selbst (verschachtelte Lvalue-Zuweisung)
+    // Frontend: Parse-Fehler im Modul selbst (verschachtelte Lvalue-Zuweisung
+    // `map[key].field = val`, siehe bugs.md)
     "http2_server",
 ];
 

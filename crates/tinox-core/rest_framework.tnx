@@ -42,6 +42,8 @@
  */
 module tinox.core.rest_framework;
 
+import tinox.core.http_server;
+
 namespace tinox.core.rest_framework
 {
     // ========================================================================
@@ -681,7 +683,7 @@ namespace tinox.core.rest_framework
             let authType: String = entry.authType;
             let originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
 
-            return ctx => {
+            return fnc(ctx: HttpContext) -> Nothing {
                 if consumes != MediaType::None
                 {
                     let expected: String = MediaTypeHelper::toString(consumes);
