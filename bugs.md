@@ -670,9 +670,9 @@ base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
 xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
 Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
-und pool sind seit Bug 27 gefixt. Stand nach Bug 27: 56/61 grün.
-Verbleibende KNOWN_BROKEN (5): Klasse 4 (Lambda/Handler)
-events/logger/rest_framework, Klasse 5 (Frontend) http2_server/ini.
+und pool sind seit Bug 27 gefixt, `ini` seit Bug 28. Stand: 57/61 grün.
+Verbleibende KNOWN_BROKEN (4): Klasse 4 (Lambda/Handler)
+events/logger/rest_framework, Klasse 5 (Frontend) http2_server.
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1098,6 +1098,30 @@ segfaultende API zu versprechen.
 **Verbleibende KNOWN_BROKEN (5):** events/logger/rest_framework (Klasse 4,
 Lambda/Handler-Typen), http2_server/ini (Klasse 5, Frontend). `make check`
 voll grün.
+
+---
+
+## Bug 28 — ini: Referenz `== null` im Typecheck erlaubt + fehlender Import
+
+**Status: GEFIXT (2026-07-18)** — Stand: 56/61 → 57/61 (KNOWN_BROKEN 5 → 4).
+
+**Typecheck-Fix (allgemein):** `check_binary_op` erlaubte `Eq`/`Ne` nur bei
+`lhs == rhs`. `Named`-Typen (Klassen) fielen schon vorher durch den Wildcard-
+Kurzschluss (`Any`/`Named` → skip), aber `Map`/`Array`/`String`/`Fn`/`Nullable`
+`== null` wurde abgelehnt („binary op 'eq' cannot be applied to Map and null").
+Da diese Typen als Zeiger gespeichert sind, ist der Null-Vergleich sinnvoll.
+Neue Helper `is_nullable_ref` erlaubt `<ref> == null` / `null == <ref>` für
+Referenztypen; Skalare (`Int`/`Float`/`Bool`/`Char`) werfen weiterhin (an
+`5 == null` verifiziert). Codegen konnte den Zeiger-Null-Vergleich bereits.
+Verifiziert: frische `Map`/`List`/`String` sind non-null; `ini` legt fehlende
+Sektions-Maps korrekt an (`if sectionMap == null` feuert im richtigen Fall).
+
+**Modul-Fix:** `ini` rief `Strings::trim` ohne `import tinox.core.string`
+(dasselbe still-Datenmüll-Muster wie xml/decimal in Bug 25/26) — Import ergänzt.
+
+**Verbleibende KNOWN_BROKEN (4):** events/logger/rest_framework (Lambda/
+Handler-Typen), http2_server (Parser: verschachtelte Lvalue-Zuweisung
+`map[key].field = val`).
 
 ---
 

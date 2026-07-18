@@ -1,5 +1,7 @@
 module tinox.core.ini;
 
+import tinox.core.string;
+
 namespace tinox.core.ini
 {
     class Ini

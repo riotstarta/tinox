@@ -2664,7 +2664,14 @@ impl TypeChecker {
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::Xor => {
                 matches!(lhs, ValueType::Int) && matches!(rhs, ValueType::Int)
             }
-            BinaryOp::Eq | BinaryOp::Ne => lhs == rhs,
+            BinaryOp::Eq | BinaryOp::Ne => {
+                // Reference types (stored as pointers) may be compared to null.
+                // Named/Any already short-circuit above; this covers Map/Array/
+                // String/Fn/Nullable == null.
+                lhs == rhs
+                    || (matches!(lhs, ValueType::Null) && Self::is_nullable_ref(rhs))
+                    || (matches!(rhs, ValueType::Null) && Self::is_nullable_ref(lhs))
+            }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
                 (matches!(lhs, ValueType::Int | ValueType::Float)
                     && matches!(rhs, ValueType::Int | ValueType::Float))
@@ -2682,6 +2689,22 @@ impl TypeChecker {
                 .to_error(),
             );
         }
+    }
+
+    /// Reference-ish types that live behind a pointer and can therefore be
+    /// meaningfully compared to `null`. Scalars (Int/Float/Bool/Char) cannot.
+    fn is_nullable_ref(t: &ValueType) -> bool {
+        matches!(
+            t,
+            ValueType::Array(_)
+                | ValueType::Map(_)
+                | ValueType::Named(_)
+                | ValueType::String
+                | ValueType::Nullable(_)
+                | ValueType::Null
+                | ValueType::Fn
+                | ValueType::Ref
+        )
     }
 
     fn check_unary_op(&mut self, op: &UnaryOp, operand: &ValueType, span: Span) {
