@@ -2,6 +2,16 @@ module tinox.core.zip;
 
 namespace tinox.core.zip
 {
+    // STORED-only ZIP (keine Kompression, nur Textinhalte). Die C-Runtime
+    // liefert skalare Zugriffe; die List<ZipEntry> wird hier in Tinox gebaut,
+    // damit C nicht von der Klassen-ABI abhängt.
+    extern fn zipEntryCount(path: String) -> Int64;
+    extern fn zipEntryName(path: String, idx: Int64) -> String;
+    extern fn zipEntrySize(path: String, idx: Int64) -> Int64;
+    extern fn zipExtractFile(path: String, name: String) -> String;
+    extern fn zipAddFile(path: String, name: String, content: String) -> Nothing;
+    extern fn zipRemoveFile(path: String, name: String) -> Nothing;
+
     class Zip
     {
         fn open(path: String) -> ZipArchive
@@ -16,7 +26,15 @@ namespace tinox.core.zip
 
         fn listEntries(path: String) -> List<ZipEntry>
         {
-            return zipListEntries(path);
+            var entries: List<ZipEntry> = [];
+            let count: Int64 = zipEntryCount(path);
+            var i: Int64 = 0;
+            while i < count
+            {
+                entries.push(ZipEntry { name: zipEntryName(path, i), size: zipEntrySize(path, i) });
+                i = i + 1;
+            }
+            return entries;
         }
 
         fn extractFile(archive: ZipArchive, entryName: String) -> String

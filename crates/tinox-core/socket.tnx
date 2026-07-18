@@ -2,8 +2,24 @@ module tinox.core.socket;
 
 namespace tinox.core.socket
 {
+    // Rohe BSD-Socket-Primitiven (blockierend). Handles sind fds als Int64,
+    // -1 = Fehler. Für einen kompletten HTTP-Server siehe
+    // tinox.core.http_server (eigene epoll-Maschinerie).
+    extern fn socketCreateTcp() -> Int64;
+    extern fn socketCreateUdp() -> Int64;
+    extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;
+    extern fn socketBind(fd: Int64, port: Int64) -> Bool;
+    extern fn socketListen(fd: Int64) -> Bool;
+    extern fn socketAccept(fd: Int64) -> Int64;
+    extern fn socketSend(fd: Int64, data: String) -> Int64;
+    extern fn socketReceive(fd: Int64, size: Int64) -> String;
+    extern fn socketClose(fd: Int64) -> Nothing;
+
     class Socket
     {
+        var handle: Int64;
+        var mode: String;
+
         fn createTcp() -> Socket
         {
             return Socket { handle: socketCreateTcp(), mode: "tcp" };

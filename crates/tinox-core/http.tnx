@@ -2,6 +2,20 @@ module tinox.core.http;
 
 namespace tinox.core.http
 {
+    // Blockierender HTTP/1.1-Client (nur http://, kein TLS). Antworten sind
+    // opake C-Structs (TinoxHttpResponse*), auf die HttpResponse durchgereicht
+    // wird. Request-Header werden thread-lokal via httpSetHeader gesammelt.
+    extern fn httpGet(url: String) -> HttpResponse;
+    extern fn httpPost(url: String, body: String) -> HttpResponse;
+    extern fn httpPut(url: String, body: String) -> HttpResponse;
+    extern fn httpDelete(url: String) -> HttpResponse;
+    extern fn httpPatch(url: String, body: String) -> HttpResponse;
+    extern fn httpSetHeader(name: String, value: String) -> Nothing;
+    extern fn httpClearHeaders() -> Nothing;
+    extern fn httpStatusCode(resp: HttpResponse) -> Int64;
+    extern fn httpBody(resp: HttpResponse) -> String;
+    extern fn httpHeader(resp: HttpResponse, name: String) -> String;
+
     class Http
     {
         fn get(url: String) -> HttpResponse

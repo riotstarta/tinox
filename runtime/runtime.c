@@ -1033,6 +1033,495 @@ void fileClose(void* handle) {
     if (handle) fclose((FILE*)handle);
 }
 
+// ---- Socket builtins (tinox.core.socket) ----
+// Handles sind rohe fds als i64; -1 = Fehler. Blockierende BSD-Sockets —
+// bewusst einfach gehalten (kein epoll hier; der HTTP-Server weiter unten
+// hat seine eigene epoll-Maschinerie).
+
+#include <netdb.h>
+
+int64_t socketCreateTcp(void) {
+    return (int64_t)socket(AF_INET, SOCK_STREAM, 0);
+}
+
+int64_t socketCreateUdp(void) {
+    return (int64_t)socket(AF_INET, SOCK_DGRAM, 0);
+}
+
+bool socketConnect(int64_t fd, const char* host, int64_t port) {
+    if (fd < 0) return false;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%ld", (long)port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    // Der Socket-Typ steht schon fest (fd existiert) — getaddrinfo nur zur
+    // Namensauflösung, SOCK_STREAM als Filter reicht für A-Records.
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) return false;
+    int r = connect((int)fd, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+    return r == 0;
+}
+
+bool socketBind(int64_t fd, int64_t port) {
+    if (fd < 0) return false;
+    int opt = 1;
+    setsockopt((int)fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+    return bind((int)fd, (struct sockaddr*)&addr, sizeof(addr)) == 0;
+}
+
+bool socketListen(int64_t fd) {
+    if (fd < 0) return false;
+    return listen((int)fd, 16) == 0;
+}
+
+int64_t socketAccept(int64_t fd) {
+    if (fd < 0) return -1;
+    return (int64_t)accept((int)fd, NULL, NULL);
+}
+
+int64_t socketSend(int64_t fd, const char* data) {
+    if (fd < 0) return -1;
+    size_t len = strlen(data);
+    ssize_t sent = send((int)fd, data, len, 0);
+    return (int64_t)sent;
+}
+
+char* socketReceive(int64_t fd, int64_t size) {
+    if (fd < 0 || size <= 0) return GC_strdup("");
+    char* buf = (char*)GC_malloc((size_t)size + 1);
+    ssize_t n = recv((int)fd, buf, (size_t)size, 0);
+    if (n <= 0) { buf[0] = '\0'; return buf; }
+    buf[n] = '\0';
+    return buf;
+}
+
+void socketClose(int64_t fd) {
+    if (fd >= 0) close((int)fd);
+}
+
+// ---- HTTP/1.1 client builtins (tinox.core.http) ----
+// Plaintext http:// only (kein TLS). Baut auf denselben blockierenden
+// BSD-Sockets auf wie oben. Request-Header sind thread-lokaler Zustand
+// (httpSetHeader/httpClearHeaders), gespiegelt auf die C-Globals-Konvention
+// der db/metrics-Module.
+
+typedef struct {
+    int64_t status;
+    char*   body;
+    char*   headers; // roher Header-Block (ohne Statuszeile) für httpHeader()
+} TinoxHttpResponse;
+
+static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n"-Kette
+
+void httpSetHeader(const char* name, const char* value) {
+    size_t old_len = _tinox_http_req_headers ? strlen(_tinox_http_req_headers) : 0;
+    size_t add = strlen(name) + strlen(value) + 4; // ": " + "\r\n"
+    char* buf = (char*)malloc(old_len + add + 1);
+    if (old_len) memcpy(buf, _tinox_http_req_headers, old_len);
+    snprintf(buf + old_len, add + 1, "%s: %s\r\n", name, value);
+    _tinox_http_req_headers = buf;
+}
+
+void httpClearHeaders(void) {
+    _tinox_http_req_headers = NULL;
+}
+
+// Zerlegt "http://host[:port]/path" → host, port, path. Gibt 0 bei Nicht-http.
+static int http_parse_url(const char* url, char* host, size_t host_sz,
+                          int* port, char* path, size_t path_sz) {
+    const char* p = url;
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+    else if (strncmp(p, "https://", 8) == 0) return 0; // TLS nicht unterstützt
+    else return 0;
+
+    const char* host_start = p;
+    while (*p && *p != ':' && *p != '/') p++;
+    size_t hlen = (size_t)(p - host_start);
+    if (hlen == 0 || hlen >= host_sz) return 0;
+    memcpy(host, host_start, hlen);
+    host[hlen] = '\0';
+
+    *port = 80;
+    if (*p == ':') {
+        p++;
+        *port = atoi(p);
+        while (*p && *p != '/') p++;
+    }
+    if (*p == '\0') {
+        snprintf(path, path_sz, "/");
+    } else {
+        snprintf(path, path_sz, "%s", p);
+    }
+    return 1;
+}
+
+static char* http_recv_all(int fd) {
+    size_t cap = 8192, len = 0;
+    char* buf = (char*)malloc(cap);
+    ssize_t n;
+    while ((n = recv(fd, buf + len, cap - len, 0)) > 0) {
+        len += (size_t)n;
+        if (len == cap) {
+            cap *= 2;
+            char* grown = (char*)malloc(cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+        }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
+    TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
+    resp->status = 0;
+    resp->body = GC_strdup("");
+    resp->headers = GC_strdup("");
+
+    char host[256], path[2048];
+    int port;
+    if (!http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) return resp;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return resp;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) { close(fd); return resp; }
+    if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { freeaddrinfo(res); close(fd); return resp; }
+    freeaddrinfo(res);
+
+    size_t body_len = body ? strlen(body) : 0;
+    const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
+    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + body_len + 256;
+    char* req = (char*)malloc(req_cap);
+    int req_len = snprintf(req, req_cap,
+        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s"
+        "Content-Length: %zu\r\n\r\n",
+        method, path, host, extra, body_len);
+    if (body_len) {
+        memcpy(req + req_len, body, body_len);
+        req_len += (int)body_len;
+    }
+
+    ssize_t sent_total = 0;
+    while (sent_total < req_len) {
+        ssize_t s = send(fd, req + sent_total, (size_t)(req_len - sent_total), 0);
+        if (s <= 0) break;
+        sent_total += s;
+    }
+
+    char* raw = http_recv_all(fd);
+    close(fd);
+
+    // Statuszeile: "HTTP/1.1 200 OK"
+    const char* sp = strchr(raw, ' ');
+    if (sp) resp->status = atoi(sp + 1);
+
+    // Header/Body-Trennung an "\r\n\r\n"
+    char* sep = strstr(raw, "\r\n\r\n");
+    if (sep) {
+        size_t hdr_len = (size_t)(sep - raw);
+        char* hdrs = (char*)GC_malloc(hdr_len + 1);
+        memcpy(hdrs, raw, hdr_len);
+        hdrs[hdr_len] = '\0';
+        resp->headers = hdrs;
+        resp->body = GC_strdup(sep + 4);
+    } else {
+        resp->body = GC_strdup(raw);
+    }
+    return resp;
+}
+
+int64_t* httpGet(const char* url)                    { return (int64_t*)http_request("GET", url, NULL); }
+int64_t* httpPost(const char* url, const char* body) { return (int64_t*)http_request("POST", url, body); }
+int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_request("PUT", url, body); }
+int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
+int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
+
+int64_t httpStatusCode(int64_t* resp) {
+    return resp ? ((TinoxHttpResponse*)resp)->status : 0;
+}
+
+char* httpBody(int64_t* resp) {
+    if (!resp) return GC_strdup("");
+    char* b = ((TinoxHttpResponse*)resp)->body;
+    return b ? b : GC_strdup("");
+}
+
+// Case-insensitive Header-Lookup im rohen Header-Block. "" wenn nicht da.
+char* httpHeader(int64_t* resp, const char* name) {
+    if (!resp) return GC_strdup("");
+    const char* hdrs = ((TinoxHttpResponse*)resp)->headers;
+    if (!hdrs) return GC_strdup("");
+    size_t nlen = strlen(name);
+    const char* line = hdrs;
+    while (*line) {
+        const char* eol = strstr(line, "\r\n");
+        size_t line_len = eol ? (size_t)(eol - line) : strlen(line);
+        if (line_len > nlen && line[nlen] == ':' && strncasecmp(line, name, nlen) == 0) {
+            const char* v = line + nlen + 1;
+            while (*v == ' ') v++;
+            size_t vlen = line_len - (size_t)(v - line);
+            char* out = (char*)GC_malloc(vlen + 1);
+            memcpy(out, v, vlen);
+            out[vlen] = '\0';
+            return out;
+        }
+        if (!eol) break;
+        line = eol + 2;
+    }
+    return GC_strdup("");
+}
+
+// ---- ZIP builtins (STORED/Methode 0, Textinhalte) ---------------------------
+// Minimaler, aber echter ZIP-Reader/-Writer: schreibt gültige .zip-Dateien
+// (von `unzip` lesbar), unterstützt beim Lesen nur unkomprimierte Einträge
+// (Methode 0). Binärinhalte mit Nullbytes sind nicht darstellbar, da Tinox-
+// Strings nullterminiert sind. Die Tinox-Seite (Zip::listEntries) baut die
+// List<ZipEntry> selbst aus zipEntryCount/zipEntryName/zipEntrySize — so bleibt
+// C von der Klassen-ABI entkoppelt.
+
+typedef struct {
+    char*          name;
+    unsigned char* data;
+    uint32_t       size;
+} TinoxZipMember;
+
+static uint32_t tinox_zip_crc32(const unsigned char* data, size_t len) {
+    static uint32_t table[256];
+    static int have_table = 0;
+    if (!have_table) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        have_table = 1;
+    }
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++)
+        crc = table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static uint16_t tinox_zip_rd16(const unsigned char* p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+static uint32_t tinox_zip_rd32(const unsigned char* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void tinox_zip_wr16(unsigned char* p, uint16_t v) {
+    p[0] = (unsigned char)(v & 0xFF); p[1] = (unsigned char)((v >> 8) & 0xFF);
+}
+static void tinox_zip_wr32(unsigned char* p, uint32_t v) {
+    p[0] = (unsigned char)(v & 0xFF);         p[1] = (unsigned char)((v >> 8) & 0xFF);
+    p[2] = (unsigned char)((v >> 16) & 0xFF); p[3] = (unsigned char)((v >> 24) & 0xFF);
+}
+
+// Ganze Datei in einen Puffer lesen; NULL + *out_len=0 wenn nicht öffenbar.
+static unsigned char* tinox_zip_read_file(const char* path, size_t* out_len) {
+    *out_len = 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    rewind(f);
+    unsigned char* buf = (unsigned char*)malloc((size_t)sz + 1);
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[rd] = 0;
+    *out_len = rd;
+    return buf;
+}
+
+// Alle STORED-Einträge parsen. Rückgabe = Anzahl, *out = Array (GC-alloziert).
+static int tinox_zip_parse(const char* path, TinoxZipMember** out) {
+    *out = NULL;
+    size_t len;
+    unsigned char* buf = tinox_zip_read_file(path, &len);
+    if (!buf || len < 4) return 0;
+
+    TinoxZipMember* mem = NULL;
+    int n = 0, cap = 0;
+    size_t pos = 0;
+    while (pos + 30 <= len && tinox_zip_rd32(buf + pos) == 0x04034b50u) {
+        uint16_t method = tinox_zip_rd16(buf + pos + 8);
+        uint32_t csize  = tinox_zip_rd32(buf + pos + 18);
+        uint32_t usize  = tinox_zip_rd32(buf + pos + 22);
+        uint16_t nlen   = tinox_zip_rd16(buf + pos + 26);
+        uint16_t elen   = tinox_zip_rd16(buf + pos + 28);
+        size_t name_off = pos + 30;
+        size_t data_off = name_off + nlen + elen;
+        if (data_off + csize > len) break;
+        if (method == 0) {
+            char* nm = (char*)malloc((size_t)nlen + 1);
+            memcpy(nm, buf + name_off, nlen); nm[nlen] = 0;
+            unsigned char* d = (unsigned char*)malloc((size_t)usize + 1);
+            memcpy(d, buf + data_off, usize); d[usize] = 0;
+            if (n == cap) {
+                cap = cap ? cap * 2 : 8;
+                mem = (TinoxZipMember*)realloc(mem, (size_t)cap * sizeof(TinoxZipMember));
+            }
+            mem[n].name = nm; mem[n].data = d; mem[n].size = usize;
+            n++;
+        }
+        pos = data_off + csize;
+    }
+    *out = mem;
+    return n;
+}
+
+// Einträge als gültige STORED-.zip schreiben.
+static void tinox_zip_write(const char* path, TinoxZipMember* mem, int n) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+
+    // Lokale Header + Daten; Offsets für Central Directory merken.
+    uint32_t* offsets = (uint32_t*)malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
+    uint32_t* crcs    = (uint32_t*)malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
+    uint32_t cursor = 0;
+    unsigned char lh[30];
+    for (int i = 0; i < n; i++) {
+        uint16_t nlen = (uint16_t)strlen(mem[i].name);
+        uint32_t crc  = tinox_zip_crc32(mem[i].data, mem[i].size);
+        offsets[i] = cursor;
+        crcs[i]    = crc;
+        memset(lh, 0, sizeof(lh));
+        tinox_zip_wr32(lh + 0, 0x04034b50u);      // local file header signature
+        tinox_zip_wr16(lh + 4, 20);               // version needed
+        tinox_zip_wr16(lh + 6, 0);                // flags
+        tinox_zip_wr16(lh + 8, 0);                // method: STORED
+        tinox_zip_wr16(lh + 10, 0);               // mod time
+        tinox_zip_wr16(lh + 12, 0x21);            // mod date (1980-01-01)
+        tinox_zip_wr32(lh + 14, crc);             // crc-32
+        tinox_zip_wr32(lh + 18, mem[i].size);     // compressed size
+        tinox_zip_wr32(lh + 22, mem[i].size);     // uncompressed size
+        tinox_zip_wr16(lh + 26, nlen);            // name length
+        tinox_zip_wr16(lh + 28, 0);               // extra length
+        fwrite(lh, 1, sizeof(lh), f);
+        fwrite(mem[i].name, 1, nlen, f);
+        fwrite(mem[i].data, 1, mem[i].size, f);
+        cursor += (uint32_t)sizeof(lh) + nlen + mem[i].size;
+    }
+
+    // Central Directory.
+    uint32_t cd_start = cursor;
+    unsigned char ch[46];
+    for (int i = 0; i < n; i++) {
+        uint16_t nlen = (uint16_t)strlen(mem[i].name);
+        memset(ch, 0, sizeof(ch));
+        tinox_zip_wr32(ch + 0, 0x02014b50u);      // central dir signature
+        tinox_zip_wr16(ch + 4, 20);               // version made by
+        tinox_zip_wr16(ch + 6, 20);               // version needed
+        tinox_zip_wr16(ch + 8, 0);                // flags
+        tinox_zip_wr16(ch + 10, 0);               // method: STORED
+        tinox_zip_wr16(ch + 12, 0);               // mod time
+        tinox_zip_wr16(ch + 14, 0x21);            // mod date
+        tinox_zip_wr32(ch + 16, crcs[i]);         // crc-32
+        tinox_zip_wr32(ch + 20, mem[i].size);     // compressed size
+        tinox_zip_wr32(ch + 24, mem[i].size);     // uncompressed size
+        tinox_zip_wr16(ch + 28, nlen);            // name length
+        tinox_zip_wr16(ch + 30, 0);               // extra length
+        tinox_zip_wr16(ch + 32, 0);               // comment length
+        tinox_zip_wr16(ch + 34, 0);               // disk number start
+        tinox_zip_wr16(ch + 36, 0);               // internal attrs
+        tinox_zip_wr32(ch + 38, 0);               // external attrs
+        tinox_zip_wr32(ch + 42, offsets[i]);      // local header offset
+        fwrite(ch, 1, sizeof(ch), f);
+        fwrite(mem[i].name, 1, nlen, f);
+        cursor += (uint32_t)sizeof(ch) + nlen;
+    }
+    uint32_t cd_size = cursor - cd_start;
+
+    // End Of Central Directory.
+    unsigned char eocd[22];
+    memset(eocd, 0, sizeof(eocd));
+    tinox_zip_wr32(eocd + 0, 0x06054b50u);        // EOCD signature
+    tinox_zip_wr16(eocd + 8, (uint16_t)n);        // entries this disk
+    tinox_zip_wr16(eocd + 10, (uint16_t)n);       // total entries
+    tinox_zip_wr32(eocd + 12, cd_size);           // central dir size
+    tinox_zip_wr32(eocd + 16, cd_start);          // central dir offset
+    fwrite(eocd, 1, sizeof(eocd), f);
+
+    fclose(f);
+}
+
+int64_t zipEntryCount(const char* path) {
+    TinoxZipMember* mem;
+    int n = tinox_zip_parse(path, &mem);
+    return (int64_t)n;
+}
+
+char* zipEntryName(const char* path, int64_t idx) {
+    TinoxZipMember* mem;
+    int n = tinox_zip_parse(path, &mem);
+    if (idx < 0 || idx >= n) return GC_strdup("");
+    return GC_strdup(mem[idx].name);
+}
+
+int64_t zipEntrySize(const char* path, int64_t idx) {
+    TinoxZipMember* mem;
+    int n = tinox_zip_parse(path, &mem);
+    if (idx < 0 || idx >= n) return 0;
+    return (int64_t)mem[idx].size;
+}
+
+// Inhalt eines Eintrags als String; "" wenn nicht gefunden.
+char* zipExtractFile(const char* path, const char* name) {
+    TinoxZipMember* mem;
+    int n = tinox_zip_parse(path, &mem);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(mem[i].name, name) == 0)
+            return GC_strdup((const char*)mem[i].data);
+    }
+    return GC_strdup("");
+}
+
+// Datei hinzufügen/ersetzen (legt die .zip bei Bedarf an).
+void zipAddFile(const char* path, const char* name, const char* content) {
+    TinoxZipMember* old;
+    int n = tinox_zip_parse(path, &old);
+    TinoxZipMember* mem = (TinoxZipMember*)malloc((size_t)(n + 1) * sizeof(TinoxZipMember));
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(old[i].name, name) == 0) continue; // ersetzen
+        mem[m++] = old[i];
+    }
+    mem[m].name = (char*)name;
+    mem[m].data = (unsigned char*)content;
+    mem[m].size = (uint32_t)strlen(content);
+    m++;
+    tinox_zip_write(path, mem, m);
+}
+
+// Datei entfernen (kein Fehler, wenn nicht vorhanden).
+void zipRemoveFile(const char* path, const char* name) {
+    TinoxZipMember* old;
+    int n = tinox_zip_parse(path, &old);
+    TinoxZipMember* mem = (TinoxZipMember*)malloc((size_t)(n > 0 ? n : 1) * sizeof(TinoxZipMember));
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(old[i].name, name) == 0) continue;
+        mem[m++] = old[i];
+    }
+    tinox_zip_write(path, mem, m);
+}
+
 // ---- Process / Environment builtins ----
 
 // Forward declarations for CLI argument globals (defined later in this file)

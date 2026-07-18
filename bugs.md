@@ -664,10 +664,14 @@ mangels Generics-Infrastruktur nie erfolgreich spezialisiert wurde — der
 eigentliche Modul-Bug (`pool.factory()` ohne deklariertes Feld) war
 unerreichbar. Siehe Bug 22.
 
-Klasse 1 (Ghost-Builtins) ist größtenteils gefixt — siehe Bug 23 (13 Module:
+Klasse 1 (Ghost-Builtins) ist **vollständig** gefixt — siehe Bug 23 (13 Module:
 mathf, debug, process, fs, time, string, io, metrics, random, regex,
-base64, uri, uuid) und Bug 24 (crypto, jwt). `hex` (Klasse 6) fiel bei
-Bug 23 mit, gleiches Bug-Muster. Verbleibend: http, socket, xml, zip, rest.
+base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
+xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
+Stand nach Bug 25: 43/61 grün. Verbleibende KNOWN_BROKEN (18): Klasse 3
+(Casts) complex/cron/decimal/fmt/toml, Klasse 4 (Lambda/Block)
+events/logger/rest_framework, Klasse 5 (Frontend) http2_server/ini,
+Laufzeit-Fehlverhalten asm/graph/heap/iter/queue/ratelimit/set, plus pool.
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -848,8 +852,8 @@ random, regex, base64, uri, uuid. Zwei Muster, je nach Modul:
   `Klasse::methode()`-Stil — nicht nur Debug/Process. Fix: die Signatur wird
   jetzt immer verwendet, sobald sie gefunden ist (kein `is_static`-Gate mehr).
 
-**Noch offen (Bug 20 Klasse 1):** http/socket (echte Netzwerk-Syscalls),
-xml/zip (Parser/Containerformat), rest (transitiv über http).
+**Noch offen (Bug 20 Klasse 1):** — nichts mehr. http/socket/rest/xml/zip
+sind in Bug 25 (dritte Runde) erledigt.
 
 ---
 
@@ -919,6 +923,58 @@ für Fälle ohne diesen Mechanismus. Für Klasse-1-Fixes ist `extern fn` im
 über `arg_types.first()`) — bei `json.tnx`s bereits bestehenden
 `extern fn jsonGetInt(...)` etc. entdeckt, für `jsonGetObject`/`jsonFromMap`
 so verwendet.
+
+---
+
+## Bug 25 — Ghost-Builtins Klasse 1: dritte Runde (socket, http, rest, xml, zip)
+
+**Status: GEFIXT (2026-07-18)** — die letzten fünf Ghost-Builtin-Module.
+Alle über `extern fn`-Deklarationen im `.tnx` (der saubere Weg aus Bug 24),
+neue Runtime-Funktionen in `runtime.c`, jeweils gegen echte Gegenstellen
+verifiziert. Danach 38/61 → 43/61 grün (KNOWN_BROKEN 23 → 18).
+
+**socket.tnx:** rohe BSD-Socket-Primitiven (`socketCreateTcp/Udp`,
+`socketConnect/Bind/Listen/Accept/Send/Receive/Close`) über `<netdb.h>`
+neu in `runtime.c`. `Socket` bekam `handle: Int64` + `mode: String`.
+Beide Richtungen gegen einen Python-Peer getestet (Client: connect/send/recv;
+Server: bind/listen/accept/recv/send).
+
+**http.tnx:** blockierender HTTP/1.1-Client (nur `http://`, kein TLS) in
+`runtime.c`. `TinoxHttpResponse{status, body, headers}` als opakes C-Struct,
+das `HttpResponse` durchgereicht wird; Request-Header thread-lokal über
+`httpSetHeader`. `httpGet/Post/Put/Delete/Patch`, plus
+`httpStatusCode/httpBody/httpHeader` (Header-Lookup case-insensitive).
+Gegen einen Python-`http.server` getestet: GET (Status 200, Body, Custom-
+Header) und POST-Echo (Status 201) korrekt.
+
+**rest.tnx:** benutzte `Http::`/`HttpResponse` ohne `import tinox.core.http`
+— gleiches Import-Loch wie jwt in Bug 24. Import ergänzt, transitiv grün.
+
+**xml.tnx:** zwei Probleme. (1) Die „Ghost-Builtins" `xmlTagName/
+xmlTextContent/xmlAttr/xmlChildren` waren in Wahrheit reine Feldzugriffe —
+`XmlNode` bekam die fehlenden Felddeklarationen (`tagName/text/attrs/
+children`), die Methoden lesen jetzt `this.<feld>` statt der Geister.
+(2) **Compiler-Fund:** `Strings::trim(x)` (statischer Aufruf auf einer
+**nicht importierten** Klasse) erzeugte stillschweigend Datenmüll statt
+eines Typfehlers — `import tinox.core.string` ergänzt. Der Compiler sollte
+statische Aufrufe auf unbekannte/nicht-importierte Klassen ablehnen; tut er
+nicht (eigenes, größeres Frontend-Thema, hier nur umschifft). Betrifft
+potentiell auch `toml`/`ini`/`decimal` (nutzen `Strings::` ebenfalls ohne
+Import — stehen aus anderen Gründen noch in KNOWN_BROKEN).
+
+**zip.tnx:** echter, minimaler ZIP-Reader/-Writer in `runtime.c` — STORED
+(Methode 0, keine Kompression), gültige Local/Central-Directory/EOCD-Records
+mit korrekter CRC-32 (RFC 1952 / ISO-HDLC). Von System-`unzip -t`
+verifiziert („No errors detected"), inklusive verschachtelter Pfade
+(`dir/b.txt`). Bewusste Grenzen: nur Textinhalte (Tinox-Strings sind
+nullterminiert, echte Binärdaten mit Nullbytes nicht darstellbar); beim
+Lesen nur STORED (deflate-komprimierte Einträge werden übersprungen, da
+kein zlib-Link). **ABI-Entkopplung:** `zipListEntries` konstruiert die
+`List<ZipEntry>` **nicht** in C (das würde von der Klassen-Speicherlayout-
+ABI abhängen — Vtable-Slot ja/nein, Feldreihenfolge), sondern C liefert nur
+Skalare (`zipEntryCount/zipEntryName/zipEntrySize`) und die Tinox-Seite baut
+die Liste selbst. Sauberer Trennschnitt für alle künftigen „C gibt
+Objektlisten zurück"-Fälle.
 
 ---
 

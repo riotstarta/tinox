@@ -5,6 +5,8 @@
  */
 module tinox.core.rest;
 
+import tinox.core.http;
+
 namespace tinox.core.rest
 {
     /**

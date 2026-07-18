@@ -1,5 +1,7 @@
 module tinox.core.xml;
 
+import tinox.core.string;
+
 namespace tinox.core.xml
 {
     class Xml
@@ -22,24 +24,33 @@ namespace tinox.core.xml
 
     class XmlNode
     {
+        var tagName: String;
+        var text: String;
+        var attrs: Map<String, String>;
+        var children: List<XmlNode>;
+
         fn tagName() -> String
         {
-            return xmlTagName(this);
+            return this.tagName;
         }
 
         fn textContent() -> String
         {
-            return xmlTextContent(this);
+            return this.text;
         }
 
         fn attr(name: String) -> String
         {
-            return xmlAttr(this, name);
+            if this.attrs.contains(name)
+            {
+                return this.attrs[name];
+            }
+            return "";
         }
 
         fn children() -> List<XmlNode>
         {
-            return xmlChildren(this);
+            return this.children;
         }
 
         fn firstChild(tag: String) -> XmlNode

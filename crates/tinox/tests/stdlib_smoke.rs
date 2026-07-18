@@ -25,9 +25,6 @@ use std::path::PathBuf;
 /// Beim Fixen: Eintrag entfernen, sonst schlägt der Test mit "stale entry"
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
-    // Ghost-Builtins: Modul ruft Funktionen, die weder Runtime noch Codegen kennen
-    "http",
-    "rest", "socket", "xml", "zip",
     // Codegen: ungültige Casts (ptr→i64/double) in Modul-Klassen
     "complex", "cron", "decimal", "fmt", "toml",
     // Codegen: Lambda-/Handler-Typen (i64 vs ptr), Block-Layout
