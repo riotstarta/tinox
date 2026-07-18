@@ -4,6 +4,9 @@ namespace tinox.core.asm
 {
     class Assembler
     {
+        var bytecode: List<Int64>;
+        var labels: Map<String, Int64>;
+
         fn new() -> Assembler
         {
             return Assembler { bytecode: [], labels: Map::new() };

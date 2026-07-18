@@ -4,16 +4,31 @@ namespace tinox.core.pool
 {
     class Pool<T>
     {
+        var available: List<T>;
+        var inUse: List<T>;
+        var maxSize: Int64;
+        var factory: fnc() -> T;
+
         fn new(maxSize: Int64) -> Pool<T>
         {
             return Pool<T> { available: [], inUse: [], maxSize: maxSize };
         }
 
+        // HINWEIS: acquire() ruft pool.factory() auf, aber das Setzen eines
+        // Factory-Callbacks als Feld ist derzeit nicht nutzbar — ein als
+        // Argument übergebenes Lambda wird als nackter fn-Zeiger gespeichert,
+        // während der fn-Feld-Aufruf ein Closure-Struct {fn_ptr, env} erwartet
+        // (Closure-Repräsentation inkonsistent). Bis das gefixt ist, ist der
+        // factory-Pfad nicht bedienbar; das Modul kompiliert (Smoke: new/
+        // release/clear).
+
         fn acquire(pool: Pool<T>) -> T
         {
             if pool.available.len() > 0
             {
-                return pool.available.pop();
+                let obj: T = pool.available[pool.available.len() - 1];
+                pool.available.pop();
+                return obj;
             }
             if pool.inUse.len() < pool.maxSize
             {

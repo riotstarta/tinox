@@ -29,12 +29,6 @@ const KNOWN_BROKEN: &[&str] = &[
     "events", "logger", "rest_framework",
     // Frontend: Parse-/Typecheck-Fehler im Modul selbst
     "http2_server", "ini",
-    // Laufzeit-Fehlverhalten (falsche Werte, leere Ausgabe, Crash)
-    "asm", "graph", "heap", "iter", "queue", "ratelimit", "set",
-    // Modul-Bug: Pool<T>.factory wird benutzt (pool.acquire()), aber nie als
-    // Feld deklariert — surfaced erst durch den Generics-Fix (Bug 20.2), da
-    // Pool<T> vorher nie erfolgreich spezialisiert wurde (siehe bugs.md Bug 21)
-    "pool",
 ];
 
 /// Module ohne Smoke-Fall, mit Begründung.

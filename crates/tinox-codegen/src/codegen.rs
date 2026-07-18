@@ -477,6 +477,12 @@ impl CodeGen {
             Type::String => "Array:String".to_string(),
             Type::Float32 | Type::Float64 => "Array:Float".to_string(),
             Type::Named(c) => format!("List:{}", c),
+            // A generic class element (e.g. List<PriorityItem<T>>) markers by
+            // its base name; container keywords fall through to the recursive
+            // branch so nested lists still compose as "Array:Array:…".
+            Type::Generic { name, .. } if name != "List" && name != "Array" && name != "Map" => {
+                format!("List:{}", name)
+            }
             _ => match Self::container_marker(inner) {
                 Some(im) => format!("Array:{}", im),
                 None => "Array".to_string(),
@@ -1068,7 +1074,31 @@ impl CodeGen {
         for c in &all_classes {
             self.defined_classes.insert(c.name.clone());
             {
-                if !c.type_params.is_empty() { continue; }
+                if !c.type_params.is_empty() {
+                    // Generic classes are specialized on demand under a mangled
+                    // name, but a bare `Foo { … }` literal (type args elided —
+                    // e.g. constructed inside another generic where the param is
+                    // already erased) resolves to the base name and needs a
+                    // layout, or it allocates 0 bytes with every field at
+                    // offset 0. Register the type-erased layout (T → i64*).
+                    if !self.struct_layouts.contains_key(&c.name) {
+                        let fields = Self::collect_inherited_fields(&c.name, &class_ast_map);
+                        self.struct_layouts.insert(c.name.clone(), fields);
+                        self.struct_field_class_types.insert(
+                            c.name.clone(),
+                            Self::collect_field_class_types(&c.name, &class_ast_map),
+                        );
+                        self.struct_field_llvm_types.insert(
+                            c.name.clone(),
+                            Self::collect_field_llvm_types(&c.name, &class_ast_map),
+                        );
+                        self.fn_field_sigs.insert(
+                            c.name.clone(),
+                            Self::collect_fn_field_sigs(&c.name, &class_ast_map),
+                        );
+                    }
+                    continue;
+                }
                 if let Some(parent) = &c.extends {
                     self.class_parents.insert(c.name.clone(), parent.clone());
                 }
@@ -5554,7 +5584,8 @@ impl CodeGen {
                 let array_only_methods = ["push","pop","sort","reverse","slice","join",
                     "first","last","find","filter","map","reduce","any","all","indexOf",
                     "clear","isEmpty","toList","unique","flatten","zip","unzip","take","skip",
-                    "sortBy","groupBy","partition","sum","min","max","average","forEach"];
+                    "sortBy","groupBy","partition","sum","min","max","average","forEach",
+                    "removeAt"];
                 // A declared container marker ("Array", "Array:…") resolves the
                 // i64 ambiguity in favor of array dispatch (e.g. elements of
                 // nested lists: xs[0].len() on List<List<Int64>>).
@@ -8674,11 +8705,13 @@ impl CodeGen {
             self.type_param_aliases = saved_aliases;
         }
 
-        // Aufruf der Spezialisierung (fnc = static, kein self)
+        // Aufruf der Spezialisierung. Die Definition entsteht über gen_fn (eine
+        // top-level Funktion OHNE impliziten self-Parameter), also darf auch
+        // der Call-Site kein self voranstellen — sonst verschieben sich alle
+        // Argumente um eins (Bug: `Iter::repeat(7,3)` band count=7, value=null).
+        // Dieser Pfad ist ausschließlich der statische `Class::method`-Aufruf;
+        // Instanzaufrufe generischer Methoden laufen woanders.
         let mut args_parts: Vec<String> = Vec::new();
-        if !gm.static_ {
-            args_parts.push("i64* null".to_string());
-        }
         for arg in args.iter() {
             let (v, t) = self.gen_expr(arg, ctx)?;
             args_parts.push(format!("{} {}", t, v));

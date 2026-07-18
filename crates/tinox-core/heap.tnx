@@ -4,6 +4,9 @@ namespace tinox.core.heap
 {
     class Heap<T>
     {
+        var items: List<T>;
+        var comparator: fnc(T, T) -> Bool;
+
         fn new() -> Heap<T>
         {
             return Heap<T> { items: [], comparator: fnc(a: T, b: T) -> Bool { return a < b; } };
@@ -27,7 +30,8 @@ namespace tinox.core.heap
                 throw "Heap is empty";
             }
             let result: T = heap.items[0];
-            let last: T = heap.items.pop();
+            let last: T = heap.items[heap.items.len() - 1];
+            heap.items.pop();
             if heap.items.len() > 0
             {
                 heap.items[0] = last;

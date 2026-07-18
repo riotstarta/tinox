@@ -669,10 +669,10 @@ mathf, debug, process, fs, time, string, io, metrics, random, regex,
 base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
 xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
-Stand nach Bug 26: 48/61 grün. Verbleibende KNOWN_BROKEN (13): Klasse 4
-(Lambda/Block) events/logger/rest_framework, Klasse 5 (Frontend)
-http2_server/ini, Laufzeit-Fehlverhalten
-asm/graph/heap/iter/queue/ratelimit/set, plus pool.
+Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
+und pool sind seit Bug 27 gefixt. Stand nach Bug 27: 56/61 grün.
+Verbleibende KNOWN_BROKEN (5): Klasse 4 (Lambda/Handler)
+events/logger/rest_framework, Klasse 5 (Frontend) http2_server/ini.
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1029,6 +1029,75 @@ Projekt profitiert; `make check` voll grün (keine Regression).
 **Offen (bewusst nicht hier):** `ini` nutzt `(Int64)strVal` (jetzt via
 Grundfix 2 sauber) UND `Strings::` ohne Import — steht aus Klasse-5-Gründen
 (Frontend-Parsefehler) weiter in KNOWN_BROKEN.
+
+---
+
+## Bug 27 — Laufzeit-Fehlverhalten-Gruppe + pool (asm/graph/heap/iter/queue/ratelimit/set)
+
+**Status: GEFIXT (2026-07-18)** — die 7-Modul-Gruppe „falsche Werte/Crash"
+plus `pool`. Diagnose: drei allgemeine Codegen-/Typecheck-Bugs + das schon
+bekannte Feld-/Import-Muster. Stand: 48/61 → 56/61 (KNOWN_BROKEN 13 → 5).
+
+**Codegen-Grundfix 1 — generische Klassen ohne Basis-Layout.** Die Klassen-
+Vorabregistrierung überspringt generische Klassen komplett (`if
+!c.type_params.is_empty() { continue; }`), Layouts entstehen nur pro
+Spezialisierung unter gemangeltem Namen. Ein bare `Foo { … }`-Literal (Typ-
+Argumente elidiert, z. B. `PriorityItem { … }` innerhalb `PriorityQueue<T>`,
+wo T bereits erased ist) löst aber auf den Basis-Namen auf → `tinox_alloc(0)`,
+alle Felder auf Offset 0 (überschreiben sich). Fix: für generische Klassen den
+typ-erased Basis-Layout registrieren (T → i64*). Betraf queue (PriorityItem).
+
+**Codegen-Grundfix 2 — Container-Marker für generische Element-Typen.**
+`container_marker` kannte nur `Named`-Elemente (`List<Foo>` → „List:Foo"),
+nicht generische (`List<PriorityItem<T>>`). Ohne Marker liefert `xs[0]` rohe
+i64 statt Klassenzeiger → `.item` dereferenziert Müll (Crash). Fix: generische
+Klassen-Elemente markern per Basis-Name (Container-Keywords List/Array/Map
+fallen weiter in den rekursiven Zweig, damit verschachtelte Listen komponieren).
+
+**Codegen-Grundfix 3 — self-Verschiebung bei generischen Methodenaufrufen.**
+`Iter::repeat(7,3)` band `count=7, value=null`: der Call-Site stellte für
+nicht-statische generische Methoden `i64* null` (self) voran, aber die
+Definition wird über `gen_fn` als top-level-Funktion OHNE self emittiert →
+alle Argumente um eins verschoben. Dieser Pfad ist ausschließlich der
+statische `Class::method`-Aufruf (Instanzaufrufe laufen woanders), also self-
+Push entfernt. Betraf iter.
+
+**Typecheck-Fix — Typparameter-Erasure rekursiv.** `type_to_value_erasing`
+löschte nur einen Typparameter als Ganzes (`T` → Any), nicht verschachtelt.
+Eine generische Methode mit Rückgabe `List<T>` unifizierte daher nicht mit
+konkretem `List<Int64>` (Fehler „expected List<Int64>, found List<T>"). Fix:
+rekursiv in Array/List/Map absteigen → `List<T>` erased zu Array(Any). Betraf
+iter (`repeat<T>`).
+
+**Kleinerer Codegen-Fix — `removeAt` fehlte in `array_only_methods`.** Es
+hatte einen Dispatch-Case, stand aber nicht in der Liste, die die Array-
+Methoden-Dispatch für i64-geladene Felder auslöst → `set.items.removeAt(i)`
+wurde als Ghost `@removeAt` emittiert. Betraf queue, set.
+
+**Modul-Fixes (Feld-/Import-/pop-Muster):**
+- Felddeklarationen ergänzt: `Assembler` (bytecode/labels), `Graph<V>`
+  (nodes/edges), `RateLimiter`, `TokenBucket`, `Set<T>` (items),
+  `PriorityQueue<T>` (items), `CircularBuffer<T>`, `Heap<T>`
+  (items + comparator-Callback-Feld), `Pool<T>`.
+- `ratelimit`: `import time`/`mathf` fehlten; `TokenBucket.tokens` mit
+  `(Float64)capacity` initialisiert (Float-Feld, Int-Wert).
+- `pop()`-Missbrauch: `pop()` gibt in Tinox das Array zurück, nicht das
+  entfernte Element (bestätigt an der grünen collections.tnx: dort
+  `data[len-1]` lesen, dann `pop()` als Statement). heap und pool lasen
+  fälschlich `let x = items.pop()` → auf das collections-Idiom umgestellt.
+
+**`pool` teilweise:** kompiliert + Smoke (new/release/clear) grün. Der
+`acquire()`-über-`factory`-Pfad bleibt unbedienbar — ein als **Argument**
+übergebenes Lambda wird als nackter fn-Zeiger gespeichert, während der
+fn-Feld-Aufruf ein Closure-Struct `{fn_ptr, env}` erwartet (inline im
+Struct-Literal übergebene Lambdas wie `Heap`s comparator werden dagegen als
+Closure gewrappt). Diese Closure-Repräsentations-Inkonsistenz ist ein eigener,
+tieferer Fix; `newWithFactory` wurde bewusst nicht eingebaut, um keine
+segfaultende API zu versprechen.
+
+**Verbleibende KNOWN_BROKEN (5):** events/logger/rest_framework (Klasse 4,
+Lambda/Handler-Typen), http2_server/ini (Klasse 5, Frontend). `make check`
+voll grün.
 
 ---
 

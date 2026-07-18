@@ -2769,6 +2769,22 @@ impl TypeChecker {
         match ty {
             Type::Named(name) if type_params.contains(name) => ValueType::Any,
             Type::Generic { name, .. } if type_params.contains(name) => ValueType::Any,
+            // Recurse into container types so a type param nested in the element
+            // is erased too — e.g. `List<T>` → Array(Any), not Array(Named("T")),
+            // otherwise a generic method returning `List<T>` fails to unify with
+            // a concrete `List<Int64>` at the call site.
+            Type::Array(inner) => {
+                ValueType::Array(Box::new(Self::type_to_value_erasing(inner, type_params)))
+            }
+            Type::Generic { name, args } if (name == "List" || name == "Array") && args.len() == 1 => {
+                ValueType::Array(Box::new(Self::type_to_value_erasing(&args[0], type_params)))
+            }
+            Type::Generic { name, args } if name == "Map" && args.len() == 2 => {
+                ValueType::Map(Box::new(Self::type_to_value_erasing(&args[1], type_params)))
+            }
+            Type::Map(_, v) => {
+                ValueType::Map(Box::new(Self::type_to_value_erasing(v, type_params)))
+            }
             _ => Self::type_to_value(ty),
         }
     }

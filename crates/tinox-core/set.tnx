@@ -4,6 +4,8 @@ namespace tinox.core.set
 {
     class Set<T>
     {
+        var items: List<T>;
+
         fn new() -> Set<T>
         {
             return Set<T> { items: [] };

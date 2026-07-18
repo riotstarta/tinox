@@ -4,6 +4,8 @@ namespace tinox.core.queue
 {
     class PriorityQueue<T>
     {
+        var items: List<PriorityItem<T>>;
+
         fn new() -> PriorityQueue<T>
         {
             return PriorityQueue<T> { items: [] };
@@ -71,6 +73,12 @@ namespace tinox.core.queue
 
     class CircularBuffer<T>
     {
+        var data: List<T>;
+        var size: Int64;
+        var head: Int64;
+        var tail: Int64;
+        var count: Int64;
+
         fn new(size: Int64) -> CircularBuffer<T>
         {
             return CircularBuffer<T> { data: [], size: size, head: 0, tail: 0, count: 0 };

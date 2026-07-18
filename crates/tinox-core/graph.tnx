@@ -4,6 +4,9 @@ namespace tinox.core.graph
 {
     class Graph<V>
     {
+        var nodes: Map<String, V>;
+        var edges: Map<String, List<GraphEdge>>;
+
         fn new() -> Graph<V>
         {
             return Graph<V> { nodes: Map::new(), edges: Map::new() };
