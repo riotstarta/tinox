@@ -25,8 +25,6 @@ use std::path::PathBuf;
 /// Beim Fixen: Eintrag entfernen, sonst schlägt der Test mit "stale entry"
 /// fehl.
 const KNOWN_BROKEN: &[&str] = &[
-    // Codegen: ungültige Casts (ptr→i64/double) in Modul-Klassen
-    "complex", "cron", "decimal", "fmt", "toml",
     // Codegen: Lambda-/Handler-Typen (i64 vs ptr), Block-Layout
     "events", "logger", "rest_framework",
     // Frontend: Parse-/Typecheck-Fehler im Modul selbst
@@ -167,7 +165,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "fmt",
         imports: &["tinox.core.fmt"],
-        body: "println(Fmt::sprintf(\"a{}b\", [\"X\"]));",
+        body: "println(Fmt::sprintf(\"a%sb\", [\"X\"]));",
         expects: &["aXb"],
         contains: &[],
     },

@@ -145,5 +145,15 @@ namespace tinox.core.mathf
         {
             return log10(x);
         }
+
+        fn exp(x: Float64) -> Float64
+        {
+            return exp(x);
+        }
+
+        fn atan2(y: Float64, x: Float64) -> Float64
+        {
+            return atan2(y, x);
+        }
     }
 }

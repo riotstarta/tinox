@@ -1,9 +1,14 @@
 module tinox.core.decimal;
 
+import tinox.core.string;
+
 namespace tinox.core.decimal
 {
     class Decimal
     {
+        var value: String;
+        var scale: Int64;
+
         fn new(value: String) -> Decimal
         {
             return Decimal { value: value, scale: 0 };

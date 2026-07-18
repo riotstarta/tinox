@@ -668,10 +668,11 @@ Klasse 1 (Ghost-Builtins) ist **vollständig** gefixt — siehe Bug 23 (13 Modul
 mathf, debug, process, fs, time, string, io, metrics, random, regex,
 base64, uri, uuid), Bug 24 (crypto, jwt) und Bug 25 (socket, http, rest,
 xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
-Stand nach Bug 25: 43/61 grün. Verbleibende KNOWN_BROKEN (18): Klasse 3
-(Casts) complex/cron/decimal/fmt/toml, Klasse 4 (Lambda/Block)
-events/logger/rest_framework, Klasse 5 (Frontend) http2_server/ini,
-Laufzeit-Fehlverhalten asm/graph/heap/iter/queue/ratelimit/set, plus pool.
+Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
+Stand nach Bug 26: 48/61 grün. Verbleibende KNOWN_BROKEN (13): Klasse 4
+(Lambda/Block) events/logger/rest_framework, Klasse 5 (Frontend)
+http2_server/ini, Laufzeit-Fehlverhalten
+asm/graph/heap/iter/queue/ratelimit/set, plus pool.
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -975,6 +976,59 @@ ABI abhängen — Vtable-Slot ja/nein, Feldreihenfolge), sondern C liefert nur
 Skalare (`zipEntryCount/zipEntryName/zipEntrySize`) und die Tinox-Seite baut
 die Liste selbst. Sauberer Trennschnitt für alle künftigen „C gibt
 Objektlisten zurück"-Fälle.
+
+---
+
+## Bug 26 — Klasse 3 (Casts): complex, cron, decimal, fmt, toml + zwei Codegen-Grundfixes
+
+**Status: GEFIXT (2026-07-18)** — die fünf „Cast"-Module. Diagnose ergab drei
+verschiedene Ursachen; zwei davon waren echte, allgemeine Codegen-Bugs (nicht
+modulspezifisch), die im gesamten Compiler wirkten.
+
+**Codegen-Grundfix 1 — Ternär/`if`-Ausdruck verlor den Zweig-Typ.** Der
+`If`-Ausdruck (auch `cond ? a : b`) allozierte immer `i64` und speicherte die
+Zweigwerte **roh** ohne Konvertierung. Bei `i8*`/`double`/`i1`-Zweigen ergab
+das ungültige IR (`store i64 <ptr>` bzw. Typ-Mismatch) oder — falls es doch
+durchkam — falsche Werte (Integer-Bits statt Pointer/Float). Fix: Zweige über
+`coerce_to_i64` in die Uniform-i64-Zelle schreiben, am Merge-Punkt zurück-
+casten (`inttoptr`/`bitcast`/`trunc i1`), Ergebnistyp aus den Zweigen führen.
+Betraf jeden String-/Float-/Bool-Ternär im ganzen Code, nicht nur `complex`
+(dort `Complex::toString`s `(c.imag >= 0.0) ? "+" : "-"`).
+
+**Codegen-Grundfix 2 — `(Int64)str` / `(Float64)str` erzeugte Unsinn.** Der
+Cast-Pfad kannte keine String-Quelle: `(Int64)"5"` fiel in den Integer-Zweig
+(`trunc i8* to i64` — ungültig), `(Float64)"1.5"` in `sitofp i8*`. Fix: für
+`val_ty == "i8*"` jetzt **parsen** — `@tinox_string_to_int` bzw.
+`@tinox_string_to_float` (mit `fptrunc`/`trunc` auf Zielbreite). Betraf
+`cron` (`(Int64)field`), `toml` (`(Int64)/(Float64)value`), `decimal`,
+`ini`. Numerische Casts (`(Int64)double`, `(Float64)int`) liefen schon.
+
+**Modul-Einzelfixes:**
+- `complex`: (a) `import tinox.core.mathf` fehlte (gleicher Ghost-durch-
+  fehlenden-Import-Bug wie xml/Strings in Bug 25 — `Mathf::cos` wurde still
+  als Struct-Literal fehlkompiliert). (b) `Complex` hatte **keine Feld-
+  deklarationen** (`real`/`imag: Float64`) — ohne sie defaulten Feldtypen auf
+  `i64`, `c.real * c.real` wurde Integer-Mathe auf den Double-Bits (kompilierte
+  bei `magnitude`, rechnete Müll; `multiply` brach ganz). (c) `Mathf::atan2`
+  und `Mathf::exp` existierten nicht → in `mathf.tnx` ergänzt (rufen die
+  Builtins `atan2`/`exp`), plus `atan2`-Registrierung (Typecheck 2-arg,
+  Codegen `declare double @atan2(double,double)` + Dispatch-Case).
+- `decimal`: fehlende Felddeklarationen (`value: String`, `scale: Int64`) +
+  `import tinox.core.string` (für `Strings::repeat`).
+- `fmt`: **kein Modul-Bug** — der Smoke-Fall war falsch (`{}`-Platzhalter,
+  aber `Fmt::sprintf` ist printf-artig mit `%s`). Testkörper auf `"a%sb"`
+  korrigiert.
+- `cron`/`toml`: allein durch Codegen-Grundfix 2 grün.
+
+Verifiziert: `magnitude(3,4)=5`, `Decimal::toString(fromInt(3))="3"`,
+`sprintf("a%sb",["X"])="aXb"`, cron/toml Smoke grün. Stand: 43/61 → 48/61
+(KNOWN_BROKEN 18 → 13). **Die zwei Grundfixes sind allgemeine Verbesserungen**
+— jeder String/Float/Bool-Ternär und jeder String→Zahl-Cast im ganzen
+Projekt profitiert; `make check` voll grün (keine Regression).
+
+**Offen (bewusst nicht hier):** `ini` nutzt `(Int64)strVal` (jetzt via
+Grundfix 2 sauber) UND `Strings::` ohne Import — steht aus Klasse-5-Gründen
+(Frontend-Parsefehler) weiter in KNOWN_BROKEN.
 
 ---
 

@@ -1,9 +1,14 @@
 module tinox.core.complex;
 
+import tinox.core.mathf;
+
 namespace tinox.core.complex
 {
     class Complex
     {
+        var real: Float64;
+        var imag: Float64;
+
         fn new(real: Float64, imag: Float64) -> Complex
         {
             return Complex { real: real, imag: imag };

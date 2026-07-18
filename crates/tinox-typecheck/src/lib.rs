@@ -979,6 +979,11 @@ impl TypeChecker {
                 params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Float,
             });
         }
+        // two-arg float math builtins
+        symbols.functions.insert("atan2".to_string(), FunctionSignature {
+            params: vec![("y".to_string(), ValueType::Float), ("x".to_string(), ValueType::Float)],
+            return_type: ValueType::Float,
+        });
         for name in &["mathIsNan", "mathIsInfinite", "mathIsNormal"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("x".to_string(), ValueType::Float)], return_type: ValueType::Int,

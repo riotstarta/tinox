@@ -912,6 +912,7 @@ impl CodeGen {
         // float math builtins
         writeln!(&mut self.ir, "declare double @log(double)").unwrap();
         writeln!(&mut self.ir, "declare double @exp(double)").unwrap();
+        writeln!(&mut self.ir, "declare double @atan2(double, double)").unwrap();
         writeln!(&mut self.ir, "declare double @sin(double)").unwrap();
         writeln!(&mut self.ir, "declare double @cos(double)").unwrap();
         writeln!(&mut self.ir, "declare double @tan(double)").unwrap();
@@ -4941,6 +4942,13 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call double @exp(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        "atan2" => {
+                            let (y, _) = self.gen_expr(&args[0], ctx)?;
+                            let (x, _) = self.gen_expr(&args[1], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @atan2(double {}, double {})", result, y, x).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "fabs" => {
                             let (val, _) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
@@ -6893,6 +6901,28 @@ impl CodeGen {
                 if llvm_ty == val_ty {
                     return Ok((val, llvm_ty));
                 }
+                // String → number: parse (bit-casting a char* would be nonsense).
+                if val_ty == "i8*" && (Self::is_float(&llvm_ty) || llvm_ty.starts_with('i')) {
+                    if Self::is_float(&llvm_ty) {
+                        let d = self.temp();
+                        writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", d, val).unwrap();
+                        if llvm_ty == "float" {
+                            let f = self.temp();
+                            writeln!(&mut self.ir, "{} = fptrunc double {} to float", f, d).unwrap();
+                            return Ok((f, "float".to_string()));
+                        }
+                        return Ok((d, "double".to_string()));
+                    }
+                    let n = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_string_to_int(i8* {})", n, val).unwrap();
+                    let bits: u32 = llvm_ty[1..].parse().unwrap_or(64);
+                    if bits < 64 {
+                        let t = self.temp();
+                        writeln!(&mut self.ir, "{} = trunc i64 {} to {}", t, n, llvm_ty).unwrap();
+                        return Ok((t, llvm_ty));
+                    }
+                    return Ok((n, "i64".to_string()));
+                }
                 let result = self.temp();
                 let src_float = Self::is_float(&val_ty);
                 let dst_float = Self::is_float(&llvm_ty);
@@ -7397,25 +7427,51 @@ impl CodeGen {
                 )
                 .unwrap();
 
+                // As an expression (ternary), branches may yield i8*/double/i1 —
+                // store them in uniform i64 form and recover the type at merge.
                 writeln!(&mut self.ir, "{}:", then_bb).unwrap();
-                let (then_val, _) = self.gen_expr(then_branch, ctx)?;
-                writeln!(&mut self.ir, "store i64 {}, i64* {}", then_val, result_slot).unwrap();
+                let (then_val, then_ty) = self.gen_expr(then_branch, ctx)?;
+                let then_i64 = self.coerce_to_i64(&then_val, &then_ty);
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", then_i64, result_slot).unwrap();
                 writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
 
+                let mut result_ty = then_ty;
                 writeln!(&mut self.ir, "{}:", else_bb).unwrap();
                 if let Some(else_expr) = else_branch {
-                    let (else_val, _) = self.gen_expr(else_expr, ctx)?;
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", else_val, result_slot)
+                    let (else_val, else_ty) = self.gen_expr(else_expr, ctx)?;
+                    let else_i64 = self.coerce_to_i64(&else_val, &else_ty);
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", else_i64, result_slot)
                         .unwrap();
+                    // Prefer a concrete branch type if the other side was untyped.
+                    if (result_ty == "i64" || result_ty == "void" || result_ty.is_empty())
+                        && else_ty != "i64" && else_ty != "void" && !else_ty.is_empty()
+                    {
+                        result_ty = else_ty;
+                    }
                 } else {
                     writeln!(&mut self.ir, "store i64 0, i64* {}", result_slot).unwrap();
                 }
                 writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
 
                 writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
-                let result = self.temp();
-                writeln!(&mut self.ir, "{} = load i64, i64* {}", result, result_slot).unwrap();
-                Ok((result, "i64".to_string()))
+                let loaded = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, result_slot).unwrap();
+                // Recover the branch type from uniform i64 storage.
+                if result_ty == "double" || result_ty == "float" {
+                    let t = self.temp();
+                    writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", t, loaded, result_ty).unwrap();
+                    Ok((t, result_ty))
+                } else if result_ty == "i1" {
+                    let t = self.temp();
+                    writeln!(&mut self.ir, "{} = trunc i64 {} to i1", t, loaded).unwrap();
+                    Ok((t, result_ty))
+                } else if result_ty.ends_with('*') {
+                    let t = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", t, loaded, result_ty).unwrap();
+                    Ok((t, result_ty))
+                } else {
+                    Ok((loaded, "i64".to_string()))
+                }
             }
             ExprKind::While { cond, body } => {
                 let loop_bb = self.new_bb("while_cond");
