@@ -1102,6 +1102,17 @@ char* socketReceive(int64_t fd, int64_t size) {
     return buf;
 }
 
+// Roh-Bytes von einem fd lesen (HTTP/2-Server-Framing). Bis zu count Bytes;
+// die tatsächlich gelesenen werden als String zurückgegeben ("" bei EOF/Fehler).
+char* httpServerReadRawBytes(int64_t fd, int64_t count) {
+    if (fd < 0 || count <= 0) return GC_strdup("");
+    char* buf = (char*)GC_malloc((size_t)count + 1);
+    ssize_t n = read((int)fd, buf, (size_t)count);
+    if (n <= 0) { buf[0] = '\0'; return buf; }
+    buf[n] = '\0';
+    return buf;
+}
+
 void socketClose(int64_t fd) {
     if (fd >= 0) close((int)fd);
 }

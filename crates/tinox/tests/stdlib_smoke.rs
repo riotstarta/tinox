@@ -24,11 +24,11 @@ use std::path::PathBuf;
 /// offener Bug (siehe bugs.md Bug 20, dort nach Fehlerklasse gruppiert).
 /// Beim Fixen: Eintrag entfernen, sonst schlägt der Test mit "stale entry"
 /// fehl.
-const KNOWN_BROKEN: &[&str] = &[
-    // Frontend: Parse-Fehler im Modul selbst (verschachtelte Lvalue-Zuweisung
-    // `map[key].field = val`, siehe bugs.md)
-    "http2_server",
-];
+///
+/// Seit 2026-07-18 leer: alle tinox-core-Module kompilieren und laufen
+/// (Bug 20 vollständig abgearbeitet, Bugs 21-32). Neu kaputte Module hier
+/// mit Begründung + bugs.md-Verweis eintragen.
+const KNOWN_BROKEN: &[&str] = &[];
 
 /// Module ohne Smoke-Fall, mit Begründung.
 const EXCLUDED: &[(&str, &str)] = &[

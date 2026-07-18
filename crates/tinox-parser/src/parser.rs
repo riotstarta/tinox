@@ -1030,6 +1030,44 @@ impl Parser {
                                     chain_expr = Spanned::new(ExprKind::FieldAccess { obj: Box::new(chain_expr), field }, ident_span);
                                 }
                             }
+                            // Assignment to a field reached through an index chain,
+                            // e.g. `map[key].field = value;` (chain_expr is now the
+                            // FieldAccess lvalue).
+                            if self.check(TokenKind::Equals) {
+                                self.bump();
+                                let value = self.parse_expr()?;
+                                self.expect(TokenKind::Semicolon)?;
+                                return Ok(Spanned::new(StmtKind::Assignment { target: chain_expr, value }, span));
+                            }
+                            if self.check(TokenKind::PlusEquals)
+                                || self.check(TokenKind::MinusEquals)
+                                || self.check(TokenKind::StarEquals)
+                                || self.check(TokenKind::SlashEquals)
+                                || self.check(TokenKind::PercentEquals)
+                            {
+                                let op = match self.peek().kind {
+                                    TokenKind::PlusEquals => CompoundOp::Add,
+                                    TokenKind::MinusEquals => CompoundOp::Sub,
+                                    TokenKind::StarEquals => CompoundOp::Mul,
+                                    TokenKind::SlashEquals => CompoundOp::Div,
+                                    TokenKind::PercentEquals => CompoundOp::Mod,
+                                    _ => unreachable!(),
+                                };
+                                self.bump();
+                                let value = self.parse_expr()?;
+                                self.expect(TokenKind::Semicolon)?;
+                                return Ok(Spanned::new(
+                                    StmtKind::Expr(Spanned::new(
+                                        ExprKind::CompoundAssign {
+                                            op,
+                                            target: Box::new(chain_expr),
+                                            value: Box::new(value),
+                                        },
+                                        ident_span,
+                                    )),
+                                    span,
+                                ));
+                            }
                             self.expect(TokenKind::Semicolon)?;
                             return Ok(Spanned::new(StmtKind::Expr(chain_expr), span));
                         }

@@ -650,7 +650,8 @@ hatte den void-Sonderfall bereits.
 
 ## Bug 20 — Stdlib-Großbefund: 42 von 61 Modulen kompilieren nicht oder rechnen falsch
 
-**Status: TEILWEISE GEFIXT** — Befund des neuen Stdlib-Smoke-Gates
+**Status: GEFIXT (2026-07-18)** — alle 61/61 Module grün, KNOWN_BROKEN leer
+(Bugs 21-32). Befund des neuen Stdlib-Smoke-Gates
 (`crates/tinox/tests/stdlib_smoke.rs`, Teil von `make e2e`). Kein Test hatte
 diese Module je importiert; da ein Import das ganze Modul codegen't, reichte
 ein minimaler Aufruf pro Modul, um alles Folgende aufzudecken. Die exakte
@@ -671,9 +672,9 @@ xml, zip). `hex` (Klasse 6) fiel bei Bug 23 mit, gleiches Bug-Muster.
 Klasse 3 (Casts) ist seit Bug 26 gefixt (complex/cron/decimal/fmt/toml).
 Die Laufzeit-Fehlverhalten-Gruppe (asm/graph/heap/iter/queue/ratelimit/set)
 und pool sind seit Bug 27 gefixt, `ini` seit Bug 28, `logger` seit Bug 29,
-`events` seit Bug 30, `rest_framework` seit Bug 31. Stand: 60/61 grün.
-Verbleibende KNOWN_BROKEN (1): http2_server (Frontend/Parser: verschachtelte
-Lvalue-Zuweisung).
+`events` seit Bug 30, `rest_framework` seit Bug 31, `http2_server` seit
+Bug 32. **Stand: 61/61 grün, KNOWN_BROKEN leer — Bug 20 vollständig
+abgearbeitet.**
 
 **Grün verifiziert (37):** array, base64, bitmap, cache, collections,
 crypto, csv, debug, encoding, env, format, fs, hash, hex, hpack,
@@ -1223,6 +1224,43 @@ Verifiziert: `GET::new("/x")`, `g.path == "/x"`.
 
 **Verbleibende KNOWN_BROKEN (1):** http2_server (Parser: verschachtelte
 Lvalue-Zuweisung `map[key].field = val`).
+
+---
+
+## Bug 32 — http2_server: verschachteltes Zuweisungsziel + Imports + Ghost — Bug 20 KOMPLETT
+
+**Status: GEFIXT (2026-07-18)** — das letzte Modul. Stand: 60/61 → **61/61
+grün, KNOWN_BROKEN leer**. Bug 20 (Stdlib-Großbefund, ursprünglich 42/61
+kaputt) ist damit vollständig abgearbeitet.
+
+**Parser-Fix (allgemein) — Zuweisung an Feld hinter Index-Kette.** Der
+handgeschriebene Statement-Parser kannte `map[key].field = val` nicht: nach
+dem Index-Ketten-Zweig (`obj.field[idx]...`) behandelte er nur `.method(...)`
+und `.field`-Ketten, dann `expect(Semicolon)` — bei `= "closed"` also
+„expected Semicolon, found Equals". Jetzt wird nach der Ketten-Schleife auch
+`=` (Assignment) und Compound-Assign (`+=` etc.) auf das erreichte
+FieldAccess-Ziel behandelt. Betraf `conn.streams[sid].state = "closed";`.
+
+**Modul-Fixes:**
+- `import tinox.core.hpack` (HpackDynTable/HpackHeader) und
+  `import tinox.core.http_server` (Route/RouteMatcher/HttpContext/Http…)
+  fehlten — `HpackDynTable_setMaxSize`, `Route_handler` waren dadurch Geister
+  (die Methoden/Felder existieren, nur unimportiert). `route.handler(ctx)`
+  ist ein fn-Feld-Aufruf auf dem deklarierten `Route.handler`-Feld.
+- Echter Ghost-Builtin `httpServerReadRawBytes(fd, count) -> String` (Roh-
+  Bytes von einem Socket-fd fürs HTTP/2-Framing) in `runtime.c` ergänzt
+  (via `read(2)`, modelliert nach `socketReceive`) und per `extern fn` im
+  Modul deklariert.
+
+Verifiziert: `Http2FrameType::HEADERS()` == 1, Modul kompiliert & Smoke grün.
+
+**Bug 20 Endstand:** 61/61 Stdlib-Module grün. Unterwegs entstandene
+allgemeine Compiler-Fixes (Auswahl): Generics-Instanzmethoden (21),
+Ghost-Builtins-Runden (23/24/25), Ternär-Typ-Erhalt + String→Zahl-Casts (26),
+generische Basis-Layouts + Container-Marker + self-Verschiebung + rekursive
+Typparameter-Erasure (27), `== null` für Referenzen (28), Closure-Param-
+Capture + void-Returns (30), Entry-Block-Kollision + `return;`-Coercion (31),
+verschachteltes Lvalue im Parser (32).
 
 ---
 

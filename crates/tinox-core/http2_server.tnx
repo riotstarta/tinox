@@ -26,8 +26,14 @@
  */
 module tinox.core.http2_server;
 
+import tinox.core.hpack;
+import tinox.core.http_server;
+
 namespace tinox.core.http2_server
 {
+    // Roh-Bytes von einem Socket-fd lesen (HTTP/2-Framing).
+    extern fn httpServerReadRawBytes(fd: Int64, count: Int64) -> String;
+
     // =========================================================================
     // Frame type identifiers (RFC 7540 §11.2)
     // =========================================================================
