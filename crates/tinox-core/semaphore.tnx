@@ -4,6 +4,9 @@ namespace tinox.core.semaphore
 {
     class Semaphore
     {
+        var count: Int64;
+        var waiting: List<Int64>;
+
         fn new(count: Int64) -> Semaphore
         {
             return Semaphore { count: count, waiting: [] };
@@ -37,6 +40,9 @@ namespace tinox.core.semaphore
 
     class Mutex
     {
+        var locked: Bool;
+        var queue: List<Int64>;
+
         fn new() -> Mutex
         {
             return Mutex { locked: false, queue: [] };
@@ -70,6 +76,9 @@ namespace tinox.core.semaphore
 
     class RWLock
     {
+        var readers: Int64;
+        var writers: Int64;
+
         fn new() -> RWLock
         {
             return RWLock { readers: 0, writers: 0 };

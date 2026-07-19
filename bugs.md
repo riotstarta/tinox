@@ -1482,6 +1482,48 @@ Signatur nicht gefunden" hart machen (aktuell permissiv wegen generischer Statik
 
 ---
 
+## Bug 37 — Failure-Mode-Härtung: Feldzugriff auf nicht deklariertes Feld → harter Fehler
+
+**Status: GEFIXT (2026-07-19).** Fortsetzung der Härtung aus Bug 36, andere
+Spielart desselben „silent garbage": eine **nicht-generische** Klasse **ganz ohne
+Felddeklarationen** (Felder nur über `Class { feld: … }`-Literale benutzt) ließ
+jeden Feldzugriff still auf `i64` defaulten. `Point` ohne `var x/y: Float64` →
+`p.x + p.y` rechnete Integer-Mathe auf Float-Bits → `-9214364837600034816` statt
+`7.5`, exit 0.
+
+**Ursache (typecheck, `ExprKind::FieldAccess`).** Der Guard meldete `FieldNotFound`
+nur, wenn die Klasse **mindestens ein** registriertes Feld hatte (Kommentar:
+„generic classes using struct-literal fields won't have registered fields"). Eine
+Klasse mit **null** deklarierten Feldern fiel komplett durch → `Any` im Typecheck,
+`i64` in der Codegen. Der Guard war zu grob: er sollte nur generische Klassen
+schonen, schonte aber auch schlicht unvollständig deklarierte.
+
+**Fix.** Neues Register `generic_class_names` (befüllt bei der Klassenregistrierung
+aus `c.type_params`). In `FieldAccess` wird jetzt gemeldet, wenn die Klasse
+**mindestens ein Feld hat** (wie bisher) **ODER** eine **bekannte, nicht-generische**
+Klasse ist (`known_class_names && !generic`). Generische Klassen und unbekannte
+Named-Typen (Enum-Payloads etc.) bleiben permissiv → keine False Positives.
+
+**Dabei aufgedeckte latente „i64-Garbage"-Klassen (Felddeklarationen ergänzt):**
+- `bitmap.tnx` Bitmap: `width/height: Int64`, `pixels: List<Int64>`
+- `cron.tnx` CronScheduler: `jobs: List<CronJob>`, `running: Bool`
+- `ini.tnx` IniConfig: `sections: Map<String, Map<String, String>>`
+- `semaphore.tnx` Semaphore: `count: Int64`, `waiting: List<Int64>`;
+  Mutex: `locked: Bool`, `queue: List<Int64>`; RWLock: `readers/writers: Int64`
+- `trie.tnx` Trie: `root: TrieNode`
+
+**Verifiziert:** `Point` ohne Deklaration → `type Point has no field 'x'`; mit
+`var x/y: Float64` → `7.5`; generische `Box<T>` ohne Felddeklaration erzeugt
+**keinen** neuen Typfehler (permissiv). `make check` voll grün.
+
+**Separater vorbestehender Fund (NICHT hier gefixt):** eine generische Klasse mit
+einem Feld (`Box<T> { var value: T }`) segfaultet zur Laufzeit beim Zugriff auf
+`this.value` — reiner Codegen-Bug im generischen Instanz-Layout, unabhängig von
+dieser Typecheck-Härtung (mit `git stash` gegengeprüft: Segfault auch vor der
+Änderung). Eigener Bug für später.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

@@ -68,6 +68,9 @@ namespace tinox.core.cron
 
     class CronScheduler
     {
+        var jobs: List<CronJob>;
+        var running: Bool;
+
         fn new() -> CronScheduler
         {
             return CronScheduler { jobs: [], running: false };

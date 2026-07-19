@@ -405,6 +405,10 @@ pub struct TypeChecker {
     current_return_type: Option<ValueType>,
     /// All class names defined in the program — allows passing a class as a value (e.g. DB.of(User)).
     known_class_names: HashSet<String>,
+    /// Subset of known_class_names that are generic (`class Foo<T>`). Generic
+    /// classes legitimately use struct-literal fields without registered field
+    /// declarations, so field-access checks stay permissive for them.
+    generic_class_names: HashSet<String>,
     /// Inferierter Typ jeder besuchten Expression, gekeyed über die NodeId
     /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
     /// Export an den Codegen über expr_markers() — TESTPLAN Phase 4.
@@ -1049,6 +1053,7 @@ impl TypeChecker {
             type_param_scope: HashSet::new(),
             current_return_type: None,
             known_class_names: HashSet::new(),
+            generic_class_names: HashSet::new(),
             expr_types: HashMap::new(),
         }
     }
@@ -1575,6 +1580,9 @@ impl TypeChecker {
                     }
 
                     self.known_class_names.insert(name.clone());
+                    if !c.type_params.is_empty() {
+                        self.generic_class_names.insert(name.clone());
+                    }
                     processed.insert(name.clone());
                 }
                 if processed.len() == before {
@@ -2185,11 +2193,18 @@ impl TypeChecker {
                     if let Some((ty, _)) = self.symbols.variables.get(&full_name) {
                         return ty.clone();
                     }
-                    // Only report error if the class has at least one registered field
-                    // (generic classes using struct-literal fields won't have registered fields)
+                    // Field not declared. Report an error when either the class has
+                    // at least one registered field (typo/unknown field), OR it is a
+                    // known non-generic class with zero declared fields — the latter
+                    // previously fell through silently and let codegen default every
+                    // field to i64 (Float/String fields → garbage math). Generic
+                    // classes legitimately use struct-literal fields without
+                    // registered declarations, so stay permissive there.
                     let has_any_field = self.symbols.variables.keys()
                         .any(|k| k.starts_with(&format!("{}.", name)));
-                    if has_any_field {
+                    let is_known_class = self.known_class_names.contains(&name);
+                    let is_generic = self.generic_class_names.contains(&name);
+                    if has_any_field || (is_known_class && !is_generic) {
                         self.errors
                             .push(TypeError::FieldNotFound(name, field.clone(), expr.span).to_error());
                     }

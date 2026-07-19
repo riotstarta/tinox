@@ -6,6 +6,10 @@ namespace tinox.core.bitmap
 {
     class Bitmap
     {
+        var width: Int64;
+        var height: Int64;
+        var pixels: List<Int64>;
+
         fn create(width: Int64, height: Int64, color: Int64) -> Bitmap
         {
             var pixels: List<Int64> = [];

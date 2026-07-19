@@ -4,6 +4,8 @@ namespace tinox.core.trie
 {
     class Trie
     {
+        var root: TrieNode;
+
         fn new() -> Trie
         {
             return Trie { root: TrieNode::new() };

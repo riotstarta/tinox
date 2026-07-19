@@ -73,6 +73,8 @@ namespace tinox.core.ini
 
     class IniConfig
     {
+        var sections: Map<String, Map<String, String>>;
+
         fn new() -> IniConfig
         {
             return IniConfig { sections: Map::new() };
