@@ -6793,8 +6793,18 @@ impl CodeGen {
                         if let Some(ret_ty) = self.method_ret_types.get(&mangled_key).cloned() {
                             let mut args_parts: Vec<String> = Vec::new();
                             let is_static = self.static_method_keys.contains(&mangled_key);
-                            if self.method_param_types.contains_key(&mangled_key) && !is_static {
-                                args_parts.push("i64* null".to_string());
+                            if !is_static {
+                                if let Some(declared) = self.method_param_types.get(&mangled_key).map(|v| v.len()) {
+                                    // Gleiche Arg-Zahl-Disambiguierung wie in
+                                    // emit_static_dispatch_call: args == declared+1
+                                    // heißt, das führende Arg ist das Empfänger-Objekt
+                                    // (self) — dann kein null-self voranstellen, sonst
+                                    // liest `this` den null-Zeiger (Segfault bei
+                                    // generischen Instanzmethoden).
+                                    if arg_vals.len() != declared + 1 {
+                                        args_parts.push("i64* null".to_string());
+                                    }
+                                }
                             }
                             for (v, t) in &arg_vals {
                                 args_parts.push(format!("{} {}", t, v));
@@ -9169,8 +9179,21 @@ impl CodeGen {
     ) -> Result<(String, String), ErrorBag> {
         let mut args_parts: Vec<String> = Vec::new();
         let is_static = self.static_method_keys.contains(key);
-        if self.method_param_types.contains_key(key) && !is_static {
-            args_parts.push("i64* null".to_string());
+        if !is_static {
+            if let Some(declared) = self.method_param_types.get(key).map(|v| v.len()) {
+                // Instanzmethode via `Class::method(...)`. Zwei Aufrufstile kommen
+                // in der Stdlib vor, disambiguiert über die Arg-Zahl:
+                //  - args == declared: das Objekt wird nicht als self übergeben
+                //    (oder als expliziter erster *deklarierter* Param, wie
+                //    `config: IniConfig`); self ist ungenutzt → null-self.
+                //  - args == declared + 1: der Aufrufer hat das Empfänger-Objekt
+                //    als führendes Arg übergeben (`Class::method(obj, args…)`) —
+                //    es IST das self. Dann KEIN null-self voranstellen, sonst
+                //    liest `this` im Methodenrumpf den null-Zeiger (Segfault).
+                if args.len() != declared + 1 {
+                    args_parts.push("i64* null".to_string());
+                }
+            }
         }
         for arg in args.iter() {
             let (v, t) = self.gen_expr(arg, ctx)?;

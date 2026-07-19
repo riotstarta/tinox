@@ -1524,6 +1524,50 @@ dieser Typecheck-Härtung (mit `git stash` gegengeprüft: Segfault auch vor der
 
 ---
 
+## Bug 38 — `this` in via `::` aufgerufener Instanzmethode las null-self → Segfault
+
+**Status: GEFIXT (2026-07-19).** Der in Bug 37 als „separater vorbestehender Fund"
+notierte Segfault. Betraf NICHT nur generische Klassen — trat bei jeder
+Instanzmethode auf, die `this` benutzt und via `Class::method(obj)` (statt
+Dot-Syntax `obj.method()`) aufgerufen wird.
+
+**Symptom.** `fn get() -> Int64 { return this.value; }`, aufgerufen als
+`IntBox::get(b)`, segfaultete. Dot-Syntax `b.get()` funktionierte dagegen.
+
+**Ursache (codegen, Static-Dispatch).** IR-Diff war eindeutig:
+- Definition: `@IntBox_get(i64* %self)` — self als (einziger) Parameter.
+- Aufruf `::`: `@IntBox_get(i64* null, i64* %b)` — null-self vorangestellt PLUS
+  das Objekt als zweites Arg. `%self` erhielt `null`, `%b` verpuffte als
+  überzähliges Arg → `this.value` = `load ptr null` → Segfault.
+
+`emit_static_dispatch_call` (und der generische Receiver-Marker-Pfad) stellten
+für Instanzmethoden (`fn`, nicht `fnc`) *immer* ein `i64* null`-self voran. Das
+passt zur Stdlib-Konvention „Objekt als expliziter erster *deklarierter* Param"
+(`fn getString(config: IniConfig, …)`, self ungenutzt), bricht aber die
+`this`-basierte Variante, bei der das Objekt das self IST.
+
+**Fix — Disambiguierung über die Arg-Zahl.** `method_param_types` kennt die Zahl
+der *deklarierten* Params (ohne self). Beim `::`-Aufruf einer Instanzmethode:
+- `args == declared` → Objekt nicht als self übergeben (oder als expliziter erster
+  Param) → null-self voranstellen (unverändert).
+- `args == declared + 1` → das führende Arg IST das Empfänger-Objekt (self) →
+  KEIN null-self; das Objekt wird zum self-Parameter.
+
+Beide Stile funktionieren damit: `IniConfig::getString(c,"s","k","?")` (4 decl, 4
+args → null-self, `config`=c) und `IntBox::get(b)` (0 decl, 1 arg → self=b). An
+beiden Emissionsstellen (nicht-generisch + generischer Pfad) angewandt.
+
+**Verifiziert:** e2e-Regressionstest `tests/e2e/this_via_static_dispatch.tnx`
+(nicht-generisch, generisch, obj+Param) → 42/5/8/7/99; `make check` voll grün
+(keine Stdlib-Regression trotz massiver Nutzung der expliziten-Objekt-Konvention).
+
+**Separat noch offen:** `.toString()` auf einem Wert von generischem Rückgabetyp
+`T` (`Box<T>::setAndGet(...).toString()`) emittiert ein unaufgelöstes `@toString`
+statt `@tinox_int_to_string` — vorbestehende generische Dispatch-Lücke, mit
+`git stash` gegengeprüft, unabhängig von diesem Fix.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
