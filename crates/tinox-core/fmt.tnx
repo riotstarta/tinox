@@ -1,5 +1,7 @@
 module tinox.core.fmt;
 
+import tinox.core.format;
+
 namespace tinox.core.fmt
 {
     class Fmt

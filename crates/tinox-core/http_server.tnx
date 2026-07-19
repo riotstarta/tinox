@@ -5,6 +5,8 @@
  */
 module tinox.core.http_server;
 
+import tinox.core.json;
+
 namespace tinox.core.http_server
 {
     /**

@@ -1,5 +1,7 @@
 module tinox.core.iter;
 
+import tinox.core.collections;
+
 namespace tinox.core.iter
 {
     class Iter

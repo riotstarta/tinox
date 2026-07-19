@@ -1,5 +1,7 @@
 module tinox.core.crypto;
 
+import tinox.core.random;
+
 namespace tinox.core.crypto
 {
     class Crypto

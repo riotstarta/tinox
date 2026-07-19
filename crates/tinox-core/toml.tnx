@@ -1,5 +1,7 @@
 module tinox.core.toml;
 
+import tinox.core.string;
+
 namespace tinox.core.toml
 {
     class Toml

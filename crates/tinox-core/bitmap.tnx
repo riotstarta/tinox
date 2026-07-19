@@ -1,5 +1,7 @@
 module tinox.core.bitmap;
 
+import tinox.core.mathf;
+
 namespace tinox.core.bitmap
 {
     class Bitmap

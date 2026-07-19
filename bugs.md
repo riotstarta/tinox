@@ -1428,6 +1428,60 @@ C-stderr-Meldung, nicht der `throw`.
 
 ---
 
+## Bug 36 — Failure-Mode-Härtung: `Class::method` auf unbekanntem Namen → harter Fehler
+
+**Status: GEFIXT (2026-07-19).** Der „Kardinalfehler" aus der Sprach-Bewertung:
+ein statischer Aufruf `Foo::bar(...)` auf einer Klasse/einem Enum, das **weder
+importiert noch definiert** ist, erzeugte still Datenmüll statt eines
+Compile-Fehlers. `Strings::trim("x")` ohne `import tinox.core.string` gab ein
+Müll-Byte zurück, `Bogus::doStuff(42)` einen Zeigerwert — beide exit 0.
+
+**Ursache (typecheck).** `Class::method(args)` und `Enum::Variant(args)` teilen
+denselben AST-Knoten `ExprKind::EnumValue`. Löste der Name nicht als registrierte
+Statik/Instanz-Methode auf (`enum_name_variant` in `symbols.functions`), fiel der
+Code auf `return ValueType::Any` (mit Args) bzw. `Named(enum_name)` (ohne) zurück
+— **kein Fehler**. Die Codegen baute daraus einen Enum-Variant-Fallback (Feld 0 =
+Zeichensumme des Methodennamens) oder eine Any-Zelle.
+
+**Fix.** In der `EnumValue`-Behandlung: ist `enum_name` **weder** ein bekanntes
+Enum (`self.enums`), **noch** eine bekannte Klasse (`known_class_names`), **noch**
+ein Typ-Parameter im Scope (`type_param_scope`, für `T::fromJson()` in Generics),
+→ neuer harter `TypeError::UnresolvedStaticPath` („unresolved 'X::y': no type,
+enum, or static method named 'X' in scope (missing import?)"). Bekannte Klasse
+ohne registrierte Signatur und Typ-Parameter bleiben bewusst permissiv (Any), um
+False Positives auf generische Statik zu vermeiden.
+
+**Dabei aufgedeckt — Registrierungslücke: Enums in Namespaces.** Fast die gesamte
+Stdlib liegt in `namespace tinox.core.X { … }`. `register_declarations` behandelte
+im Namespace-Zweig `Class`/`Immutable`/`Function`, aber **nicht `Enum`** — d.h.
+namespaced Enums landeten nie in `self.enums`. `Enum::Variant` daraus fiel bisher
+still auf `Named(...)`. Nach der Härtung wurde das ein Fehler (`HttpStatus::…` in
+rest, `MediaType::None` in rest_framework). Gefixt durch Spiegeln der
+Top-Level-Enum-Registrierung in den Namespace-Zweig (enums + Payloads + Varianten-
+Variablen). **Das ist ein allgemeiner Korrektheitsgewinn** (Match-Exhaustiveness,
+Varianten-Typisierung über alle namespaced Enums).
+
+**Dabei aufgedeckte latente Missing-Import-Bugs (vorher still Datenmüll):**
+- `crypto.tnx`: `Random::nextInt(256)` zur **Schlüssel-/Zufallsbyte-Erzeugung**
+  ohne `import tinox.core.random` — sicherheitsrelevant! (+import random)
+- `http_server.tnx`: `Json::parse/serialize/deserialize` ohne import (+import json)
+- `rest.tnx`: `Base64::encode` + `Json::parse` ohne imports (+import base64, json)
+- `iter.tnx`: `Pair::new` (aus collections) ohne import (+import collections)
+- `toml.tnx`: `Strings::trim` ohne import (+import string)
+- `bitmap.tnx`: `Mathf::abs` ohne import (+import mathf)
+- `fmt.tnx`: `Format::intToHex/intToBinary` ohne import (+import format)
+
+**Verifiziert:** `Strings::trim`/`Bogus::doStuff` ohne Import → Compile-Fehler mit
+Import-Hinweis; korrekt importiert → grün; Enum-mit-Payload, nackte Variante und
+generische Statik (`Pool::newWithFactory`, `T::fromJson`) ohne False Positive;
+`make check` voll grün.
+
+**Damit ist der wichtigste Punkt aus der Sprach-Bewertung adressiert: silent
+garbage → hard error.** Verbleibend (v2): auch „bekannte Klasse, aber Methode/
+Signatur nicht gefunden" hart machen (aktuell permissiv wegen generischer Statik).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

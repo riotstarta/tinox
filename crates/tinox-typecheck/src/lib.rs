@@ -71,6 +71,14 @@ pub enum TypeError {
         member: String,
         span: Span,
     },
+    /// `Name::member(...)` where `Name` is neither a known enum, nor a known
+    /// class, nor a registered static/instance method — previously silently
+    /// returned Any and produced garbage code.
+    UnresolvedStaticPath {
+        name: String,
+        member: String,
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -194,6 +202,12 @@ impl TypeError {
             TypeError::ProtectedAccess { class, member, span } => Error::new(
                 *span,
                 format!("'{}' is protected in class '{}' and not accessible here", member, class),
+            ),
+            TypeError::UnresolvedStaticPath { name, member, span } => Error::new(
+                *span,
+                format!(
+                    "unresolved '{name}::{member}': no type, enum, or static method named '{name}' in scope (missing import?)"
+                ),
             ),
         }
     }
@@ -1320,6 +1334,25 @@ impl TypeChecker {
                                 return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
                             };
                             self.symbols.functions.insert(f.name.clone(), sig);
+                        }
+                        // Enums inside a namespace were never registered (only the
+                        // top-level arm did) — so `Enum::Variant` from a namespaced
+                        // enum fell through to the silent Named() fallback. Mirror
+                        // the top-level DeclKind::Enum registration here.
+                        DeclKind::Enum(e) => {
+                            let variant_names: Vec<String> =
+                                e.variants.iter().map(|v| v.name.clone()).collect();
+                            self.enums.insert(e.name.clone(), variant_names.clone());
+                            for variant in &e.variants {
+                                self.enum_variant_payloads.insert(
+                                    format!("{}::{}", e.name, variant.name),
+                                    variant.args.iter().map(Self::type_to_value).collect(),
+                                );
+                                let ty = ValueType::Named(format!("{}.{}", e.name, variant.name));
+                                self.symbols
+                                    .variables
+                                    .insert(format!("{}.{}", e.name, variant.name), (ty, true));
+                            }
                         }
                         _ => {}
                         }
@@ -2481,11 +2514,38 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_type(arg);
                 }
-                // If it has args and is not a known enum, treat as static method returning Any
-                if !args.is_empty() && !self.enums.contains_key(enum_name.as_str()) {
+                let is_known_enum = self.enums.contains_key(enum_name.as_str());
+                let is_known_class = self.known_class_names.contains(enum_name.as_str());
+                // A type parameter in scope (`T::fromJson()` in a generic fn/class):
+                // the concrete type is only known after monomorphization, so we
+                // cannot resolve the static method here — stay permissive.
+                let is_type_param = self.type_param_scope.contains(enum_name.as_str());
+                // `Name::member` resolves to nothing: not a registered static/
+                // instance method (checked above via static_key), not a known enum,
+                // not a known class, not a type parameter. Previously this silently
+                // returned Any (with args) or Named(enum_name) (without) and let
+                // codegen build garbage — the "silent-garbage" failure mode. Now a
+                // hard error (typischer Auslöser: fehlender `import` der Klasse,
+                // s. Strings::/Mathf::).
+                if !is_known_enum && !is_known_class && !is_type_param {
+                    self.errors.push(
+                        TypeError::UnresolvedStaticPath {
+                            name: enum_name.clone(),
+                            member: variant.clone(),
+                            span: expr.span,
+                        }
+                        .to_error(),
+                    );
                     return ValueType::Any;
                 }
-                // Return the enum type
+                // Known class (static method whose signature wasn't captured) or a
+                // type parameter (resolved after monomorphization): keep the prior
+                // permissive behavior (return Any) rather than risk false positives
+                // on generic-class statics.
+                if !is_known_enum && (is_known_class || is_type_param) {
+                    return ValueType::Any;
+                }
+                // Known enum → enum-variant construction.
                 ValueType::Named(enum_name.clone())
             }
             ExprKind::ArrayLiteral(elements) => {

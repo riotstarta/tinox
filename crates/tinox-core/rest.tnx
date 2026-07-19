@@ -6,6 +6,8 @@
 module tinox.core.rest;
 
 import tinox.core.http;
+import tinox.core.base64;
+import tinox.core.json;
 
 namespace tinox.core.rest
 {
