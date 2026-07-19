@@ -1677,6 +1677,35 @@ Ressource, `defer close`, ruft etwas das wirft). Verwandt: [[Bug 40]].
 
 ---
 
+## Bug 42 — `try`-`finally` ohne `catch`: kompilierte nicht + schluckte die Exception
+
+**Status: GEFIXT (2026-07-19).** Zwei Fehler in einem: (1) `try { … } finally { … }`
+**ohne** `catch` erzeugte ungültiges IR und kompilierte gar nicht — der
+leere-catches-Zweig emittierte `catch_bb:` direkt gefolgt von einem weiteren
+Label ohne Terminator dazwischen (`opt: expected instruction opcode`). Der Fall
+wurde nie getestet (Tests hatten immer ein `catch`). (2) Selbst mit behobenem IR
+wäre die Semantik falsch: ein `try`-`finally` ohne `catch` muss `finally`
+ausführen und den Fehler dann **re-werfen** (propagieren), nicht schlucken.
+
+**Fix (gen_try_stmt-Tail umgebaut).** Neuer Konvergenz-Block `try_converge`, durch
+den normaler Pfad UND catch-Dispatch (via `finally`, falls vorhanden) laufen —
+nie direkt zu `end_bb`. Am Konvergenzpunkt bei **leeren catches**: `error_var`
+prüfen (0 auf Normalpfad, Fehlerwert auf Fehlerpfad) — bei != 0 re-werfen NACH
+`finally`: an den umschließenden try dieser Funktion (`ctx.error_catch`) übergeben
+oder aus dem Frame propagieren (`@__tinox_err` setzen, Unwind-Defers aus Bug 41,
+Default-Return). Der leere-catches-Zweig bekam den fehlenden Terminator.
+
+**Verifiziert:** `try`-`finally` ohne catch mit throw → `finally` läuft, Fehler
+propagiert in den äußeren catch bzw. uncaught (exit 1); ohne Fehler → normaler
+Fluss; `try`-`catch`-`finally` mit gefangenem Fehler → **kein** Re-throw
+(unverändert). e2e-Regressionstest `tests/e2e/try_finally_rethrow.tnx`;
+`make check` voll grün.
+
+Damit ist die Exception-Semantik vollständig: uncaught→fatal (35), sofortiges
+Unwinding (40), defer-Cleanup auf Fehlerpfaden (41), finally+re-throw (42).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

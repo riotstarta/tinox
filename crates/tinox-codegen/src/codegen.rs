@@ -8570,8 +8570,15 @@ impl CodeGen {
             None
         };
         let end_bb = self.new_bb("try_end");
+        // Convergence point after body/catch/finally. For a try WITHOUT catch
+        // clauses this is where an unhandled error is re-thrown after finally
+        // (Bug 42); with catch clauses it just falls through to end_bb.
+        let converge_bb = self.new_bb("try_converge");
 
-        let merge_target = finally_bb.as_deref().unwrap_or(&end_bb).to_string();
+        // Normal completion and the catch dispatch funnel through finally (if
+        // present) and then the convergence point — never straight to end_bb, so
+        // the re-throw check always gets a chance to run.
+        let merge_target = finally_bb.as_deref().unwrap_or(&converge_bb).to_string();
 
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
@@ -8601,9 +8608,12 @@ impl CodeGen {
         // jumps into the first clause; each clause ends with an unreachable-guard
         // block that branches to the next clause (or merge_target after the last).
         if catches.is_empty() {
+            // No catch clauses: the error is not handled here. Route to finally
+            // (via merge_target), then re-throw at the convergence point. (The
+            // old code emitted `catch_bb:` immediately followed by another label
+            // with no terminator between them → invalid IR; try-finally without
+            // catch never compiled.)
             writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
-            let catch_ok_bb = self.new_bb("catch_ok");
-            writeln!(&mut self.ir, "{}:", catch_ok_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
         } else {
             // Pre-allocate all per-clause block labels so we can forward-reference them.
@@ -8670,6 +8680,8 @@ impl CodeGen {
         }
 
         // --- finally block ---
+        // Runs on both the normal and the error path (merge_target). Afterwards
+        // control reaches the convergence point.
         if let Some(fb) = &finally_bb {
             writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
@@ -8678,6 +8690,34 @@ impl CodeGen {
             let finally_ok_bb = self.new_bb("finally_ok");
             writeln!(&mut self.ir, "br label %{}", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "{}:", finally_ok_bb).unwrap();
+            writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
+        }
+
+        // --- convergence / re-throw ---
+        writeln!(&mut self.ir, "{}:", converge_bb).unwrap();
+        if catches.is_empty() {
+            // A try without catch clauses does not handle the error: if one
+            // reached here (error_var != 0, set on the error path; 0 on the
+            // normal path), re-throw it now — AFTER finally has run (Bug 42).
+            let ev = self.temp();
+            writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, error_var).unwrap();
+            let has = self.temp();
+            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, ev).unwrap();
+            let rethrow_bb = self.new_bb("rethrow");
+            writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, rethrow_bb, end_bb).unwrap();
+            writeln!(&mut self.ir, "{}:", rethrow_bb).unwrap();
+            if let Some((outer_catch, outer_error_var)) = ctx.error_catch.clone() {
+                // Hand the error to the enclosing try in this function.
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", ev, outer_error_var).unwrap();
+                writeln!(&mut self.ir, "br label %{}", outer_catch).unwrap();
+            } else {
+                // Propagate out of this frame: park in the global slot, run
+                // pending defers (Bug 41), return the function default.
+                writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", ev).unwrap();
+                self.emit_unwind_defers(ctx)?;
+                self.emit_ret_default(ctx);
+            }
+        } else {
             writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
         }
 
