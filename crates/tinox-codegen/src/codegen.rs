@@ -6756,12 +6756,19 @@ impl CodeGen {
                         for (tp, ta) in gc.type_params.iter().zip(type_args.iter()) {
                             bindings.insert(tp.clone(), Self::type_to_llvm(ta));
                         }
+                        // Bei `Class::method(obj, args…)` (this-Stil, Bug 38) ist das
+                        // erste Arg das Empfänger-Objekt, NICHT der erste deklarierte
+                        // Param. Die Bindungsinferenz muss die Args entsprechend
+                        // versetzt zu den Params betrachten, sonst würde ein T-Param
+                        // gegen das Objekt (Zeigertyp, z.B. i64*) statt gegen sein
+                        // echtes Argument gebunden → falsche Spezialisierung (i64P).
+                        let arg_offset = if arg_vals.len() == method.params.len() + 1 { 1 } else { 0 };
                         for tp in &gc.type_params {
                             if bindings.contains_key(tp) {
                                 continue;
                             }
                             for (pi, param) in method.params.iter().enumerate() {
-                                let Some((_, arg_llvm)) = arg_vals.get(pi) else { continue };
+                                let Some((_, arg_llvm)) = arg_vals.get(pi + arg_offset) else { continue };
                                 match &param.param_type {
                                     // Direkt T-typisierter Param (Option::some(value: T))
                                     Type::Named(n) if n == tp => {
@@ -6772,7 +6779,7 @@ impl CodeGen {
                                     // set(cache: Cache<K,V>, …)) — Marker des Arguments
                                     // (mangled Klassenname) in Bindungen zurückzerlegen.
                                     Type::Generic { name: pname, .. } if pname == enum_name.as_str() => {
-                                        if let Some(arg_expr) = args.get(pi) {
+                                        if let Some(arg_expr) = args.get(pi + arg_offset) {
                                             if let Some(marker) = self.infer_struct_type(arg_expr, ctx) {
                                                 if let Some(rest) = marker.strip_prefix(&format!("{}__", enum_name)) {
                                                     for (itp, part) in gc.type_params.iter().zip(rest.split("__")) {

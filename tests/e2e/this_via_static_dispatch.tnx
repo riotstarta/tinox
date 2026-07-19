@@ -2,12 +2,17 @@
 // das führende Arg IST das self. Früher stellte der Static-Dispatch-Pfad ein
 // null-self voran und übergab das Objekt als überzähliges Arg -> `this.feld`
 // las den null-Zeiger -> Segfault (Bug 38). Deckt nicht-generisch, generisch,
-// und obj+weitere-Params ab.
+// und obj+weitere-Params ab. Zusätzlich (Bug 39): direktes `.toString()` auf dem
+// generischen Rückgabewert einer Instanzmethode MIT T-Param — die
+// Bindungsinferenz muss das führende Objekt-Arg überspringen, sonst wird T gegen
+// den Objekt-Zeiger (i64*) statt gegen das echte Arg (i64) gebunden → falsche
+// Zeiger-Spezialisierung → unauflösbares @toString.
 // expect: 42
 // expect: 5
 // expect: 8
 // expect: 7
 // expect: 99
+// expect: 123
 
 class IntBox {
     var value: Int64;
@@ -25,6 +30,7 @@ class Box<T> {
     var value: T;
     fn wrap(v: T) -> Box<T> { return Box { value: v }; }
     fn get() -> T { return this.value; }
+    fn setAndGet(v: T) -> T { this.value = v; return this.value; }
 }
 
 fn main() -> Int32 {
@@ -43,5 +49,8 @@ fn main() -> Int32 {
 
     let h: Box<Int64> = Box::wrap(99);
     println(Box::get(h).toString());           // 99
+
+    // generisch, T-Param, direktes .toString() auf dem Rueckgabewert (Bug 39)
+    println(Box::setAndGet(h, 123).toString()); // 123
     return 0;
 }

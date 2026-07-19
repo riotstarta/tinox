@@ -1568,6 +1568,36 @@ statt `@tinox_int_to_string` — vorbestehende generische Dispatch-Lücke, mit
 
 ---
 
+## Bug 39 — generische Spezialisierungswahl: Objekt-Arg verschob T-Bindung → falsche Zeiger-Variante
+
+**Status: GEFIXT (2026-07-19).** Der in Bug 38 notierte separate `@toString`-Fund.
+Direktes `Box::setAndGet(b, 99).toString()` (generische Instanzmethode mit
+T-Param, Rückgabewert direkt weiterverwendet) erzeugte ungültiges IR
+(`use of undefined value '@toString'`); mit typannotierter Zwischenvariable
+(`let r: Int64 = …`) ging es.
+
+**Ursache (codegen, generische Bindungsinferenz).** Das IR zeigte, dass der Aufruf
+die **Zeiger**-Spezialisierung `Box__i64P_setAndGet` (Rückgabe `i64*`) statt der
+Wert-Variante `Box__i64` wählte — und `.toString()` auf `i64*` ist unauflösbar.
+Grund: die Bindungsinferenz matcht `method.params[pi]` gegen `arg_vals[pi]`,
+ignorierte aber das **führende Objekt-Arg** aus der `Class::method(obj, …)`-
+Konvention (Bug 38). Bei `setAndGet(v: T)` wurde `v` (pi=0) gegen `arg_vals[0]` =
+das Objekt `b` (LLVM-Typ `i64*`) gebunden statt gegen `99` (`i64`) → `T = i64P`.
+
+**Fix.** `arg_offset = if arg_vals.len() == method.params.len() + 1 { 1 } else { 0 }`
+(genau die Bug-38-Disambiguierung: führt der Aufruf das Objekt als erstes Arg?).
+Die Inferenz liest jetzt `arg_vals[pi + arg_offset]` / `args[pi + arg_offset]` —
+so wird `v` gegen `99` gebunden → `T = i64` → richtige Wert-Spezialisierung. Der
+Empfänger-Stil (`Cache::set(cache, …)`, Objekt IST deklarierter Param,
+`args == declared` → offset 0) bleibt unberührt.
+
+**Verifiziert:** `Box::setAndGet(b, 99).toString()` → 99, `Box<String>` → "world";
+Regressionsfall im e2e-Test `this_via_static_dispatch.tnx` ergänzt (→ 123);
+`make check` voll grün (Cache/Option/Result/collections nutzen den
+Empfänger-Stil ausgiebig — keine Regression).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
