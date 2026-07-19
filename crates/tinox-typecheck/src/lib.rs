@@ -432,6 +432,12 @@ pub struct TypeChecker {
     /// classes legitimately use struct-literal fields without registered field
     /// declarations, so field-access checks stay permissive for them.
     generic_class_names: HashSet<String>,
+    /// `ClassName_method` keys of instance methods whose body uses `this`. Such a
+    /// method's receiver is the leading call arg (self); a method that does NOT
+    /// use `this` takes its receiver as an explicit first declared param. This
+    /// disambiguates the two `Class::method(obj, …)` calling styles (Bug 38)
+    /// deterministically, so the arg-count check can be exact (Bug 47).
+    method_uses_this: HashSet<String>,
     /// Inferierter Typ jeder besuchten Expression, gekeyed über die NodeId
     /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
     /// Export an den Codegen über expr_markers() — TESTPLAN Phase 4.
@@ -1077,6 +1083,7 @@ impl TypeChecker {
             current_return_type: None,
             known_class_names: HashSet::new(),
             generic_class_names: HashSet::new(),
+            method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
         }
     }
@@ -1134,6 +1141,103 @@ impl TypeChecker {
         for v in variants {
             if !entry.contains(v) {
                 entry.push(v.clone());
+            }
+        }
+    }
+
+    /// Does this statement (transitively) reference `this`? Used to classify an
+    /// instance method's calling convention (Bug 47): a `this`-using method takes
+    /// its receiver as the implicit self (leading call arg); one that doesn't
+    /// takes the receiver as an explicit first param.
+    fn stmt_uses_this(stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Expr(e) => Self::expr_uses_this(e),
+            StmtKind::Let { value, .. } | StmtKind::Var { value, .. } => {
+                value.as_ref().is_some_and(Self::expr_uses_this)
+            }
+            StmtKind::Assignment { target, value } => {
+                Self::expr_uses_this(target) || Self::expr_uses_this(value)
+            }
+            StmtKind::If { cond, then_branch, else_branch } => {
+                Self::expr_uses_this(cond)
+                    || Self::stmt_uses_this(then_branch)
+                    || else_branch.as_ref().is_some_and(|b| Self::stmt_uses_this(b))
+            }
+            StmtKind::While { cond, body } => Self::expr_uses_this(cond) || Self::stmt_uses_this(body),
+            StmtKind::For { iter, body, .. } => Self::expr_uses_this(iter) || Self::stmt_uses_this(body),
+            StmtKind::ForC { init, cond, update, body } => {
+                init.as_ref().is_some_and(|s| Self::stmt_uses_this(s))
+                    || cond.as_ref().is_some_and(Self::expr_uses_this)
+                    || update.as_ref().is_some_and(Self::expr_uses_this)
+                    || Self::stmt_uses_this(body)
+            }
+            StmtKind::Loop { body } => Self::stmt_uses_this(body),
+            StmtKind::Block(stmts) => stmts.iter().any(Self::stmt_uses_this),
+            StmtKind::Return(v) => v.as_ref().is_some_and(Self::expr_uses_this),
+            StmtKind::Throw(e) => Self::expr_uses_this(e),
+            StmtKind::Try { body, catches, finally } => {
+                Self::stmt_uses_this(body)
+                    || catches.iter().any(|c| Self::stmt_uses_this(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::stmt_uses_this(f))
+            }
+            StmtKind::Defer(s) => Self::stmt_uses_this(s),
+            StmtKind::Select { arms, default } => {
+                arms.iter().any(|a| Self::stmt_uses_this(&a.body))
+                    || default.as_ref().is_some_and(|d| Self::stmt_uses_this(d))
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
+        }
+    }
+
+    fn expr_uses_this(expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::This => true,
+            ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Channel
+            | ExprKind::Break | ExprKind::Continue => false,
+            ExprKind::Binary { lhs, rhs, .. } => Self::expr_uses_this(lhs) || Self::expr_uses_this(rhs),
+            ExprKind::Unary { operand, .. } => Self::expr_uses_this(operand),
+            ExprKind::Call { func, args } => {
+                Self::expr_uses_this(func) || args.iter().any(Self::expr_uses_this)
+            }
+            ExprKind::MethodCall { obj, args, .. } => {
+                Self::expr_uses_this(obj) || args.iter().any(Self::expr_uses_this)
+            }
+            ExprKind::SuperCall { args, .. } => args.iter().any(Self::expr_uses_this),
+            ExprKind::New { args, .. } => args.iter().any(Self::expr_uses_this),
+            ExprKind::EnumValue { args, .. } => args.iter().any(Self::expr_uses_this),
+            ExprKind::Index { obj, index } => Self::expr_uses_this(obj) || Self::expr_uses_this(index),
+            ExprKind::FieldAccess { obj, .. } => Self::expr_uses_this(obj),
+            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => es.iter().any(Self::expr_uses_this),
+            ExprKind::MapLiteral(kvs) => kvs.iter().any(|(k, v)| Self::expr_uses_this(k) || Self::expr_uses_this(v)),
+            ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| Self::expr_uses_this(v)),
+            ExprKind::Block(stmts) => stmts.iter().any(Self::stmt_uses_this),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                Self::expr_uses_this(cond) || Self::expr_uses_this(then_branch)
+                    || else_branch.as_ref().is_some_and(|b| Self::expr_uses_this(b))
+            }
+            ExprKind::While { cond, body } => Self::expr_uses_this(cond) || Self::expr_uses_this(body),
+            ExprKind::For { iter, body, .. } => Self::expr_uses_this(iter) || Self::expr_uses_this(body),
+            ExprKind::Loop { body } => Self::expr_uses_this(body),
+            ExprKind::Match { expr, cases } => {
+                Self::expr_uses_this(expr)
+                    || cases.iter().any(|c| Self::expr_uses_this(&c.body)
+                        || c.guard.as_ref().is_some_and(Self::expr_uses_this))
+            }
+            ExprKind::Return(v) => v.as_ref().is_some_and(|e| Self::expr_uses_this(e)),
+            ExprKind::Throw(e) => Self::expr_uses_this(e),
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                Self::expr_uses_this(target) || Self::expr_uses_this(value)
+            }
+            ExprKind::Lambda { body, .. } => Self::expr_uses_this(body),
+            ExprKind::Spawn(e) | ExprKind::Await(e) | ExprKind::Recv(e)
+            | ExprKind::Cast { expr: e, .. } | ExprKind::Is { expr: e, .. }
+            | ExprKind::TupleIndex { tuple: e, .. } => Self::expr_uses_this(e),
+            ExprKind::Send { channel, value } => Self::expr_uses_this(channel) || Self::expr_uses_this(value),
+            ExprKind::Range { start, end, .. } => Self::expr_uses_this(start) || Self::expr_uses_this(end),
+            ExprKind::Try { body, catches, finally } => {
+                Self::expr_uses_this(body)
+                    || catches.iter().any(|c| Self::stmt_uses_this(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::expr_uses_this(f))
             }
         }
     }
@@ -1197,6 +1301,9 @@ impl TypeChecker {
                             return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
                         };
                         let key = format!("{}_{}", c.name, method.name);
+                        if !method.static_ && Self::stmt_uses_this(&method.body) {
+                            self.method_uses_this.insert(key.clone());
+                        }
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
                     }
@@ -1336,6 +1443,9 @@ impl TypeChecker {
                                     return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
                                 };
                                 let key = format!("{}_{}", c.name, method.name);
+                                if !method.static_ && Self::stmt_uses_this(&method.body) {
+                                    self.method_uses_this.insert(key.clone());
+                                }
                                 self.symbols.functions.insert(key.clone(), sig);
                                 self.method_visibility.insert(key, method.visibility.clone());
                             }
@@ -1609,6 +1719,9 @@ impl TypeChecker {
                                     params,
                                     return_type: Self::type_to_value(&method.ret_type),
                                 };
+                                if Self::stmt_uses_this(&method.body) {
+                                    self.method_uses_this.insert(child_key.clone());
+                                }
                                 self.symbols.functions.insert(child_key.clone(), sig);
                                 self.method_visibility
                                     .entry(child_key)
@@ -2566,21 +2679,30 @@ impl TypeChecker {
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(sig) = self.symbols.functions.get(&static_key).cloned() {
                     for arg in args { self.infer_type(arg); }
-                    // Argument-count check (Bug 46). Instance methods (`fn`) carry a
-                    // leading synthetic "self" param; the receiver may be passed as
-                    // the leading arg (args == declared+1) OR omitted / given as an
-                    // explicit first declared param (args == declared) — accept both
-                    // (Bug 38 dual convention). Static methods (`fnc`) have no self,
-                    // so args must equal the declared count exactly.
+                    // Argument-count check (Bug 46/47). Instance methods (`fn`) carry
+                    // a leading synthetic "self" param and are called via one of two
+                    // Bug-38 styles. The receiver-as-self vs receiver-as-explicit-
+                    // param distinction is NOT statically decidable in general — a
+                    // method that ignores its receiver (`fn label() { return "x"; }`,
+                    // called `C::label(obj)`) and a pure namespace helper
+                    // (`Hex::encode(data)`, called with no object) both lack `this`
+                    // yet need different counts. So stay permissive there. But a
+                    // method that USES `this` provably needs the receiver → the count
+                    // is exactly declared+1 (Bug 47: catches `C::m()` forgetting the
+                    // object, which would deref a null self at runtime).
+                    // Static methods (`fnc`) have no self: exactly declared.
                     let is_instance = sig.params.first().map(|(n, _)| n == "self").unwrap_or(false);
                     let declared = if is_instance { sig.params.len().saturating_sub(1) } else { sig.params.len() };
-                    let count_ok = if is_instance {
-                        args.len() == declared || args.len() == declared + 1
-                    } else {
+                    let uses_this = is_instance && self.method_uses_this.contains(&static_key);
+                    let count_ok = if !is_instance {
                         args.len() == declared
+                    } else if uses_this {
+                        args.len() == declared + 1
+                    } else {
+                        args.len() == declared || args.len() == declared + 1
                     };
                     if !count_ok {
-                        let expected = if is_instance && args.len() < declared { declared } else if is_instance { declared + 1 } else { declared };
+                        let expected = if uses_this { declared + 1 } else { declared };
                         self.errors.push(
                             TypeError::InvalidArgumentCount {
                                 expected,
@@ -5020,6 +5142,27 @@ class Jogger implements Runner {
              fn main() -> Int32 { let r: Int64 = Mathy::square(3, 4, 5); return 0; }",
             "arguments",
         );
+    }
+
+    #[test]
+    fn test_static_call_this_method_without_receiver_err() {
+        // `getN` uses `this`, so the receiver is mandatory (exactly declared+1
+        // args). Calling `Box::getN()` with no object would deref a null self at
+        // runtime — caught exactly (Bug 47).
+        err_contains(
+            "class Box { var n: Int64; fn getN() -> Int64 { return this.n; } } \
+             fn main() -> Int32 { let b: Box = Box { n: 5 }; let r: Int64 = Box::getN(); return 0; }",
+            "arguments",
+        );
+    }
+
+    #[test]
+    fn test_static_call_receiver_agnostic_method_permissive_ok() {
+        // `label` ignores its receiver (no `this`); called `C::label(obj)` the
+        // object is passed-but-unused. Not distinguishable from a pure namespace
+        // helper → stays permissive, must not false-positive (Bug 47).
+        ok("class C { var n: Int64; fn label() -> String { return \"x\"; } } \
+            fn main() -> Int32 { let c: C = C { n: 0 }; let s: String = C::label(c); return 0; }");
     }
 
     #[test]

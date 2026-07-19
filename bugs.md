@@ -1825,6 +1825,46 @@ Argument-TYP-Prüfung durch die Self-Konvention hindurch (v2). Enum-Varianten-Ar
 
 ---
 
+## Bug 47 — Self-Konvention-Sondierung + sichere Verschärfung der Arg-Prüfung
+
+**Status: TEILWEISE (2026-07-19).** Anlauf, die duale Self-Konvention (Bug 38) an
+der Wurzel zu entschärfen, statt nur Symptome. **Ergebnis: die Ambiguität ist
+NICHT statisch auflösbar** — die permissive Arg-Prüfung (Bug 46) ist das korrekte
+lokale Optimum. Eine sichere Teilverschärfung ist aber möglich und umgesetzt.
+
+**Sondierung der Stdlib (798 Instanzmethoden):** nur 198 (25 %) nutzen `this`; 75 %
+übergeben den Empfänger als expliziten ersten Param (Style B, inkl. generischer)
+oder sind Factories/Namespace-Helfer (`Hex::encode`). Eine echte Vereinheitlichung
+auf EINE Konvention hieße ~150+ Methoden umzuschreiben — hohes Risiko, geringer
+Nutzen (das Codegen-ABI funktioniert über die Arg-Zahl-Heuristik bereits korrekt).
+
+**Warum exakt nicht geht (empirisch bewiesen):** `Class::method(obj)` bindet obj
+als self — auch bei einer Methode, die `this` NICHT benutzt (`fn label() { return
+"x"; }`, mit obj-als-self das ignoriert wird). Und ein reiner Namespace-Helfer
+(`Hex::encode(data)`) hat gar keinen Empfänger. Beide sind `this`-los, brauchen
+aber unterschiedliche Arg-Zahlen — nicht unterscheidbar. Ein voll-exakter Check
+erzeugte prompt einen False Positive auf `Derived::label(d)`.
+
+**Sichere Verschärfung (umgesetzt).** Neuer `this`-Scanner + Register
+`method_uses_this` (an allen 3 Registrierungsstellen inkl. Vererbung). Eine
+Methode, die `this` BENUTZT, braucht den Empfänger zwingend → dort ist die
+Arg-Zahl exakt `declared+1` (fängt `Class::m()` ohne Objekt, das sonst zur
+Laufzeit einen null-self dereferenziert). Alle anderen (this-los) bleiben
+permissiv (`declared`/`declared+1`). Static (`fnc`): exakt `declared`.
+
+**Verifiziert:** `Box::getN()` ohne Objekt (getN nutzt this) → Fehler;
+`Derived::label(d)` (label this-los) → grün; `Hex::encode`/Style-B → grün;
+geerbte this-Methode → grün (kein False Positive). Typecheck-Unit-Tests
+(`test_static_call_this_method_*`, `*receiver_agnostic*`); `make check` voll grün.
+
+**Fazit für die ABI-Wurzel:** Die echte Auflösung der Ambiguität erfordert die
+ABI-/Konventions-Migration (eine Konvention) ODER die getypte Wertdarstellung
+(Problem 1) — beides teuer. Bis dahin ist permissiv-mit-`this`-Verschärfung das
+Optimum. Nächster sinnvoller Schritt ist NICHT weitere Konventions-Arbeit,
+sondern getypte Struct-Layouts (B1).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
