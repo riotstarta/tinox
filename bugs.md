@@ -1794,6 +1794,37 @@ bleibt bestehen (Union maskiert sie nur für die Namensprüfung).
 
 ---
 
+## Bug 46 — `Class::method(...)` prüfte die Argument-Anzahl nicht
+
+**Status: GEFIXT (2026-07-19).** Freie Funktionen wurden auf Arg-Anzahl geprüft
+(`expected N arguments, found M`), `::`-Methodenaufrufe aber nicht: `Calc::add(c)`
+(fehlende Args) gab Datenmüll, `Mathy::square(3,4,5)` (statisch, zu viele)
+ignorierte still die Extra-Args. Loose i64-ABI → keine Laufzeit-Fehler.
+
+**Fix (typecheck, `EnumValue`-static_key-Zweig).** Nach dem Auflösen der Signatur
+wird die Arg-Anzahl geprüft. Wegen der Self-Konvention-Ambiguität (Bug 38) zwei
+Fälle:
+- Instanzmethode (`fn`, führender synthetischer `"self"`-Param): das Empfänger-
+  Objekt darf als führendes Arg (`args == declared+1`) ODER weggelassen/als
+  expliziter erster deklarierter Param (`args == declared`) übergeben werden —
+  beide akzeptiert (fängt grobe Fehler wie fehlende/zu viele Args).
+- Statische Methode (`fnc`, kein `self`): `args == declared` exakt.
+
+**Verifiziert:** Instanz zu wenig Args → Fehler; statisch falsche Anzahl → Fehler;
+beide legitimen Instanz-Stile (obj-als-self `Calc::add(c,3,4)`, expliziter
+Objekt-Param `Store::getWith(s,5)`) → grün. Typecheck-Unit-Tests
+(`test_static_call_*_args*`); `make check` voll grün — **keine False Positives**,
+alle Stdlib-`::`-Aufrufe haben korrekte Arg-Zahlen (kein latenter Bug diesmal,
+aber die Prüfung schützt künftig vor dieser Fehlerklasse).
+
+**Grenze:** Instanzmethoden-Prüfung ist wegen der dualen Konvention permissiv
+(akzeptiert `declared` und `declared+1`) — ein subtiler Off-by-one mit passendem
+Typ (`c` als erstes Int-Arg) bleibt unerkannt; das bräuchte präzise
+Argument-TYP-Prüfung durch die Self-Konvention hindurch (v2). Enum-Varianten-Args
+(Bug 45) sind weiterhin ungeprüft.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

@@ -2566,6 +2566,30 @@ impl TypeChecker {
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(sig) = self.symbols.functions.get(&static_key).cloned() {
                     for arg in args { self.infer_type(arg); }
+                    // Argument-count check (Bug 46). Instance methods (`fn`) carry a
+                    // leading synthetic "self" param; the receiver may be passed as
+                    // the leading arg (args == declared+1) OR omitted / given as an
+                    // explicit first declared param (args == declared) — accept both
+                    // (Bug 38 dual convention). Static methods (`fnc`) have no self,
+                    // so args must equal the declared count exactly.
+                    let is_instance = sig.params.first().map(|(n, _)| n == "self").unwrap_or(false);
+                    let declared = if is_instance { sig.params.len().saturating_sub(1) } else { sig.params.len() };
+                    let count_ok = if is_instance {
+                        args.len() == declared || args.len() == declared + 1
+                    } else {
+                        args.len() == declared
+                    };
+                    if !count_ok {
+                        let expected = if is_instance && args.len() < declared { declared } else if is_instance { declared + 1 } else { declared };
+                        self.errors.push(
+                            TypeError::InvalidArgumentCount {
+                                expected,
+                                found: args.len(),
+                                span: expr.span,
+                            }
+                            .to_error(),
+                        );
+                    }
                     return sig.return_type.clone();
                 }
                 // Type check all arguments
@@ -4976,6 +5000,36 @@ class Jogger implements Runner {
         // pass the variant check (Bug 45 union across cross-module collisions).
         ok("enum M { A; B; } enum M { C; D; } \
             fn main() -> Int32 { let x: M = M::A; let y: M = M::D; return 0; }");
+    }
+
+    #[test]
+    fn test_static_call_instance_too_few_args_err() {
+        // `add` declares 2 params; a call giving only the receiver (1 arg) is
+        // below both accepted counts {2, 3} → error.
+        err_contains(
+            "class Calc { var v: Int64; fn add(a: Int64, b: Int64) -> Int64 { return a + b; } } \
+             fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::add(c); return 0; }",
+            "arguments",
+        );
+    }
+
+    #[test]
+    fn test_static_call_static_wrong_arg_count_err() {
+        err_contains(
+            "class Mathy { fnc square(x: Int64) -> Int64 { return x * x; } } \
+             fn main() -> Int32 { let r: Int64 = Mathy::square(3, 4, 5); return 0; }",
+            "arguments",
+        );
+    }
+
+    #[test]
+    fn test_static_call_instance_both_styles_ok() {
+        // Style 2 (object as self, args == declared+1) and style 1 (object as an
+        // explicit first declared param, args == declared) both pass.
+        ok("class Calc { var v: Int64; fn add(a: Int64, b: Int64) -> Int64 { return a + b; } } \
+            fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::add(c, 3, 4); return 0; }");
+        ok("class Store { var n: Int64; fn getWith(s: Store, extra: Int64) -> Int64 { return s.n + extra; } } \
+            fn main() -> Int32 { let s: Store = Store { n: 0 }; let r: Int64 = Store::getWith(s, 5); return 0; }");
     }
 
     #[test]
