@@ -95,7 +95,7 @@ namespace tinox.core.ini
 
         fn getInt(config: IniConfig, section: String, key: String, default: Int64) -> Int64
         {
-            let strVal: String = Ini::getString(config, section, key, "");
+            let strVal: String = IniConfig::getString(config, section, key, "");
             if strVal == ""
             {
                 return default;

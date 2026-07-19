@@ -79,6 +79,14 @@ pub enum TypeError {
         member: String,
         span: Span,
     },
+    /// `Class::method(...)` where `Class` is a known (non-generic) class but has
+    /// no method by that name (typo or missing definition) — previously silently
+    /// returned Any.
+    UnknownStaticMethod {
+        class: String,
+        method: String,
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -208,6 +216,10 @@ impl TypeError {
                 format!(
                     "unresolved '{name}::{member}': no type, enum, or static method named '{name}' in scope (missing import?)"
                 ),
+            ),
+            TypeError::UnknownStaticMethod { class, method, span } => Error::new(
+                *span,
+                format!("type '{class}' has no method '{method}'"),
             ),
         }
     }
@@ -2553,10 +2565,24 @@ impl TypeChecker {
                     );
                     return ValueType::Any;
                 }
-                // Known class (static method whose signature wasn't captured) or a
-                // type parameter (resolved after monomorphization): keep the prior
-                // permissive behavior (return Any) rather than risk false positives
-                // on generic-class statics.
+                // Known NON-generic class but no method by that name (checked via
+                // static_key above; inherited + generic-own methods are registered
+                // too) → the method genuinely does not exist: typo or missing
+                // definition. Hard error (Bug 43) instead of the old silent Any.
+                let is_generic_class = self.generic_class_names.contains(enum_name.as_str());
+                if is_known_class && !is_generic_class && !is_type_param {
+                    self.errors.push(
+                        TypeError::UnknownStaticMethod {
+                            class: enum_name.clone(),
+                            method: variant.clone(),
+                            span: expr.span,
+                        }
+                        .to_error(),
+                    );
+                    return ValueType::Any;
+                }
+                // Generic class or type parameter: the method may only resolve
+                // after monomorphization — stay permissive (return Any).
                 if !is_known_enum && (is_known_class || is_type_param) {
                     return ValueType::Any;
                 }
@@ -4853,6 +4879,44 @@ class Jogger implements Runner {
     #[test]
     fn test_try_finally_ok() {
         ok("fn f() { try { throw \"err\"; } catch e: String {} finally { println(\"done\"); } }");
+    }
+
+    // ================================================================
+    // Static-call resolution (Bug 36 / 43): unknown class or method → error
+    // ================================================================
+
+    #[test]
+    fn test_static_call_unknown_class_err() {
+        // `Bogus` is neither imported nor defined → hard error, not silent Any.
+        err_contains(
+            "fn main() -> Int32 { let x: Int64 = Bogus::doStuff(42); return 0; }",
+            "unresolved",
+        );
+    }
+
+    #[test]
+    fn test_static_call_unknown_method_err() {
+        // `Calc` is a known non-generic class but has no method `addValu` (typo).
+        err_contains(
+            "class Calc { var v: Int64; fn addVal(x: Int64) -> Int64 { return x; } } \
+             fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::addValu(c, 5); return 0; }",
+            "has no method 'addValu'",
+        );
+    }
+
+    #[test]
+    fn test_static_call_known_method_ok() {
+        ok("class Calc { var v: Int64; fn addVal(x: Int64) -> Int64 { return x; } } \
+            fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::addVal(c, 5); return 0; }");
+    }
+
+    #[test]
+    fn test_static_call_generic_class_permissive_ok() {
+        // Generic-class statics stay permissive (method may resolve only after
+        // monomorphization) — no false positive from the Bug 43 hardening.
+        ok("class Box<T> { var value: T; fn wrap(v: T) -> Box<T> { return Box { value: v }; } \
+            fn get() -> T { return this.value; } } \
+            fn main() -> Int32 { let b: Box<Int64> = Box::wrap(5); let r: Int64 = Box::get(b); return 0; }");
     }
 
     // ================================================================

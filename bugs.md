@@ -1706,6 +1706,36 @@ Unwinding (40), defer-Cleanup auf Fehlerpfaden (41), finally+re-throw (42).
 
 ---
 
+## Bug 43 — `Class::method` auf bekannter Klasse ohne diese Methode → harter Fehler
+
+**Status: GEFIXT (2026-07-19).** Schließt die in Bug 36 bewusst permissiv
+gelassene Restlücke: ein statischer Aufruf `Foo::bar()` auf einer **bekannten**
+Klasse, die keine Methode `bar` hat (Tippfehler oder falsche Klasse), gab still
+`Any` zurück statt eines Fehlers — die Codegen baute daraus Datenmüll.
+
+**Fix (typecheck, `EnumValue`-Zweig).** Löst `Class_method` nicht in
+`symbols.functions` auf (dort registriert: eigene, geerbte und generische
+Methoden) UND ist `Class` eine bekannte **nicht-generische** Klasse (kein
+`generic_class_names`, kein `type_param_scope`) → neuer harter
+`TypeError::UnknownStaticMethod` („type 'X' has no method 'Y'"). Generische
+Klassen und Typ-Parameter bleiben permissiv (Methode kann sich erst nach
+Monomorphisierung auflösen) — gleiche Abgrenzung wie beim Feld-Check (Bug 37).
+
+**Dabei aufgedeckter latenter Bug:** `ini.tnx` `IniConfig::getInt` rief intern
+`Ini::getString(...)` auf — `getString` ist aber eine Methode von `IniConfig`,
+nicht `Ini` (falsche Klasse). `getInt` gab dadurch **Datenmüll** zurück (still
+`Any`). Auf `IniConfig::getString` korrigiert; verifiziert: `getInt` für
+`port=8080` liefert jetzt 8080 statt Müll.
+
+**Verifiziert:** Tippfehler-Methode → Compile-Fehler; korrekte Methode → grün;
+geerbte Methode via `::` löst NICHT falsch aus (Typecheck kennt den Kind-Schlüssel
+— separater vorbestehender Codegen-Bug: geerbte Methoden werden nicht unter dem
+mangled Kind-Namen emittiert, `@Derived_getN` undefined, mit `git stash`
+gegengeprüft); generische Klasse bleibt permissiv. Typecheck-Unit-Tests
+(`test_static_call_*`); `make check` voll grün.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
