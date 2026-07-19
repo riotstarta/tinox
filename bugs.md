@@ -1349,6 +1349,67 @@ gelieferte Pfad.
 
 ---
 
+## Bug 35 — Uncaught `throw` wird still geschluckt (Programm läuft weiter, exit 0)
+
+**Status: OFFEN (gefunden 2026-07-19).** Ein `throw` ohne umschließendes `try`
+irgendwo in der Aufrufkette (inkl. `main`) beendet das Programm **nicht** und
+meldet **nichts** — die werfende Funktion liefert stillschweigend einen
+Default-Wert (0/null/void) und der Aufrufer läuft weiter, als wäre nichts
+gewesen. Exit-Code bleibt 0.
+
+**Reproduktion (minimal):**
+```tnx
+class Foo {
+    var x: Int64;
+    fn new() -> Foo { return Foo { x: 0 }; }
+    fn go() -> Nothing {
+        this.x = 0 - 1;
+        if this.x < 0 { throw "geworfen"; }   // feuert
+        println("kein throw");                  // wird korrekt übersprungen
+    }
+}
+fn main() -> Int32 {
+    let f: Foo = Foo::new();
+    f.go();
+    println("nach go");   // WIRD gedruckt — throw verpufft
+    return 0;             // exit 0
+}
+```
+Ausgabe: nur `nach go`, exit 0. Erwartet: Programm bricht mit der Fehlermeldung
+`geworfen` und Exit != 0 ab.
+
+**Ursache (codegen.rs).** Die Fehlerpropagierung läuft über einen globalen Slot
+`@__tinox_err` plus Default-Return: `StmtKind::Throw` ohne `ctx.error_catch`
+(~Z. 3991) parkt den Wert in `@__tinox_err` und macht `ret <default>`. Konsumiert
+wird der Slot ausschließlich in `gen_try_stmt` (~Z. 8431): **nach jedem Statement
+im `try`-Body** wird `emit_global_err_check` emittiert, das `@__tinox_err` lädt
+und bei != 0 in den `catch`-Block springt. Es gibt **keine** solche Prüfung
+außerhalb eines `try`. Fehlt also ein `try` in der gesamten Kette hoch bis `main`,
+prüft niemand den Slot → der Fehler verschwindet, das Programm endet regulär mit 0.
+
+**Verifiziert korrekt:** Mit umschließendem `try`/`catch` funktioniert alles
+sauber, auch über Funktionsgrenzen (`fn risky(){throw "x";}` in `try{risky();}
+catch e:String{…}` fängt, überspringt Folgecode, exit 0). Der Bug betrifft
+**ausschließlich den uncaught-Fall**.
+
+**Fix-Skizze.** Nach dem Body von `tinox_main` (bzw. am Programm-Ende) einmal
+`@__tinox_err` prüfen: bei != 0 die Fehlermeldung auf stderr schreiben und mit
+Exit != 0 abbrechen (Runtime-Helper `tinox_report_uncaught(i64)`). Das macht
+uncaught throws laut+fatal statt still. **Bekannte Zusatzschwäche desselben
+Designs:** der Slot wird nur an `try`-Body-Statement-Grenzen geprüft — ein
+`throw` in einer Zwischenfunktion propagiert nur, weil deren Aufruf zufällig als
+Statement in einem `try`-Body steht; die dazwischenliegenden Frames laufen vorher
+noch mit Default-Rückgabewerten zu Ende (verzögerte/unpräzise Propagierung). Ein
+robuster Fix würde `@__tinox_err` auch nach jedem potenziell werfenden Call
+außerhalb von `try` prüfen (oder auf echtes Unwinding via setjmp/longjmp bzw.
+Rückgabe-Konvention umstellen).
+
+**Gefunden bei:** Feature 34 (HTTPS) — `HttpServer::listenTls` wirft bei
+fehlgeschlagenem TLS-Setup; der Diagnose-Kanal ist dort deshalb bewusst die
+C-stderr-Meldung, nicht der `throw`.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
