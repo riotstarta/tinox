@@ -1736,6 +1736,32 @@ gegengeprüft); generische Klasse bleibt permissiv. Typecheck-Unit-Tests
 
 ---
 
+## Bug 44 — geerbte Methode via `Class::method(obj)` erzeugte undefinierte Funktion
+
+**Status: GEFIXT (2026-07-19).** Der in Bug 43 als separat notierte Fund.
+`Derived::getN(d)` für eine von `Base` geerbte Methode rief `@Derived_getN` auf —
+das aber nie emittiert wird (nur `@Base_getN` existiert) → ungültiges IR
+(`use of undefined value '@Derived_getN'`). Die Dot-Syntax `d.getN()` funktionierte
+dagegen.
+
+**Ursache.** Der Codegen hat eine Map `method_impl: ClassName_method →
+OwnerClassName_method` (löst Vererbung auf, `Derived_getN → Base_getN`). Der
+Dot-Syntax-Pfad (MethodCall) nutzt sie; der `::`-Static-Dispatch
+(`emit_static_dispatch_call`) nutzte sie NICHT und emittierte den nackten
+`Derived_getN`-Aufruf.
+
+**Fix.** In `emit_static_dispatch_call` den Schlüssel zuerst über `method_impl`
+zum definierenden Vorfahren auflösen (wie der Dot-Pfad). Eigene Methoden mappen
+auf sich selbst (Z. 1158), überschriebene auf die Kind-Version — daher bleibt
+Override korrekt. Zentral in `emit_static_dispatch_call`, also profitiert auch
+der generische Pfad.
+
+**Verifiziert:** geerbte Methode ohne/mit Param via `::` → 7 / 15; überschriebene
+Methode → Kind-Version („derived"). e2e-Regressionstest
+`tests/e2e/inherited_static_dispatch.tnx`; `make check` voll grün.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

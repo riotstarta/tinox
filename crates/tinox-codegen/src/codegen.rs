@@ -9383,6 +9383,12 @@ impl CodeGen {
         args: &[tinox_parser::Expr],
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
+        // Resolve inherited methods to the class that actually defines (emits)
+        // them: `Derived::getN` has no `@Derived_getN` body — only `@Base_getN`.
+        // The dot-syntax path already does this via method_impl; mirror it here so
+        // `Class::method(obj)` on an inherited method links (was: undefined value).
+        let key = self.method_impl.get(key).cloned().unwrap_or_else(|| key.to_string());
+        let key = key.as_str();
         let mut args_parts: Vec<String> = Vec::new();
         let is_static = self.static_method_keys.contains(key);
         if !is_static {
