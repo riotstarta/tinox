@@ -87,6 +87,13 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// `Enum::Variant` where `Enum` is a known enum but has no such variant
+    /// (typo) — previously silently returned Named(Enum) and built a bogus value.
+    UnknownEnumVariant {
+        enum_name: String,
+        variant: String,
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -220,6 +227,10 @@ impl TypeError {
             TypeError::UnknownStaticMethod { class, method, span } => Error::new(
                 *span,
                 format!("type '{class}' has no method '{method}'"),
+            ),
+            TypeError::UnknownEnumVariant { enum_name, variant, span } => Error::new(
+                *span,
+                format!("enum '{enum_name}' has no variant '{variant}'"),
             ),
         }
     }
@@ -1107,6 +1118,26 @@ impl TypeChecker {
         (iface_methods, self.interface_implementations.clone())
     }
 
+    /// Register an enum's variants, UNIONing with any existing entry of the same
+    /// name. Enum names aren't module-qualified, so several modules can define
+    /// e.g. `MediaType` with different variants; a flat overwrite would make a
+    /// valid `MediaType::None` (from one definition) fail the variant check
+    /// (Bug 45) just because another same-named enum was registered last. The
+    /// union keeps the check permissive across collisions while still catching a
+    /// variant that exists in NO definition (a real typo).
+    fn register_enum_variants(
+        enums: &mut HashMap<String, Vec<String>>,
+        name: &str,
+        variants: &[String],
+    ) {
+        let entry = enums.entry(name.to_string()).or_default();
+        for v in variants {
+            if !entry.contains(v) {
+                entry.push(v.clone());
+            }
+        }
+    }
+
     fn register_declarations(&mut self, source: &SourceFile) {
         for decl in &source.decls {
             match &decl.node {
@@ -1190,7 +1221,7 @@ impl TypeChecker {
                 DeclKind::Enum(e) => {
                     let variant_names: Vec<String> =
                         e.variants.iter().map(|v| v.name.clone()).collect();
-                    self.enums.insert(e.name.clone(), variant_names.clone());
+                    Self::register_enum_variants(&mut self.enums, &e.name, &variant_names);
                     for variant in &e.variants {
                         self.enum_variant_payloads.insert(
                             format!("{}::{}", e.name, variant.name),
@@ -1359,7 +1390,7 @@ impl TypeChecker {
                         DeclKind::Enum(e) => {
                             let variant_names: Vec<String> =
                                 e.variants.iter().map(|v| v.name.clone()).collect();
-                            self.enums.insert(e.name.clone(), variant_names.clone());
+                            Self::register_enum_variants(&mut self.enums, &e.name, &variant_names);
                             for variant in &e.variants {
                                 self.enum_variant_payloads.insert(
                                     format!("{}::{}", e.name, variant.name),
@@ -2586,7 +2617,21 @@ impl TypeChecker {
                 if !is_known_enum && (is_known_class || is_type_param) {
                     return ValueType::Any;
                 }
-                // Known enum → enum-variant construction.
+                // Known enum → enum-variant construction. Validate the variant
+                // exists (Bug 45): a typo like `Color::Purpel` previously returned
+                // Named(Color) and built a bogus value.
+                if let Some(variants) = self.enums.get(enum_name.as_str()) {
+                    if !variants.contains(variant) {
+                        self.errors.push(
+                            TypeError::UnknownEnumVariant {
+                                enum_name: enum_name.clone(),
+                                variant: variant.clone(),
+                                span: expr.span,
+                            }
+                            .to_error(),
+                        );
+                    }
+                }
                 ValueType::Named(enum_name.clone())
             }
             ExprKind::ArrayLiteral(elements) => {
@@ -4908,6 +4953,29 @@ class Jogger implements Runner {
     fn test_static_call_known_method_ok() {
         ok("class Calc { var v: Int64; fn addVal(x: Int64) -> Int64 { return x; } } \
             fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::addVal(c, 5); return 0; }");
+    }
+
+    #[test]
+    fn test_enum_unknown_variant_err() {
+        err_contains(
+            "enum Color { Red; Green; Blue; } \
+             fn main() -> Int32 { let c: Color = Color::Purple; return 0; }",
+            "has no variant 'Purple'",
+        );
+    }
+
+    #[test]
+    fn test_enum_known_variant_ok() {
+        ok("enum Color { Red; Green; Blue; } \
+            fn main() -> Int32 { let c: Color = Color::Green; return 0; }");
+    }
+
+    #[test]
+    fn test_enum_same_name_variants_unioned_ok() {
+        // Two enums share the name `M`; a variant valid in EITHER definition must
+        // pass the variant check (Bug 45 union across cross-module collisions).
+        ok("enum M { A; B; } enum M { C; D; } \
+            fn main() -> Int32 { let x: M = M::A; let y: M = M::D; return 0; }");
     }
 
     #[test]

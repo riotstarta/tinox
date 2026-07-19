@@ -1762,6 +1762,38 @@ Methode → Kind-Version („derived"). e2e-Regressionstest
 
 ---
 
+## Bug 45 — nicht existente Enum-Variante `Enum::Variant` wurde still akzeptiert
+
+**Status: GEFIXT (2026-07-19).** Analog zu Bug 43, aber für Enums: `Color::Purple`
+auf einem Enum ohne `Purple`-Variante gab still `Named(Color)` zurück und baute
+einen Bogus-Wert, statt zu fehlern.
+
+**Fix (typecheck, `EnumValue`-Zweig).** Ist `enum_name` ein bekanntes Enum, wird
+`variant` gegen die registrierte Variantenliste geprüft; fehlt sie → neuer harter
+`TypeError::UnknownEnumVariant` („enum 'X' has no variant 'Y'").
+
+**Namenskollisions-Falle (dabei entdeckt + gelöst).** Enum-Namen sind NICHT
+modul-qualifiziert: `MediaType` ist in http_server (`APPLICATION_JSON`/
+`PLAIN_TEXT`), rest (`ApplicationJson`/…) UND rest_framework (`None`/`Json`/…)
+mit UNTERSCHIEDLICHEN Varianten definiert. Die flache `enums`-Map behielt bei
+`insert` nur eine — das gültige `MediaType::None` (rest_framework) schlug dann
+fehl, weil http_servers Version gewann. Fix: neuer Helper
+`register_enum_variants` VEREINIGT die Varianten gleichnamiger Enums (statt
+overwrite). Sicher, weil `self.enums` nur für `is_known_enum` (contains_key) und
+diese Varianten-Prüfung genutzt wird (NICHT für Match-Exhaustiveness). Ein echter
+Tippfehler (Variante in KEINER Definition) fällt weiter durch.
+
+**Verifiziert:** `Color::Purple`/`Shape::Triangle(3.0)` → Compile-Fehler; gültige
+Varianten (auch mit Payload) → grün; `MediaType::None` (Kollision) → grün;
+`M::A`+`M::D` über zwei gleichnamige Enums → grün (Union). Typecheck-Unit-Tests
+(`test_enum_*`); `make check` voll grün.
+
+**Bekannte Grenze (v2):** Arg-Anzahl/-Typen einer Enum-Variante werden hier nicht
+geprüft (nur der Name); die modul-übergreifende Enum-Namenskollision selbst
+bleibt bestehen (Union maskiert sie nur für die Namensprüfung).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
