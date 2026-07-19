@@ -708,6 +708,13 @@ impl TypeChecker {
         symbols.functions.insert("httpServerSendRaw".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
         symbols.functions.insert("httpServerCloseConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         symbols.functions.insert("httpServerClose".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        // HTTPS/TLS + connection-handle API
+        symbols.functions.insert("httpServerCreateTls".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int), ("certPath".to_string(), ValueType::String), ("keyPath".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerAcceptTls".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerAcceptConnHandle".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpConnReadRequest".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::String });
+        symbols.functions.insert("httpConnSendRaw".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],

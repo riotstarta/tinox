@@ -889,6 +889,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @httpServerSendRaw(i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerCloseConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerClose(i64)").unwrap();
+        // HTTPS/TLS + connection-handle API (siehe runtime.c, TinoxConn)
+        writeln!(&mut self.ir, "declare i64 @httpServerCreateTls(i64, i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerAcceptTls(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerAcceptConnHandle(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @httpConnReadRequest(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpConnSendRaw(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
         // CLI helpers (@Command / @Option / @Argument)
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cli_has_flag(i8*, i8*)").unwrap();

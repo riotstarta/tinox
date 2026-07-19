@@ -1297,6 +1297,58 @@ geschlossen.**
 
 ---
 
+## Feature 34 — HTTPS/TLS für den HTTP-Server
+
+**Status: IMPLEMENTIERT (2026-07-19)** — `HttpServer::listenTls(cert, key)` liefert
+echtes HTTPS (TLSv1.3 verifiziert). Vorher konnte der Server (und Client) nur
+Klartext-`http://` (runtime.c sagte explizit „Plaintext http:// only, kein TLS").
+
+**Kernidee — Connection-Handles statt roher fds.** Bei TLS reicht ein fd nicht,
+weil jede Verbindung ein eigenes `SSL*` braucht. Neu: `TinoxConn {int fd; void* ssl}`
+(GC-alloziert), dessen Zeiger als opakes `int64`-Handle zurückgegeben wird
+(Userspace-Adresse ist stets > 0, Fehler = -1). `ssl==NULL` = Plaintext — damit
+teilen sich http und https **denselben** Lese-/Schreib-Pfad über `conn_recv`/
+`conn_send`/`conn_close`, die intern auf `SSL_read/Write` vs. `recv/send`
+verzweigen. `httpServerReadRequest` wurde auf den geteilten Kern
+`conn_read_request(TinoxConn*)` refaktoriert (Content-Length-Logik unverändert).
+
+**Neue Runtime-Funktionen (runtime.c):**
+- `httpServerCreateTls(port, certPath, keyPath)` — lädt Cert-Chain + Key (PEM),
+  prüft Key-Paarung, bindet/lauscht wie `httpServerCreate`; -1 bei Fehler.
+- `httpServerAcceptTls(serverFd)` — accept + blockierender `SSL_accept`-Handshake,
+  liefert Conn-Handle.
+- `httpServerAcceptConnHandle(serverFd)` — Plaintext-accept, das ebenfalls ein
+  Conn-Handle liefert (damit `listen()` denselben Loop nutzt).
+- `httpConnReadRequest/SendRaw/Close(conn)` — I/O über das Handle.
+
+Alle in typecheck (`symbols.functions`) + codegen (`declare`) registriert.
+
+**`.tnx`-Seite (http_server.tnx):** `handleRequest` bekommt jetzt ein Conn-Handle
+statt eines fds und nutzt `httpConn*`; `listen()` (Plaintext) und das neue
+`listenTls()` teilen sich diesen Handler — der einzige Unterschied ist
+`httpServerAcceptConnHandle` vs. `httpServerAcceptTls`.
+
+**Build — opt-in per `TINOX_TLS=1`** (main.rs): setzt `-DTINOX_TLS` beim
+Runtime-Compile und linkt `-lssl -lcrypto`. Default-Build bleibt bewusst
+OpenSSL-frei (Zeile-1651-Design). Ohne das Flag liefern die `*Tls`-Funktionen -1
+mit klarer stderr-Diagnose statt eines Linkfehlers.
+
+**Verifiziert:** self-signed Cert, `curl -k https://localhost:8443/hello` → 200
+„Hallo ueber TLS!", 404-Routing, `openssl s_client` handelt TLSv1.3 /
+AES-256-GCM aus; Plain-HTTP gegen den TLS-Port wird korrekt abgewiesen
+(`tls_validate_record_header:http request`). Default-Build ohne Flag: Plaintext
+`listen()` unverändert grün, kein OpenSSL gelinkt; `listenTls` bricht sauber ab
+(kein Crash). `make check` voll grün.
+
+**Bewusste Nicht-Ziele (v2):** SNI/mehrere Zerts, mTLS/Client-Zertifikate,
+ALPN/HTTP2-über-TLS, non-blocking Handshake. Außerdem: die schnelle
+route-basierte C-epoll-Loop (`tinox_HttpServer_listen`) bleibt Plaintext — TLS
+dort erfordert per-fd-`SSL*`-Mapping + Handshake im level-triggered epoll und
+ist ein separater Umbau. Der `.tnx`-`HttpServer` (der `listenTls` nutzt) ist der
+gelieferte Pfad.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

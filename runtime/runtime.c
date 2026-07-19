@@ -2010,6 +2010,50 @@ static size_t fast_i64_write(int64_t val, char* buf);
 
 // ---- HTTP Server ----
 
+// ---- TLS / Connection handles ----
+//
+// Bei TLS reicht ein roher fd nicht mehr: jede Verbindung braucht ein eigenes
+// SSL*-Objekt. Deshalb kapseln wir {fd, ssl} in einem GC-allozierten TinoxConn
+// und geben dessen Zeiger als opakes int64-Handle zurück (Userspace-Adresse ist
+// stets > 0, Fehler sind -1). ssl==NULL bedeutet Plaintext — damit teilen sich
+// http:// und https:// exakt denselben Lese-/Schreib-Code (conn_recv/conn_send).
+//
+// TLS ist hinter -DTINOX_TLS + -lssl -lcrypto geschaltet; der Default-Build
+// bleibt bewusst OpenSSL-frei. Ohne das Flag liefern die *Tls-Funktionen -1,
+// sodass es einen sauberen Laufzeitfehler statt eines Linkfehlers gibt.
+
+typedef struct { int fd; void* ssl; } TinoxConn;   // ssl==NULL => Plaintext
+
+#ifdef TINOX_TLS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+static SSL_CTX* g_tls_ctx = NULL;
+
+static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
+    if (c->ssl) return (ssize_t)SSL_read((SSL*)c->ssl, buf, (int)n);
+    return recv(c->fd, buf, n, 0);
+}
+static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
+    if (c->ssl) return (ssize_t)SSL_write((SSL*)c->ssl, buf, (int)n);
+    return send(c->fd, buf, n, MSG_NOSIGNAL);
+}
+static void conn_close(TinoxConn* c) {
+    if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
+    if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+}
+#else
+// Plaintext-only Fallback — identische Semantik ohne OpenSSL.
+static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
+    return recv(c->fd, buf, n, 0);
+}
+static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
+    return send(c->fd, buf, n, MSG_NOSIGNAL);
+}
+static void conn_close(TinoxConn* c) {
+    if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+}
+#endif
+
 int64_t httpServerCreate(int64_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -2042,20 +2086,20 @@ int64_t httpServerAcceptConn(int64_t server_fd) {
 static __thread char*  g_recv_buf = NULL;
 static __thread size_t g_recv_cap = 0;
 
-// Reads a full HTTP/1.1 request from the socket into g_recv_buf (static, not freed by caller).
-char* httpServerReadRequest(int64_t client_fd) {
+// Reads a full HTTP/1.1 request from the connection into g_recv_buf (static, not freed by caller).
+// Works for both plaintext (ssl==NULL) and TLS connections via conn_recv.
+static char* conn_read_request(TinoxConn* c) {
     if (!g_recv_buf) { g_recv_cap = 4096; g_recv_buf = (char*)malloc(g_recv_cap); }
     size_t used = 0;
     char* buf = g_recv_buf;
     size_t cap = g_recv_cap;
-    int fd = (int)client_fd;
     while (1) {
         if (used + 1 >= cap) {
             cap *= 2;
             buf = (char*)realloc(buf, cap);
             g_recv_buf = buf; g_recv_cap = cap;
         }
-        ssize_t n = recv(fd, buf + used, cap - used - 1, 0);
+        ssize_t n = conn_recv(c, buf + used, cap - used - 1);
         if (n <= 0) break;
         used += (size_t)n;
         buf[used] = '\0';
@@ -2083,7 +2127,7 @@ char* httpServerReadRequest(int64_t client_fd) {
                 cap *= 2; buf = (char*)realloc(buf, cap);
                 g_recv_buf = buf; g_recv_cap = cap;
             }
-                ssize_t m = recv(fd, buf + used, (size_t)(total - (long)used), 0);
+                ssize_t m = conn_recv(c, buf + used, (size_t)(total - (long)used));
                 if (m <= 0) break;
                 used += (size_t)m;
                 buf[used] = '\0';
@@ -2095,20 +2139,128 @@ char* httpServerReadRequest(int64_t client_fd) {
     return buf;
 }
 
-// Sends a raw HTTP response string and returns.
-void httpServerSendRaw(int64_t client_fd, const char* data) {
-    if (!data) return;
-    size_t len = strlen(data);
+// Reads a full HTTP/1.1 request from a raw fd (plaintext). Wraps the fd in a
+// stack TinoxConn with ssl==NULL and delegates to the shared core.
+char* httpServerReadRequest(int64_t client_fd) {
+    TinoxConn c = { (int)client_fd, NULL };
+    return conn_read_request(&c);
+}
+
+static void conn_send_all(TinoxConn* c, const char* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send((int)client_fd, data + sent, len - sent, MSG_NOSIGNAL);
+        ssize_t n = conn_send(c, data + sent, len - sent);
         if (n <= 0) break;
         sent += (size_t)n;
     }
 }
 
+// Sends a raw HTTP response string and returns.
+void httpServerSendRaw(int64_t client_fd, const char* data) {
+    if (!data) return;
+    TinoxConn c = { (int)client_fd, NULL };
+    conn_send_all(&c, data, strlen(data));
+}
+
 void httpServerCloseConn(int64_t client_fd) {
     close((int)client_fd);
+}
+
+// ---- TLS server entry points + connection-handle API ----
+//
+// Diese Funktionen bilden die getypte extern-fn-Schnittstelle für die
+// Tinox-Seite (siehe http_server.tnx: listenTls). Das zurückgegebene Handle
+// ist der Zeiger auf einen GC-allozierten TinoxConn.
+
+// Richtet einen TLS-Server ein: lädt Cert-Chain + Private Key (beide PEM) und
+// bindet/lauscht wie httpServerCreate. Rückgabe: server-fd (>=0) oder -1.
+int64_t httpServerCreateTls(int64_t port, const char* cert_path, const char* key_path) {
+#ifdef TINOX_TLS
+    if (!g_tls_ctx) {
+        SSL_library_init();
+        SSL_load_error_strings();
+        OpenSSL_add_ssl_algorithms();
+        g_tls_ctx = SSL_CTX_new(TLS_server_method());
+        if (!g_tls_ctx) return -1;
+        SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
+    }
+    if (SSL_CTX_use_certificate_chain_file(g_tls_ctx, cert_path) <= 0) {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    if (SSL_CTX_use_PrivateKey_file(g_tls_ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+    if (!SSL_CTX_check_private_key(g_tls_ctx)) {
+        fprintf(stderr, "httpServerCreateTls: cert/key mismatch\n");
+        return -1;
+    }
+    return httpServerCreate(port);
+#else
+    (void)port; (void)cert_path; (void)key_path;
+    fprintf(stderr, "httpServerCreateTls: runtime ohne TLS gebaut (-DTINOX_TLS fehlt)\n");
+    return -1;
+#endif
+}
+
+// Akzeptiert eine Verbindung und führt den TLS-Handshake durch. Rückgabe:
+// opakes Connection-Handle (>0) oder -1. Der Handshake ist blockierend.
+int64_t httpServerAcceptTls(int64_t server_fd) {
+#ifdef TINOX_TLS
+    if (!g_tls_ctx) return -1;
+    struct sockaddr_in client = {0};
+    socklen_t len = sizeof(client);
+    int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    SSL* ssl = SSL_new(g_tls_ctx);
+    if (!ssl) { close(fd); return -1; }
+    SSL_set_fd(ssl, fd);
+    if (SSL_accept(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_free(ssl);
+        close(fd);
+        return -1;
+    }
+    TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    c->fd = fd;
+    c->ssl = ssl;
+    return (int64_t)(intptr_t)c;
+#else
+    (void)server_fd;
+    return -1;
+#endif
+}
+
+// Akzeptiert eine Plaintext-Verbindung und liefert ebenfalls ein Conn-Handle,
+// sodass der Tinox-Code EINEN Loop (httpConn*) für http und https nutzen kann.
+int64_t httpServerAcceptConnHandle(int64_t server_fd) {
+    int64_t fd = httpServerAcceptConn(server_fd);
+    if (fd < 0) return -1;
+    TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    c->fd = (int)fd;
+    c->ssl = NULL;
+    return (int64_t)(intptr_t)c;
+}
+
+// Liest einen Request über ein Conn-Handle (TLS oder Plaintext).
+char* httpConnReadRequest(int64_t conn) {
+    if (conn <= 0) return (char*)"";
+    return conn_read_request((TinoxConn*)(intptr_t)conn);
+}
+
+// Sendet eine rohe Antwort über ein Conn-Handle.
+void httpConnSendRaw(int64_t conn, const char* data) {
+    if (conn <= 0 || !data) return;
+    conn_send_all((TinoxConn*)(intptr_t)conn, data, strlen(data));
+}
+
+// Schließt eine Verbindung (TLS-shutdown + free + close).
+void httpConnClose(int64_t conn) {
+    if (conn <= 0) return;
+    conn_close((TinoxConn*)(intptr_t)conn);
 }
 
 void httpServerClose(int64_t server_fd) {

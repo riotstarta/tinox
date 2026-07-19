@@ -148,18 +148,62 @@ namespace tinox.core.http_server
             this.running = true;
             while this.running
             {
-                let clientFd: Int64 = httpServerAcceptConn(this.socketHandle);
-                if clientFd >= 0
+                let conn: Int64 = httpServerAcceptConnHandle(this.socketHandle);
+                if conn > 0
                 {
-                    let raw: String = httpServerReadRequest(clientFd);
+                    let raw: String = httpConnReadRequest(conn);
                     if raw.len() > 0
                     {
                         let ctx: HttpContext = this.parseRawRequest(raw);
-                        this.handleRequest(ctx, clientFd);
+                        this.handleRequest(ctx, conn);
                     }
                     else
                     {
-                        httpServerCloseConn(clientFd);
+                        httpConnClose(conn);
+                    }
+                }
+            }
+            httpServerClose(this.socketHandle);
+        }
+
+        /**
+         * Starts the server with TLS/HTTPS enabled.
+         *
+         * Requires the runtime to be built with TLS support (-DTINOX_TLS,
+         * linked against OpenSSL). Without it, httpServerCreateTls returns -1
+         * and this call throws.
+         *
+         * Certificate and key must both be PEM files. certPath may contain the
+         * full certificate chain (leaf first).
+         *
+         * Example:
+         *   server.listenTls("cert.pem", "key.pem");
+         *
+         * @param certPath path to the PEM certificate (chain) file
+         * @param keyPath path to the PEM private key file
+         */
+        fn listenTls(certPath: String, keyPath: String) -> Nothing
+        {
+            this.socketHandle = httpServerCreateTls(this.port, certPath, keyPath);
+            if this.socketHandle < 0
+            {
+                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS-Setup fehlgeschlagen — Runtime ohne -DTINOX_TLS gebaut, oder Cert/Key ungültig)";
+            }
+            this.running = true;
+            while this.running
+            {
+                let conn: Int64 = httpServerAcceptTls(this.socketHandle);
+                if conn > 0
+                {
+                    let raw: String = httpConnReadRequest(conn);
+                    if raw.len() > 0
+                    {
+                        let ctx: HttpContext = this.parseRawRequest(raw);
+                        this.handleRequest(ctx, conn);
+                    }
+                    else
+                    {
+                        httpConnClose(conn);
                     }
                 }
             }
@@ -279,9 +323,9 @@ namespace tinox.core.http_server
          * then sends the response and closes the connection.
          *
          * @param ctx the request context
-         * @param clientFd the client socket file descriptor
+         * @param conn the client connection handle (plaintext or TLS)
          */
-        fn handleRequest(ctx: HttpContext, clientFd: Int64) -> Nothing
+        fn handleRequest(ctx: HttpContext, conn: Int64) -> Nothing
         {
             let middlewareContinue: Bool = this.runMiddleware(ctx);
             if middlewareContinue == false
@@ -299,8 +343,8 @@ namespace tinox.core.http_server
                 }
             }
             let raw: String = this.formatResponse(ctx.response);
-            httpServerSendRaw(clientFd, raw);
-            httpServerCloseConn(clientFd);
+            httpConnSendRaw(conn, raw);
+            httpConnClose(conn);
         }
 
         /**

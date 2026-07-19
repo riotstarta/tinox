@@ -1919,6 +1919,11 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         .map(|v| v.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
 
+    // HTTPS/TLS-Server: opt-in per TINOX_TLS=1. Aktiviert den TLS-Code in
+    // runtime.c (-DTINOX_TLS) und linkt OpenSSL (-lssl -lcrypto). Default-Build
+    // bleibt bewusst OpenSSL-frei.
+    let tls_enabled = std::env::var("TINOX_TLS").map(|v| v == "1" || v == "true").unwrap_or(false);
+
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
@@ -1926,6 +1931,9 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         cc_args.push("-DTINOX_DB_MYSQL");
     } else if db_driver == "sqlite" {
         cc_args.push("-DTINOX_DB_SQLITE");
+    }
+    if tls_enabled {
+        cc_args.push("-DTINOX_TLS");
     }
     cc_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let cc_status = Command::new("cc")
@@ -1944,6 +1952,10 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         link_args.push("-lmysqlclient");
     } else if db_driver == "sqlite" {
         link_args.push("-lsqlite3");
+    }
+    if tls_enabled {
+        link_args.push("-lssl");
+        link_args.push("-lcrypto");
     }
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let link_status = Command::new("cc")
