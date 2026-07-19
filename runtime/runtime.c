@@ -4059,11 +4059,26 @@ char* tinox_int_to_param(int64_t val) {
 
 extern int64_t tinox_main(void);
 
+// Globaler Fehler-Slot aus dem generierten IR (@__tinox_err = global i64 0).
+// Ein `throw` ohne umschließendes `try` parkt hier den Fehlerwert und die
+// werfende Funktion kehrt mit einem Default-Wert zurück; ein `try` weiter oben
+// konsumiert den Slot und setzt ihn zurück auf 0. Ist nach Ende von tinox_main
+// noch ein Wert gesetzt, wurde der throw NIRGENDS gefangen — das darf nicht
+// still durchgehen (Bug 35): laut auf stderr melden und mit Exit != 0 abbrechen.
+extern int64_t __tinox_err;
+
 int main(int argc, char** argv) {
     GC_INIT();
     _tinox_argc = argc;
     _tinox_argv = argv;
-    return (int)tinox_main();
+    int64_t rc = tinox_main();
+    if (__tinox_err != 0) {
+        // throw ist typgeprüft auf String-oder-Error; im Regelfall ein String.
+        const char* msg = (const char*)(intptr_t)__tinox_err;
+        fprintf(stderr, "Uncaught error: %s\n", msg ? msg : "(unknown)");
+        return 1;
+    }
+    return (int)rc;
 }
 
 // Float classification and constants

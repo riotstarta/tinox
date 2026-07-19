@@ -1351,7 +1351,24 @@ gelieferte Pfad.
 
 ## Bug 35 — Uncaught `throw` wird still geschluckt (Programm läuft weiter, exit 0)
 
-**Status: OFFEN (gefunden 2026-07-19).** Ein `throw` ohne umschließendes `try`
+**Status: PRIMÄR GEFIXT (2026-07-19).** Ein uncaught `throw` ist jetzt laut und
+fatal: `main` (runtime.c) prüft nach `tinox_main()` den globalen Slot
+`__tinox_err` — ist er != 0, wurde nirgends gefangen → `fprintf(stderr,
+"Uncaught error: %s", …)` + Exit 1. Ein gefangener throw setzt den Slot via
+`emit_global_err_check` auf 0 zurück, löst also keine Falschmeldung aus.
+Verifiziert: Repro unten meldet jetzt `Uncaught error: geworfen` und Exit 1;
+`try`/`catch`-Fälle unverändert grün (Exit 0). `make check` grün.
+
+**Bewusst noch offen (tiefere Design-Schwäche, s.u.):** der throw macht weiterhin
+einen *stillen Funktions-Return* mit Default-Wert, statt sofort zu unwinden — der
+Code zwischen throw und Programmende läuft also noch mit Default-Werten durch
+(im Repro erscheint `nach go` vor dem Abbruch). Der Fix garantiert nur, dass ein
+uncaught throw das Programm am Ende nicht mit Erfolg (Exit 0) verlässt. Echtes
+sofortiges Unwinding wäre der v2-Fix (setjmp/longjmp oder Result-Rückgabe-ABI).
+
+---
+
+**Ursprünglicher Befund (Status vor dem Fix):** Ein `throw` ohne umschließendes `try`
 irgendwo in der Aufrufkette (inkl. `main`) beendet das Programm **nicht** und
 meldet **nichts** — die werfende Funktion liefert stillschweigend einen
 Default-Wert (0/null/void) und der Aufrufer läuft weiter, als wäre nichts
@@ -1392,17 +1409,18 @@ sauber, auch über Funktionsgrenzen (`fn risky(){throw "x";}` in `try{risky();}
 catch e:String{…}` fängt, überspringt Folgecode, exit 0). Der Bug betrifft
 **ausschließlich den uncaught-Fall**.
 
-**Fix-Skizze.** Nach dem Body von `tinox_main` (bzw. am Programm-Ende) einmal
-`@__tinox_err` prüfen: bei != 0 die Fehlermeldung auf stderr schreiben und mit
-Exit != 0 abbrechen (Runtime-Helper `tinox_report_uncaught(i64)`). Das macht
-uncaught throws laut+fatal statt still. **Bekannte Zusatzschwäche desselben
-Designs:** der Slot wird nur an `try`-Body-Statement-Grenzen geprüft — ein
-`throw` in einer Zwischenfunktion propagiert nur, weil deren Aufruf zufällig als
-Statement in einem `try`-Body steht; die dazwischenliegenden Frames laufen vorher
-noch mit Default-Rückgabewerten zu Ende (verzögerte/unpräzise Propagierung). Ein
-robuster Fix würde `@__tinox_err` auch nach jedem potenziell werfenden Call
-außerhalb von `try` prüfen (oder auf echtes Unwinding via setjmp/longjmp bzw.
-Rückgabe-Konvention umstellen).
+**Umgesetzter Fix (runtime.c `main`).** Nach `tinox_main()` wird der extern
+sichtbare Slot `__tinox_err` geprüft; bei != 0 → `fprintf(stderr, "Uncaught
+error: %s", (char*)err)` + `return 1`. Damit sind uncaught throws laut+fatal
+statt still. (Der Wert ist typgeprüft String-oder-Error; als String gedruckt —
+der Normalfall.) **Bekannte Zusatzschwäche desselben Designs (noch offen):** der
+Slot wird nur an `try`-Body-Statement-Grenzen konsumiert und der throw returned
+still mit Default — ein `throw` in einer Zwischenfunktion propagiert nur, weil
+deren Aufruf zufällig als Statement in einem `try`-Body steht; dazwischenliegende
+Frames laufen vorher noch mit Default-Rückgabewerten zu Ende (verzögerte/
+unpräzise Propagierung). Ein robuster v2-Fix würde `@__tinox_err` auch nach jedem
+potenziell werfenden Call außerhalb von `try` prüfen oder auf echtes Unwinding
+via setjmp/longjmp bzw. Result-Rückgabe-ABI umstellen.
 
 **Gefunden bei:** Feature 34 (HTTPS) — `HttpServer::listenTls` wirft bei
 fehlgeschlagenem TLS-Setup; der Diagnose-Kanal ist dort deshalb bewusst die
