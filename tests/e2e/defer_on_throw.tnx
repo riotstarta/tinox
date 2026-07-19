@@ -1,0 +1,52 @@
+// defer läuft während des throw-Unwindings (Bug 41): Ressourcen-Cleanup passiert
+// auch auf Fehlerpfaden, nicht nur bei normalem return. Deckt ab: uncaught-throw,
+// throw aus verschachteltem Loop (führt ALLE aktiven defer-Scopes aus, auch den
+// Funktions-Scope), LIFO-Reihenfolge, und dass der normale return-Pfad
+// unverändert bleibt.
+// expect: vor throw
+// expect: cleanup risky
+// expect: gefangen: fehler
+// expect: i=0
+// expect: i=1
+// expect: close resource
+// expect: gefangen: loop
+// expect: defer B
+// expect: defer A
+// expect: catch
+// expect: normal cleanup
+// expect: 42
+
+fn risky() -> Nothing {
+    defer { println("cleanup risky"); }
+    println("vor throw");
+    throw "fehler";
+}
+
+fn worker() -> Nothing {
+    defer { println("close resource"); }   // Funktions-Scope
+    var i: Int64 = 0;
+    while i < 5 {
+        if i == 2 { throw "loop"; }         // throw aus Loop-Scope
+        println("i=" + i.toString());
+        i = i + 1;
+    }
+}
+
+fn multi() -> Nothing {
+    defer { println("defer A"); }   // zuerst registriert -> zuletzt
+    defer { println("defer B"); }   // zuletzt registriert -> zuerst
+    throw "x";
+}
+
+fn ok() -> Int64 {
+    defer { println("normal cleanup"); }
+    return 42;
+}
+
+fn main() -> Int32 {
+    try { risky(); } catch e: String { println("gefangen: " + e); }
+    try { worker(); } catch e: String { println("gefangen: " + e); }
+    try { multi(); } catch e: String { println("catch"); }
+    println(ok().toString());
+    return 0;
+}

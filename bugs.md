@@ -1643,6 +1643,40 @@ schluckt weiterhin (kein Re-throw, wie im Alt-Mechanismus).
 
 ---
 
+## Bug 41 — `defer` lief nicht beim throw-Unwinding (Ressourcen-Leak auf Fehlerpfaden)
+
+**Status: GEFIXT (2026-07-19).** `defer`-Blöcke (Cleanup-Mechanismus wie in Go)
+liefen bei normalem `return`, wurden aber bei einem `throw` **still übersprungen**
+— genau dann, wenn Cleanup am wichtigsten ist. Dateien/Locks/Connections blieben
+auf Fehlerpfaden offen. Durch das jetzt sofortige Unwinding (Bug 40) noch
+prominenter.
+
+**Ursache.** Das alte IR emittierte die deferred Statements des Blocks *nach* dem
+throw-`ret` (als toter Code hinter dem Terminator, den `opt`/`llc` verwerfen) —
+sie liefen also nie. `emit_ret_default` (throw ohne umschließenden try) und der
+Bug-40-Propagate-Check gaben ohne Cleanup zurück.
+
+**Fix.** Neuer Helper `emit_unwind_defers`, der VOR dem `ret` **alle aktiven
+defer-Scopes** (innerster zuerst, LIFO) ausführt — aufgerufen im throw-Codegen
+(non-catch-Pfad) und im `emit_post_stmt_throw_check` (Propagate-Pfad). Anders als
+`gen_defer_scope` (nur innerster Scope, normaler Blockaustritt) muss ein
+entweichender throw *jeden* umschließenden Scope aufräumen: ein throw in einer
+Schleife muss auch den Funktions-`defer` ausführen. `in_defer_exec`-Guard
+verhindert Rekursion; der defer_stack bleibt intakt, sodass der normale
+(nicht-werfende) Pfad seine Scopes weiterhin beim jeweiligen Blockaustritt läuft.
+
+**Verifiziert:** defer läuft bei uncaught-throw; Funktions-`defer` läuft bei throw
+aus verschachteltem Loop (ALLE Scopes); mehrere defers in LIFO-Reihenfolge;
+normaler `return`-Pfad unverändert. e2e-Regressionstest
+`tests/e2e/defer_on_throw.tnx`; `make check` voll grün.
+
+**Bewusst noch offen:** defer-Scopes zwischen throw und einem `catch` in
+DERSELBEN Funktion (teilweises Unwinding innerhalb eines Frames) — der Fix deckt
+das Entweichen aus dem Frame ab (der häufige Ressourcen-Fall: Funktion öffnet
+Ressource, `defer close`, ruft etwas das wirft). Verwandt: [[Bug 40]].
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

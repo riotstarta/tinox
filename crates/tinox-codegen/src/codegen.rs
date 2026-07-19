@@ -3319,7 +3319,7 @@ impl CodeGen {
                         && Self::stmt_may_throw(s)
                         && !self.last_is_terminator()
                     {
-                        self.emit_post_stmt_throw_check(ctx);
+                        self.emit_post_stmt_throw_check(ctx)?;
                     }
                 }
                 if !ctx.in_defer_exec {
@@ -4005,8 +4005,10 @@ impl CodeGen {
                     // throw-checks in the calling frames (emit_post_stmt_throw_check)
                     // propagate it immediately up the call stack (Bug 40); the
                     // nearest enclosing try consumes it, or the runtime entry point
-                    // reports it as uncaught.
+                    // reports it as uncaught. Run pending defers first (Bug 41) so
+                    // resource cleanup happens as the throw unwinds this frame.
                     writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", store_val).unwrap();
+                    self.emit_unwind_defers(ctx)?;
                     self.emit_ret_default(ctx);
                 }
             }
@@ -8436,7 +8438,7 @@ impl CodeGen {
     /// propagating it up the stack. Without this, a throw only stopped its own
     /// function; intermediate frames and loops kept running with default values
     /// until the next try boundary.
-    fn emit_post_stmt_throw_check(&mut self, ctx: &mut GenCtx) {
+    fn emit_post_stmt_throw_check(&mut self, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
         let e = self.temp();
         writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", e).unwrap();
         let has = self.temp();
@@ -8450,9 +8452,12 @@ impl CodeGen {
             writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
             writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
         } else {
+            // Propagating out of this frame — run pending defers first (Bug 41).
+            self.emit_unwind_defers(ctx)?;
             self.emit_ret_default(ctx);
         }
         writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
+        Ok(())
     }
 
     /// Conservative syntactic check: could executing this statement transitively
@@ -8582,7 +8587,7 @@ impl CodeGen {
         // (which isn't a Block) and is a harmless no-op after a Block body.
         self.gen_stmt_body(body, ctx)?;
         if !self.last_is_terminator() {
-            self.emit_post_stmt_throw_check(ctx);
+            self.emit_post_stmt_throw_check(ctx)?;
         }
         ctx.error_catch = old_error_catch;
         let try_ok_bb = self.new_bb("try_ok");
@@ -8689,6 +8694,30 @@ impl CodeGen {
             }
             ctx.in_defer_exec = old_in_defer;
         }
+        Ok(())
+    }
+
+    /// Run ALL active defer scopes (innermost first) before a throw unwinds out
+    /// of the current function (Bug 41). Unlike gen_defer_scope (innermost scope,
+    /// normal block exit), an escaping throw must clean up every enclosing scope
+    /// — a throw nested in a loop still has to run the function-level `defer`.
+    /// The defer_stack is left intact: the normal (non-throwing) control-flow
+    /// path through the blocks still runs each scope on its own exit.
+    fn emit_unwind_defers(&mut self, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        if ctx.in_defer_exec {
+            return Ok(());
+        }
+        let scopes: Vec<Vec<Stmt>> = ctx.defer_stack.iter().rev().cloned().collect();
+        if scopes.iter().all(|s| s.is_empty()) {
+            return Ok(());
+        }
+        ctx.in_defer_exec = true;
+        for scope in scopes {
+            for stmt in scope.into_iter().rev() {
+                self.gen_stmt_body(&Box::new(stmt), ctx)?;
+            }
+        }
+        ctx.in_defer_exec = false;
         Ok(())
     }
 
