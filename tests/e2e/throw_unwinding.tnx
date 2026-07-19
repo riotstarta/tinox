@@ -1,0 +1,65 @@
+// Sofortiges throw-Unwinding (Bug 40): ein throw stoppt nicht nur seine eigene
+// Funktion, sondern propagiert sofort durch Zwischen-Frames und aus Schleifen
+// heraus bis zum nächsten try. Früher liefen Zwischen-Frames und Schleifen mit
+// Default-Werten weiter, bis zur nächsten try-Grenze.
+// expect: iter 0
+// expect: iter 1
+// expect: iter 2
+// expect: aus Schleife gefangen: boom
+// expect: a faengt: aus c
+// expect: a fertig
+// expect: gefangen: negativ
+// expect: fertig
+
+fn c() -> Nothing { throw "aus c"; }
+fn b() -> Nothing { c(); println("b nach c (nie)"); }
+
+fn helper(i: Int64) -> Nothing {
+    if i == 3 { throw "boom"; }
+    println("iter " + i.toString());
+}
+
+fn compute(x: Int64) -> Int64 {
+    if x < 0 { throw "negativ"; }
+    return x * 2;
+}
+
+fn useCompute() -> Int64 {
+    let r: Int64 = compute(0 - 5);
+    println("nach compute (nie)");   // uebersprungen — sofortiges Unwinding
+    return r;
+}
+
+fn main() -> Int32 {
+    // Unwinding aus einer Schleife heraus in ein try
+    try {
+        var i: Int64 = 0;
+        while i < 10 {
+            helper(i);
+            i = i + 1;
+        }
+        println("nie erreicht (Schleife)");
+    } catch e: String {
+        println("aus Schleife gefangen: " + e);
+    }
+
+    // Multi-Frame-Unwinding: c -> b (kein try) -> hier gefangen
+    try {
+        b();
+        println("nach b (nie)");
+    } catch e: String {
+        println("a faengt: " + e);
+    }
+    println("a fertig");
+
+    // Rueckgabewert-Funktion wirft, Aufrufer faengt
+    try {
+        let v: Int64 = useCompute();
+        println(v.toString());
+    } catch e: String {
+        println("gefangen: " + e);
+    }
+
+    println("fertig");
+    return 0;
+}

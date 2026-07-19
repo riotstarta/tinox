@@ -3310,6 +3310,17 @@ impl CodeGen {
                 }
                 for s in stmts {
                     self.gen_stmt_body(s, ctx)?;
+                    // Bug 40: propagate a thrown error immediately after any
+                    // statement that could have thrown — unless the statement
+                    // already terminated the block (throw/return/break emit their
+                    // own terminator). Not while replaying deferred statements
+                    // (those run during unwinding/return and must not re-trigger).
+                    if !ctx.in_defer_exec
+                        && Self::stmt_may_throw(s)
+                        && !self.last_is_terminator()
+                    {
+                        self.emit_post_stmt_throw_check(ctx);
+                    }
                 }
                 if !ctx.in_defer_exec {
                     self.gen_defer_scope(ctx)?;
@@ -3990,18 +4001,13 @@ impl CodeGen {
                     writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
                 } else {
                     // No enclosing try in this function: park the error in the
-                    // global slot and return a zero value — the nearest try
-                    // further up the call chain consumes it.
+                    // global slot and return a default value. Per-statement
+                    // throw-checks in the calling frames (emit_post_stmt_throw_check)
+                    // propagate it immediately up the call stack (Bug 40); the
+                    // nearest enclosing try consumes it, or the runtime entry point
+                    // reports it as uncaught.
                     writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", store_val).unwrap();
-                    match ctx.ret_type.as_str() {
-                        "void" | "" => writeln!(&mut self.ir, "ret void").unwrap(),
-                        "double" => writeln!(&mut self.ir, "ret double 0.0").unwrap(),
-                        "float" => writeln!(&mut self.ir, "ret float 0.0").unwrap(),
-                        t if t.ends_with('*') || t == "ptr" => {
-                            writeln!(&mut self.ir, "ret {} null", t).unwrap()
-                        }
-                        t => writeln!(&mut self.ir, "ret {} 0", t).unwrap(),
-                    }
+                    self.emit_ret_default(ctx);
                 }
             }
             StmtKind::Try {
@@ -8398,21 +8404,149 @@ impl CodeGen {
         }
     }
 
-    /// Consume a cross-function error parked in @__tinox_err: move it into
-    /// the local error slot and branch to the catch dispatch block.
-    fn emit_global_err_check(&mut self, catch_bb: &str, error_var: &str) {
+    /// Emit `ret <default>` for the current function's return type — used when a
+    /// throw (or a propagated throw) leaves a function without an enclosing try.
+    fn emit_ret_default(&mut self, ctx: &GenCtx) {
+        match ctx.ret_type.as_str() {
+            "void" | "" => writeln!(&mut self.ir, "ret void").unwrap(),
+            "double" => writeln!(&mut self.ir, "ret double 0.0").unwrap(),
+            "float" => writeln!(&mut self.ir, "ret float 0.0").unwrap(),
+            t if t.ends_with('*') || t == "ptr" => {
+                writeln!(&mut self.ir, "ret {} null", t).unwrap()
+            }
+            t => writeln!(&mut self.ir, "ret {} 0", t).unwrap(),
+        }
+    }
+
+    /// True if the last emitted IR line already terminates the current basic
+    /// block, so no further instructions may be appended to it.
+    fn last_is_terminator(&self) -> bool {
+        self.ir.lines().last().is_some_and(|l| {
+            let t = l.trim();
+            t.starts_with("ret ") || t == "ret void" || t.starts_with("br ")
+                || t == "unreachable" || t.starts_with("switch ")
+        })
+    }
+
+    /// After a statement that may have thrown, check the global error slot and
+    /// react immediately (Bug 40 — true unwinding at statement granularity).
+    /// Inside a try, consume the error and branch to the catch dispatch.
+    /// Otherwise return the function default, leaving the flag set so the
+    /// caller's own post-statement check (or the runtime entry point) keeps
+    /// propagating it up the stack. Without this, a throw only stopped its own
+    /// function; intermediate frames and loops kept running with default values
+    /// until the next try boundary.
+    fn emit_post_stmt_throw_check(&mut self, ctx: &mut GenCtx) {
         let e = self.temp();
         writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", e).unwrap();
         let has = self.temp();
         writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, e).unwrap();
-        let err_bb = self.new_bb("gerr");
-        let cont_bb = self.new_bb("gcont");
+        let err_bb = self.new_bb("throwck");
+        let cont_bb = self.new_bb("throwcont");
         writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, err_bb, cont_bb).unwrap();
         writeln!(&mut self.ir, "{}:", err_bb).unwrap();
-        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
-        writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
-        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
+        if let Some((catch_bb, error_var)) = ctx.error_catch.clone() {
+            writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
+            writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
+        } else {
+            self.emit_ret_default(ctx);
+        }
         writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
+    }
+
+    /// Conservative syntactic check: could executing this statement transitively
+    /// throw? True if it contains any call-like expression or an explicit throw.
+    /// Over-approximates (extra checks are harmless); must never miss a call.
+    fn stmt_may_throw(stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Expr(e) => Self::expr_may_throw(e),
+            StmtKind::Let { value, .. } | StmtKind::Var { value, .. } => {
+                value.as_ref().is_some_and(Self::expr_may_throw)
+            }
+            StmtKind::Assignment { target, value } => {
+                Self::expr_may_throw(target) || Self::expr_may_throw(value)
+            }
+            StmtKind::If { cond, then_branch, else_branch } => {
+                Self::expr_may_throw(cond)
+                    || Self::stmt_may_throw(then_branch)
+                    || else_branch.as_ref().is_some_and(|b| Self::stmt_may_throw(b))
+            }
+            StmtKind::While { cond, body } => {
+                Self::expr_may_throw(cond) || Self::stmt_may_throw(body)
+            }
+            StmtKind::For { iter, body, .. } => {
+                Self::expr_may_throw(iter) || Self::stmt_may_throw(body)
+            }
+            StmtKind::ForC { init, cond, update, body } => {
+                init.as_ref().is_some_and(|s| Self::stmt_may_throw(s))
+                    || cond.as_ref().is_some_and(Self::expr_may_throw)
+                    || update.as_ref().is_some_and(Self::expr_may_throw)
+                    || Self::stmt_may_throw(body)
+            }
+            StmtKind::Loop { body } => Self::stmt_may_throw(body),
+            StmtKind::Block(stmts) => stmts.iter().any(Self::stmt_may_throw),
+            StmtKind::Return(v) => v.as_ref().is_some_and(Self::expr_may_throw),
+            StmtKind::Throw(_) => true,
+            StmtKind::Try { body, catches, finally } => {
+                Self::stmt_may_throw(body)
+                    || catches.iter().any(|c| Self::stmt_may_throw(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::stmt_may_throw(f))
+            }
+            StmtKind::Defer(s) => Self::stmt_may_throw(s),
+            StmtKind::Select { arms, default } => {
+                arms.iter().any(|a| Self::stmt_may_throw(&a.body))
+                    || default.as_ref().is_some_and(|d| Self::stmt_may_throw(d))
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
+        }
+    }
+
+    /// Companion of `stmt_may_throw` for expressions.
+    fn expr_may_throw(expr: &Expr) -> bool {
+        match &expr.node {
+            // Call-like nodes: the callee may throw.
+            ExprKind::Call { .. }
+            | ExprKind::MethodCall { .. }
+            | ExprKind::SuperCall { .. }
+            | ExprKind::New { .. }
+            | ExprKind::EnumValue { .. }
+            | ExprKind::Throw(_)
+            | ExprKind::Await(_)
+            | ExprKind::Recv(_)
+            | ExprKind::Spawn(_) => true,
+            ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Channel => false,
+            ExprKind::Binary { lhs, rhs, .. } => Self::expr_may_throw(lhs) || Self::expr_may_throw(rhs),
+            ExprKind::Unary { operand, .. } => Self::expr_may_throw(operand),
+            ExprKind::Index { obj, index } => Self::expr_may_throw(obj) || Self::expr_may_throw(index),
+            ExprKind::FieldAccess { obj, .. } => Self::expr_may_throw(obj),
+            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => es.iter().any(Self::expr_may_throw),
+            ExprKind::MapLiteral(kvs) => kvs.iter().any(|(k, v)| Self::expr_may_throw(k) || Self::expr_may_throw(v)),
+            ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| Self::expr_may_throw(v)),
+            ExprKind::Block(stmts) => stmts.iter().any(Self::stmt_may_throw),
+            ExprKind::If { cond, then_branch, else_branch } => {
+                Self::expr_may_throw(cond) || Self::expr_may_throw(then_branch)
+                    || else_branch.as_ref().is_some_and(|b| Self::expr_may_throw(b))
+            }
+            ExprKind::While { cond, body } => Self::expr_may_throw(cond) || Self::expr_may_throw(body),
+            ExprKind::For { iter, body, .. } => Self::expr_may_throw(iter) || Self::expr_may_throw(body),
+            ExprKind::Loop { body } => Self::expr_may_throw(body),
+            ExprKind::Match { expr, cases } => {
+                Self::expr_may_throw(expr) || cases.iter().any(|c| Self::expr_may_throw(&c.body)
+                    || c.guard.as_ref().is_some_and(Self::expr_may_throw))
+            }
+            ExprKind::Return(v) => v.as_ref().is_some_and(|e| Self::expr_may_throw(e)),
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                Self::expr_may_throw(target) || Self::expr_may_throw(value)
+            }
+            ExprKind::Lambda { .. } => false, // body runs only when the lambda is called
+            ExprKind::Send { channel, value } => Self::expr_may_throw(channel) || Self::expr_may_throw(value),
+            ExprKind::Cast { expr, .. } | ExprKind::Is { expr, .. } => Self::expr_may_throw(expr),
+            ExprKind::Range { start, end, .. } => Self::expr_may_throw(start) || Self::expr_may_throw(end),
+            ExprKind::TupleIndex { tuple, .. } => Self::expr_may_throw(tuple),
+            ExprKind::Break | ExprKind::Continue => false,
+            ExprKind::Try { .. } => true,
+        }
     }
 
     fn gen_try_stmt(
@@ -8442,17 +8576,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
         let old_error_catch = ctx.error_catch.take();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone()));
-        // Statement-level checks of the global error slot: a callee without
-        // its own try parks thrown errors in @__tinox_err and returns; after
-        // each try-body statement we consume it and branch to the catch.
-        if let StmtKind::Block(stmts) = &body.node {
-            for stmt in stmts {
-                self.gen_stmt_body(&Box::new(stmt.clone()), ctx)?;
-                self.emit_global_err_check(&catch_bb, &error_var);
-            }
-        } else {
-            self.gen_stmt_body(body, ctx)?;
-            self.emit_global_err_check(&catch_bb, &error_var);
+        // The body runs with error_catch set: per-statement throw-checks inside
+        // (emitted by the Block handler and other nested scopes) branch to this
+        // try's catch (Bug 40). A trailing check covers a single-statement body
+        // (which isn't a Block) and is a harmless no-op after a Block body.
+        self.gen_stmt_body(body, ctx)?;
+        if !self.last_is_terminator() {
+            self.emit_post_stmt_throw_check(ctx);
         }
         ctx.error_catch = old_error_catch;
         let try_ok_bb = self.new_bb("try_ok");

@@ -1351,7 +1351,8 @@ gelieferte Pfad.
 
 ## Bug 35 — Uncaught `throw` wird still geschluckt (Programm läuft weiter, exit 0)
 
-**Status: PRIMÄR GEFIXT (2026-07-19).** Ein uncaught `throw` ist jetzt laut und
+**Status: PRIMÄR GEFIXT (2026-07-19); Restschwäche in Bug 40 geschlossen.** Ein
+uncaught `throw` ist jetzt laut und
 fatal: `main` (runtime.c) prüft nach `tinox_main()` den globalen Slot
 `__tinox_err` — ist er != 0, wurde nirgends gefangen → `fprintf(stderr,
 "Uncaught error: %s", …)` + Exit 1. Ein gefangener throw setzt den Slot via
@@ -1595,6 +1596,50 @@ Empfänger-Stil (`Cache::set(cache, …)`, Objekt IST deklarierter Param,
 Regressionsfall im e2e-Test `this_via_static_dispatch.tnx` ergänzt (→ 123);
 `make check` voll grün (Cache/Option/Result/collections nutzen den
 Empfänger-Stil ausgiebig — keine Regression).
+
+---
+
+## Bug 40 — Echtes throw-Unwinding: sofortige Propagierung statt bis zur nächsten try-Grenze
+
+**Status: GEFIXT (2026-07-19).** Schließt die in Bug 35 bewusst offen gelassene
+tiefere Design-Schwäche. Vorher stoppte ein `throw` nur seine eigene Funktion
+(via `ret <default>` + globalem Slot `@__tinox_err`); **Zwischen-Frames ohne try
+und Schleifen liefen mit Default-Werten weiter**, bis ein `try` an einer
+Statement-Grenze den Slot prüfte. Jetzt wird ein geworfener Fehler **sofort** (auf
+Statement-Granularität) durch alle Frames und aus Schleifen heraus propagiert.
+
+**Ansatz (bewusst NICHT setjmp/longjmp).** setjmp/longjmp wäre architektonisch
+sauber (Prototyp durch `opt -O3 + llc -O3` verifiziert), erfordert aber
+Handler-Stack-Aufräumen bei `return`/`break`/`continue`/`finally`/`defer` aus
+einem try — große, fehleranfällige Blast-Radius. Stattdessen wird der bewährte
+`@__tinox_err`-Flag-Mechanismus wiederverwendet: **nach jedem Statement, das
+werfen kann, eine Propagierungs-Prüfung** (`emit_post_stmt_throw_check`) im
+Block-Handler (und am try-Body-Ende):
+- innerhalb eines try → Fehler konsumieren, zum catch springen (wie bisher);
+- sonst → `ret <default>`, Flag bleibt gesetzt, sodass die Prüfung im aufrufenden
+  Frame (oder der Runtime-Entry-Check aus Bug 35) weiter propagiert.
+
+`throw` selbst unverändert (Slot setzen + Default-Return); `try` und der
+Runtime-main-Check unverändert. Neu nur die per-Statement-Prüfung, gegated durch
+`stmt_may_throw` (konservativer Syntax-Walker: nur nach Statements mit Call/`throw`
+— reine Arithmetik/Zuweisungen bleiben ungeprüft, kein Overhead) und
+`last_is_terminator` (keine Prüfung nach `ret`/`br`, sonst ungültiges IR).
+
+**Granularität:** Statement-Ebene. Ein throw in einer Zwischen-Funktion stoppt den
+Aufrufer beim nächsten Statement (nicht mitten in einem mehr-Call-Ausdruck wie
+`a() + b()` — dort liefe `b()` nach `a()`s throw noch, dann greift die Prüfung).
+Für die Praxis (Zwischen-Frames, Schleifen, Rückgabewerte) ist das vollständiges
+sofortiges Unwinding.
+
+**Verifiziert:** Bug-35-Repro druckt „nach go" jetzt NICHT (sofortiger Abbruch);
+Schleife mit werfendem Body stoppt sofort; `try`/`catch` fängt aus Schleifen und
+über mehrere Frames; Rückgabewert-Funktion propagiert. e2e-Regressionstest
+`tests/e2e/throw_unwinding.tnx`; `make check` voll grün (der per-Statement-Check
+betrifft ALLEN Block-Code — Dogfood inkl. jgrep-tinox/Benchmarks unverändert grün).
+
+**Bewusst noch offen (v3):** Sub-Statement-Granularität (perfekte Immediacy in
+`a()+b()`) bräuchte Post-Call-Checks oder setjmp; `try`-`finally` ohne `catch`
+schluckt weiterhin (kein Re-throw, wie im Alt-Mechanismus).
 
 ---
 
