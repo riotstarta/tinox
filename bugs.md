@@ -2043,10 +2043,20 @@ Der Alloc (`tinox_alloc`) und der Vtable-Slot-Store bleiben i64 (Phase 3).
 Verifiziert: double-/String-/Int-/Bool-/Objekt-Referenz-Felder korrekt geschrieben
 + gelesen; e2e-Test um die Store-Seite erweitert; `make check` grün.
 
-**Noch offen (Phasen 3–5):** verstreute Feld-Assignments (`obj.f = v`) getypt +
-Vererbung + Vtable-Slot (3); generische Monomorphisierung — eigener named type pro
-Instanziierung (4); Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar
-(5) — der eigentliche Payoff.
+**Phase 3 (2026-07-20):** Feld-Assignments (`obj.f = v`) getypt. Beide Haupt-
+Assignment-Pfade (StmtKind::Assignment + ExprKind::Assign, FieldAccess-Target)
+nutzen jetzt einen gemeinsamen Helper `try_typed_field_store` (getyptes GEP +
+`store <slot>`, sonst false → unveränderter i64-Fallback jeder Stelle). **Vererbung
+war bereits kostenlos abgedeckt** (der named type enthält Parent-Felder via
+`collect_inherited_fields`; Read + Assignment auf geerbten Feldern verifiziert).
+Der `New`-Konstruktor (positional args, selten) und Tuple-Stores bleiben i64.
+Verifiziert: getypte Assignments auf double-/String-/Bool-/geerbten Int-/Objekt-
+Feldern; `make check` grün.
+
+**Noch offen (Phasen 4–5):** generische Monomorphisierung — eigener named type pro
+Instanziierung `Foo__i64` (4); Vtable-Slot-Store getypt + `New`-Konstruktor-Pfad;
+Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar (5) — der eigentliche
+Payoff.
 
 ---
 

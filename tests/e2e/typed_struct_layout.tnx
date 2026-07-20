@@ -10,6 +10,10 @@
 // expect: 42
 // expect: -3
 // expect: flag-true
+// expect: 5.5
+// expect: welt
+// expect: flag-false
+// expect: 100
 
 class Inner {
     var value: Int64;
@@ -35,5 +39,15 @@ fn main() -> Int32 {
     println(o.inner.value.toString());    // 42 — Objekt-Feld -> Int-Feld
     println(o.inner.neg.toString());      // -3 — negativer Int
     if o.flag { println("flag-true"); } else { println("flag-false"); }  // Bool i1->i64-Slot
+
+    // Phase 3: getypte Feld-Assignments (obj.f = v) über double/ptr/i64-Slots
+    o.fx = 1.5;
+    o.name = "welt";
+    o.flag = false;
+    o.inner.value = 100;                  // Assignment auf Objekt-Feld -> Int
+    println((o.fx + o.fy).toString());    // 5.5
+    println(o.name);                       // welt
+    if o.flag { println("flag-true"); } else { println("flag-false"); }  // flag-false
+    println(o.inner.value.toString());     // 100
     return 0;
 }

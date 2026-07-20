@@ -4410,41 +4410,39 @@ impl CodeGen {
                         obj_raw
                     };
                     let struct_name = self.infer_struct_type(obj, ctx);
-                    let offset = if let Some(sname) = struct_name {
-                        if let Some(fields) = self.struct_layouts.get(&sname) {
-                            fields.iter().position(|f| f == field).unwrap_or(0) as i64
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
+                    let offset = struct_name.as_ref()
+                        .and_then(|sn| self.struct_layouts.get(sn))
+                        .and_then(|fields| fields.iter().position(|f| f == field))
+                        .unwrap_or(0) as i64;
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
-                    // Uniform i64 field storage: floats → bitcast, i1 → zext, pointers → ptrtoint
-                    let store_val = if val_ty == "i1" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                        cast
-                    } else if val_ty == "double" || val_ty == "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else if val_ty != "i64" && !val_ty.is_empty() {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else {
-                        val
-                    };
-                    let field_ptr = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = getelementptr i64, ptr {}, i64 {}",
-                        field_ptr, obj_ptr, offset
-                    )
-                    .unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr)
+                    // B1 phase 3: typed field store for named-type classes; else i64.
+                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, offset, &val, &val_ty) {
+                        // Uniform i64 field storage: floats → bitcast, i1 → zext, pointers → ptrtoint
+                        let store_val = if val_ty == "i1" {
+                            let cast = self.temp();
+                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
+                            cast
+                        } else if val_ty == "double" || val_ty == "float" {
+                            let cast = self.temp();
+                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                            cast
+                        } else if val_ty != "i64" && !val_ty.is_empty() {
+                            let cast = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                            cast
+                        } else {
+                            val
+                        };
+                        let field_ptr = self.temp();
+                        writeln!(
+                            &mut self.ir,
+                            "{} = getelementptr i64, ptr {}, i64 {}",
+                            field_ptr, obj_ptr, offset
+                        )
                         .unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr)
+                            .unwrap();
+                    }
                 } else if let ExprKind::Index { obj, index } = &target.node {
                     // Detect Map type for map[key] = val → tinox_map_set
                     let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
@@ -7909,20 +7907,23 @@ impl CodeGen {
                         .and_then(|sn| self.struct_layouts.get(sn))
                         .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
                         .unwrap_or(0) as i64;
-                    let store_val = if val_ty == "double" || val_ty == "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else {
-                        val.clone()
-                    };
-                    let field_ptr = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
-                    writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+                    // B1 phase 3: typed field-assignment store for named-type classes.
+                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, offset, &val, &val_ty) {
+                        let store_val = if val_ty == "double" || val_ty == "float" {
+                            let cast = self.temp();
+                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
+                            cast
+                        } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
+                            let cast = self.temp();
+                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                            cast
+                        } else {
+                            val.clone()
+                        };
+                        let field_ptr = self.temp();
+                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+                    }
                 } else if let ExprKind::Ident(name) = &target.node {
                     let store_ty = ctx.locals.get(name).map(|(t, _)| t.clone()).unwrap_or_else(|| val_ty.clone());
                     let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
@@ -9797,6 +9798,35 @@ impl CodeGen {
     }
 
     /// Coerce an LLVM value of the given type to i64, emitting cast instructions as needed.
+    /// If `struct_name` is a class with a named LLVM struct type, emit a typed
+    /// field store (typed GEP + `store <slot>`) and return true (B1 phase 3).
+    /// Otherwise emit nothing and return false — the caller keeps its existing
+    /// i64-slot store, which is layout-compatible with the typed path.
+    fn try_typed_field_store(
+        &mut self,
+        struct_name: Option<&str>,
+        obj_ptr: &str,
+        field: &str,
+        offset: i64,
+        val: &str,
+        val_ty: &str,
+    ) -> bool {
+        let Some(sname) = struct_name.filter(|s| self.class_named_types.contains(*s)) else {
+            return false;
+        };
+        let sname = sname.to_string();
+        let field_llvm_ty = self.struct_field_llvm_types.get(&sname)
+            .and_then(|m| m.get(field))
+            .cloned()
+            .unwrap_or_else(|| "i64".to_string());
+        let slot = Self::slot_llvm_ty(&field_llvm_ty);
+        let store_val = self.coerce_to_slot(val, val_ty, &slot);
+        let field_ptr = self.temp();
+        writeln!(&mut self.ir, "{} = getelementptr %class.{}, ptr {}, i32 0, i32 {}", field_ptr, sname, obj_ptr, offset).unwrap();
+        writeln!(&mut self.ir, "store {} {}, {}* {}", slot, store_val, slot, field_ptr).unwrap();
+        true
+    }
+
     /// Coerce a value of llvm type `val_ty` to an 8-byte struct slot type `slot`
     /// (double / a pointer / i64) for a typed field store (B1 phase 2). The common
     /// case (val_ty == slot) is a no-op; mismatches bit-cast/int-to-ptr as needed.
