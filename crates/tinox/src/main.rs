@@ -11,6 +11,23 @@ use tinox_parser::{DeclKind, Formatter, Parser};
 mod pm;
 
 fn main() {
+    // Run the compiler on a thread with a large stack. The parser, type checker
+    // and code generator all recurse over the AST, so deeply nested (or maliciously
+    // deep) input can overflow the default 8 MB main-thread stack. A 512 MB stack
+    // pushes the safe nesting depth far beyond any real program; the parser's own
+    // MAX_RECURSION_DEPTH guard rejects the truly pathological case with a clean
+    // error before even this stack is exhausted.
+    let child = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(run)
+        .expect("failed to spawn compiler thread");
+    // Propagate a panic in the worker as a non-zero exit (no double-panic noise).
+    if child.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn run() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {

@@ -1906,6 +1906,43 @@ Damit ist throw-Unwinding **zero-cost when unused**: Programme ohne erreichbaren
 
 ---
 
+## Bug 49 — Parser: Stack-Overflow-Crash bei tief verschachtelter Eingabe
+
+**Status: GEFIXT (2026-07-20).** Der rekursive-Descent-Parser (und die
+nachgelagerten AST-Walks) hatten kein Tiefenlimit → pathologisch tiefe Eingabe
+crashte den Compiler (SIGABRT/Stack-Overflow) statt eines sauberen Fehlers —
+klassische Parser-DoS. Betroffen: geklammerte Ausdrücke `(((…`, Array-Literale
+`[[[…`, verschachtelte Blöcke `if{if{…`, Postfix-Ketten `a.a.a.…` (je ×50000).
+
+**Sondierung:** verschiedene Konstrukte crashten bei verschiedenen Tiefen —
+Parser-Rekursion (paren) erst >95, aber nested-Array-Literale schon bei ~43 (die
+TEUERSTE Phase ist nicht der Parser, sondern typecheck/codegen der verschachtelten
+Container). Ein einheitliches niedriges Parser-Limit hätte legitimen Code gebrochen.
+
+**Fix — zwei Ebenen, wie in ausgereiften Compilern (rustc):**
+1. **Großer Compiler-Stack.** `main` läuft den Compiler jetzt auf einem Thread mit
+   512 MB Stack (`std::thread::Builder::stack_size`). Das verschiebt die sichere
+   Verschachtelungstiefe ALLER Phasen (Parser, node-ids, typecheck, codegen) um
+   ~64× nach oben (nested-Array-Crash von ~43 auf ~2750). Ein Panic im Worker →
+   Exit 101 (kein Double-Panic-Rauschen).
+2. **Parser-Tiefen-Guard.** Feld `depth` + `MAX_RECURSION_DEPTH = 1000`, geprüft in
+   `parse_expr` und `parse_stmt` (rekursive Eintrittspunkte) → sauberer Fehler
+   „expression/statement nesting too deep". Postfix-Ketten sind iterativ (erhöhen
+   die Rekursion nicht, bauen aber gleich tiefe AST) → separater Ketten-Zähler in
+   `parse_postfix_expr` („postfix chain too deep"). Das Limit ist mit dem 512-MB-
+   Stack sicher und weit über jedem realen Programm.
+
+**Verifiziert:** alle 5 Pathologie-Fälle (×50000) → sauberer Fehler statt Crash;
+legitim tiefe Eingabe (300 verschachtelte Arrays, 40-fach geklammert, verschachtelte
+if) → kompiliert; e2e-Regressionstest `tests/e2e/deep_nesting_guard.tnx`;
+`make check` voll grün (kein Stdlib-Programm überschreitet das Limit).
+
+**Separater vorbestehender Fund (Bug 50):** Method-Ketten haben EXPONENTIELLE
+Compile-Zeit (Kette 15→971 ms, 20→2666 ms; mit `git stash` als vor der Änderung
+bestätigt) — der Guard verhindert den Crash, aber nicht diesen Hänger; eigener Bug.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

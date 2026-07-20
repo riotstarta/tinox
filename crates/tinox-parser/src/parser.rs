@@ -7,7 +7,16 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     errors: Vec<Error>,
+    /// Current recursion / nesting depth, guarded against stack overflow on
+    /// pathologically deep input (e.g. `(((…`, `[[[…`, `a.a.a.…`, nested blocks).
+    depth: usize,
 }
+
+/// Maximum expression/statement nesting the parser accepts before returning a
+/// clean error instead of overflowing the stack. Generous for real code (the
+/// stdlib's deepest nesting is well under 30) yet safe for every later AST walk
+/// (node-id assignment, typecheck, codegen) which recurse over the same depth.
+const MAX_RECURSION_DEPTH: usize = 1000;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
@@ -15,6 +24,7 @@ impl Parser {
             tokens,
             pos: 0,
             errors: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -795,6 +805,17 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Error> {
+        self.depth += 1;
+        if self.depth > MAX_RECURSION_DEPTH {
+            self.depth -= 1;
+            return Err(Error::new(self.mk_span(), "statement nesting too deep"));
+        }
+        let r = self.parse_stmt_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, Error> {
         let span = self.mk_span();
 
         let stmt = match self.peek().kind {
@@ -1318,7 +1339,14 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Error> {
-        self.parse_assign_expr()
+        self.depth += 1;
+        if self.depth > MAX_RECURSION_DEPTH {
+            self.depth -= 1;
+            return Err(Error::new(self.mk_span(), "expression nesting too deep"));
+        }
+        let r = self.parse_assign_expr();
+        self.depth -= 1;
+        r
     }
 
     fn parse_assign_expr(&mut self) -> Result<Expr, Error> {
@@ -1741,7 +1769,17 @@ impl Parser {
     fn parse_postfix_expr(&mut self) -> Result<Expr, Error> {
         let mut expr = self.parse_primary_expr()?;
 
+        // Postfix chains (`a.b.c…`, `a[i][j]…`, `a()()…`) are parsed iteratively,
+        // so they don't grow the parser's recursion depth — but they DO build an
+        // equally deep AST that later recursive walks (node-ids, typecheck,
+        // codegen) traverse. Cap the chain length to keep that AST bounded and
+        // avoid a stack overflow on pathological input like `a.a.a.…` (×50000).
+        let mut chain = 0usize;
         loop {
+            chain += 1;
+            if chain > MAX_RECURSION_DEPTH {
+                return Err(Error::new(self.mk_span(), "postfix chain too deep"));
+            }
             if self.check(TokenKind::Dot) {
                 self.bump();
                 // Tuple index access: expr.0, expr.1, ...
