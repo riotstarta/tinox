@@ -160,6 +160,15 @@ pub struct CodeGen {
     vtable_sizes: HashMap<String, usize>,
     /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
     method_impl: HashMap<String, String>,
+    /// Free-function names that can (transitively) throw. A call to a free fn NOT
+    /// in this set provably cannot throw, so no post-statement throw-check (Bug 40)
+    /// is needed after it — the throw-effect analysis (Bug 48) makes exception
+    /// propagation zero-cost for the common non-throwing case.
+    throwing_free_fns: HashSet<String>,
+    /// Method base names (e.g. `get`) for which SOME class's method can throw.
+    /// A `obj.m()` / `Class::m()` call whose base name is absent provably cannot
+    /// throw (over-approximates across same-named methods; always safe).
+    throwing_method_basenames: HashSet<String>,
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
     spawn_counter: usize,
@@ -253,6 +262,8 @@ impl CodeGen {
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
             method_impl: HashMap::new(),
+            throwing_free_fns: HashSet::new(),
+            throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
             spawn_counter: 0,
             generic_fns: HashMap::new(),
@@ -1018,6 +1029,10 @@ impl CodeGen {
                 _ => {}
             }
         }
+
+        // Throw-effect analysis (Bug 48): must run before any function body is
+        // emitted, so the per-statement throw-check gate has the throwing-sets.
+        self.analyze_throw_effects(source);
 
         // First pass: build struct_layouts (with vtable slot at index 0 where needed)
         // and method_impl (for inherited method dispatch). Handles both top-level and
@@ -3316,7 +3331,7 @@ impl CodeGen {
                     // own terminator). Not while replaying deferred statements
                     // (those run during unwinding/return and must not re-trigger).
                     if !ctx.in_defer_exec
-                        && Self::stmt_may_throw(s)
+                        && Self::stmt_may_throw(s, &self.throwing_free_fns, &self.throwing_method_basenames)
                         && !self.last_is_terminator()
                     {
                         self.emit_post_stmt_throw_check(ctx)?;
@@ -8460,98 +8475,173 @@ impl CodeGen {
         Ok(())
     }
 
-    /// Conservative syntactic check: could executing this statement transitively
-    /// throw? True if it contains any call-like expression or an explicit throw.
-    /// Over-approximates (extra checks are harmless); must never miss a call.
-    fn stmt_may_throw(stmt: &Stmt) -> bool {
+    /// Could executing this statement (transitively) throw? Consults the
+    /// throw-effect analysis (Bug 48): a call whose resolved target provably
+    /// cannot throw is not counted. Over-approximates on unresolved/dynamic calls
+    /// (always safe — extra checks are correct, just slower). `tf`/`tm` are the
+    /// throwing free-fn names / throwing method base names.
+    fn stmt_may_throw(stmt: &Stmt, tf: &HashSet<String>, tm: &HashSet<String>) -> bool {
         match &stmt.node {
-            StmtKind::Expr(e) => Self::expr_may_throw(e),
+            StmtKind::Expr(e) => Self::expr_may_throw(e, tf, tm),
             StmtKind::Let { value, .. } | StmtKind::Var { value, .. } => {
-                value.as_ref().is_some_and(Self::expr_may_throw)
+                value.as_ref().is_some_and(|e| Self::expr_may_throw(e, tf, tm))
             }
             StmtKind::Assignment { target, value } => {
-                Self::expr_may_throw(target) || Self::expr_may_throw(value)
+                Self::expr_may_throw(target, tf, tm) || Self::expr_may_throw(value, tf, tm)
             }
             StmtKind::If { cond, then_branch, else_branch } => {
-                Self::expr_may_throw(cond)
-                    || Self::stmt_may_throw(then_branch)
-                    || else_branch.as_ref().is_some_and(|b| Self::stmt_may_throw(b))
+                Self::expr_may_throw(cond, tf, tm)
+                    || Self::stmt_may_throw(then_branch, tf, tm)
+                    || else_branch.as_ref().is_some_and(|b| Self::stmt_may_throw(b, tf, tm))
             }
             StmtKind::While { cond, body } => {
-                Self::expr_may_throw(cond) || Self::stmt_may_throw(body)
+                Self::expr_may_throw(cond, tf, tm) || Self::stmt_may_throw(body, tf, tm)
             }
             StmtKind::For { iter, body, .. } => {
-                Self::expr_may_throw(iter) || Self::stmt_may_throw(body)
+                Self::expr_may_throw(iter, tf, tm) || Self::stmt_may_throw(body, tf, tm)
             }
             StmtKind::ForC { init, cond, update, body } => {
-                init.as_ref().is_some_and(|s| Self::stmt_may_throw(s))
-                    || cond.as_ref().is_some_and(Self::expr_may_throw)
-                    || update.as_ref().is_some_and(Self::expr_may_throw)
-                    || Self::stmt_may_throw(body)
+                init.as_ref().is_some_and(|s| Self::stmt_may_throw(s, tf, tm))
+                    || cond.as_ref().is_some_and(|e| Self::expr_may_throw(e, tf, tm))
+                    || update.as_ref().is_some_and(|e| Self::expr_may_throw(e, tf, tm))
+                    || Self::stmt_may_throw(body, tf, tm)
             }
-            StmtKind::Loop { body } => Self::stmt_may_throw(body),
-            StmtKind::Block(stmts) => stmts.iter().any(Self::stmt_may_throw),
-            StmtKind::Return(v) => v.as_ref().is_some_and(Self::expr_may_throw),
+            StmtKind::Loop { body } => Self::stmt_may_throw(body, tf, tm),
+            StmtKind::Block(stmts) => stmts.iter().any(|s| Self::stmt_may_throw(s, tf, tm)),
+            StmtKind::Return(v) => v.as_ref().is_some_and(|e| Self::expr_may_throw(e, tf, tm)),
             StmtKind::Throw(_) => true,
             StmtKind::Try { body, catches, finally } => {
-                Self::stmt_may_throw(body)
-                    || catches.iter().any(|c| Self::stmt_may_throw(&c.body))
-                    || finally.as_ref().is_some_and(|f| Self::stmt_may_throw(f))
+                Self::stmt_may_throw(body, tf, tm)
+                    || catches.iter().any(|c| Self::stmt_may_throw(&c.body, tf, tm))
+                    || finally.as_ref().is_some_and(|f| Self::stmt_may_throw(f, tf, tm))
             }
-            StmtKind::Defer(s) => Self::stmt_may_throw(s),
+            StmtKind::Defer(s) => Self::stmt_may_throw(s, tf, tm),
             StmtKind::Select { arms, default } => {
-                arms.iter().any(|a| Self::stmt_may_throw(&a.body))
-                    || default.as_ref().is_some_and(|d| Self::stmt_may_throw(d))
+                arms.iter().any(|a| Self::stmt_may_throw(&a.body, tf, tm))
+                    || default.as_ref().is_some_and(|d| Self::stmt_may_throw(d, tf, tm))
             }
             StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
         }
     }
 
-    /// Companion of `stmt_may_throw` for expressions.
-    fn expr_may_throw(expr: &Expr) -> bool {
+    /// Companion of `stmt_may_throw` for expressions. Call resolution:
+    ///   - free call `name(...)`   → throws iff `name` ∈ tf (builtins/non-throwing
+    ///     user fns absent → no throw).
+    ///   - `obj.m(...)` / `Class::m(...)` / `super.m(...)` → throws iff `m` ∈ tm.
+    ///   - dynamic call (callee not an Ident), `New`, `await`/`recv`/`spawn` → true
+    ///     (conservative; cannot prove non-throwing).
+    fn expr_may_throw(expr: &Expr, tf: &HashSet<String>, tm: &HashSet<String>) -> bool {
         match &expr.node {
-            // Call-like nodes: the callee may throw.
-            ExprKind::Call { .. }
-            | ExprKind::MethodCall { .. }
-            | ExprKind::SuperCall { .. }
-            | ExprKind::New { .. }
-            | ExprKind::EnumValue { .. }
-            | ExprKind::Throw(_)
-            | ExprKind::Await(_)
-            | ExprKind::Recv(_)
-            | ExprKind::Spawn(_) => true,
+            ExprKind::Throw(_) => true,
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Ident(name) = &func.node {
+                    tf.contains(name.as_str())
+                        || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
+                } else {
+                    true // dynamic/lambda call — cannot prove non-throwing
+                }
+            }
+            ExprKind::MethodCall { obj, method, args } => {
+                tm.contains(method.as_str())
+                    || Self::expr_may_throw(obj, tf, tm)
+                    || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
+            }
+            ExprKind::SuperCall { method, args } => {
+                tm.contains(method.as_str()) || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
+            }
+            ExprKind::EnumValue { variant, args, .. } => {
+                tm.contains(variant.as_str()) || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
+            }
+            ExprKind::New { .. } | ExprKind::Await(_) | ExprKind::Recv(_) | ExprKind::Spawn(_) => true,
             ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Channel => false,
-            ExprKind::Binary { lhs, rhs, .. } => Self::expr_may_throw(lhs) || Self::expr_may_throw(rhs),
-            ExprKind::Unary { operand, .. } => Self::expr_may_throw(operand),
-            ExprKind::Index { obj, index } => Self::expr_may_throw(obj) || Self::expr_may_throw(index),
-            ExprKind::FieldAccess { obj, .. } => Self::expr_may_throw(obj),
-            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => es.iter().any(Self::expr_may_throw),
-            ExprKind::MapLiteral(kvs) => kvs.iter().any(|(k, v)| Self::expr_may_throw(k) || Self::expr_may_throw(v)),
-            ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| Self::expr_may_throw(v)),
-            ExprKind::Block(stmts) => stmts.iter().any(Self::stmt_may_throw),
+            ExprKind::Binary { lhs, rhs, .. } => Self::expr_may_throw(lhs, tf, tm) || Self::expr_may_throw(rhs, tf, tm),
+            ExprKind::Unary { operand, .. } => Self::expr_may_throw(operand, tf, tm),
+            ExprKind::Index { obj, index } => Self::expr_may_throw(obj, tf, tm) || Self::expr_may_throw(index, tf, tm),
+            ExprKind::FieldAccess { obj, .. } => Self::expr_may_throw(obj, tf, tm),
+            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => es.iter().any(|e| Self::expr_may_throw(e, tf, tm)),
+            ExprKind::MapLiteral(kvs) => kvs.iter().any(|(k, v)| Self::expr_may_throw(k, tf, tm) || Self::expr_may_throw(v, tf, tm)),
+            ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| Self::expr_may_throw(v, tf, tm)),
+            ExprKind::Block(stmts) => stmts.iter().any(|s| Self::stmt_may_throw(s, tf, tm)),
             ExprKind::If { cond, then_branch, else_branch } => {
-                Self::expr_may_throw(cond) || Self::expr_may_throw(then_branch)
-                    || else_branch.as_ref().is_some_and(|b| Self::expr_may_throw(b))
+                Self::expr_may_throw(cond, tf, tm) || Self::expr_may_throw(then_branch, tf, tm)
+                    || else_branch.as_ref().is_some_and(|b| Self::expr_may_throw(b, tf, tm))
             }
-            ExprKind::While { cond, body } => Self::expr_may_throw(cond) || Self::expr_may_throw(body),
-            ExprKind::For { iter, body, .. } => Self::expr_may_throw(iter) || Self::expr_may_throw(body),
-            ExprKind::Loop { body } => Self::expr_may_throw(body),
+            ExprKind::While { cond, body } => Self::expr_may_throw(cond, tf, tm) || Self::expr_may_throw(body, tf, tm),
+            ExprKind::For { iter, body, .. } => Self::expr_may_throw(iter, tf, tm) || Self::expr_may_throw(body, tf, tm),
+            ExprKind::Loop { body } => Self::expr_may_throw(body, tf, tm),
             ExprKind::Match { expr, cases } => {
-                Self::expr_may_throw(expr) || cases.iter().any(|c| Self::expr_may_throw(&c.body)
-                    || c.guard.as_ref().is_some_and(Self::expr_may_throw))
+                Self::expr_may_throw(expr, tf, tm) || cases.iter().any(|c| Self::expr_may_throw(&c.body, tf, tm)
+                    || c.guard.as_ref().is_some_and(|g| Self::expr_may_throw(g, tf, tm)))
             }
-            ExprKind::Return(v) => v.as_ref().is_some_and(|e| Self::expr_may_throw(e)),
+            ExprKind::Return(v) => v.as_ref().is_some_and(|e| Self::expr_may_throw(e, tf, tm)),
             ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
-                Self::expr_may_throw(target) || Self::expr_may_throw(value)
+                Self::expr_may_throw(target, tf, tm) || Self::expr_may_throw(value, tf, tm)
             }
             ExprKind::Lambda { .. } => false, // body runs only when the lambda is called
-            ExprKind::Send { channel, value } => Self::expr_may_throw(channel) || Self::expr_may_throw(value),
-            ExprKind::Cast { expr, .. } | ExprKind::Is { expr, .. } => Self::expr_may_throw(expr),
-            ExprKind::Range { start, end, .. } => Self::expr_may_throw(start) || Self::expr_may_throw(end),
-            ExprKind::TupleIndex { tuple, .. } => Self::expr_may_throw(tuple),
+            ExprKind::Send { channel, value } => Self::expr_may_throw(channel, tf, tm) || Self::expr_may_throw(value, tf, tm),
+            ExprKind::Cast { expr, .. } | ExprKind::Is { expr, .. } => Self::expr_may_throw(expr, tf, tm),
+            ExprKind::Range { start, end, .. } => Self::expr_may_throw(start, tf, tm) || Self::expr_may_throw(end, tf, tm),
+            ExprKind::TupleIndex { tuple, .. } => Self::expr_may_throw(tuple, tf, tm),
             ExprKind::Break | ExprKind::Continue => false,
             ExprKind::Try { .. } => true,
         }
+    }
+
+    /// Throw-effect analysis (Bug 48): compute which functions/methods can
+    /// transitively throw, so the per-statement throw-check (Bug 40) is only
+    /// emitted after calls that can actually propagate an error. Fixpoint over
+    /// the call graph; a fn is "throwing" if its body has a `throw` or calls a
+    /// throwing target. Unresolved/dynamic calls are treated as throwing
+    /// (over-approximation — never misses a real throw, so Bug 40 stays correct).
+    fn analyze_throw_effects(&mut self, source: &SourceFile) {
+        // Collect every user fn/method body with its base name and kind.
+        // (basename, body, is_method)
+        let mut fns: Vec<(String, Stmt, bool)> = Vec::new();
+        fn collect(decls: &[Spanned<DeclKind>], out: &mut Vec<(String, Stmt, bool)>) {
+            for d in decls {
+                match &d.node {
+                    DeclKind::Function(f) => out.push((f.name.clone(), f.body.clone(), false)),
+                    DeclKind::Class(c) => {
+                        for m in &c.methods {
+                            out.push((m.name.clone(), m.body.clone(), true));
+                        }
+                    }
+                    DeclKind::Interface(i) => {
+                        for m in &i.methods {
+                            out.push((m.name.clone(), m.body.clone(), true));
+                        }
+                    }
+                    DeclKind::Namespace(ns) => collect(&ns.decls, out),
+                    _ => {}
+                }
+            }
+        }
+        collect(&source.decls, &mut fns);
+
+        let mut tf: HashSet<String> = HashSet::new();
+        let mut tm: HashSet<String> = HashSet::new();
+        loop {
+            let mut changed = false;
+            for (name, body, is_method) in &fns {
+                let already = if *is_method { tm.contains(name) } else { tf.contains(name) };
+                if already {
+                    continue;
+                }
+                if Self::stmt_may_throw(body, &tf, &tm) {
+                    if *is_method {
+                        tm.insert(name.clone());
+                    } else {
+                        tf.insert(name.clone());
+                    }
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.throwing_free_fns = tf;
+        self.throwing_method_basenames = tm;
     }
 
     fn gen_try_stmt(

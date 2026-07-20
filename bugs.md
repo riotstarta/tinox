@@ -1641,6 +1641,12 @@ betrifft ALLEN Block-Code — Dogfood inkl. jgrep-tinox/Benchmarks unverändert 
 `a()+b()`) bräuchte Post-Call-Checks oder setjmp; `try`-`finally` ohne `catch`
 schluckt weiterhin (kein Re-throw, wie im Alt-Mechanismus).
 
+**Perf-Nachtrag (2026-07-20):** gemessener Overhead des per-Statement-Checks —
+call-freie heiße Schleifen 0 % (`stmt_may_throw`=false); inlinebare Calls 0 %
+(`opt -O3` eliminiert den Check komplett); nur nicht-inlinebare Call-*Statements*
+in extrem heißem Code ~17 % (worst case: rekursives `compute(40)`, 160→186 ms).
+Der Overhead ist mit der throw-Effekt-Analyse (Bug 48) eliminiert.
+
 ---
 
 ## Bug 41 — `defer` lief nicht beim throw-Unwinding (Ressourcen-Leak auf Fehlerpfaden)
@@ -1862,6 +1868,41 @@ ABI-/Konventions-Migration (eine Konvention) ODER die getypte Wertdarstellung
 (Problem 1) — beides teuer. Bis dahin ist permissiv-mit-`this`-Verschärfung das
 Optimum. Nächster sinnvoller Schritt ist NICHT weitere Konventions-Arbeit,
 sondern getypte Struct-Layouts (B1).
+
+---
+
+## Bug 48 — throw-Effekt-Analyse: throw-Unwinding zero-cost-when-unused
+
+**Status: GEFIXT (2026-07-20).** Beseitigt den in Bug 40 gemessenen worst-case-
+Overhead (~17 %). `stmt_may_throw` war rein syntaktisch — es markierte JEDEN Call
+als potenziell werfend und emittierte danach einen `@__tinox_err`-Check, auch nach
+Funktionen, die nachweislich nie werfen (`compute()` in der Fibonacci-Rekursion).
+
+**Fix — Call-Graph-Fixpunkt-Analyse** (`analyze_throw_effects`, läuft vor der
+Body-Emission). Eine Funktion „kann werfen", wenn ihr Rumpf ein `throw` enthält
+ODER eine Funktion aufruft, die werfen kann (transitiv). Zwei Ergebnis-Mengen:
+`throwing_free_fns` (freie fn-Namen) und `throwing_method_basenames` (Methoden-
+Basisnamen, über die keine Objekt-Typinfo nötig ist — `obj.m()`/`Class::m()`
+werfen gdw. IRGENDEIN `m` werfen kann, sichere Über-Approximation). `stmt_may_throw`
+konsultiert die Mengen: ein Call auf ein Ziel, das NICHT drin ist, zählt nicht als
+werfend → kein Check.
+
+**Korrektheit (kritisch).** Konservativ in die sichere Richtung: unauflösbare/
+dynamische Calls (Lambda-Variable, `New`, `await`/`recv`/`spawn`) gelten als
+werfend. Da die Analyse ALLE user-fns/Methoden (inkl. Namespaces rekursiv +
+Interface-Methoden) erfasst, ist „nicht in der Menge → Builtin/nachweislich
+non-throwing → kein throw" korrekt — ein echter throw wird nie übersehen, Bug 40
+bleibt korrekt.
+
+**Verifiziert:** `@pure` (rekursiv, wirft nie) → **0** Checks; `@a`/`@b`/`@mixed`
+(rufen werfende Kette) → Checks erhalten; werfende Propagierung über 3 Frames +
+gemischte fn (nicht-werfender + werfender Call) korrekt. worst-case-Benchmark
+`compute(40)`: 186 → **156 ms** (Overhead weg). e2e-Regressionstest
+`tests/e2e/throw_effect_analysis.tnx` (prüft beide Seiten); alle throw/defer/
+try-finally-e2e-Tests unverändert grün; `make check` voll grün.
+
+Damit ist throw-Unwinding **zero-cost when unused**: Programme ohne erreichbaren
+`throw` bekommen gar keine Checks, nur Funktionen auf einem throw-Pfad zahlen.
 
 ---
 
