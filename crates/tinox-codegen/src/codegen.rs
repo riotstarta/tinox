@@ -166,6 +166,12 @@ pub struct CodeGen {
     /// far; everything else falls back to the i64 path (identical memory layout,
     /// so the two are mixable during migration).
     class_named_types: HashSet<String>,
+    /// Named struct type defs for on-demand generic specializations (`Foo__i64`),
+    /// which arise mid-emission. Collected here and spliced into the module before
+    /// any function body (at the `@@SPEC_TYPES@@` marker) so the types are defined
+    /// before their `getelementptr` uses — a forward-referenced named type is
+    /// opaque/unsized and rejected by the verifier (B1 phase 4).
+    spec_type_defs: String,
     /// Free-function names that can (transitively) throw. A call to a free fn NOT
     /// in this set provably cannot throw, so no post-statement throw-check (Bug 40)
     /// is needed after it — the throw-effect analysis (Bug 48) makes exception
@@ -269,6 +275,7 @@ impl CodeGen {
             vtable_sizes: HashMap::new(),
             method_impl: HashMap::new(),
             class_named_types: HashSet::new(),
+            spec_type_defs: String::new(),
             throwing_free_fns: HashSet::new(),
             throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
@@ -1841,7 +1848,10 @@ impl CodeGen {
     }
 
     pub fn into_ir(self) -> String {
-        let mut result = self.ir;
+        // Splice generic-specialization struct types in at the marker (before any
+        // function body) so they're defined before their getelementptr uses.
+        let body = self.ir.replacen("; @@SPEC_TYPES@@", self.spec_type_defs.trim_end(), 1);
+        let mut result = body;
         result.push_str(&self.lambda_ir);
         result
     }
@@ -3274,24 +3284,37 @@ impl CodeGen {
             if self.generic_classes.contains_key(&name) || name.contains("__") {
                 continue;
             }
-            let layout = self.struct_layouts.get(&name).cloned().unwrap_or_default();
-            let fllt = self.struct_field_llvm_types.get(&name).cloned().unwrap_or_default();
-            // Every field is physically an 8-byte slot (the store side always
-            // writes i64 bits). Normalize each declared field type to its 8-byte
-            // slot type so the named type is byte-identical to the i64 layout.
-            // Float32 fields keep a latent i64->float bitcast bug in the old read
-            // path, so classes containing one are skipped here (stay on i64 path).
-            if layout.iter().any(|f| fllt.get(f).map(|t| t == "float").unwrap_or(false)) {
-                continue;
+            if let Some(def) = self.register_named_struct_type(&name) {
+                writeln!(&mut self.ir, "{}", def).unwrap();
             }
-            let field_types: Vec<String> = layout
-                .iter()
-                .map(|f| Self::slot_llvm_ty(fllt.get(f).map(|s| s.as_str()).unwrap_or("i64")))
-                .collect();
-            writeln!(&mut self.ir, "%class.{} = type {{ {} }}", name, field_types.join(", ")).unwrap();
-            self.class_named_types.insert(name);
         }
+        // Placeholder line: generic-specialization struct types (which arise later,
+        // mid-emission) are spliced in here by into_ir, before any function body.
+        writeln!(&mut self.ir, "; @@SPEC_TYPES@@").unwrap();
         writeln!(&mut self.ir).unwrap();
+    }
+
+    /// Build the `%class.<name> = type { … }` definition for a class layout,
+    /// register the class in `class_named_types`, and return the def string (the
+    /// caller writes it to the right buffer). Returns None for classes with a
+    /// Float32 field (latent i64->float bitcast bug in the old path → stay i64).
+    ///
+    /// Every field is physically an 8-byte slot (the store side always writes i64
+    /// bits), so each declared field type is normalized to its 8-byte slot type —
+    /// the named type is byte-identical to the uniform i64 layout, and a typed GEP
+    /// and the old i64 GEP resolve to the same address.
+    fn register_named_struct_type(&mut self, name: &str) -> Option<String> {
+        let layout = self.struct_layouts.get(name).cloned().unwrap_or_default();
+        let fllt = self.struct_field_llvm_types.get(name).cloned().unwrap_or_default();
+        if layout.iter().any(|f| fllt.get(f).map(|t| t == "float").unwrap_or(false)) {
+            return None;
+        }
+        let field_types: Vec<String> = layout
+            .iter()
+            .map(|f| Self::slot_llvm_ty(fllt.get(f).map(|s| s.as_str()).unwrap_or("i64")))
+            .collect();
+        self.class_named_types.insert(name.to_string());
+        Some(format!("%class.{} = type {{ {} }}", name, field_types.join(", ")))
     }
 
     /// The 8-byte storage slot type for a declared field llvm type. Pointers and
@@ -9665,6 +9688,14 @@ impl CodeGen {
                 mangled.clone(),
                 Self::collect_field_llvm_types(&mangled, &one_class_map),
             );
+            // B1 phase 4: emit a named struct type for this specialization so its
+            // field access is typed too. Collected in spec_type_defs and spliced
+            // in before all function bodies (see into_ir) — a forward-referenced
+            // named type is opaque/unsized and rejected by the verifier.
+            if let Some(def) = self.register_named_struct_type(&mangled) {
+                self.spec_type_defs.push_str(&def);
+                self.spec_type_defs.push('\n');
+            }
             // Fn-typed fields (callback fields, e.g. Pool<T>.factory) — the
             // MethodCall dispatch for calling-a-field-as-a-function consults
             // this table by struct name; without it, `pool.factory()` is

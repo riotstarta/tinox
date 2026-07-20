@@ -2053,9 +2053,27 @@ Der `New`-Konstruktor (positional args, selten) und Tuple-Stores bleiben i64.
 Verifiziert: getypte Assignments auf double-/String-/Bool-/geerbten Int-/Objekt-
 Feldern; `make check` grün.
 
-**Noch offen (Phasen 4–5):** generische Monomorphisierung — eigener named type pro
-Instanziierung `Foo__i64` (4); Vtable-Slot-Store getypt + `New`-Konstruktor-Pfad;
-Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar (5) — der eigentliche
+**Phase 4 (2026-07-20):** generische Spezialisierungen (`Box__i64`) bekommen jetzt
+auch named struct types + getypte Feldzugriffe. Herausforderung war das Timing:
+Spezialisierungen entstehen on-demand MITTEN in der Emission (im Second Pass),
+aber ein forward-referenzierter named type ist opaque/unsized → `getelementptr`
+wird vom Verifier abgelehnt (`base element must be sized`). Lösung: die
+Spezialisierungs-type-defs werden in `spec_type_defs` gesammelt und in `into_ir`
+an einem `@@SPEC_TYPES@@`-Marker (VOR allen Funktionsrümpfen) eingesetzt. Helper
+`register_named_struct_type` von Phase 1 wiederverwendet. Verifiziert: getypter
+Read + Assignment auf `Box<Int64>`-Feldern korrekt; named types `%class.Box__i64`
+im IR; `make check` grün (generic-lastige Stdlib — Cache/Option/Result/collections
+— unverändert).
+
+**Dabei bestätigte vorbestehende Bugs (NICHT Phase 4, git-stash-geprüft):** ein
+generisches `T`-Feld wird im TYPECHECK nicht zur Instanz aufgelöst —
+`Box<String>::get()` gibt den Zeiger als Zahl aus, `pair.tField.toString()` →
+„undefined function: T_toString", `pair.tField = literal` → „expected T, found
+String". Betrifft die Typecheck-seitige Typ-Auflösung generischer Felder, nicht den
+(jetzt getypten) Codegen-Feldzugriff. Eigener Bug-Komplex.
+
+**Noch offen (Phase 5):** Vtable-Slot-Store getypt + `New`-Konstruktor-Pfad;
+Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar — der eigentliche
 Payoff.
 
 ---
