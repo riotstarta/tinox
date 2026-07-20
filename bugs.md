@@ -1971,6 +1971,39 @@ betroffen (build wurde mit dem typecheck-Fix allein linear).
 
 ---
 
+## Bug 51 — Lexer: Zahlen-Literal über Wertebereich wurde still zu 0
+
+**Status: GEFIXT (2026-07-20).** Beim Lexer-Fuzzing gefunden. Ein Ganzzahl-
+Literal über i64-max (`99999999999999999999999999999999`, `0xF…F`, `0b1…1`)
+wurde still zu **0** — silent garbage, dieselbe Klasse wie Bug 36/37/45. Ursache:
+fünf `.parse().unwrap_or(0)` / `from_str_radix(…).unwrap_or(0)` im Lexer
+(dezimal, hex, oktal, binär, float) schluckten Overflow/Format-Fehler.
+
+**Fix.** `unwrap_or(0)` → `map_err(…)?` mit klarem Lexer-Fehler („integer literal
+out of range for Int64: …", analog hex/oktal/binär; Float: „out of range for
+Float64" via `is_finite()`-Prüfung, plus „invalid float literal" für
+Format-Fehler). Die Lex-Funktionen geben bereits `Result<Token, Error>` zurück.
+
+**Dabei aufgedeckte Zweit-Regression (im selben Fix gelöst):** der Zahlen-`text`
+wurde NACH dem Suffix-Lesen erfasst (`read_float_suffix`/`read_int_suffix` bewegen
+`pos` schon vorbei) → `text` enthielt das Suffix (`"3.14f32"`, `"42i32"`), das
+`parse()` nun ablehnte. Der alte `unwrap_or(0.0)` hatte das maskiert (die Tests
+prüften nur den Token-TYP, nicht den Wert). Fix: `num_end = self.pos` VOR dem
+Suffix-Lesen, `text` aus `chars[start..num_end]`.
+
+**Verifiziert:** Overflow-Literale (dezimal/hex/binär) → sauberer Lexer-Fehler;
+gültige Grenz-/Basis-Literale (i64-max, hex, binär, oktal, Underscores, Float,
+f32/f64-Suffix, i64::MIN+1) → korrekt gelext + gerechnet; alle 246 Lexer-Unit-
+Tests grün; e2e-Regressionstest `tests/e2e/int_literal_overflow.tnx`; `make check`
+voll grün.
+
+**Bekannte Grenze:** exakt `i64::MIN` (`-9223372036854775808`) — das Literal
+`9223372036854775808` passt allein nicht in i64 (nur nach dem Unary-Minus) → wird
+abgelehnt. War vorher auch schon kaputt (→ 0); ein sauberer Fix bräuchte
+negativ-Literal-Sonderbehandlung im Parser (v2). `i64::MIN+1` und alles andere ok.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

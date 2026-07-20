@@ -858,22 +858,37 @@ impl<'a> Lexer<'a> {
                 }
             }
 
+            // Capture the numeric text BEFORE consuming the suffix, so the suffix
+            // (f32/f64) is not fed to parse() (which would reject e.g. "3.14f32").
+            let num_end = self.pos;
             // Check for float suffix (f32/f64) — consumed for compatibility, but
             // TokenKind::Float only carries f64; a distinct Float32 representation
             // is not yet modeled downstream.
             let _suffix = self.read_float_suffix();
 
-            let text: String = self.chars[start..self.pos].iter().filter(|c| **c != '_').collect();
-            let value: f64 = text.parse().unwrap_or(0.0);
+            let text: String = self.chars[start..num_end].iter().filter(|c| **c != '_').collect();
+            // Reject a literal that doesn't fit in f64 (parses to ±inf) or is
+            // otherwise unparseable — previously `unwrap_or(0.0)` silently yielded
+            // 0.0, and an overflowing literal became a non-finite value (Bug 51).
+            let value: f64 = text.parse()
+                .map_err(|_| Error::new(self.mk_span(), format!("invalid float literal: {}", text)))?;
+            if !value.is_finite() {
+                return Err(Error::new(self.mk_span(), format!("float literal out of range for Float64: {}", text)));
+            }
 
             return Ok(Token::new(TokenKind::Float(value), self.mk_span()));
         }
 
-        // Check for integer suffix
+        // Capture the numeric text BEFORE the suffix, so a suffixed literal like
+        // "42i32" doesn't feed the suffix to parse().
+        let num_end = self.pos;
         let suffix = self.read_int_suffix();
-        
-        let text: String = self.chars[start..self.pos].iter().filter(|c| **c != '_').collect();
-        let value: i64 = text.parse().unwrap_or(0);
+
+        let text: String = self.chars[start..num_end].iter().filter(|c| **c != '_').collect();
+        // An integer literal exceeding i64 previously became 0 via unwrap_or(0)
+        // (silent garbage, Bug 51). Report it as a clean lexer error instead.
+        let value: i64 = text.parse()
+            .map_err(|_| Error::new(self.mk_span(), format!("integer literal out of range for Int64: {}", text)))?;
         
         match suffix {
             Some(s) => Ok(Token::new(TokenKind::IntegerSuffix(s), self.mk_span())),
@@ -943,7 +958,9 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
         let text: String = self.chars[_start..self.pos].iter().filter(|c| **c != '_').collect();
-        let value = i64::from_str_radix(&text[2..], 16).unwrap_or(0);
+        // Overflow or missing digits (`0x`) previously became 0 (Bug 51).
+        let value = i64::from_str_radix(&text[2..], 16)
+            .map_err(|_| Error::new(self.mk_span(), format!("invalid or out-of-range hex integer literal: {}", text)))?;
         Ok(Token::new(TokenKind::Integer(value), self.mk_span()))
     }
 
@@ -954,7 +971,8 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
         let text: String = self.chars[_start..self.pos].iter().filter(|c| **c != '_').collect();
-        let value = i64::from_str_radix(&text[2..], 8).unwrap_or(0);
+        let value = i64::from_str_radix(&text[2..], 8)
+            .map_err(|_| Error::new(self.mk_span(), format!("invalid or out-of-range octal integer literal: {}", text)))?;
         Ok(Token::new(TokenKind::Integer(value), self.mk_span()))
     }
 
@@ -965,7 +983,8 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
         let text: String = self.chars[_start..self.pos].iter().filter(|c| **c != '_').collect();
-        let value = i64::from_str_radix(&text[2..], 2).unwrap_or(0);
+        let value = i64::from_str_radix(&text[2..], 2)
+            .map_err(|_| Error::new(self.mk_span(), format!("invalid or out-of-range binary integer literal: {}", text)))?;
         Ok(Token::new(TokenKind::Integer(value), self.mk_span()))
     }
 
