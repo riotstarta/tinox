@@ -6925,6 +6925,23 @@ impl CodeGen {
                         // gegen das Objekt (Zeigertyp, z.B. i64*) statt gegen sein
                         // echtes Argument gebunden → falsche Spezialisierung (i64P).
                         let arg_offset = if arg_vals.len() == method.params.len() + 1 { 1 } else { 0 };
+                        // this-Stil-Aufruf (`Box::get(bs)`, arg_offset==1): der
+                        // implizite Empfänger args[0] trägt die Klassen-Bindungen in
+                        // seinem Marker (`Box__i8P` → T=i8*). Für eine Methode OHNE
+                        // T-Parameter (`fn get() -> T`) ist das die EINZIGE Bindungs-
+                        // quelle — sonst fällt T auf den i64-Default und die falsche
+                        // Spezialisierung (Box__i64) wird gewählt (Bug 52).
+                        if arg_offset == 1 {
+                            if let Some(recv) = args.first() {
+                                if let Some(marker) = self.infer_struct_type(recv, ctx) {
+                                    if let Some(rest) = marker.strip_prefix(&format!("{}__", enum_name)) {
+                                        for (itp, part) in gc.type_params.iter().zip(rest.split("__")) {
+                                            bindings.entry(itp.clone()).or_insert_with(|| part.replace('P', "*"));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for tp in &gc.type_params {
                             if bindings.contains_key(tp) {
                                 continue;

@@ -2096,6 +2096,41 @@ gefundenen generischen T-Feld-Typecheck-Bugs (s. Phase 4).
 
 ---
 
+## Bug 52 — generische Instanzmethode ohne T-Param wählte falsche Spezialisierung (erster B2-Schritt)
+
+**Status: GEFIXT (2026-07-20).** Der erste der in B1-Phase 4 gefundenen
+generischen Wert-Bugs — und der Einstieg in B2 (getypte Werte). `Box::get(bs)` mit
+`bs: Box<String>` rief fälschlich `@Box__i64_get` (Int64-Spezialisierung) statt
+`@Box__i8P_get` und gab den String-Zeiger als Zahl aus (silent garbage, `4263940`).
+
+**Ursache (codegen, generische Bindungsinferenz).** Für den Spezialisierungs-Aufruf
+werden die Typbindungen aus den Argumenten abgeleitet. Bei einer Methode OHNE
+T-Parameter (`fn get() -> T` nutzt T nur im Rückgabetyp) läuft die Param-Schleife
+leer → T fällt auf den **i64-Default** → `Box__i64` gewählt. Der implizite
+Empfänger `bs` (args[0] bei arg_offset==1, Bug 38) wurde nicht als Bindungsquelle
+genutzt.
+
+**Fix.** Vor dem i64-Default: ist es ein this-Stil-Aufruf (arg_offset==1), wird der
+Marker des Empfängers (args[0], z.B. `Box__i8P`) in die Bindungen zerlegt
+(`Box__` strippen → `i8P` → T=`i8*`) — dieselbe Zerlegung wie beim Cache::set-Stil,
+aber auf den impliziten Empfänger angewandt. Für Methoden ohne T-Param ist das die
+einzige Bindungsquelle. B1-Phase 4 hatte die Zielfunktion `@Box__i8P_get` bereits
+korrekt getypt (`ret i8*`); es fehlte nur die richtige AUSWAHL an der Call-Site.
+
+**Verifiziert:** `Box<String>/Int64/Float64::get(obj)` → hi/42/3.5 (korrekte
+Spezialisierung + Rückgabetyp); e2e-Test `tests/e2e/generic_receiver_binding.tnx`;
+`make check` grün (generic-lastige Stdlib Cache/Option/Result unverändert).
+
+**Noch offen (die anderen zwei Phase-4-Bugs, TYPECHECK-seitig, größerer Refactor):**
+der Typechecker trägt für Instanzen nur `ValueType::Named("Box")` OHNE Typargumente
+— `Box<Int64>` und `Box<String>` sind ununterscheidbar, ein `T`-Feld bleibt
+unaufgelöst. Daher `bi.value.toString()` → „undefined function: T_toString" und
+`box.tField = literal` → „expected T, found String". Der Fix erfordert, dass
+`ValueType` generische Typargumente führt und sie durch Feldzugriffe/Methoden
+propagiert (die Typecheck-Seite von B2) — großer Refactor, eigener Komplex.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
