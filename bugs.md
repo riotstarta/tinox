@@ -2187,6 +2187,38 @@ häufigen Weg ab** (wie in Java, wo generische Konstruktoren i.d.R. annotiert we
 
 ---
 
+## Bug 54 — `charCodeAt` out-of-bounds las über das String-Ende → Müll
+
+**Status: GEFIXT (2026-07-20).** Beim String/Unicode-Fuzzing gefunden.
+`"ABC".charCodeAt(100)` gab `140226739651968` (ein Zeiger-Wert als Zahl) statt
+eines definierten Werts — silent garbage, dieselbe Klasse wie der Rest der Session.
+
+**Ursache (codegen).** `charCodeAt` emittierte einen INLINE `getelementptr i8 +
+load i8` OHNE Bounds-Check. Bei einem Index jenseits der String-Länge (oder
+negativ) las es beliebigen Speicher → UB/Müll.
+
+**Fix.** Neue bounds-geprüfte Runtime-Funktion `tinox_string_char_code_at(s, idx)`
+(gibt -1 für idx<0 oder idx>=len, sonst das Byte); der Codegen emittiert jetzt
+einen Call statt des ungeprüften Inline-Loads. -1 ist konsistent mit `indexOf`s
+„nicht gefunden".
+
+**Verifiziert:** gültige Indizes unverändert (65/67); out-of-bounds/negativ/leerer
+String → -1; e2e-Test `tests/e2e/char_code_at_bounds.tnx`; `make check` grün (die
+Stdlib-Nutzer hex/uri/encoding/hash iterieren mit `i < len()` → unberührt).
+
+**Sondierungs-Fazit String/Unicode (sonst kein Bug):** die übrigen String-Ops
+sind byte-basiert (Go-Modell) — `.len()` gibt Bytes, `substring` nimmt Byte-
+Offsets. Das ist eine DURCHGÄNGIGE, KONSISTENTE Design-Entscheidung (92 Stdlib-
+`substring`-Aufrufe nutzen `indexOf`+`substring`+`len` byte-konsistent, korrekt für
+ASCII-Delimiter). `substring` über eine Multibyte-Zeichengrenze erzeugt korruptes
+UTF-8 (`"café".substring(0,4)` → `"caf�"`) — der bekannte Kompromiss byte-basierter
+Sprachen, KEIN Fix-fähiger Bug (eine Umstellung auf zeichen-basiert bräche alle 92
+byte-konsistenten Stdlib-Stellen). `toUpperCase`/`toLowerCase` sind ASCII-only.
+indexOf/replace/trim/split/startsWith/endsWith + out-of-bounds-substring sind
+robust und korrekt (kein Crash/Hänger).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

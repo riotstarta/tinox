@@ -858,6 +858,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_ends_with(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_trim(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_substring(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_char_code_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
@@ -6164,13 +6165,11 @@ impl CodeGen {
                             return Ok((result, "i8*".to_string()));
                         }
                         "charCodeAt" => {
+                            // Bounds-checked runtime call (returns -1 on out-of-range)
+                            // instead of an unchecked inline load past the string end.
                             let (idx, _) = self.gen_expr(&args[0], ctx)?;
-                            let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i8, ptr {}, i64 {}", ptr, obj_ptr, idx).unwrap();
-                            let byte = self.temp();
-                            writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, ptr).unwrap();
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = zext i8 {} to i64", result, byte).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_char_code_at(i8* {}, i64 {})", result, obj_ptr, idx).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "substring" => {

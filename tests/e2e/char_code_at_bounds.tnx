@@ -1,0 +1,18 @@
+// Bug 54: charCodeAt(idx) las mit einem unchecked inline load über das String-Ende
+// hinaus → Müll-Wert (Zeiger als Zahl) bei out-of-bounds. Jetzt ein bounds-
+// geprüfter Runtime-Call, der -1 für einen ungültigen Index liefert. Gültige
+// Indizes bleiben unverändert.
+// expect: 65
+// expect: 67
+// expect: -1
+// expect: -1
+// expect: -1
+
+fn main() -> Int32 {
+    println("ABC".charCodeAt(0).toString());     // 65 (A)
+    println("ABC".charCodeAt(2).toString());     // 67 (C)
+    println("ABC".charCodeAt(100).toString());   // -1 (out of bounds, war Müll)
+    println("ABC".charCodeAt(0 - 1).toString()); // -1 (negativ)
+    println("".charCodeAt(0).toString());        // -1 (leerer String)
+    return 0;
+}

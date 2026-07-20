@@ -819,6 +819,16 @@ char* tinox_string_mask_partial(const char* s) {
     return result;
 }
 
+// Byte value at index, bounds-checked: returns -1 for an out-of-range index
+// instead of reading past the string (the inline codegen version did an
+// unchecked load → garbage / UB on out-of-bounds access).
+int64_t tinox_string_char_code_at(const char* s, int64_t idx) {
+    if (!s || idx < 0) return -1;
+    int64_t len = (int64_t)strlen(s);
+    if (idx >= len) return -1;
+    return (int64_t)(unsigned char)s[idx];
+}
+
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
     if (from < 0) from = 0;
