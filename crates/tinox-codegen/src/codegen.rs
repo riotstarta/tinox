@@ -3330,6 +3330,23 @@ impl CodeGen {
         }
     }
 
+    /// Field offset within a named-type class layout (B1 phase 5). Unlike the old
+    /// `position(...).unwrap_or(0)`, a missing field is a hard error instead of a
+    /// silent write/read at offset 0 — the last silent-garbage source in field
+    /// codegen. The typechecker already rejects unknown fields (Bug 37), so this
+    /// is defense-in-depth: it fires only on an internal layout inconsistency.
+    fn checked_typed_offset(&self, sname: &str, field: &str, span: Span) -> Result<i64, ErrorBag> {
+        self.struct_layouts.get(sname)
+            .and_then(|fields| fields.iter().position(|f| f == field))
+            .map(|p| p as i64)
+            .ok_or_else(|| {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(span, format!(
+                    "internal codegen error: field '{}' not in layout of typed class '{}'", field, sname)));
+                bag
+            })
+    }
+
     /// Emit a vtable global for each class that implements at least one interface.
     fn emit_vtable_globals(&mut self, source: &SourceFile) {
         let class_names: Vec<(String, Vec<String>)> = source
@@ -4439,7 +4456,7 @@ impl CodeGen {
                         .unwrap_or(0) as i64;
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
                     // B1 phase 3: typed field store for named-type classes; else i64.
-                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, offset, &val, &val_ty) {
+                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
                         // Uniform i64 field storage: floats → bitcast, i1 → zext, pointers → ptrtoint
                         let store_val = if val_ty == "i1" {
                             let cast = self.temp();
@@ -6611,12 +6628,14 @@ impl CodeGen {
                 // slot), so `load double`/`load i8*` at that address is a valid
                 // type-pun and gives the same value as the old load+cast.
                 if let Some(sname) = struct_name.as_ref().filter(|s| self.class_named_types.contains(s.as_str())) {
+                    // B1 phase 5: hard error on a missing field instead of offset 0.
+                    let checked = self.checked_typed_offset(sname, field, expr.span)?;
                     let slot = Self::slot_llvm_ty(&field_llvm_ty);
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
                         "{} = getelementptr %class.{}, ptr {}, i32 0, i32 {}",
-                        field_ptr, sname, obj_ptr, offset
+                        field_ptr, sname, obj_ptr, checked
                     ).unwrap();
                     let loaded = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* {}", loaded, slot, slot, field_ptr).unwrap();
@@ -7931,7 +7950,7 @@ impl CodeGen {
                         .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
                         .unwrap_or(0) as i64;
                     // B1 phase 3: typed field-assignment store for named-type classes.
-                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, offset, &val, &val_ty) {
+                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
                         let store_val = if val_ty == "double" || val_ty == "float" {
                             let cast = self.temp();
                             writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
@@ -9838,14 +9857,15 @@ impl CodeGen {
         struct_name: Option<&str>,
         obj_ptr: &str,
         field: &str,
-        offset: i64,
+        span: Span,
         val: &str,
         val_ty: &str,
-    ) -> bool {
+    ) -> Result<bool, ErrorBag> {
         let Some(sname) = struct_name.filter(|s| self.class_named_types.contains(*s)) else {
-            return false;
+            return Ok(false);
         };
         let sname = sname.to_string();
+        let offset = self.checked_typed_offset(&sname, field, span)?;
         let field_llvm_ty = self.struct_field_llvm_types.get(&sname)
             .and_then(|m| m.get(field))
             .cloned()
@@ -9855,7 +9875,7 @@ impl CodeGen {
         let field_ptr = self.temp();
         writeln!(&mut self.ir, "{} = getelementptr %class.{}, ptr {}, i32 0, i32 {}", field_ptr, sname, obj_ptr, offset).unwrap();
         writeln!(&mut self.ir, "store {} {}, {}* {}", slot, store_val, slot, field_ptr).unwrap();
-        true
+        Ok(true)
     }
 
     /// Coerce a value of llvm type `val_ty` to an 8-byte struct slot type `slot`

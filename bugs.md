@@ -2072,9 +2072,27 @@ generisches `T`-Feld wird im TYPECHECK nicht zur Instanz aufgelöst —
 String". Betrifft die Typecheck-seitige Typ-Auflösung generischer Felder, nicht den
 (jetzt getypten) Codegen-Feldzugriff. Eigener Bug-Komplex.
 
-**Noch offen (Phase 5):** Vtable-Slot-Store getypt + `New`-Konstruktor-Pfad;
-Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar — der eigentliche
-Payoff.
+**Phase 5 (2026-07-20) — ABSCHLUSS.** Der `unwrap_or(0)`-Offset-Fallback an den
+getypten Feldzugriffs-Stellen (Read + beide Assignment-Pfade via
+`try_typed_field_store`) ist jetzt ein harter Codegen-Fehler statt eines stillen
+Zugriffs auf Offset 0 — die letzte silent-garbage-Quelle im Feld-Codegen (Helper
+`checked_typed_offset`). **Empirisches Ergebnis (wie in der Sondierung vermutet):
+der Fallback wird NIE erreicht** — `make check` bleibt grün, weil Bug 37 (Typecheck
+lehnt unbekannte Felder ab) den Fall schon vorher abfängt. Die Härtung ist also
+defense-in-depth (feuert nur bei einer internen Layout-Inkonsistenz), kein neuer
+Fund. Damit ist der Korrektheits-Payoff von B1 formal abgesichert.
+
+**B1-Bilanz (5 Phasen):** Read (1), StructLiteral-Store (2), Feld-Assignments +
+Vererbung (3), generische Spezialisierungen (4), Offset-Härtung (5). Plain- UND
+generische Klassen nutzen jetzt echte LLVM-Struct-Typen (`%class.<name>`) für
+Feldzugriff statt uniformer i64-Slots + bitcast — dank Layout-Identität (jedes Feld
+8-Byte-Slot) risikoarm inkrementell, jede Phase mit grünem `make check`.
+**Weiterhin auf i64-Pfad (bewusst):** Float32-Feld-Klassen (latenter Cast-Bug),
+`New`-Konstruktor (positional args, selten), Vtable-Slot-Store, Tuple-Stores — alle
+mischbar via Type-Pun. **Fundament für B2** (getypte Werte durch die ganze Codegen)
+steht. **Nicht gelöst (Wurzel bleibt):** die uniforme i64-Wertdarstellung von
+*Werten* (nicht Feldern) — Methoden-Rückgaben, Locals, Args — inkl. der dabei
+gefundenen generischen T-Feld-Typecheck-Bugs (s. Phase 4).
 
 ---
 
