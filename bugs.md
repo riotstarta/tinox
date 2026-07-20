@@ -2004,6 +2004,44 @@ negativ-Literal-Sonderbehandlung im Parser (v2). `i64::MIN+1` und alles andere o
 
 ---
 
+## B1 — Getypte Struct-Layouts (Phase 1 von 5)
+
+**Status: PHASE 1 GEFIXT (2026-07-20).** Erster Schritt, die uniforme i64-Wert-
+darstellung (die Wurzel diverser Bug-Klassen, s. Sprach-Bewertung) durch echte
+LLVM-Struct-Typen zu ersetzen. Architektur-Investition (IR-Qualität, opt-
+Verifikation, Fundament für B2), kein akuter Korrektheitsgewinn — der ist durch
+Bug 37 (undeklarierte Felder → Typfehler) bereits abgedeckt.
+
+**Kernidee — Layout-Identität.** Jedes Feld ist physisch ein 8-Byte-Slot (die
+Store-Seite schreibt immer i64-Bits). Ein named type `%class.Foo = type { double,
+i64, i8* }` mit zum 8-Byte-Slot normalisierten Feldtypen ist damit BYTE-IDENTISCH
+zum bisherigen `[N x i64]`-Layout — ein getyptes `getelementptr %class.Foo, …,
+i32 <idx>` und das alte `getelementptr i64, …, i64 <idx>` treffen dieselbe
+Adresse. Deshalb sind getypte und i64-Zugriffe während der Migration MISCHBAR, und
+die C-Runtime (die Objekte über i64-Offsets anfasst) bleibt unberührt.
+
+**Phase 1 (dieser Commit):** `emit_struct_type_defs` gibt `%class.<name>`-Typen für
+PLAIN Klassen aus (nicht-generisch, nicht-spezialisiert, kein Float32-Feld —
+Letzteres hat einen latenten i64→float-bitcast-Bug im Alt-Pfad). Der FieldAccess-
+READ nutzt für diese Klassen ein getyptes GEP + direktes `load <slot>` statt
+i64-Load+bitcast (`slot_llvm_ty`: double/ptr bleiben, alles andere → i64). Ein
+`load double`/`load i8*` an der i64-geschriebenen Adresse ist ein valider Type-Pun
+gleicher Größe → gleicher Wert wie Alt-Pfad, aber opt kann den Offset verifizieren.
+Alle anderen Klassen (generisch, spezialisiert, mit Float32) fallen auf den
+i64-Pfad zurück (identisches Layout).
+
+**Verifiziert:** Float-/String-/Int-/Objekt-Referenz-Felder + verschachtelte
+Objektzugriffe korrekt; named types im IR, getypte GEP im Einsatz; e2e-
+Regressionstest `tests/e2e/typed_struct_layout.tnx`; `make check` voll grün (die
+Layout-Identität hält über die gesamte Stdlib inkl. C-Runtime).
+
+**Noch offen (Phasen 2–5):** Write-Pfad (StructLiteral-Allokation + Feld-
+Assignment) getypt (Phase 2); Vererbung + Vtable-Slot (3); generische
+Monomorphisierung — eigener named type pro Instanziierung (4); Offset-0-Fallback
+zum harten Fehler, jetzt via opt sichtbar (5) — der eigentliche Payoff.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

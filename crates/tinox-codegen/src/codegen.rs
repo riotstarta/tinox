@@ -160,6 +160,12 @@ pub struct CodeGen {
     vtable_sizes: HashMap<String, usize>,
     /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
     method_impl: HashMap<String, String>,
+    /// Classes for which a named LLVM struct type `%class.<name>` was emitted
+    /// (B1 phase 1): field access on these uses a typed GEP instead of the uniform
+    /// i64 slot + bitcast. Only plain (non-generic, non-specialized) classes so
+    /// far; everything else falls back to the i64 path (identical memory layout,
+    /// so the two are mixable during migration).
+    class_named_types: HashSet<String>,
     /// Free-function names that can (transitively) throw. A call to a free fn NOT
     /// in this set provably cannot throw, so no post-statement throw-check (Bug 40)
     /// is needed after it — the throw-effect analysis (Bug 48) makes exception
@@ -262,6 +268,7 @@ impl CodeGen {
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
             method_impl: HashMap::new(),
+            class_named_types: HashSet::new(),
             throwing_free_fns: HashSet::new(),
             throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
@@ -1297,6 +1304,11 @@ impl CodeGen {
         // Pre-register toJson() / fromJson() for @JsonSerializable classes
         self.pre_register_json_to_json();
         self.pre_register_json_from_json();
+
+        // B1 phase 1: emit named LLVM struct types for plain classes now that all
+        // non-generic layouts are built. Enables typed field access + opt-level
+        // verification of field offsets.
+        self.emit_struct_type_defs();
 
         // Second pass: generate code (skip generic functions — they are monomorphized on demand)
         for decl in &source.decls {
@@ -3245,6 +3257,54 @@ impl CodeGen {
 
         self.lambda_ir.push_str(&b);
         self.has_main = true;
+    }
+
+    /// B1 phase 1: emit `%class.<name> = type { … }` for plain classes.
+    ///
+    /// The field types come from `struct_field_llvm_types` in `struct_layouts`
+    /// order (default `i64` for compiler-added slots like `__vtable__`/`log`),
+    /// so the named type is byte-identical to the current uniform i64 layout —
+    /// a typed GEP and the old i64 GEP resolve to the same address. Only plain
+    /// classes for now: generic templates and on-demand specializations (`Foo__i64`)
+    /// are skipped and keep using the i64 path.
+    fn emit_struct_type_defs(&mut self) {
+        let mut names: Vec<String> = self.struct_layouts.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            if self.generic_classes.contains_key(&name) || name.contains("__") {
+                continue;
+            }
+            let layout = self.struct_layouts.get(&name).cloned().unwrap_or_default();
+            let fllt = self.struct_field_llvm_types.get(&name).cloned().unwrap_or_default();
+            // Every field is physically an 8-byte slot (the store side always
+            // writes i64 bits). Normalize each declared field type to its 8-byte
+            // slot type so the named type is byte-identical to the i64 layout.
+            // Float32 fields keep a latent i64->float bitcast bug in the old read
+            // path, so classes containing one are skipped here (stay on i64 path).
+            if layout.iter().any(|f| fllt.get(f).map(|t| t == "float").unwrap_or(false)) {
+                continue;
+            }
+            let field_types: Vec<String> = layout
+                .iter()
+                .map(|f| Self::slot_llvm_ty(fllt.get(f).map(|s| s.as_str()).unwrap_or("i64")))
+                .collect();
+            writeln!(&mut self.ir, "%class.{} = type {{ {} }}", name, field_types.join(", ")).unwrap();
+            self.class_named_types.insert(name);
+        }
+        writeln!(&mut self.ir).unwrap();
+    }
+
+    /// The 8-byte storage slot type for a declared field llvm type. Pointers and
+    /// `double` are already 8 bytes; everything else (i64/i1/i8/i16/i32) is stored
+    /// in an i64 slot. (`float` is handled by excluding such classes entirely.)
+    fn slot_llvm_ty(field_llvm_ty: &str) -> String {
+        if field_llvm_ty == "double" {
+            "double".to_string()
+        } else if field_llvm_ty.ends_with('*') {
+            field_llvm_ty.to_string()
+        } else {
+            "i64".to_string()
+        }
     }
 
     /// Emit a vtable global for each class that implements at least one interface.
@@ -6522,6 +6582,25 @@ impl CodeGen {
                 } else {
                     (0i64, "i64".to_string())
                 };
+
+                // B1 phase 1: typed field read for classes with a named struct
+                // type. The GEP indexes the named type (opt verifies the offset)
+                // and loads the slot type directly — no i64 slot + bitcast dance.
+                // The slot type matches the store side (i64 bits at an 8-byte
+                // slot), so `load double`/`load i8*` at that address is a valid
+                // type-pun and gives the same value as the old load+cast.
+                if let Some(sname) = struct_name.as_ref().filter(|s| self.class_named_types.contains(s.as_str())) {
+                    let slot = Self::slot_llvm_ty(&field_llvm_ty);
+                    let field_ptr = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = getelementptr %class.{}, ptr {}, i32 0, i32 {}",
+                        field_ptr, sname, obj_ptr, offset
+                    ).unwrap();
+                    let loaded = self.temp();
+                    writeln!(&mut self.ir, "{} = load {}, {}* {}", loaded, slot, slot, field_ptr).unwrap();
+                    return Ok((loaded, slot));
+                }
 
                 let field_ptr = self.temp();
                 writeln!(
