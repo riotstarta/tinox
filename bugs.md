@@ -2165,10 +2165,25 @@ Assignment korrekt; Nicht-T-Felder unverändert; e2e-Test
 `tests/e2e/generic_field_type_resolution.tnx`; `make check` voll grün (der zentrale
 ValueType/PartialEq-Umbau bricht nichts).
 
-**Noch offen (B2 Schritt 2):** Typargument-INFERENZ für nicht-annotierte
-Bindungen (`let bi = Box::make(42)` ohne `: Box<Int64>`) — der Konstruktor-
-Rückgabetyp müsste die Args aus den Argumenten ableiten. Aktuell trägt nur die
-explizite Annotation die Args.
+**B2 Schritt 2 SONDIERT (2026-07-20) — nicht sauber machbar, zurückgestellt.**
+Typargument-INFERENZ für nicht-annotierte Bindungen (`let bi = Box::make(42)` ohne
+`: Box<Int64>`). Die Typecheck-Hälfte wurde implementiert und funktionierte
+isoliert (Register `generic_method_param_types` mit unerased Param-Typen + Helfer
+`unify_param`/`substitute_bindings`: leitet aus `make(42)` T=Int ab → Rückgabetyp
+`Named("Box", [Int])`). ABER: sie allein verwandelt einen sauberen Typecheck-Fehler
+in einen **Codegen-ICE** (`use of undefined value @T_toString`) — deshalb wieder
+zurückgenommen. Grund: **der Codegen hat ein EIGENES Typ-System (Marker-Sprache),
+getrennt vom Typecheck-`ValueType`.** `to_marker(Named("Box",[Int]))` liefert nur
+`"Box"` (verwirft die Args), und `infer_struct_type` für den let-Wert nutzt
+`method_ret_class["Box_make"] = "Box"` (erased Basis), nicht die im EnumValue-
+Codegen abgeleitete Spezialisierung `Box__i64`. Der Codegen ruft `@Box__i64_make`
+zwar korrekt (Bug 52), aber `bi`s MARKER bleibt `"Box"` → `bi.value` löst zu `T`
+auf → `@T_toString`. Ein vollständiger Schritt 2 braucht also BEIDE Seiten:
+Typecheck-Inferenz UND Codegen-Marker-Propagierung (die Spezialisierung durch
+`infer_struct_type`/`method_ret_class` bis zum let-Marker tragen) — eine Verbindung
+der zwei getrennten Typ-Systeme, der eigentliche tiefe B2-Kern. Kein sauberer
+Ein-Zug-Schritt; eigener Komplex. **Der annotierte Fall (Schritt 1) deckt den
+häufigen Weg ab** (wie in Java, wo generische Konstruktoren i.d.R. annotiert werden).
 
 ---
 
