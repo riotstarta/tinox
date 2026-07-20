@@ -1943,6 +1943,34 @@ bestätigt) — der Guard verhindert den Crash, aber nicht diesen Hänger; eigen
 
 ---
 
+## Bug 50 — Method-Ketten: exponentielle Typecheck-Zeit
+
+**Status: GEFIXT (2026-07-20).** Der in Bug 49 gefundene Hänger. Eine Method-Kette
+`c.n().n()…` hatte O(2ⁿ) Typecheck-Zeit (Kette 20 → 1,4 s, 24 → 23 s, 50 →
+Timeout). Vorbestehend (mit `git stash` bestätigt).
+
+**Ursache (typecheck).** `infer_type` eines `MethodCall` inferiert den Empfänger
+ZWEIMAL: direkt (`let obj_ty = self.infer_type(obj)`) UND erneut über `check_call`,
+das den Empfänger als impliziten self-Parameter durchreicht und dort wieder
+`infer_type` darauf laufen lässt. T(n) = 2·T(n−1) = O(2ⁿ) über die Kettentiefe.
+
+**Fix — Memoization.** `infer_type` cached das Ergebnis pro Node-Id (der
+`expr_types`-HashMap existierte bereits, wurde aber nur beschrieben, nie zum
+Kurzschließen gelesen). Am Anfang: bei vorhandener Id + Cache-Treffer sofort
+zurückgeben. Sicher, weil nur EIN source via `infer_type` läuft (preludes werden
+nur deklariert), Node-Ids darin eindeutig sind und der geklonte Empfänger seine
+Id behält → trifft den Cache. Der `check`-Befehl bekam zusätzlich
+`assign_node_ids` VOR dem Typecheck (lief nur im build-Pfad) — ohne Ids ist die
+Memoization inaktiv. Nebeneffekt: keine duplizierten Typfehler mehr.
+
+**Verifiziert:** Kette 24: build 28 s → **971 ms**, check 23 s → **2 ms**; Kette
+300: check 8 ms (linear/quasi-konstant). e2e-Regressionstest
+`tests/e2e/method_chain_linear.tnx` (60-fache Kette, korrektes Ergebnis 42);
+`make check` voll grün (Memoization ändert kein Typ-Ergebnis). Codegen war NICHT
+betroffen (build wurde mit dem typecheck-Fix allein linear).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

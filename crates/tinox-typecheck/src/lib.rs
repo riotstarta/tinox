@@ -2198,6 +2198,17 @@ impl TypeChecker {
     }
 
     fn infer_type(&mut self, expr: &Expr) -> ValueType {
+        // Memoize by node id (Bug 50). The same sub-expression is inferred more
+        // than once — e.g. a MethodCall infers its receiver directly AND again via
+        // check_call, which passes the receiver as the implicit self arg — making
+        // inference exponential on deep method chains (`a.n().n()…`) without a
+        // cache. Node ids are unique within the single checked source (preludes
+        // are only declared, never inferred); synthetic exprs (id 0) aren't cached.
+        if expr.id != 0 {
+            if let Some(cached) = self.expr_types.get(&expr.id) {
+                return cached.clone();
+            }
+        }
         let ty = self.infer_type_inner(expr);
         if expr.id != 0 {
             self.expr_types.insert(expr.id, ty.clone());

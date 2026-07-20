@@ -846,6 +846,11 @@ fn check(args: &[String]) {
         std::process::exit(1);
     }
 
+    // Assign node ids before type-checking so infer_type's memoization is active
+    // (Bug 50) — without ids every sub-expression is re-inferred, making deep
+    // method chains exponential. The build path already does this before check.
+    tinox_parser::assign_node_ids(&mut ast);
+
     // Type-check
     let mut typechecker = tinox_typecheck::TypeChecker::new();
     match typechecker.check(&ast) {
