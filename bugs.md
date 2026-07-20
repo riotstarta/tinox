@@ -2131,6 +2131,47 @@ propagiert (die Typecheck-Seite von B2) — großer Refactor, eigener Komplex.
 
 ---
 
+## Bug 53 — B2 Schritt 1: ValueType trägt generische Typargumente (T-Feld-Auflösung)
+
+**Status: GEFIXT (2026-07-20).** Der in Bug 52 als „großer Refactor" umrissene
+Typecheck-seitige B2-Komplex — überraschend sauber gelandet. Behebt die zwei
+verbleibenden generischen T-Feld-Bugs aus B1-Phase 4: `bi.value.toString()`
+(bi: Box<Int64>) → „undefined function: T_toString" und `box.tField = literal` →
+„expected T, found String".
+
+**Ursache.** `ValueType::Named(String)` trug NUR den Klassennamen — die
+Typargumente wurden in `from_parser_type` (`Type::Generic { name, .. } →
+Named(name)`) verworfen. `Box<Int64>` und `Box<String>` waren ununterscheidbar;
+ein Feld `value: T` blieb der unaufgelöste Typparameter `Named("T")`, auf dem
+`.toString()`/Assignment scheiterten.
+
+**Fix (3 Teile).** (1) `Named(String)` → `Named(String, Vec<ValueType>)`;
+`from_parser_type` füllt die Args (`Box<Int64>` → `Named("Box", [Int])`). (2) Neues
+Register `class_type_params` (`Box` → `["T"]`) + Helper `substitute_type_params`:
+löst einen Feld-/Rückgabetyp gegen die Instanz-Args auf (`Named("T")` bei Box mit
+`[Int]` → `Int`; rekursiv in Array/Map/Nullable). Angewandt in der FieldAccess-
+Typinferenz. (3) **Custom `PartialEq`**: zwei `Named` sind gleich gdw ihre Namen
+gleich sind — die Args sind Zusatzinfo für die Substitution, NICHT Teil der
+Typidentität. Hält jeden bestehenden `==`-Vergleich exakt wie vorher (`Box<Int>`
+und `Box<String>` galten schon immer als gleich) und verhindert Fehlalarme wie
+„expected Box, found Box" (Rückgabetyp `Box<T>` vs StructLiteral `Named("Box",[])`).
+
+**Refactor-Sicherheit:** die ~46 `Named`-Stellen wurden durch Rusts Typprüfung
+erzwungen (ein vergessenes `Named` = Compile-Fehler, kein stiller Bug) — deshalb
+war dieser zentrale Typ-Refactor risikoarm trotz Breite.
+
+**Verifiziert:** `Box<Int64/String/Float64>`-T-Feld Read + `.toString()` +
+Assignment korrekt; Nicht-T-Felder unverändert; e2e-Test
+`tests/e2e/generic_field_type_resolution.tnx`; `make check` voll grün (der zentrale
+ValueType/PartialEq-Umbau bricht nichts).
+
+**Noch offen (B2 Schritt 2):** Typargument-INFERENZ für nicht-annotierte
+Bindungen (`let bi = Box::make(42)` ohne `: Box<Int64>`) — der Konstruktor-
+Rückgabetyp müsste die Args aus den Argumenten ableiten. Aktuell trägt nur die
+explizite Annotation die Args.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

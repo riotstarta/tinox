@@ -236,7 +236,7 @@ impl TypeError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ValueType {
     Int,
     Float,
@@ -252,12 +252,40 @@ pub enum ValueType {
     Map(Box<ValueType>),
     Ref,
     Fn,
-    Named(String),
+    /// A class or enum type. The second field holds generic type arguments
+    /// (`Box<Int64>` → `Named("Box", [Int])`); empty for non-generic types and
+    /// type parameters. Carrying the args lets a `T`-typed field/return of a
+    /// generic instance resolve to the concrete type (B2 step 1).
+    Named(String, Vec<ValueType>),
     Tuple,
     Range,
     Nullable(Box<ValueType>),
     Null,
 }
+
+// Custom equality (B2 step 1): two `Named` types are equal iff their class/enum
+// names match — the generic type args are additional info for field-type
+// substitution, NOT part of type identity. This keeps every existing `==`
+// comparison behaving exactly as before the args were added (`Box<Int>` and
+// `Box<String>` were both `Named("Box")` and compared equal). Arg-aware
+// compatibility is a later step.
+impl PartialEq for ValueType {
+    fn eq(&self, other: &Self) -> bool {
+        use ValueType::*;
+        match (self, other) {
+            (Int, Int) | (Float, Float) | (Bool, Bool) | (Char, Char)
+            | (String, String) | (Nothing, Nothing) | (Never, Never)
+            | (Any, Any) | (Ref, Ref) | (Fn, Fn) | (Tuple, Tuple)
+            | (Range, Range) | (Null, Null) => true,
+            (Array(a), Array(b)) => a == b,
+            (Map(a), Map(b)) => a == b,
+            (Nullable(a), Nullable(b)) => a == b,
+            (Named(a, _), Named(b, _)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for ValueType {}
 
 impl ValueType {
     /// Typgelöschtes Array (Element unbekannt) — für Builtin-Signaturen.
@@ -288,7 +316,7 @@ impl ValueType {
             Type::Never => ValueType::Never,
             Type::Any => ValueType::Any,
             Type::Infer => ValueType::Any,
-            Type::Named(name) => ValueType::Named(name.clone()),
+            Type::Named(name) => ValueType::Named(name.clone(), vec![]),
             Type::Generic { name, args } if name == "Array" || name == "List" => {
                 ValueType::Array(Box::new(
                     args.first().map(Self::from_parser_type).unwrap_or(ValueType::Any),
@@ -297,7 +325,10 @@ impl ValueType {
             Type::Generic { name, args } if name == "Map" => ValueType::Map(Box::new(
                 args.get(1).map(Self::from_parser_type).unwrap_or(ValueType::Any),
             )),
-            Type::Generic { name, .. } => ValueType::Named(name.clone()),
+            Type::Generic { name, args } => ValueType::Named(
+                name.clone(),
+                args.iter().map(Self::from_parser_type).collect(),
+            ),
             Type::Array(inner) => ValueType::Array(Box::new(Self::from_parser_type(inner))),
             Type::Map(_, v) => ValueType::Map(Box::new(Self::from_parser_type(v))),
             Type::Tuple(_) => ValueType::Tuple,
@@ -317,11 +348,11 @@ impl ValueType {
         match self {
             ValueType::String => Some("String".to_string()),
             ValueType::Float => Some("Float".to_string()),
-            ValueType::Named(c) => Some(c.clone()),
+            ValueType::Named(c, _) => Some(c.clone()),
             ValueType::Array(e) => Some(match e.as_ref() {
                 ValueType::String => "Array:String".to_string(),
                 ValueType::Float => "Array:Float".to_string(),
-                ValueType::Named(c) => format!("List:{}", c),
+                ValueType::Named(c, _) => format!("List:{}", c),
                 elem => match elem.to_marker() {
                     Some(m) => format!("Array:{}", m),
                     None => "Array".to_string(),
@@ -369,7 +400,7 @@ impl std::fmt::Display for ValueType {
             ValueType::Map(_) => "Map".to_string(),
             ValueType::Ref => "Ref".to_string(),
             ValueType::Fn => "Fn".to_string(),
-            ValueType::Named(name) => name.clone(),
+            ValueType::Named(name, _) => name.clone(),
             ValueType::Tuple => "Tuple".to_string(),
             ValueType::Range => "Range".to_string(),
             ValueType::Nullable(inner) => format!("{}?", inner),
@@ -432,6 +463,10 @@ pub struct TypeChecker {
     /// classes legitimately use struct-literal fields without registered field
     /// declarations, so field-access checks stay permissive for them.
     generic_class_names: HashSet<String>,
+    /// Generic class name → its type-parameter names (`Box` → `["T"]`). Used to
+    /// substitute a `T`-typed field/return against a generic instance's type
+    /// arguments (`Named("Box", [Int])`) so it resolves to the concrete type (B2).
+    class_type_params: HashMap<String, Vec<String>>,
     /// `ClassName_method` keys of instance methods whose body uses `this`. Such a
     /// method's receiver is the leading call arg (self); a method that does NOT
     /// use `this` takes its receiver as an explicit first declared param. This
@@ -765,7 +800,7 @@ impl TypeChecker {
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
-            return_type: ValueType::Named("File".to_string()),
+            return_type: ValueType::Named("File".to_string(), vec![]),
         });
         symbols.functions.insert("fileExists".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String)],
@@ -775,7 +810,7 @@ impl TypeChecker {
             params: vec![("path".to_string(), ValueType::String)],
             return_type: ValueType::Nothing,
         });
-        let file_ty = ValueType::Named("File".to_string());
+        let file_ty = ValueType::Named("File".to_string(), vec![]);
         symbols.functions.insert("File_read".to_string(), FunctionSignature {
             params: vec![("f".to_string(), file_ty.clone())],
             return_type: ValueType::String,
@@ -964,7 +999,7 @@ impl TypeChecker {
         for name in &["httpGet", "httpPost", "httpPut", "httpDelete", "httpPatch"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("url".to_string(), ValueType::String)],
-                return_type: ValueType::Named("HttpResponse".to_string()),
+                return_type: ValueType::Named("HttpResponse".to_string(), vec![]),
             });
         }
         for name in &["httpSetHeader", "httpClearHeaders", "httpHeader", "httpBody", "httpStatusCode"] {
@@ -978,16 +1013,16 @@ impl TypeChecker {
         {
             let name = &"HttpResponse_statusCode";
             symbols.functions.insert(name.to_string(), FunctionSignature {
-                params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string()))],
+                params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string(), vec![]))],
                 return_type: ValueType::Int,
             });
         }
         symbols.functions.insert("HttpResponse_body".to_string(), FunctionSignature {
-            params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string()))],
+            params: vec![("r".to_string(), ValueType::Named("HttpResponse".to_string(), vec![]))],
             return_type: ValueType::String,
         });
         // HttpServer method builtins
-        let hs = ValueType::Named("HttpServer".to_string());
+        let hs = ValueType::Named("HttpServer".to_string(), vec![]);
         for name in &["HttpServer_get", "HttpServer_post", "HttpServer_put", "HttpServer_delete", "HttpServer_patch", "HttpServer_use"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("srv".to_string(), hs.clone()), ("path".to_string(), ValueType::String), ("handler".to_string(), ValueType::Fn)],
@@ -1083,6 +1118,7 @@ impl TypeChecker {
             current_return_type: None,
             known_class_names: HashSet::new(),
             generic_class_names: HashSet::new(),
+            class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
         }
@@ -1268,14 +1304,14 @@ impl TypeChecker {
                     }
                     if c.annotations.iter().any(|a| a.name == "Log") {
                         let key = format!("{}.log", c.name);
-                        self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string()), false));
+                        self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string(), vec![]), false));
                         self.field_visibility.insert(key, Visibility::Public);
                     }
                     for method in &c.methods {
                         let mut params = if method.static_ {
                             vec![]
                         } else {
-                            vec![("self".to_string(), ValueType::Named(c.name.clone()))]
+                            vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))]
                         };
                         // Erase both the method's own type params (`fn map<U>`)
                         // AND the enclosing class's (`class Stack<T>`) — only
@@ -1312,15 +1348,15 @@ impl TypeChecker {
                         self.symbols.functions.insert(
                             format!("{}_toJson", c.name),
                             FunctionSignature {
-                                params: vec![("self".to_string(), ValueType::Named(c.name.clone()))],
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
                                 return_type: ValueType::String,
                             },
                         );
                         self.symbols.functions.insert(
                             format!("{}_fromJson", c.name),
                             FunctionSignature {
-                                params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string()))],
-                                return_type: ValueType::Named(c.name.clone()),
+                                params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string(), vec![]))],
+                                return_type: ValueType::Named(c.name.clone(), vec![]),
                             },
                         );
                     }
@@ -1334,7 +1370,7 @@ impl TypeChecker {
                             format!("{}::{}", e.name, variant.name),
                             variant.args.iter().map(Self::type_to_value).collect(),
                         );
-                        let ty = ValueType::Named(format!("{}.{}", e.name, variant.name));
+                        let ty = ValueType::Named(format!("{}.{}", e.name, variant.name), vec![]);
                         self.symbols
                             .variables
                             .insert(format!("{}.{}", e.name, variant.name), (ty, true));
@@ -1394,7 +1430,7 @@ impl TypeChecker {
                         .collect();
                     let sig = FunctionSignature {
                         params,
-                        return_type: ValueType::Named(u.name.clone()),
+                        return_type: ValueType::Named(u.name.clone(), vec![]),
                     };
                     let key = format!("{}_new", u.name);
                     self.symbols.functions.insert(key.clone(), sig);
@@ -1415,14 +1451,14 @@ impl TypeChecker {
                             }
                             if c.annotations.iter().any(|a| a.name == "Log") {
                                 let key = format!("{}.log", c.name);
-                                self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string()), false));
+                                self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string(), vec![]), false));
                                 self.field_visibility.insert(key, Visibility::Public);
                             }
                             for method in &c.methods {
                                 let mut params = if method.static_ {
                                     vec![]
                                 } else {
-                                    vec![("self".to_string(), ValueType::Named(c.name.clone()))]
+                                    vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))]
                                 };
                                 // Erase class-level AND method-level type params
                                 // (see the top-level DeclKind::Class arm above —
@@ -1453,15 +1489,15 @@ impl TypeChecker {
                                 self.symbols.functions.insert(
                                     format!("{}_toJson", c.name),
                                     FunctionSignature {
-                                        params: vec![("self".to_string(), ValueType::Named(c.name.clone()))],
+                                        params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
                                         return_type: ValueType::String,
                                     },
                                 );
                                 self.symbols.functions.insert(
                                     format!("{}_fromJson", c.name),
                                     FunctionSignature {
-                                        params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string()))],
-                                        return_type: ValueType::Named(c.name.clone()),
+                                        params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string(), vec![]))],
+                                        return_type: ValueType::Named(c.name.clone(), vec![]),
                                     },
                                 );
                             }
@@ -1478,7 +1514,7 @@ impl TypeChecker {
                                 .collect();
                             let sig = FunctionSignature {
                                 params,
-                                return_type: ValueType::Named(u.name.clone()),
+                                return_type: ValueType::Named(u.name.clone(), vec![]),
                             };
                             let key = format!("{}_new", u.name);
                             self.symbols.functions.insert(key.clone(), sig);
@@ -1506,7 +1542,7 @@ impl TypeChecker {
                                     format!("{}::{}", e.name, variant.name),
                                     variant.args.iter().map(Self::type_to_value).collect(),
                                 );
-                                let ty = ValueType::Named(format!("{}.{}", e.name, variant.name));
+                                let ty = ValueType::Named(format!("{}.{}", e.name, variant.name), vec![]);
                                 self.symbols
                                     .variables
                                     .insert(format!("{}.{}", e.name, variant.name), (ty, true));
@@ -1613,7 +1649,7 @@ impl TypeChecker {
         for (iface_name, method_name, sig) in iface_entries {
             let full_name = format!("{}_{}", iface_name, method_name);
             // first param is self (the interface-typed object)
-            let mut params = vec![("self".to_string(), ValueType::Named(iface_name.clone()))];
+            let mut params = vec![("self".to_string(), ValueType::Named(iface_name.clone(), vec![]))];
             params.extend(sig.params.clone());
             self.symbols.functions.insert(
                 full_name,
@@ -1710,7 +1746,7 @@ impl TypeChecker {
                                 }
                                 let mut params = vec![(
                                     "self".to_string(),
-                                    ValueType::Named(name.clone()),
+                                    ValueType::Named(name.clone(), vec![]),
                                 )];
                                 params.extend(method.params.iter().map(|p| {
                                     (p.name.clone(), Self::type_to_value(&p.param_type))
@@ -1738,6 +1774,7 @@ impl TypeChecker {
                     self.known_class_names.insert(name.clone());
                     if !c.type_params.is_empty() {
                         self.generic_class_names.insert(name.clone());
+                        self.class_type_params.insert(name.clone(), c.type_params.clone());
                     }
                     processed.insert(name.clone());
                 }
@@ -1825,7 +1862,7 @@ impl TypeChecker {
                 .collect();
             self.symbols.variables.insert(
                 "self".to_string(),
-                (ValueType::Named(c.name.clone()), false),
+                (ValueType::Named(c.name.clone(), vec![]), false),
             );
             for param in &method.params {
                 self.symbols.variables.insert(
@@ -2017,7 +2054,7 @@ impl TypeChecker {
                 else_branch,
             } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_, _)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -2037,7 +2074,7 @@ impl TypeChecker {
             }
             StmtKind::While { cond, body } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_, _)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -2174,7 +2211,7 @@ impl TypeChecker {
                 }
                 if let Some(cond_expr) = cond {
                     let ty = self.infer_type(cond_expr);
-                    if ty != ValueType::Bool && !matches!(ty, ValueType::Any | ValueType::Named(_)) {
+                    if ty != ValueType::Bool && !matches!(ty, ValueType::Any | ValueType::Named(_, _)) {
                         self.errors.push(
                             TypeError::TypeMismatch {
                                 expected: "Bool".to_string(),
@@ -2352,13 +2389,16 @@ impl TypeChecker {
             }
             ExprKind::FieldAccess { obj, field } => {
                 let obj_ty = self.infer_type(obj);
-                if let ValueType::Named(name) = obj_ty {
+                if let ValueType::Named(name, targs) = obj_ty {
                     let full_name = format!("{}.{}", name, field);
                     if let Some(vis) = self.field_visibility.get(&full_name).cloned() {
                         self.check_member_visibility(&name, field, &vis, expr.span);
                     }
                     if let Some((ty, _)) = self.symbols.variables.get(&full_name) {
-                        return ty.clone();
+                        // Resolve a T-typed field against the instance's type args
+                        // (B2 step 1): `bi: Box<Int64>`, field `value: T` → Int.
+                        let ty = ty.clone();
+                        return self.substitute_type_params(&ty, &name, &targs);
                     }
                     // Field not declared. Report an error when either the class has
                     // at least one registered field (typo/unknown field), OR it is a
@@ -2386,7 +2426,7 @@ impl TypeChecker {
                 if let Some((ty, _)) = self.symbols.variables.get("self") {
                     ty.clone()
                 } else {
-                    ValueType::Named("Self".to_string())
+                    ValueType::Named("Self".to_string(), vec![])
                 }
             }
             ExprKind::SuperCall { method, args } => {
@@ -2467,13 +2507,13 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_type(arg);
                 }
-                ValueType::Named(class.clone())
+                ValueType::Named(class.clone(), vec![])
             }
             ExprKind::StructLiteral { name, fields } => {
                 for (_, field_expr) in fields {
                     self.infer_type(field_expr);
                 }
-                ValueType::Named(name.clone())
+                ValueType::Named(name.clone(), vec![])
             }
             ExprKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
@@ -2495,7 +2535,7 @@ impl TypeChecker {
                 else_branch,
             } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_, _)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -2515,7 +2555,7 @@ impl TypeChecker {
             }
             ExprKind::While { cond, body } => {
                 let cond_ty = self.infer_type(cond);
-                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_)) {
+                if cond_ty != ValueType::Bool && !matches!(cond_ty, ValueType::Any | ValueType::Named(_, _)) {
                     self.errors.push(
                         TypeError::TypeMismatch {
                             expected: "Bool".to_string(),
@@ -2789,7 +2829,7 @@ impl TypeChecker {
                         );
                     }
                 }
-                ValueType::Named(enum_name.clone())
+                ValueType::Named(enum_name.clone(), vec![])
             }
             ExprKind::ArrayLiteral(elements) => {
                 // Element-Typ als lub über alle Elemente (leer → Any)
@@ -2925,7 +2965,7 @@ impl TypeChecker {
                 // variant ist leer; qualifiziert `JV::Arr(xs)` ist beides gesetzt.
                 let variant_name = if variant.is_empty() { enum_name } else { variant };
                 let payloads = match scrutinee {
-                    ValueType::Named(e) => self
+                    ValueType::Named(e, _) => self
                         .enum_variant_payloads
                         .get(&format!("{}::{}", e, variant_name))
                         .cloned(),
@@ -2950,8 +2990,8 @@ impl TypeChecker {
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
         // Any and Named (generic type params) are wildcards — skip checking
-        if matches!(lhs, ValueType::Any | ValueType::Named(_))
-            || matches!(rhs, ValueType::Any | ValueType::Named(_))
+        if matches!(lhs, ValueType::Any | ValueType::Named(_, _))
+            || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
         {
             return;
         }
@@ -3011,7 +3051,7 @@ impl TypeChecker {
             t,
             ValueType::Array(_)
                 | ValueType::Map(_)
-                | ValueType::Named(_)
+                | ValueType::Named(_, _)
                 | ValueType::String
                 | ValueType::Nullable(_)
                 | ValueType::Null
@@ -3021,7 +3061,7 @@ impl TypeChecker {
     }
 
     fn check_unary_op(&mut self, op: &UnaryOp, operand: &ValueType, span: Span) {
-        if matches!(operand, ValueType::Any | ValueType::Named(_)) {
+        if matches!(operand, ValueType::Any | ValueType::Named(_, _)) {
             return;
         }
         let valid = match op {
@@ -3054,8 +3094,8 @@ impl TypeChecker {
                 ValueType::String
             }
             _ => {
-                if matches!(lhs, ValueType::Any | ValueType::Named(_))
-                    || matches!(rhs, ValueType::Any | ValueType::Named(_))
+                if matches!(lhs, ValueType::Any | ValueType::Named(_, _))
+                    || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
                 {
                     ValueType::Any
                 } else if *lhs == ValueType::Float || *rhs == ValueType::Float {
@@ -3089,6 +3129,38 @@ impl TypeChecker {
 
     fn type_to_value(ty: &Type) -> ValueType {
         ValueType::from_parser_type(ty)
+    }
+
+    /// Substitute a class's type parameters with concrete instance type args
+    /// (B2 step 1). E.g. field type `Named("T", [])` of class `Box` with args
+    /// `[Int]` becomes `Int`. Recurses into Array/Map/Nullable so `List<T>`
+    /// resolves too. A no-op when there are no args or the class isn't generic.
+    fn substitute_type_params(&self, ty: &ValueType, class_name: &str, targs: &[ValueType]) -> ValueType {
+        if targs.is_empty() {
+            return ty.clone();
+        }
+        let Some(tparams) = self.class_type_params.get(class_name) else {
+            return ty.clone();
+        };
+        match ty {
+            ValueType::Named(n, _) => {
+                if let Some(idx) = tparams.iter().position(|p| p == n) {
+                    targs.get(idx).cloned().unwrap_or_else(|| ty.clone())
+                } else {
+                    ty.clone()
+                }
+            }
+            ValueType::Array(inner) => {
+                ValueType::Array(Box::new(self.substitute_type_params(inner, class_name, targs)))
+            }
+            ValueType::Map(v) => {
+                ValueType::Map(Box::new(self.substitute_type_params(v, class_name, targs)))
+            }
+            ValueType::Nullable(inner) => {
+                ValueType::Nullable(Box::new(self.substitute_type_params(inner, class_name, targs)))
+            }
+            _ => ty.clone(),
+        }
     }
 
     /// Like `type_to_value` but resolves type parameters in scope to `Any`.
@@ -3203,7 +3275,7 @@ impl TypeChecker {
             // A non-null value is compatible with its nullable counterpart
             (ValueType::Nullable(inner), _) => self.types_compatible(inner, b),
             // Allow passing a class where an interface it implements is expected
-            (ValueType::Named(iface), ValueType::Named(class)) => {
+            (ValueType::Named(iface, _), ValueType::Named(class, _)) => {
                 self.interface_implementations
                     .get(class)
                     .map(|ifaces| ifaces.iter().any(|i| i == iface))
