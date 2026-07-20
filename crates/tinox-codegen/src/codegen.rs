@@ -6666,10 +6666,30 @@ impl CodeGen {
                     .unwrap();
                 }
 
+                // B1 phase 2: typed field stores for classes with a named struct
+                // type — typed GEP + `store <slot>` instead of the i64 slot +
+                // ptrtoint/bitcast dance (mixable with the i64 path, same layout).
+                let use_typed = self.class_named_types.contains(name.as_str());
                 for (fname, value) in fields.iter() {
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
                     // Look up field position in layout (which includes __vtable__ at 0 if vtable class)
                     let field_idx = layout.iter().position(|f| f == fname).unwrap_or(0);
+                    if use_typed {
+                        let field_llvm_ty = self.struct_field_llvm_types.get(name)
+                            .and_then(|m| m.get(fname.as_str()))
+                            .cloned()
+                            .unwrap_or_else(|| "i64".to_string());
+                        let slot = Self::slot_llvm_ty(&field_llvm_ty);
+                        let store_val = self.coerce_to_slot(&val, &val_ty, &slot);
+                        let field_ptr = self.temp();
+                        writeln!(
+                            &mut self.ir,
+                            "{} = getelementptr %class.{}, ptr {}, i32 0, i32 {}",
+                            field_ptr, name, typed_ptr, field_idx
+                        ).unwrap();
+                        writeln!(&mut self.ir, "store {} {}, {}* {}", slot, store_val, slot, field_ptr).unwrap();
+                        continue;
+                    }
                     let field_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -9777,6 +9797,39 @@ impl CodeGen {
     }
 
     /// Coerce an LLVM value of the given type to i64, emitting cast instructions as needed.
+    /// Coerce a value of llvm type `val_ty` to an 8-byte struct slot type `slot`
+    /// (double / a pointer / i64) for a typed field store (B1 phase 2). The common
+    /// case (val_ty == slot) is a no-op; mismatches bit-cast/int-to-ptr as needed.
+    fn coerce_to_slot(&mut self, val: &str, val_ty: &str, slot: &str) -> String {
+        if val_ty == slot || val_ty.is_empty() {
+            return val.to_string();
+        }
+        if slot == "double" {
+            if val_ty == "i64" {
+                let t = self.temp();
+                writeln!(&mut self.ir, "  {} = bitcast i64 {} to double", t, val).unwrap();
+                return t;
+            }
+            return val.to_string();
+        }
+        if slot.ends_with('*') {
+            if val_ty == "i64" {
+                let t = self.temp();
+                writeln!(&mut self.ir, "  {} = inttoptr i64 {} to {}", t, val, slot).unwrap();
+                return t;
+            }
+            if val_ty.ends_with('*') || val_ty == "ptr" {
+                let t = self.temp();
+                let from = if val_ty == "ptr" { "ptr" } else { val_ty };
+                writeln!(&mut self.ir, "  {} = bitcast {} {} to {}", t, from, val, slot).unwrap();
+                return t;
+            }
+            return val.to_string();
+        }
+        // slot == "i64"
+        self.coerce_to_i64(val, val_ty)
+    }
+
     fn coerce_to_i64(&mut self, val: &str, ty: &str) -> String {
         if ty == "i64" {
             val.to_string()

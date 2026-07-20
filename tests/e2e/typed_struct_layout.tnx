@@ -3,10 +3,13 @@
 // bitcast. Das Layout bleibt byte-identisch (jedes Feld ein 8-Byte-Slot), daher
 // müssen Float-, String-, Int- und Objekt-Referenz-Felder unverändert korrekt
 // gelesen werden — inkl. verschachtelter Objektzugriffe.
+// Phase 2 ergänzt die Store-Seite: StructLiteral-Konstruktion schreibt Felder
+// über getypte GEP + `store <slot>` (double/ptr/i64), inkl. Bool (i1 -> i64-Slot).
 // expect: 7.5
 // expect: hallo
 // expect: 42
 // expect: -3
+// expect: flag-true
 
 class Inner {
     var value: Int64;
@@ -18,9 +21,10 @@ class Outer {
     var fx: Float64;
     var fy: Float64;
     var name: String;
+    var flag: Bool;
     var inner: Inner;
     fn make() -> Outer {
-        return Outer { fx: 3.5, fy: 4.0, name: "hallo", inner: Inner::make(42) };
+        return Outer { fx: 3.5, fy: 4.0, name: "hallo", flag: true, inner: Inner::make(42) };
     }
 }
 
@@ -30,5 +34,6 @@ fn main() -> Int32 {
     println(o.name);                      // hallo — String-Feld (ptr-Slot)
     println(o.inner.value.toString());    // 42 — Objekt-Feld -> Int-Feld
     println(o.inner.neg.toString());      // -3 — negativer Int
+    if o.flag { println("flag-true"); } else { println("flag-false"); }  // Bool i1->i64-Slot
     return 0;
 }

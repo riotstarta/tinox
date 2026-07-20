@@ -2035,10 +2035,18 @@ Objektzugriffe korrekt; named types im IR, getypte GEP im Einsatz; e2e-
 Regressionstest `tests/e2e/typed_struct_layout.tnx`; `make check` voll grün (die
 Layout-Identität hält über die gesamte Stdlib inkl. C-Runtime).
 
-**Noch offen (Phasen 2–5):** Write-Pfad (StructLiteral-Allokation + Feld-
-Assignment) getypt (Phase 2); Vererbung + Vtable-Slot (3); generische
-Monomorphisierung — eigener named type pro Instanziierung (4); Offset-0-Fallback
-zum harten Fehler, jetzt via opt sichtbar (5) — der eigentliche Payoff.
+**Phase 2 (2026-07-20):** Write-Pfad im StructLiteral-Konstruktor getypt. Die
+Feld-Stores nutzen jetzt getyptes GEP + `store <slot>` (via neuer `coerce_to_slot`:
+Wert → 8-Byte-Slot double/ptr/i64) statt i64-slot + ptrtoint/bitcast. Bool (i1)
+→ i64-Slot via zext, wie zuvor. Für Klassen ohne named type unverändert i64-Pfad.
+Der Alloc (`tinox_alloc`) und der Vtable-Slot-Store bleiben i64 (Phase 3).
+Verifiziert: double-/String-/Int-/Bool-/Objekt-Referenz-Felder korrekt geschrieben
++ gelesen; e2e-Test um die Store-Seite erweitert; `make check` grün.
+
+**Noch offen (Phasen 3–5):** verstreute Feld-Assignments (`obj.f = v`) getypt +
+Vererbung + Vtable-Slot (3); generische Monomorphisierung — eigener named type pro
+Instanziierung (4); Offset-0-Fallback zum harten Fehler, jetzt via opt sichtbar
+(5) — der eigentliche Payoff.
 
 ---
 
