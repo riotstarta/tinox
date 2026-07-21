@@ -5225,6 +5225,14 @@ impl CodeGen {
                                 return Ok((val, "i8*".to_string()));
                             }
                             let result = self.temp();
+                            // Small int widths (i8/i16/i32) must be sext'd to i64
+                            // before tinox_int_to_string, else the i64 param gets a
+                            // narrower value → type-mismatched IR.
+                            let val = if matches!(ty.as_str(), "i8" | "i16" | "i32") {
+                                let ext = self.temp();
+                                writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, ty, val).unwrap();
+                                ext
+                            } else { val };
                             let (fn_name, arg_ty) = match ty.as_str() {
                                 "double" => ("tinox_float_to_string", "double"),
                                 "i1"     => ("tinox_bool_to_string", "i1"),
@@ -6061,14 +6069,18 @@ impl CodeGen {
                 // Int/Float/Bool toString must be dispatched before str_methods conversion
                 // to avoid i64 integer values being misidentified as string pointers.
                 if method == "toString" {
-                    if obj_ty == "i64" || obj_ty == "double" || obj_ty == "i1" {
+                    if matches!(obj_ty.as_str(), "i64" | "i32" | "i16" | "i8" | "double" | "i1") {
                         let result = self.temp();
-                        let (fn_name, arg_ty) = match obj_ty.as_str() {
-                            "double" => ("tinox_float_to_string", "double"),
-                            "i1"     => ("tinox_bool_to_string", "i1"),
-                            _        => ("tinox_int_to_string", "i64"),
-                        };
-                        writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, obj_ptr).unwrap();
+                        match obj_ty.as_str() {
+                            "double" => { writeln!(&mut self.ir, "{} = call i8* @tinox_float_to_string(double {})", result, obj_ptr).unwrap(); }
+                            "i1" => { writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap(); }
+                            "i64" => { writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap(); }
+                            _ => {
+                                let ext = self.temp();
+                                writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
+                            }
+                        }
                         return Ok((result, "i8*".to_string()));
                     }
                     // Class object toString() — dispatch to generated ClassName_toString
@@ -6248,17 +6260,31 @@ impl CodeGen {
                     }
                 }
 
-                // Int/Float/Bool method dispatch (toString, charCodeAt, etc.)
-                if obj_ty == "i64" || obj_ty == "double" || obj_ty == "i1" {
+                // Int/Float/Bool method dispatch (toString, charCodeAt, etc.).
+                // Small int widths (i8/i16/i32, e.g. after `x as Int32`) count as
+                // ints here — otherwise the dispatch was skipped and `.toString()`
+                // fell through to an undefined `@toString` (invalid IR / ICE).
+                if matches!(obj_ty.as_str(), "i64" | "i32" | "i16" | "i8" | "double" | "i1") {
                     match method.as_str() {
                         "toString" => {
                             let result = self.temp();
-                            let (fn_name, arg_ty) = match obj_ty.as_str() {
-                                "double" => ("tinox_float_to_string", "double"),
-                                "i1"     => ("tinox_bool_to_string", "i1"),
-                                _        => ("tinox_int_to_string", "i64"),
-                            };
-                            writeln!(&mut self.ir, "{} = call i8* @{}({} {})", result, fn_name, arg_ty, obj_ptr).unwrap();
+                            match obj_ty.as_str() {
+                                "double" => {
+                                    writeln!(&mut self.ir, "{} = call i8* @tinox_float_to_string(double {})", result, obj_ptr).unwrap();
+                                }
+                                "i1" => {
+                                    writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap();
+                                }
+                                "i64" => {
+                                    writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap();
+                                }
+                                _ => {
+                                    // small int (i8/i16/i32) → sext to i64 first
+                                    let ext = self.temp();
+                                    writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                    writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
+                                }
+                            }
                             return Ok((result, "i8*".to_string()));
                         }
                         "sqrt" if args.is_empty() => {
