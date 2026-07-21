@@ -2261,6 +2261,28 @@ fangbare Exceptions; ein `throw` wäre v2, der Abort ist der sichtbare 80/20-Fix
 
 ---
 
+## Bugs 58–59 — String-Index + first()/last() ungeprüft (Bounds-Härtung, Forts.)
+
+**Status: GEFIXT (2026-07-21).** Weiter dem Bug-54-Faden gefolgt: übrige
+Runtime-Ops mit unchecked Reads.
+
+**Bug 58 — String-Index `s[i]`.** Machte denselben unchecked inline `getelementptr
+i8 + load` wie `charCodeAt` vor Bug 54 (`"hi"[100]` las hinter den String, hier
+zufällig 0). Fix: über `tinox_string_char_code_at` (bounds-geprüft, -1 out-of-range).
+
+**Bug 59 — `first()` / `last()` auf leerem Array.** `first()` las Element 0
+ungeprüft; `last()` rechnete `len-1` = **-1** bei leerem Array → Read VOR dem
+Buffer. Beide über `tinox_array_get` geleitet → harter Fehler bei leerem Array. Der
+echte Instance-Pfad (MethodCall, mit `is_str`-inttoptr) war ein ANDERER als der
+zuerst gefixte (5068, static) — beide umgestellt.
+
+**Verifiziert:** String-Index gültig (104) + OOB → -1; `first`/`last` auf Int- und
+String-Arrays korrekt (10,30 / a,c); leeres `first()` → „array index out of bounds:
+0 (length 0)"; e2e-Test `tests/e2e/string_index_first_last_bounds.tnx`; `make check`
+grün (keine latenten Stdlib-Bugs diesmal — first/last nie auf leeren Arrays genutzt).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

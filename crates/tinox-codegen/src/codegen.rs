@@ -5066,24 +5066,22 @@ impl CodeGen {
                             return Ok((result, "i64*".to_string()));
                         }
                         "first" => {
+                            // Bounds-checked: empty array → hard error (was an
+                            // unchecked read of element 0).
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
-                            let data_ptr = self.emit_array_data(&arr);
-                            let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, data_ptr).unwrap();
                             let val = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", val, ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 0)", val, arr).unwrap();
                             return Ok((val, "i64".to_string()));
                         }
                         "last" => {
+                            // Bounds-checked: empty array → len-1 = -1 → hard error
+                            // (was a read before the buffer at index -1).
                             let (arr, _) = self.gen_expr(&args[0], ctx)?;
                             let len_val = self.emit_array_len(&arr);
-                            let data_ptr = self.emit_array_data(&arr);
                             let last_idx = self.temp();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
-                            let elem_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, last_idx).unwrap();
                             let val = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", val, elem_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", val, arr, last_idx).unwrap();
                             return Ok((val, "i64".to_string()));
                         }
                         "slice" => {
@@ -5830,11 +5828,9 @@ impl CodeGen {
                             return Ok((result, "i64*".to_string()));
                         }
                         "first" => {
-                            let data_ptr = self.emit_array_data(&obj_ptr);
-                            let ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 0", ptr, data_ptr).unwrap();
+                            // Bounds-checked: empty array → hard error.
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 0)", raw, obj_ptr).unwrap();
                             if is_str {
                                 let s = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, raw).unwrap();
@@ -5843,14 +5839,12 @@ impl CodeGen {
                             return Ok((raw, "i64".to_string()));
                         }
                         "last" => {
+                            // Bounds-checked: empty array → len-1 = -1 → hard error.
                             let len_val = self.emit_array_len(&obj_ptr);
-                            let data_ptr = self.emit_array_data(&obj_ptr);
                             let last_idx = self.temp();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
-                            let elem_ptr = self.temp();
-                            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, last_idx).unwrap();
                             let raw = self.temp();
-                            writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, elem_ptr).unwrap();
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", raw, obj_ptr, last_idx).unwrap();
                             if is_str {
                                 let s = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, raw).unwrap();
@@ -6535,13 +6529,10 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_i8, key_i8).unwrap();
                     Ok(self.coerce_map_value(result, declared_elem_type.as_deref()))
                 } else if base_ty == "i8*" {
-                    // String indexing → return byte as i64
-                    let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i8, ptr {}, i64 {}", ptr_name, base_ptr, idx_val).unwrap();
-                    let byte = self.temp();
-                    writeln!(&mut self.ir, "{} = load i8, i8* {}", byte, ptr_name).unwrap();
+                    // String indexing → byte as i64, bounds-checked (-1 out of range)
+                    // instead of an unchecked inline load past the string end.
                     let extended = self.temp();
-                    writeln!(&mut self.ir, "{} = zext i8 {} to i64", extended, byte).unwrap();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_string_char_code_at(i8* {}, i64 {})", extended, base_ptr, idx_val).unwrap();
                     Ok((extended, "i64".to_string()))
                 } else {
                     // Coerce base pointer to ptr if it's an i64 (pointer-as-integer).

@@ -1,0 +1,23 @@
+// Bugs 58/59 (Fortsetzung der Bounds-Härtung): String-Index `s[i]` machte einen
+// unchecked inline load (wie charCodeAt vor Bug 54) — jetzt bounds-geprüft (-1 bei
+// out-of-range). `first()`/`last()` lasen Element 0 bzw. len-1 (bei leerem Array
+// = -1, Read vor dem Buffer!) ungeprüft — jetzt über tinox_array_get (harter
+// Fehler bei leerem Array). Hier die gültigen Pfade + String-OOB → -1.
+// expect: 104
+// expect: -1
+// expect: 10,30
+// expect: a,c
+
+fn main() -> Int32 {
+    // String-Index: gültig + out-of-bounds
+    let s: String = "hi";
+    println(s[0].toString());        // 104 (h)
+    println(s[100].toString());      // -1 (out of bounds, war 0/Müll)
+
+    // first()/last() auf Int- und String-Arrays (gültig)
+    let xs: List<Int64> = [10, 20, 30];
+    println(xs.first().toString() + "," + xs.last().toString());   // 10,30
+    let ss: List<String> = ["a", "b", "c"];
+    println(ss.first() + "," + ss.last());                          // a,c
+    return 0;
+}
