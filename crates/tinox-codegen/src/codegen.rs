@@ -10012,6 +10012,12 @@ impl CodeGen {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = ptrtoint {} {} to i64", t, ty, val).unwrap();
             t
+        } else if matches!(ty, "i8" | "i16" | "i32") {
+            // Small int widths must be widened to fill the i64 slot; without the
+            // sext a `store i64 %v` on an i32 value is type-mismatched IR (Bug 62).
+            let t = self.temp();
+            writeln!(&mut self.ir, "  {} = sext {} {} to i64", t, ty, val).unwrap();
+            t
         } else {
             val.to_string()
         }
