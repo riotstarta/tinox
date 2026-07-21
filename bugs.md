@@ -2283,6 +2283,39 @@ grün (keine latenten Stdlib-Bugs diesmal — first/last nie auf leeren Arrays g
 
 ---
 
+## Bugs 60–63 — kleine-Int-Typen & Konvertierungen (Cast-Jagd)
+
+**Status: ALLE GEFIXT (2026-07-21).** Revierwechsel zu Typ-Konvertierungen/Casts;
+Muster: kleine Int-Breiten (i32/i16/i8) sind untergetestet, weil realer Tinox-Code
+fast nur Int64 nutzt.
+
+**Bug 60 — `"xyz".toFloat()` → 8004 (Müll).** Handgeschriebener Parser rechnete
+`result*10 + (*s-'0')` für JEDES Zeichen ohne Ziffern-Check. Fix: `strtod`.
+
+**Bug 61 — `.toString()` auf i32/i16/i8 → ICE.** Der Int-Method-Dispatch-Guard
+(`obj_ty == "i64" || "double" || "i1"`) schloss kleine Ints aus → unaufgelöstes
+`@toString`. Fix: Guard erweitert + sext zu i64 vor `tinox_int_to_string` (3 Stellen).
+
+**Bug 62 — i32/i16/i8-Wert im Feld/Array-Store → ICE.** `coerce_to_i64` ließ kleine
+Ints unverändert (`else → val`) → `store i64 %v` mit i32-Wert (type-mismatched IR).
+Fix: sext zu i64. Beim Testen von Bug 61 aufgedeckt.
+
+**Bug 63 — Div/Mod durch Null nur teilweise gecheckt.** Bug 56 checkte nur den
+Binary-Op-i64-Pfad. Kleine Ints (i32-Binary) UND alle CompoundAssign-Pfade
+(`/=`/`%=`, auch i64) nutzten weiter rohes `sdiv`/`srem` → UB/Müll. Fix: gemeinsamer
+Helper `emit_checked_idiv` (i64 direkt checked, i8/i16/i32 widen→check→narrow) an
+allen vier Div/Mod-Codegen-Stellen.
+
+**Verifiziert:** toFloat gültig/ungültig/wissenschaftlich; `.toString()` + Arithmetik
++ Vergleiche + Feld-Store auf i32/i16 korrekt; Div/Mod durch Null (i32-Binary +
+i64/i32-CompoundAssign) → harter Fehler; gültige Division unverändert. e2e-Tests
+`string_to_float_parse`, `small_int_tostring`, `small_int_field_store`,
+`checked_division_all_paths`; `make check` grün. **Verbleibende kleine-Int-Ecken
+möglich** (Int32 selten → geringer Grenznutzen), aber Parse/toString/Store/Division
+sind durch.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

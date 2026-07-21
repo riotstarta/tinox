@@ -4767,11 +4767,9 @@ impl CodeGen {
                             let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
                             writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, float_ty, lf, rf).unwrap();
                             return Ok((result, float_ty.to_string()));
-                        } else if lt == "i64" {
-                            // Checked: hard error on divide-by-zero (was LLVM UB → garbage).
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_checked_sdiv(i64 {}, i64 {})", result, l, r).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, lt, l, r).unwrap()
+                            // Checked: hard error on divide-by-zero (was LLVM UB → garbage).
+                            self.emit_checked_idiv(&result, &lt, &l, &r, false);
                         }
                     }
                     tinox_parser::BinaryOp::Mod => {
@@ -4781,10 +4779,8 @@ impl CodeGen {
                             let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
                             writeln!(&mut self.ir, "{} = frem {} {}, {}", result, float_ty, lf, rf).unwrap();
                             return Ok((result, float_ty.to_string()));
-                        } else if lt == "i64" {
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_checked_srem(i64 {}, i64 {})", result, l, r).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = srem {} {}, {}", result, lt, l, r).unwrap()
+                            self.emit_checked_idiv(&result, &lt, &l, &r, true);
                         }
                     }
                     tinox_parser::BinaryOp::Eq => {
@@ -8147,14 +8143,18 @@ impl CodeGen {
                                 .unwrap();
                         }
                         tinox_parser::CompoundOp::Div => {
-                            let instr = if is_float { "fdiv" } else { "sdiv" };
-                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
-                                .unwrap();
+                            if is_float {
+                                writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, ty, loaded, rhs).unwrap();
+                            } else {
+                                self.emit_checked_idiv(&result, &ty, &loaded, &rhs, false);
+                            }
                         }
                         tinox_parser::CompoundOp::Mod => {
-                            let instr = if is_float { "frem" } else { "srem" };
-                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
-                                .unwrap();
+                            if is_float {
+                                writeln!(&mut self.ir, "{} = frem {} {}, {}", result, ty, loaded, rhs).unwrap();
+                            } else {
+                                self.emit_checked_idiv(&result, &ty, &loaded, &rhs, true);
+                            }
                         }
                         tinox_parser::CompoundOp::BitAnd => {
                             writeln!(&mut self.ir, "{} = and {} {}, {}", result, ty, loaded, rhs)
@@ -8228,12 +8228,10 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = mul i64 {}, {}", result, loaded, rhs).unwrap();
                     }
                     tinox_parser::CompoundOp::Div => {
-                        writeln!(&mut self.ir, "{} = sdiv i64 {}, {}", result, loaded, rhs)
-                            .unwrap();
+                        self.emit_checked_idiv(&result, "i64", &loaded, &rhs, false);
                     }
                     tinox_parser::CompoundOp::Mod => {
-                        writeln!(&mut self.ir, "{} = srem i64 {}, {}", result, loaded, rhs)
-                            .unwrap();
+                        self.emit_checked_idiv(&result, "i64", &loaded, &rhs, true);
                     }
                     tinox_parser::CompoundOp::BitAnd => {
                         writeln!(&mut self.ir, "{} = and i64 {}, {}", result, loaded, rhs).unwrap();
@@ -9994,6 +9992,25 @@ impl CodeGen {
             let c = self.temp();
             writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, ty, val).unwrap();
             c
+        }
+    }
+
+    /// Emit a checked integer division (`is_rem=false`) or remainder into `result`
+    /// for any int width: divide-by-zero and INT_MIN/-1 overflow become a hard
+    /// error instead of LLVM UB (garbage). i64 calls the checked runtime fn
+    /// directly; i8/i16/i32 widen → check → narrow; other types fall back to raw.
+    fn emit_checked_idiv(&mut self, result: &str, ty: &str, l: &str, r: &str, is_rem: bool) {
+        let func = if is_rem { "tinox_checked_srem" } else { "tinox_checked_sdiv" };
+        if ty == "i64" {
+            writeln!(&mut self.ir, "{} = call i64 @{}(i64 {}, i64 {})", result, func, l, r).unwrap();
+        } else if matches!(ty, "i8" | "i16" | "i32") {
+            let le = self.temp(); writeln!(&mut self.ir, "{} = sext {} {} to i64", le, ty, l).unwrap();
+            let re = self.temp(); writeln!(&mut self.ir, "{} = sext {} {} to i64", re, ty, r).unwrap();
+            let wide = self.temp(); writeln!(&mut self.ir, "{} = call i64 @{}(i64 {}, i64 {})", wide, func, le, re).unwrap();
+            writeln!(&mut self.ir, "{} = trunc i64 {} to {}", result, wide, ty).unwrap();
+        } else {
+            let instr = if is_rem { "srem" } else { "sdiv" };
+            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, l, r).unwrap();
         }
     }
 
