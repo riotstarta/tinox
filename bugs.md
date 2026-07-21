@@ -2219,6 +2219,48 @@ robust und korrekt (kein Crash/Hänger).
 
 ---
 
+## Bugs 55–57 — Array-OOB + Division-durch-Null (silent garbage) + der dadurch aufgedeckte Short-Circuit-Bug
+
+**Status: ALLE GEFIXT (2026-07-21).** Bei der Runtime-Ops-Bounds-Jagd (Fortsetzung
+von Bug 54) gefunden — und ein Fix deckte einen fundamentalen dritten Bug auf
+(Bug-37-Methodik).
+
+**Bug 55 — Array-Index out-of-bounds → Müll.** `xs[100]` auf einem 3-Element-Array
+gab einen Zeiger-Wert als Zahl (unchecked inline `getelementptr + load`). Fix:
+bounds-geprüfte Runtime-Funktion `tinox_array_get(handle, idx)` → harter Fehler
+„array index out of bounds: N (length M)" statt Müll (wie Javas
+ArrayIndexOutOfBoundsException).
+
+**Bug 56 — Integer-Division/Modulo durch Null → Müll.** `10 / 0` gab Müll (LLVM-UB;
+`opt` faltete `sdiv i64 x, 0` zu einem beliebigen Wert). Fix: `tinox_checked_sdiv`/
+`tinox_checked_srem` (i64-Pfad) → harter Fehler „division/modulo by zero"; auch der
+`INT64_MIN / -1`-Overflow-UB ist jetzt definiert (wrap, wie in Java).
+
+**Bug 57 — `&&` / `||` kurzschlossen NICHT (fundamental).** Aufgedeckt, weil der
+neue Array-Bounds-Check (55) den Heap-Smoke-Test crashte: `siftDown`s Guard
+`left < len && items[left] < …` las `items[left]` trotz `left >= len`. Ursache: der
+Codegen emittierte `and i1`/`or i1` auf zwei EAGER (vorab) ausgewerteten Operanden
+→ die RHS lief IMMER. Das brach jeden Guard (`i < len && arr[i]`, `ptr != null &&
+ptr.f`, `d != 0 && x/d`) und jeden gewollten Seiteneffekt-Kurzschluss. Vorher
+maskiert, weil der OOB-Read still Müll las, den `false &&` verwarf. Fix: `&&`/`||`
+werden VOR der Operanden-Auswertung abgefangen und als Branch emittiert — LHS
+auswerten, dann die RHS nur in ihrem eigenen Block (Ergebnis über einen i1-Slot).
+
+**Verifiziert:** RHS läuft nicht bei `false &&`/`true ||`; Guards schützen vor
+OOB/div0; kaskadierte + gemischte Logik korrekt; gültige Array-/Div-Pfade
+unverändert. e2e-Test `tests/e2e/short_circuit_eval.tnx`; zwei Codegen-Unit-Tests
+auf die neue Branch-Emission umgestellt; `make check` voll grün (Heap-Modul jetzt
+korrekt — der Guard schützt wirklich). **Der Short-Circuit-Bug war der wichtigste
+Fund der Session** — fundamental und die ganze Zeit latent, sichtbar erst durch die
+Bounds-Härtung.
+
+**Bewusste Grenze:** die checked-div-Umstellung greift nur für den i64-Pfad
+(uniform-ABI-Hauptfall); kleinere Int-Typen (i32 etc., selten) behalten das rohe
+`sdiv`. Array-Index-OOB und div0 sind harte Aborts (nicht fangbar) — Java würfe
+fangbare Exceptions; ein `throw` wäre v2, der Abort ist der sichtbare 80/20-Fix.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

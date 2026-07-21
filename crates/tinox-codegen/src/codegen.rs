@@ -819,6 +819,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_from_char_code(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_new(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_get(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_checked_sdiv(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_checked_srem(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_push(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_pop(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_slice(i64*, i64, i64)").unwrap();
@@ -4609,6 +4612,41 @@ impl CodeGen {
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
+                // Short-circuit && / || : the RHS must only run when the LHS
+                // doesn't already decide the result. Emitting `and i1`/`or i1` on
+                // two eagerly-evaluated operands runs the RHS unconditionally,
+                // breaking guards like `i < len && arr[i]` (they'd read out of
+                // bounds / hit side effects). Branch instead, evaluating the RHS
+                // only in its own block, result via an i1 slot.
+                if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                    let slot = self.temp();
+                    writeln!(&mut self.ir, "{} = alloca i1", slot).unwrap();
+                    let (l, lt) = self.gen_expr(lhs, ctx)?;
+                    let li1 = self.emit_i1(&l, &lt);
+                    let rhs_bb = self.new_bb("sc_rhs");
+                    let short_bb = self.new_bb("sc_short");
+                    let merge_bb = self.new_bb("sc_merge");
+                    // &&: L true → eval RHS, else short-circuit false.
+                    // ||: L true → short-circuit true, else eval RHS.
+                    let (then_lbl, else_lbl, short_val) = if matches!(op, BinaryOp::And) {
+                        (&rhs_bb, &short_bb, "false")
+                    } else {
+                        (&short_bb, &rhs_bb, "true")
+                    };
+                    writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", li1, then_lbl, else_lbl).unwrap();
+                    writeln!(&mut self.ir, "{}:", short_bb).unwrap();
+                    writeln!(&mut self.ir, "store i1 {}, i1* {}", short_val, slot).unwrap();
+                    writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                    writeln!(&mut self.ir, "{}:", rhs_bb).unwrap();
+                    let (r, rt) = self.gen_expr(rhs, ctx)?;
+                    let ri1 = self.emit_i1(&r, &rt);
+                    writeln!(&mut self.ir, "store i1 {}, i1* {}", ri1, slot).unwrap();
+                    writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
+                    writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = load i1, i1* {}", result, slot).unwrap();
+                    return Ok((result, "i1".to_string()));
+                }
                 let (l, lt) = self.gen_expr(lhs, ctx)?;
                 let (r, rt) = self.gen_expr(rhs, ctx)?;
                 let result = self.temp();
@@ -4729,6 +4767,9 @@ impl CodeGen {
                             let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
                             writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, float_ty, lf, rf).unwrap();
                             return Ok((result, float_ty.to_string()));
+                        } else if lt == "i64" {
+                            // Checked: hard error on divide-by-zero (was LLVM UB → garbage).
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_checked_sdiv(i64 {}, i64 {})", result, l, r).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = sdiv {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -4740,6 +4781,8 @@ impl CodeGen {
                             let rf = if rt != "double" && rt != "float" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to double", c, rt, r).unwrap(); c } else { r.clone() };
                             writeln!(&mut self.ir, "{} = frem {} {}, {}", result, float_ty, lf, rf).unwrap();
                             return Ok((result, float_ty.to_string()));
+                        } else if lt == "i64" {
+                            writeln!(&mut self.ir, "{} = call i64 @tinox_checked_srem(i64 {}, i64 {})", result, l, r).unwrap()
                         } else {
                             writeln!(&mut self.ir, "{} = srem {} {}, {}", result, lt, l, r).unwrap()
                         }
@@ -6509,11 +6552,10 @@ impl CodeGen {
                     } else {
                         base_ptr.clone()
                     };
-                    let data_ptr = self.emit_array_data(&base_as_ptr);
-                    let ptr_name = self.temp();
-                    writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", ptr_name, data_ptr, idx_val).unwrap();
+                    // Bounds-checked read (hard error on out-of-range) instead of
+                    // an unchecked inline load past the array data.
                     let raw = self.temp();
-                    writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ptr_name).unwrap();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", raw, base_as_ptr, idx_val).unwrap();
                     if is_str_arr {
                         let str_ptr = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", str_ptr, raw).unwrap();
@@ -9927,6 +9969,17 @@ impl CodeGen {
         self.coerce_to_i64(val, val_ty)
     }
 
+    /// Coerce a value to i1 (booleans are often stored as i64): `icmp ne … 0`.
+    fn emit_i1(&mut self, val: &str, ty: &str) -> String {
+        if ty == "i1" {
+            val.to_string()
+        } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", c, ty, val).unwrap();
+            c
+        }
+    }
+
     fn coerce_to_i64(&mut self, val: &str, ty: &str) -> String {
         if ty == "i64" {
             val.to_string()
@@ -10667,14 +10720,15 @@ mod tests {
 
     #[test]
     fn test_bool_and_ir() {
+        // && short-circuits: branch to an RHS block instead of eager `and i1`.
         let ir = compile_to_ir("fn main() -> Int64 { let x = true && false; return 0; }");
-        assert!(ir.contains("and i1"), "should emit and i1 for &&");
+        assert!(ir.contains("sc_rhs") && ir.contains("br i1"), "should short-circuit && via branch");
     }
 
     #[test]
     fn test_bool_or_ir() {
         let ir = compile_to_ir("fn main() -> Int64 { let x = true || false; return 0; }");
-        assert!(ir.contains("or i1"), "should emit or i1 for ||");
+        assert!(ir.contains("sc_rhs") && ir.contains("br i1"), "should short-circuit || via branch");
     }
 
     // --- Unary ops IR ---

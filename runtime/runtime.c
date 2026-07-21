@@ -200,6 +200,39 @@ int64_t* tinox_array_new(int64_t len, int64_t cap) {
     return (int64_t*)a;
 }
 
+// Checked integer division / modulo. Division by zero was LLVM UB (the optimizer
+// folded `10/0` to a garbage value); INT64_MIN/-1 overflows and is also UB. Both
+// are now a hard error / defined result instead of silent garbage.
+int64_t tinox_checked_sdiv(int64_t a, int64_t b) {
+    if (b == 0) {
+        fprintf(stderr, "runtime error: division by zero\n");
+        exit(1);
+    }
+    if (a == INT64_MIN && b == -1) return INT64_MIN; // avoid overflow UB (wraps, as in Java)
+    return a / b;
+}
+int64_t tinox_checked_srem(int64_t a, int64_t b) {
+    if (b == 0) {
+        fprintf(stderr, "runtime error: modulo by zero\n");
+        exit(1);
+    }
+    if (a == INT64_MIN && b == -1) return 0; // avoid overflow UB
+    return a % b;
+}
+
+// Bounds-checked element read. An out-of-range (or negative) index is a hard
+// error with a clear message instead of reading past the buffer (the inline
+// codegen version did an unchecked load → garbage / UB on out-of-bounds access).
+int64_t tinox_array_get(int64_t* handle, int64_t idx) {
+    TinoxArray* a = (TinoxArray*)handle;
+    if (!a || idx < 0 || idx >= a->len) {
+        fprintf(stderr, "runtime error: array index out of bounds: %ld (length %ld)\n",
+                (long)idx, a ? (long)a->len : 0L);
+        exit(1);
+    }
+    return a->data[idx];
+}
+
 // String functions
 int64_t tinox_string_length(const char* str) {
     int64_t len = 0;
