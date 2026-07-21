@@ -378,16 +378,12 @@ int64_t tinox_string_to_int(const char* s) {
 }
 
 double tinox_string_to_float(const char* s) {
-    double result = 0.0, frac = 0.1;
-    int neg = 0, in_frac = 0;
-    if (*s == '-') { neg = 1; s++; }
-    while (*s) {
-        if (*s == '.') { in_frac = 1; }
-        else if (in_frac) { result += (*s - '0') * frac; frac *= 0.1; }
-        else { result = result * 10 + (*s - '0'); }
-        s++;
-    }
-    return neg ? -result : result;
+    // strtod validates and stops at the first non-numeric char. The old
+    // hand-rolled parser did `result*10 + (*s - '0')` for EVERY char without a
+    // digit check, so "xyz" produced garbage (72→793→8004). strtod also handles
+    // scientific notation and leading +/-. Invalid input → 0.0.
+    if (!s) return 0.0;
+    return strtod(s, NULL);
 }
 
 char* tinox_bool_to_string(int val) {

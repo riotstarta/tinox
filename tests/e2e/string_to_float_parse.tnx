@@ -1,0 +1,17 @@
+// Bug 60: "xyz".toFloat() gab 8004 (Müll) — der handgeschriebene Parser rechnete
+// result*10 + (*s - '0') für JEDES Zeichen ohne Ziffern-Check ('x'-'0'=72 → 8004).
+// Jetzt via strtod: validiert, stoppt am ersten Nicht-Ziffern-Zeichen, unterstützt
+// wissenschaftliche Notation, ungültig → 0.0.
+// expect: 3.14
+// expect: -2.5
+// expect: 1500
+// expect: 0
+// expect: 12.5
+fn main() -> Int32 {
+    println("3.14".toFloat().toString());     // 3.14
+    println("-2.5".toFloat().toString());      // -2.5
+    println("1.5e3".toFloat().toString());     // 1500 (wissenschaftlich)
+    println("xyz".toFloat().toString());       // 0 (war 8004)
+    println("12.5abc".toFloat().toString());   // 12.5 (partiell)
+    return 0;
+}
