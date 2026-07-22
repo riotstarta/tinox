@@ -2383,6 +2383,61 @@ Fundament + inkrementellem Pfad.
 
 ---
 
+## Feature: Array `map`/`filter`/`forEach`/`reduce` mit Lambda-Argument
+
+**Status: IMPLEMENTIERT (2026-07-22).** Das in den Bugs 64/65 bewusst offen
+gelassene Feature (`Array_map` war nie implementiert): `xs.map(x => x * 2)`,
+`xs.filter(x => x % 2 == 0)`, `xs.forEach(x => …)` und `xs.reduce(init, (acc, x)
+=> …)` auf Arrays/Listen — für Int64-, Float64-, String- und Objekt-Elemente,
+mit nicht-capturenden UND capturenden Lambdas (auch Lambda in Variable).
+
+**Architektur:** Kein Runtime-Callback — der Lambda-Aufruf landet als INLINE
+IR-Loop direkt am Call-Site (`gen_array_lambda_method`), über das stabile
+`{len,cap,data}`-Array-Handle. Das vermeidet die C-ABI-Falle bei double-
+Rückgaben (xmm0 vs rax) und gibt volle Kontrolle über die Slot-Konvertierung:
+i64-Slot → Param-Typ vor dem Aufruf (Float-Slots bitcast, Int-Element vor
+double-Param sitofp, Pointer inttoptr), map-Rückgabe zurück in die i64-Slot-
+Form (`array_slot_to_typed`/`typed_to_array_slot`). Der Aufruf geht über den
+bestehenden Closure-Block `{fn_ptr, env}`; der Env-Pointer wird immer als
+Trailing-Param übergeben (nicht-capturende Lambdas ignorieren ihn — bestehende
+Konvention aller Indirect-Call-Sites). filter ruft das Prädikat als `i1` auf
+und pusht passende Elemente als ROHEN Slot (`tinox_array_push`) — der
+Eingabe-Marker bleibt so verlustfrei erhalten; map schreibt in ein frisch
+alloziertes Handle gleicher Länge.
+
+**Typisierung:** Der Typecheck registriert `Array_map`/`Array_filter`/
+`Array_forEach`/`Array_reduce` (permissive Fn-Signaturen) und bindet den
+Lambda-Param VOR `check_call` an den Element-Typ des Empfängers
+(`infer_lambda_with_param_hints`) — wichtig, weil `infer_type` per Node-Id
+memoisiert: check_call hätte den Body sonst zuerst mit Any-Params inferiert
+und die arme Typisierung auch für den Codegen-Export festgeschrieben. Der
+map-Ergebnistyp wird aus dem Lambda-Rückgabetyp abgeleitet (`[1,2].map(x =>
+x.toString())` → `Array:String`), filter behält den Eingabe-Marker, reduce
+liefert den Typ des Startwerts. Wo die Inferenz nichts hergibt, bleibt es
+permissiv `Array(Any)`; ein Lambda mit falscher Parameterzahl ist ein HARTER
+Codegen-Fehler, ein Nicht-Fn-Argument ein Typecheck-Fehler (kein Silent-
+Garbage, Projektlinie seit Bugs 55–63). Der Codegen bekommt die Element-/
+Rückgabetypen über die Marker (`elem_marker`) plus die typisierte Wertbrücke
+(`expr_value_types`, Phase 1) und reicht sie als LLVM-Typ-Hints an
+`gen_lambda` (`pending_lambda_param_llvm`/`pending_lambda_ret_llvm`, per
+`std::mem::take` konsumiert, damit verschachtelte Lambdas sie nie erben).
+
+**Verifiziert:** Int/Float/String/Objekt-map und -filter, capturing Lambdas,
+typwechselndes map, Chaining (`xs.map(…).filter(…)`), leere Arrays, map/filter
+in Klassenmethoden, verschachtelte Listen (`grid.map(row => row.len())`),
+Lambda in Variable; e2e-Tests `array_map_lambda.tnx`, `array_filter_lambda.tnx`,
+`array_foreach_reduce_lambda.tnx`; `make check` grün.
+
+**Bewusste Lücken:** (1) benannte Top-Level-Funktionen als Argument
+(`xs.map(double)`) sind nicht gedeckt — nur Lambda-Literale und Closure-
+Variablen; (2) bei einer Closure-VARIABLE auf einem Float-Array muss die
+Signatur der Closure zur Aufruf-Konvention passen (Literal-Lambdas bekommen
+die Typen als Hints, eine anderswo erzeugte Closure nicht); (3) `this` ist in
+Lambdas generell nicht capturebar (vorbestehende Lambda-Einschränkung, nicht
+Teil dieses Features).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

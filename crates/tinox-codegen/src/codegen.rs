@@ -257,6 +257,14 @@ pub struct CodeGen {
     method_param_types: HashMap<String, Vec<tinox_parser::Type>>,
     /// Temporary: expected class names for the next lambda's params (set before gen_expr on lambda)
     pending_lambda_param_types: Vec<Option<String>>,
+    /// Temporary: expected LLVM types for the next lambda literal's unannotated
+    /// params (array map/filter/…: element type of the receiver). Taken (and
+    /// cleared) by gen_lambda so nested lambdas never inherit the hint.
+    pending_lambda_param_llvm: Vec<Option<String>>,
+    /// Temporary: expected LLVM return type for the next lambda literal without
+    /// declared return type (map: result element type, filter: i1). Taken by
+    /// gen_lambda like the param hint.
+    pending_lambda_ret_llvm: Option<String>,
 }
 
 impl CodeGen {
@@ -317,6 +325,8 @@ impl CodeGen {
             fn_field_sigs: HashMap::new(),
             method_param_types: HashMap::new(),
             pending_lambda_param_types: Vec::new(),
+            pending_lambda_param_llvm: Vec::new(),
+            pending_lambda_ret_llvm: None,
         }
     }
 
@@ -5932,6 +5942,30 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_insert(i64* {}, i64 {}, i64 {})", result, obj_ptr, idx, store_val).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
+                        "map" | "filter" | "forEach" if args.len() == 1 => {
+                            return self.gen_array_lambda_method(
+                                method.as_str(),
+                                &obj_ptr,
+                                obj,
+                                &args[0],
+                                None,
+                                expr.id,
+                                declared_type.as_deref(),
+                                ctx,
+                            );
+                        }
+                        "reduce" if args.len() == 2 => {
+                            return self.gen_array_lambda_method(
+                                method.as_str(),
+                                &obj_ptr,
+                                obj,
+                                &args[1],
+                                Some(&args[0]),
+                                expr.id,
+                                declared_type.as_deref(),
+                                ctx,
+                            );
+                        }
                         _ => {}
                     }
                 }
@@ -8308,6 +8342,383 @@ impl CodeGen {
         }
     }
 
+    /// Array `map`/`filter`/`forEach`/`reduce` mit Lambda-Argument: inline
+    /// IR-Loop über das {len,cap,data}-Handle, Lambda-Aufruf über den
+    /// Closure-Block {fn_ptr, env}. Der Env-Pointer wird immer als Trailing-
+    /// Param übergeben (nicht-capturende Lambdas ignorieren ihn — bestehende
+    /// Closure-Konvention). Elementtypisierung über das Marker-System bzw. die
+    /// typisierte Wertbrücke: das i64-Slot-Element wird vor dem Aufruf in den
+    /// Param-LLVM-Typ konvertiert (Float bitcast, Pointer inttoptr), der
+    /// map-Rückgabewert zurück in die i64-Slot-Repräsentation.
+    #[allow(clippy::too_many_arguments)]
+    fn gen_array_lambda_method(
+        &mut self,
+        kind: &str,
+        obj_ptr: &str,
+        obj: &tinox_parser::Expr,
+        lam: &tinox_parser::Expr,
+        init: Option<&tinox_parser::Expr>,
+        call_id: u32,
+        declared_type: Option<&str>,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        use tinox_typecheck::ValueType as VT;
+        // --- Elementtyp des Empfängers: deklarierter Marker vor reichem Export ---
+        let elem_vt: Option<VT> = self.expr_value_types.get(&obj.id).and_then(|vt| match vt {
+            VT::Array(e) => Some((**e).clone()),
+            _ => None,
+        });
+        let elem_marker: Option<String> = declared_type
+            .and_then(Self::elem_marker)
+            .or_else(|| elem_vt.as_ref().and_then(|vt| self.valuetype_to_marker(vt)));
+        let elem_llvm: String = match elem_marker.as_deref() {
+            Some("String") => "i8*".to_string(),
+            Some("Float") => "double".to_string(),
+            Some(m)
+                if m.starts_with("Array") || m.starts_with("List:") || Self::is_map_marker(m) =>
+            {
+                "i64*".to_string()
+            }
+            Some(m) if self.known_enum_types.contains(m) => "i64".to_string(),
+            Some(m) if self.struct_layouts.contains_key(m) => "i64*".to_string(),
+            _ => match elem_vt.as_ref() {
+                Some(VT::Float) => "double".to_string(),
+                Some(VT::String) => "i8*".to_string(),
+                Some(VT::Bool) => "i1".to_string(),
+                Some(VT::Char) => "i32".to_string(),
+                _ => "i64".to_string(),
+            },
+        };
+        // --- Lambda-Literal: Parameterzahl hart prüfen (kein Silent-Garbage) ---
+        let expected_params = if kind == "reduce" { 2 } else { 1 };
+        if let ExprKind::Lambda { params, .. } = &lam.node {
+            if params.len() != expected_params {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(
+                    lam.span,
+                    format!(
+                        "codegen: {}-lambda expects {} parameter(s), got {}",
+                        kind,
+                        expected_params,
+                        params.len()
+                    ),
+                ));
+                return Err(bag);
+            }
+        }
+        // --- reduce: Startwert zuerst auswerten (Akku-Typ = Init-Typ) ---
+        let init_acc: Option<(String, String)> = match init {
+            Some(e) => Some(self.gen_expr(e, ctx)?),
+            None => None,
+        };
+        let acc_llvm = init_acc
+            .as_ref()
+            .map(|(_, t)| if t.is_empty() { "i64".to_string() } else { t.clone() })
+            .unwrap_or_else(|| "i64".to_string());
+        // --- Rückgabe-LLVM-Typ des Lambdas ---
+        let ret_llvm: String = match kind {
+            "filter" => "i1".to_string(),
+            "forEach" => "void".to_string(),
+            "reduce" => acc_llvm.clone(),
+            _ => {
+                // map: 1) deklarierter Lambda-Rückgabetyp, 2) Ergebnis-
+                // Elementtyp vom Typecheck (Array(e) am Call-Knoten),
+                // 3) Body-Typ, 4) i64.
+                let mut r: Option<String> = None;
+                if let ExprKind::Lambda { ret_type: Some(rt), .. } = &lam.node {
+                    r = Some(Self::type_to_llvm(rt));
+                }
+                if r.is_none() {
+                    if let Some(VT::Array(e)) = self.expr_value_types.get(&call_id) {
+                        if **e != VT::Any {
+                            r = Some(Self::valuetype_to_llvm(e));
+                        }
+                    }
+                }
+                if r.is_none() {
+                    if let ExprKind::Lambda { body, .. } = &lam.node {
+                        if let Some(vt) = self.expr_value_types.get(&body.id) {
+                            if *vt != VT::Any && *vt != VT::Nothing {
+                                r = Some(Self::valuetype_to_llvm(vt));
+                            }
+                        }
+                    }
+                }
+                r.unwrap_or_else(|| "i64".to_string())
+            }
+        };
+        // --- Lambda-/Closure-Wert erzeugen (Literal: mit Typ-Hints) ---
+        let is_literal = matches!(&lam.node, ExprKind::Lambda { .. });
+        if is_literal {
+            self.pending_lambda_param_llvm = if kind == "reduce" {
+                vec![Some(acc_llvm.clone()), Some(elem_llvm.clone())]
+            } else {
+                vec![Some(elem_llvm.clone())]
+            };
+            self.pending_lambda_ret_llvm = Some(ret_llvm.clone());
+            // Struktur-/Container-Marker fürs Dispatch im Lambda-Body
+            let lt_marker = elem_marker.clone().filter(|m| {
+                m.starts_with("Array")
+                    || m.starts_with("List:")
+                    || Self::is_map_marker(m)
+                    || self.struct_layouts.contains_key(m.as_str())
+            });
+            self.pending_lambda_param_types = if kind == "reduce" {
+                vec![None, lt_marker]
+            } else {
+                vec![lt_marker]
+            };
+        }
+        let (clos_val, clos_ty) = self.gen_expr(lam, ctx)?;
+        self.pending_lambda_param_types.clear();
+        self.pending_lambda_param_llvm.clear();
+        self.pending_lambda_ret_llvm = None;
+        // --- Closure-Block {fn_ptr, env} laden ---
+        let block = if clos_ty == "i64*" {
+            clos_val.clone()
+        } else if clos_ty.ends_with('*') || clos_ty == "ptr" {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = bitcast {} {} to i64*", c, clos_ty, clos_val).unwrap();
+            c
+        } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, clos_val).unwrap();
+            c
+        };
+        let fp = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", fp, block).unwrap();
+        let env_gep = self.temp();
+        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_gep, block).unwrap();
+        let env_val = self.temp();
+        writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_gep).unwrap();
+        // Call-Param-Typen: ein deklarierter Lambda-Param gewinnt über den
+        // Elementtyp (die Definition wurde mit dem deklarierten Typ emittiert).
+        let lam_param_llvm = |idx: usize, fallback: &str| -> String {
+            if let ExprKind::Lambda { params, .. } = &lam.node {
+                params
+                    .get(idx)
+                    .map(|p| match &p.param_type {
+                        tinox_parser::Type::Infer | tinox_parser::Type::Any => {
+                            fallback.to_string()
+                        }
+                        t => Self::type_to_llvm(t),
+                    })
+                    .unwrap_or_else(|| fallback.to_string())
+            } else {
+                fallback.to_string()
+            }
+        };
+        let (call_acc_llvm, call_param_llvm) = if kind == "reduce" {
+            (lam_param_llvm(0, &acc_llvm), lam_param_llvm(1, &elem_llvm))
+        } else {
+            (String::new(), lam_param_llvm(0, &elem_llvm))
+        };
+        let fn_sig = if kind == "reduce" {
+            format!("{} ({}, {}, i64*)", ret_llvm, call_acc_llvm, call_param_llvm)
+        } else {
+            format!("{} ({}, i64*)", ret_llvm, call_param_llvm)
+        };
+        let casted = self.temp();
+        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}*", casted, fp, fn_sig).unwrap();
+        // --- Loop über das Handle ---
+        let len = self.emit_array_len(obj_ptr);
+        let src_data = self.emit_array_data(obj_ptr);
+        let (res_handle, res_data) = match kind {
+            "map" => {
+                let h = self.temp();
+                writeln!(&mut self.ir, "{} = call i64* @tinox_array_new(i64 {}, i64 0)", h, len)
+                    .unwrap();
+                let d = self.emit_array_data(&h);
+                (Some(h), Some(d))
+            }
+            "filter" => {
+                let h = self.temp();
+                writeln!(&mut self.ir, "{} = call i64* @tinox_array_new(i64 0, i64 {})", h, len)
+                    .unwrap();
+                (Some(h), None)
+            }
+            _ => (None, None),
+        };
+        let acc_slot = if kind == "reduce" {
+            let slot = self.temp();
+            writeln!(&mut self.ir, "{} = alloca {}", slot, acc_llvm).unwrap();
+            let (iv, _) = init_acc.as_ref().unwrap().clone();
+            writeln!(&mut self.ir, "store {} {}, {}* {}", acc_llvm, iv, acc_llvm, slot).unwrap();
+            Some(slot)
+        } else {
+            None
+        };
+        let idx_slot = self.temp();
+        writeln!(&mut self.ir, "{} = alloca i64", idx_slot).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* {}", idx_slot).unwrap();
+        let cond_bb = self.new_bb("arrlam_cond");
+        let body_bb = self.new_bb("arrlam_body");
+        let end_bb = self.new_bb("arrlam_end");
+        writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
+        let cur = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", cur, idx_slot).unwrap();
+        let cmp = self.temp();
+        writeln!(&mut self.ir, "{} = icmp slt i64 {}, {}", cmp, cur, len).unwrap();
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", cmp, body_bb, end_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+        let ep = self.temp();
+        writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", ep, src_data, cur)
+            .unwrap();
+        let raw = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ep).unwrap();
+        // i64-Slot → Param-Typ. Float-Slots sind bitcast-gespeicherte doubles;
+        // ein Int-Element vor einem double-Param wird dagegen numerisch
+        // konvertiert (sitofp).
+        let arg = self.array_slot_to_typed(&raw, &call_param_llvm, elem_llvm == "double");
+        match kind {
+            "map" => {
+                let r = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = call {} {}({} {}, i64* {})",
+                    r, ret_llvm, casted, call_param_llvm, arg, env_val
+                )
+                .unwrap();
+                let out = self.typed_to_array_slot(&r, &ret_llvm);
+                let op = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = getelementptr i64, i64* {}, i64 {}",
+                    op,
+                    res_data.as_ref().unwrap(),
+                    cur
+                )
+                .unwrap();
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", out, op).unwrap();
+            }
+            "filter" => {
+                let r = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = call i1 {}({} {}, i64* {})",
+                    r, casted, call_param_llvm, arg, env_val
+                )
+                .unwrap();
+                let keep_bb = self.new_bb("arrlam_keep");
+                let next_bb = self.new_bb("arrlam_next");
+                writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", r, keep_bb, next_bb)
+                    .unwrap();
+                writeln!(&mut self.ir, "{}:", keep_bb).unwrap();
+                let p = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = call i64* @tinox_array_push(i64* {}, i64 {})",
+                    p,
+                    res_handle.as_ref().unwrap(),
+                    raw
+                )
+                .unwrap();
+                writeln!(&mut self.ir, "br label %{}", next_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", next_bb).unwrap();
+            }
+            "forEach" => {
+                writeln!(
+                    &mut self.ir,
+                    "call void {}({} {}, i64* {})",
+                    casted, call_param_llvm, arg, env_val
+                )
+                .unwrap();
+            }
+            _ => {
+                // reduce
+                let slot = acc_slot.as_ref().unwrap();
+                let a = self.temp();
+                writeln!(&mut self.ir, "{} = load {}, {}* {}", a, acc_llvm, acc_llvm, slot)
+                    .unwrap();
+                let r = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = call {} {}({} {}, {} {}, i64* {})",
+                    r, ret_llvm, casted, call_acc_llvm, a, call_param_llvm, arg, env_val
+                )
+                .unwrap();
+                writeln!(&mut self.ir, "store {} {}, {}* {}", acc_llvm, r, acc_llvm, slot)
+                    .unwrap();
+            }
+        }
+        let nxt = self.temp();
+        writeln!(&mut self.ir, "{} = add i64 {}, 1", nxt, cur).unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", nxt, idx_slot).unwrap();
+        writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+        match kind {
+            "map" | "filter" => Ok((res_handle.unwrap(), "i64*".to_string())),
+            "reduce" => {
+                let slot = acc_slot.unwrap();
+                let v = self.temp();
+                writeln!(&mut self.ir, "{} = load {}, {}* {}", v, acc_llvm, acc_llvm, slot)
+                    .unwrap();
+                Ok((v, acc_llvm))
+            }
+            _ => Ok(("0".to_string(), "void".to_string())),
+        }
+    }
+
+    /// i64-Array-Slot → typisierter Wert (Gegenstück zur Slot-Speicherung:
+    /// Float-Slots sind bitcast-doubles, Pointer sind ptrtoint-i64).
+    /// `slot_is_float_bits`: der Slot enthält Float-Bits (Array:Float) — dann
+    /// bitcast statt numerischer Konvertierung.
+    fn array_slot_to_typed(&mut self, raw: &str, target: &str, slot_is_float_bits: bool) -> String {
+        match target {
+            "i64" => raw.to_string(),
+            "double" => {
+                let c = self.temp();
+                if slot_is_float_bits {
+                    writeln!(&mut self.ir, "{} = bitcast i64 {} to double", c, raw).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "{} = sitofp i64 {} to double", c, raw).unwrap();
+                }
+                c
+            }
+            t if t.ends_with('*') || t == "ptr" => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, raw, t).unwrap();
+                c
+            }
+            t if t.starts_with('i') => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = trunc i64 {} to {}", c, raw, t).unwrap();
+                c
+            }
+            _ => raw.to_string(),
+        }
+    }
+
+    /// Typisierter Wert → i64-Array-Slot (double bitcast, Pointer ptrtoint,
+    /// i1 zext, schmale Ints sext).
+    fn typed_to_array_slot(&mut self, val: &str, from: &str) -> String {
+        match from {
+            "i64" => val.to_string(),
+            "double" => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, val).unwrap();
+                c
+            }
+            "i1" => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                c
+            }
+            t if t.ends_with('*') || t == "ptr" => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, t, val).unwrap();
+                c
+            }
+            t if t.starts_with('i') => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = sext {} {} to i64", c, t, val).unwrap();
+                c
+            }
+            _ => val.to_string(),
+        }
+    }
+
     fn gen_lambda(
         &mut self,
         params: &[tinox_parser::Param],
@@ -8318,9 +8729,13 @@ impl CodeGen {
         let lambda_id = self.temp_count;
         self.temp_count += 1;
         let fn_name = format!("__lambda_{}", lambda_id);
+        // LLVM type hints from the call site (array map/filter/…): take them so
+        // a nested lambda in the body never inherits them.
+        let param_llvm_hints = std::mem::take(&mut self.pending_lambda_param_llvm);
+        let ret_llvm_hint = std::mem::take(&mut self.pending_lambda_ret_llvm);
         let ret_ty = match ret_type {
             Some(t) => Self::type_to_llvm(t),
-            None => "i64".to_string(),
+            None => ret_llvm_hint.unwrap_or_else(|| "i64".to_string()),
         };
         let mut params_str = String::new();
         let mut fn_type_str = String::new();
@@ -8345,7 +8760,17 @@ impl CodeGen {
                 params_str.push_str(", ");
                 fn_type_str.push_str(", ");
             }
-            let llvm_ty = Self::type_to_llvm(&p.param_type);
+            let is_unannotated =
+                matches!(p.param_type, tinox_parser::Type::Infer | tinox_parser::Type::Any);
+            let llvm_ty = if is_unannotated {
+                param_llvm_hints
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_else(|| Self::type_to_llvm(&p.param_type))
+            } else {
+                Self::type_to_llvm(&p.param_type)
+            };
             params_str.push_str(&format!("{} %{}", llvm_ty, p.name));
             fn_type_str.push_str(&llvm_ty);
             lambda_ctx
