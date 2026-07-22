@@ -1,0 +1,142 @@
+// WebSocket Phase 2+3 (tasklist.md): Handshake + Frame-Codec über eine echte
+// Loopback-Conn. Client-Seite schickt handgebaute (maskierte) Golden-Frames
+// über die binärsicheren Primitiven; Server-Seite nutzt die websocket.tnx-API.
+// Deckt ab: 101-Handshake mit RFC-6455-Beispiel-Key, Text-Frame klein,
+// Ping->automatisches Pong, 126er-Längenpfad (200 Bytes) in beide Richtungen,
+// Close-Echo, Handshake-Ablehnung (falsche Version -> accept == -1).
+// expect: ok-accept
+// expect: 1
+// expect: Hi!
+// expect: ok-echo
+// expect: x
+// expect: ok-pong
+// expect: 1 200 65
+// expect: ok-big
+// expect: 8
+// expect: ok-close
+// expect: ok-reject
+
+import tinox.core.websocket;
+import tinox.core.socket;
+
+fn main() -> Int32 {
+    let srv = WsServer::listen(47614);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+
+    // --- Handshake (Client sendet zuerst, dann accept: single-threaded) ---
+    let cfd = socketCreateTcp();
+    socketConnect(cfd, "127.0.0.1", 47614);
+    let cconn = httpConnFromFd(cfd);
+    httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    let conn = WsServer::accept(srv);
+    if conn <= 0 {
+        println("handshake fehlgeschlagen");
+        return 1;
+    }
+    let resp = httpConnReadRequest(cconn);
+    if resp.contains("101") {
+        if resp.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") {
+            println("ok-accept");
+        }
+    }
+
+    // --- Text-Frame "Hi!", Maske [1,2,3,4] ---
+    httpConnWriteBytes(cconn, [129, 131, 1, 2, 3, 4, 73, 107, 34]);
+    let f1 = Ws::readMessage(conn);
+    println(f1.opcode.toString());
+    println(Ws::text(f1));
+
+    // Echo zurück: [0x81, 3, 'H','i','!']
+    Ws::sendText(conn, Ws::text(f1));
+    let echo = httpConnReadN(cconn, 5);
+    if echo.len() == 5 {
+        if echo[0] == 129 {
+            if echo[1] == 3 {
+                if echo[2] == 72 {
+                    println("ok-echo");
+                }
+            }
+        }
+    }
+
+    // --- Ping "ab" + Text "x" in einem Schwung: readMessage pongt automatisch ---
+    httpConnWriteBytes(cconn, [137, 130, 1, 2, 3, 4, 96, 96, 129, 129, 1, 2, 3, 4, 121]);
+    let f2 = Ws::readMessage(conn);
+    println(Ws::text(f2));
+    let pong = httpConnReadN(cconn, 4);
+    if pong.len() == 4 {
+        if pong[0] == 138 {
+            if pong[1] == 2 {
+                if pong[2] == 97 {
+                    if pong[3] == 98 {
+                        println("ok-pong");
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 126er-Längenpfad: 200×'A', Maske [0,0,0,0] ---
+    var big: List<Int64> = [129, 254, 0, 200, 0, 0, 0, 0];
+    for i in 0..200 {
+        big.push(65);
+    }
+    httpConnWriteBytes(cconn, big);
+    let f3 = Ws::readMessage(conn);
+    println(f3.opcode.toString() + " " + f3.payload.len().toString() + " " + f3.payload[0].toString());
+
+    // Rückrichtung: 200×'B' als Binary — Header [0x82, 126, 0, 200]
+    var bigOut: List<Int64> = [];
+    for i in 0..200 {
+        bigOut.push(66);
+    }
+    Ws::sendBinary(conn, bigOut);
+    let hdr = httpConnReadN(cconn, 4);
+    let body = httpConnReadN(cconn, 200);
+    if hdr[0] == 130 {
+        if hdr[1] == 126 {
+            if hdr[2] == 0 {
+                if hdr[3] == 200 {
+                    if body.len() == 200 {
+                        if body[199] == 66 {
+                            println("ok-big");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Close 1000: readMessage quittiert mit Close und liefert opcode 8 ---
+    httpConnWriteBytes(cconn, [136, 130, 1, 2, 3, 4, 2, 234]);
+    let f4 = Ws::readMessage(conn);
+    println(f4.opcode.toString());
+    let closeEcho = httpConnReadN(cconn, 4);
+    if closeEcho[0] == 136 {
+        if closeEcho[1] == 2 {
+            if closeEcho[2] == 3 {
+                if closeEcho[3] == 232 {
+                    println("ok-close");
+                }
+            }
+        }
+    }
+    Ws::close(conn);
+    httpConnClose(cconn);
+
+    // --- Handshake-Ablehnung: falsche Version -> accept == -1 ---
+    let cfd2 = socketCreateTcp();
+    socketConnect(cfd2, "127.0.0.1", 47614);
+    let cconn2 = httpConnFromFd(cfd2);
+    httpConnSendRaw(cconn2, "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n");
+    let rejected = WsServer::accept(srv);
+    if rejected == -1 {
+        println("ok-reject");
+    }
+    httpConnClose(cconn2);
+    httpServerClose(srv);
+    return 0;
+}

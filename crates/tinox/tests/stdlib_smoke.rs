@@ -452,6 +452,15 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "websocket",
+        imports: &["tinox.core.websocket"],
+        // Reine Codec-Logik ohne Socket (die volle Strecke inkl. Handshake
+        // deckt tests/e2e/ws_handshake_frames.tnx ab).
+        body: "let f: WsFrame = WsFrame { fin: true, opcode: 1, payload: Ws::textToBytes(\"hi\") };\n    println(Ws::text(f));",
+        expects: &["hi"],
+        contains: &[],
+    },
+    Smoke {
         key: "validation",
         imports: &["tinox.core.validation"],
         body: r#"if Validation::isNumeric("123") { println("yes"); } else { println("no"); }"#,

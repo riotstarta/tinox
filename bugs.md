@@ -2570,6 +2570,43 @@ Teil dieses Features).
 
 ---
 
+## Feature: WebSocket-Server (RFC 6455) — `tinox.core.websocket`
+
+**Status: IMPLEMENTIERT (2026-07-22), v1.** Roadmap/Status in `tasklist.md`.
+`WsServer::listen/accept` (accept inkl. Handshake) + `Ws::readMessage`-Schleife;
+Echo-Beispiel `examples/ws_echo.tnx`.
+
+**Architektur.** Aufgebaut auf der Conn-Handle-Schicht des HTTP-Servers (wie
+TLS): der textuelle Handshake läuft über die bestehenden C-String-Pfade
+(`httpConnReadRequest`/`SendRaw`), die binären Frames über die neuen
+länge-basierten Primitiven aus WS-Phase 1 (`httpConnReadN`/`httpConnWriteBytes`,
+ein Byte pro i64-Slot — die C-String-Pfade reißen an NUL-Bytes ab).
+`Sec-WebSocket-Accept` komplett in C (`wsAcceptKey`: sha1+base64 über
+Rohbytes), damit der binäre Digest nie durch einen Tinox-String muss. Der
+Frame-Codec ist pure Tinox (websocket.tnx). Da beides auf Conn-Handles sitzt,
+sollte wss über `listenTls` fast gratis sein (ungetestet, s. tasklist).
+
+**Härte-Verhalten (Projektlinie: kein Silent-Garbage):** unmaskierte
+Client-Frames/RSV-Bits → Close 1002; Continuation/Fragmentierung (bewusst
+nicht in v1) → Close 1003; Payload-Cap 16 MB; EOF mittendrin → opcode -1,
+Aufrufer beendet. Handshake ohne Key/Upgrade oder Version != 13 → 400 + close.
+
+**Verifiziert:** e2e `ws_phase1_primitives.tnx` (SHA-1-RFC-Vektoren,
+NUL-Byte-Loopback) + `ws_handshake_frames.tnx` (Golden-Frames über echte
+Loopback-Conn: Handshake mit RFC-Beispiel-Key, Text, Ping→Auto-Pong,
+126er-Längenpfad beidseitig, Close-Echo, Ablehnung); stdlib_smoke-Eintrag.
+LIVE gegen python-websockets 16.1.1: Text-Echo, UTF-8-Roundtrip, lib-Ping,
+sequentielle Verbindungen, 5 KB + 70 KB (64-bit-Längenpfad beidseitig),
+Binary mit NULs — alles grün.
+
+**Bewusste v1-Lücken (s. tasklist.md „Später"):** keine Fragmentierung, kein
+Client, kein permessage-deflate, blocking-per-Connection (keine
+epoll-Integration), `Ws::text` ist byte-basiert (UTF-8 als Byte-Roundtrip
+erhalten, aber len()/charCodeAt zählen Bytes), kein UTF-8-Validitätscheck auf
+Text-Frames (RFC verlangt Close 1007 — akzeptierte Abweichung in v1).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
