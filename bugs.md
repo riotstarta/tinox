@@ -2343,6 +2343,46 @@ mit Lambda (`Array_map` ist nicht implementiert — eigenes Feature, kein Bug).
 
 ---
 
+## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
+
+**Status: PHASE 1 GELANDET (2026-07-22).** Angriff auf die #1-Struktur-Schwäche
+(s. Sprach-Bewertung): der Codegen hat ein EIGENES Typ-System (String-„Marker-
+Sprache") getrennt vom Typecheck-`ValueType`, und die Brücke war nur ein flacher
+`HashMap<u32, String>` (`expr_markers`) — verlustbehaftet (verwarf generische
+Typargumente), weshalb B2 Schritt 2 an einer Wand endete.
+
+**Sondierung ergab die Blocker:** (1) keine Crate-Abhängigkeit codegen→typecheck,
+also floss `ValueType` gar nicht durch; (2) der flache Marker wird an ~10 Codegen-
+Stellen als Fallback genutzt, die die ARME Form (`"Box"`) erwarten — ihn zu
+bereichern bricht sie sofort; (3) `infer_struct_type` nutzt die Codegen-EIGENE
+Heuristik zuerst und den Export nur als Fallback (Codegen vertraut sich selbst mehr
+als dem Typechecker); (4) zwei interne Vokabulare (Marker `String/Float/Box` vs
+mangled `i8P/double/i64`). ⇒ Keine additive Einzeländerung möglich; die
+Vereinheitlichung braucht einen PARALLELEN reichen Export + schrittweise Migration.
+
+**Phase 1 (dieser Commit) — das Fundament:**
+- Crate-Abhängigkeit `tinox-codegen → tinox-typecheck` (azyklisch geprüft).
+- Paralleler REICHER Export `expr_value_types(): HashMap<u32, ValueType>` — die
+  volle `ValueType` pro Node-Id (inkl. generischer Args), NEBEN dem alten
+  verlustbehafteten `expr_markers` (das unangetastet bleibt → nichts bricht).
+- Brücke-Funktion `valuetype_to_marker` (die eigentliche Verbindung der zwei
+  Systeme): übersetzt `ValueType` in die Codegen-Marker-Sprache und löst eine
+  generische Instanz zur mangled Spezialisierung auf (`Named("Box",[Int])` →
+  `"Box__i64"`, via `valuetype_to_llvm` + `mangle_generic_name`).
+- `infer_struct_type` nutzt den reichen Export als BEVORZUGTEN Fallback (vor dem
+  verlustbehafteten `expr_markers`, noch nach den lokalen Heuristiken).
+
+Additiv und sicher: `make check` voll grün. Die Brücke ist AKTIV (liefert reichere
+Marker, wo die Heuristik nichts weiß), ohne bestehendes Verhalten zu überstimmen.
+
+**Noch offen (Phase 2…N):** pro Expr-Art die lokale Heuristik (`infer_struct_type_local`,
+81 Z., 10 Expr-Arten) auf den reichen Export migrieren (Export ZUERST statt zuletzt),
+je mit `make check` — das entsperrt B2 Schritt 2 (`let bi = Box::make(42)`) und führt
+am Ende zur Entfernung der Codegen-eigenen Inferenz. Großes Projekt, aber jetzt mit
+Fundament + inkrementellem Pfad.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

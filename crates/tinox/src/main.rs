@@ -1496,6 +1496,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
 
     let mut cg = CodeGen::new();
     cg.set_expr_markers(tc.expr_markers());
+    cg.set_expr_value_types(tc.expr_value_types());
     cg.set_interface_info(iface, impls);
     let do_not_serialize_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann.do_not_serialize_fields
         .iter()
@@ -1734,6 +1735,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
 
     let mut codegen = CodeGen::new();
     codegen.set_expr_markers(typechecker.expr_markers());
+    codegen.set_expr_value_types(typechecker.expr_value_types());
     codegen.set_interface_info(iface_methods, class_implements);
     let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
         .iter()

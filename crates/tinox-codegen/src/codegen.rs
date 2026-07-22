@@ -233,6 +233,10 @@ pub struct CodeGen {
     /// Fallback für infer_struct_type, wenn die lokalen Heuristiken nichts
     /// liefern. ID 0 (synthetische Knoten) hat nie einen Eintrag.
     expr_markers: HashMap<u32, String>,
+    /// Rich per-expression types from the checker (type-system unification): the
+    /// full ValueType per node id, incl. generic args, alongside the lossy
+    /// `expr_markers`. Migration target for the codegen's own inference.
+    expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
@@ -302,6 +306,7 @@ impl CodeGen {
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
             expr_markers: HashMap::new(),
+            expr_value_types: HashMap::new(),
             db_url: None,
             metrics_path: None,
             test_entry: None,
@@ -337,6 +342,10 @@ impl CodeGen {
 
     pub fn set_expr_markers(&mut self, markers: HashMap<u32, String>) {
         self.expr_markers = markers;
+    }
+
+    pub fn set_expr_value_types(&mut self, types: HashMap<u32, tinox_typecheck::ValueType>) {
+        self.expr_value_types = types;
     }
 
     pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
@@ -672,8 +681,11 @@ impl CodeGen {
     /// Infer the struct/class type name for an expression (for nested field access).
     fn infer_struct_type(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         self.infer_struct_type_local(expr, ctx)
-            // Fallback: Marker aus dem Typecheck (expr_markers) — greift nur,
-            // wenn die lokalen Heuristiken nichts wissen, und überstimmt sie nie
+            // Rich typed export (type-system unification): full ValueType → marker,
+            // incl. generic specialization (Box<Int> → Box__i64). Preferred over the
+            // lossy expr_markers; still after the local heuristics, which migrate
+            // onto this over time. Greift nur, wenn die Heuristik nichts weiß.
+            .or_else(|| self.expr_value_types.get(&expr.id).and_then(|vt| self.valuetype_to_marker(vt)))
             .or_else(|| self.expr_markers.get(&expr.id).cloned())
     }
 
@@ -9309,6 +9321,63 @@ impl CodeGen {
         } else {
             writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_llvm, mangled, args_parts.join(", ")).unwrap();
             Ok((result, ret_llvm))
+        }
+    }
+
+    /// The bridge between the two type systems: translate a checker `ValueType`
+    /// into the codegen's marker language, resolving a generic instance to its
+    /// mangled specialization name (`Named("Box",[Int])` → `"Box__i64"`). This is
+    /// how the rich type export becomes usable by the marker-based codegen.
+    fn valuetype_to_marker(&self, vt: &tinox_typecheck::ValueType) -> Option<String> {
+        use tinox_typecheck::ValueType as VT;
+        match vt {
+            VT::String => Some("String".to_string()),
+            VT::Float => Some("Float".to_string()),
+            VT::Named(name, args) if args.is_empty() => Some(name.clone()),
+            VT::Named(name, args) => {
+                // Generic instance → mangled specialization, if the class is known.
+                if let Some(gc) = self.generic_classes.get(name) {
+                    let tps = gc.type_params.clone();
+                    let bindings: HashMap<String, String> = tps.iter().zip(args.iter())
+                        .map(|(tp, a)| (tp.clone(), Self::valuetype_to_llvm(a)))
+                        .collect();
+                    Some(Self::mangle_generic_name(name, &tps, &bindings))
+                } else {
+                    Some(name.clone())
+                }
+            }
+            VT::Array(e) => Some(match e.as_ref() {
+                VT::String => "Array:String".to_string(),
+                VT::Float => "Array:Float".to_string(),
+                VT::Named(c, _) => format!("List:{}", c),
+                inner => match self.valuetype_to_marker(inner) {
+                    Some(m) => format!("Array:{}", m),
+                    None => "Array".to_string(),
+                },
+            }),
+            VT::Map(v) => Some(match self.valuetype_to_marker(v) {
+                Some(m) => format!("Map:{}", m),
+                None => "Map".to_string(),
+            }),
+            VT::Nullable(inner) => self.valuetype_to_marker(inner),
+            _ => None,
+        }
+    }
+
+    /// The llvm slot type for a ValueType arg, mirroring `type_to_llvm`, used to
+    /// mangle a generic specialization (`Int` → `i64`, `String` → `i8*`).
+    fn valuetype_to_llvm(vt: &tinox_typecheck::ValueType) -> String {
+        use tinox_typecheck::ValueType as VT;
+        match vt {
+            VT::Int => "i64".to_string(),
+            VT::Float => "double".to_string(),
+            VT::Bool => "i1".to_string(),
+            VT::Char => "i32".to_string(),
+            VT::String => "i8*".to_string(),
+            VT::Named(_, _) => "i64*".to_string(),
+            VT::Array(_) | VT::Map(_) => "i64*".to_string(),
+            VT::Nullable(inner) => Self::valuetype_to_llvm(inner),
+            _ => "i64".to_string(),
         }
     }
 

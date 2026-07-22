@@ -1133,6 +1133,14 @@ impl TypeChecker {
             .collect()
     }
 
+    /// Rich per-expression type export (type-system unification): the full
+    /// `ValueType` per node id, including generic type args — unlike
+    /// `expr_markers`, which flattens to a lossy string. The codegen migrates its
+    /// own inference (`infer_struct_type_local`) onto this over time.
+    pub fn expr_value_types(&self) -> HashMap<u32, ValueType> {
+        self.expr_types.clone()
+    }
+
     pub fn check(&mut self, source: &SourceFile) -> Result<SourceFile, ErrorBag> {
         self.check_source_file(source);
         if self.errors.is_empty() {

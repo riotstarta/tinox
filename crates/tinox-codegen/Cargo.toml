@@ -6,6 +6,9 @@ edition.workspace = true
 [dependencies]
 tinox-common = { path = "../tinox-common" }
 tinox-parser = { path = "../tinox-parser" }
+# Typed-value bridge (type-system unification): the codegen consumes the
+# type checker's ValueType directly, not just the flat string-marker export.
+tinox-typecheck = { path = "../tinox-typecheck" }
 
 [dev-dependencies]
 tinox-lexer = { path = "../tinox-lexer" }
