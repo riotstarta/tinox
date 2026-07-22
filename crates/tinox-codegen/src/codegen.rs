@@ -968,6 +968,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConnHandle(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpConnReadRequest(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnSendRaw(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpConnFromFd(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
         // CLI helpers (@Command / @Option / @Argument)
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
@@ -1035,6 +1038,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
         writeln!(&mut self.ir, "declare i8* @md5Hash(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @sha256Hash(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @sha1Hash(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @wsAcceptKey(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @hmacSha256Hash(i8*, i8*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 

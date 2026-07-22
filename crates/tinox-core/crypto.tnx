@@ -16,6 +16,13 @@ namespace tinox.core.crypto
             return sha256Hash(data);
         }
 
+        // Nur fuer Protokoll-Kompatibilitaet (z. B. WebSocket-Handshake),
+        // nicht fuer neue kryptografische Zwecke — SHA-1 gilt als gebrochen.
+        fn sha1(data: String) -> String
+        {
+            return sha1Hash(data);
+        }
+
         fn hmacSha256(data: String, key: String) -> String
         {
             return hmacSha256Hash(data, key);

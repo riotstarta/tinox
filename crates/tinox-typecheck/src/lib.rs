@@ -790,6 +790,10 @@ impl TypeChecker {
         symbols.functions.insert("httpServerAcceptConnHandle".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpConnReadRequest".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("httpConnSendRaw".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnFromFd".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        // Binärsichere Conn-Primitiven (WebSocket-Frames): Bytes als Array<Int64>
+        symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
+        symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
@@ -942,7 +946,8 @@ impl TypeChecker {
             params: vec![], return_type: ValueType::Float,
         });
         // Crypto / hashing
-        for name in &["sha256Hash", "md5Hash", "hmacSha256Hash", "aesEncrypt", "aesDecrypt", "base64Encode", "base64Decode", "base64EncodeChar"] {
+        // wsAcceptKey: Sec-WebSocket-Accept aus dem Client-Key (sha1+base64 in C)
+        for name in &["sha256Hash", "md5Hash", "sha1Hash", "wsAcceptKey", "hmacSha256Hash", "aesEncrypt", "aesDecrypt", "base64Encode", "base64Decode", "base64EncodeChar"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("data".to_string(), ValueType::String)],
                 return_type: ValueType::String,
@@ -3008,7 +3013,7 @@ impl TypeChecker {
                     || name.starts_with("String_")
                     || matches!(name.as_str(),
                         "now" | "sleep" | "fromCharCode" | "charCodeAt"
-                        | "sha256Hash" | "md5Hash" | "hmacSha256Hash"
+                        | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
                         | "aesEncrypt" | "aesDecrypt"
                         | "base64Encode" | "base64Decode" | "base64EncodeChar"
                         | "gcCollect" | "memoryUsage" | "printStackTrace" | "processExit"

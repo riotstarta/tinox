@@ -40,16 +40,19 @@ Client, wss (TLS), Fragmentierung, permessage-deflate sind explizit SPÄTER.
 
 ## Phase 1 — Runtime-Grundlagen (runtime/runtime.c)
 
-- [ ] 1.1 SHA-1 in die C-Runtime (`tinox_sha1(data, len) -> 20 Bytes`), Export
-      als Tinox-extern; Wiring in `crypto.tnx` (`Crypto::sha1Hex`,
-      `Crypto::sha1Raw` oder als Byte-Array). Testvektoren: leerer String,
-      "abc" (a9993e36...), langer Input (>1 Block).
-- [ ] 1.2 Binärsichere Conn-Primitiven: `httpConnReadN(conn, n) -> Array<Int64>`
-      (oder Byte-Puffer-Handle) und `httpConnWriteBytes(conn, bytes, len)` —
-      länge-basiert, kein `char*`-Truncating. Muss auf Plain- UND TLS-Conn-
-      Handles funktionieren (dieselbe Dispatch-Stelle wie httpConnReadRequest).
-- [ ] 1.3 e2e-Smoke für 1.1/1.2 (SHA-1-Vektoren; Bytes mit \0 durch eine
-      Loopback-Conn schleifen).
+- [x] 1.1 SHA-1 in die C-Runtime (`sha1_raw` + `sha1Hash` hex, Stil wie
+      sha256), `Crypto::sha1` in crypto.tnx. ZUSÄTZLICH `wsAcceptKey(key)`
+      komplett in C (sha1+base64 inkl. eigenem `tinox_b64_encode` über
+      Rohbytes) — der binäre Digest muss so nie durch einen Tinox-String.
+- [x] 1.2 Binärsichere Conn-Primitiven: `httpConnReadN(conn, n) -> List<Int64>`
+      (liest EXAKT n, blockierend; kürzer = EOF/Fehler, Aufrufer prüft Länge)
+      und `httpConnWriteBytes(conn, bytes) -> Int64`; ein Byte pro i64-Slot.
+      Läuft via conn_recv/conn_send_all auf Plain- UND TLS-Handles. Dazu
+      `httpConnFromFd(fd)`: wickelt nackte Socket-fds (Client-Seite) in ein
+      Conn-Handle — für Tests und später WsClient.
+- [x] 1.3 e2e `tests/e2e/ws_phase1_primitives.tnx`: SHA-1-Vektoren (leer, abc,
+      128×a), wsAcceptKey gegen RFC-6455-Beispiel, NUL-Bytes-Loopback in beide
+      Richtungen (connect-vor-accept, single-threaded via Backlog, Port 47613).
 
 ## Phase 2 — Handshake
 
@@ -109,3 +112,6 @@ Client, wss (TLS), Fragmentierung, permessage-deflate sind explizit SPÄTER.
 ## Log
 
 - 2026-07-22: Roadmap angelegt (Sondierungsbefund aus Session; noch kein Code).
+- 2026-07-22: Phase 1 komplett (SHA-1, wsAcceptKey, ReadN/WriteBytes/FromFd,
+  e2e-Smoke). Nebenbei: vorbestehende Clippy-Lint in main.rs:866 gefixt (kam
+  durch Cache-Invalidierung hoch). make check grün.

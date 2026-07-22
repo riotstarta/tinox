@@ -1872,6 +1872,96 @@ char* hmacSha256Hash(const char* data, const char* key) {
     return tinox_bytes_to_hex(final_hash, 32);
 }
 
+// ---- SHA-1 (RFC 3174) — gebraucht für den WebSocket-Handshake ----
+// Sicherheitshinweis wie bei MD5: nur für Protokoll-Kompatibilität
+// (Sec-WebSocket-Accept), nicht für neue kryptografische Zwecke.
+
+static uint32_t sha1_rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+
+static void sha1_transform(uint32_t state[5], const unsigned char block[64]) {
+    uint32_t w[80];
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i*4] << 24) | ((uint32_t)block[i*4+1] << 16) |
+               ((uint32_t)block[i*4+2] << 8) | (uint32_t)block[i*4+3];
+    }
+    for (int i = 16; i < 80; i++) {
+        w[i] = sha1_rotl(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+    }
+    uint32_t a=state[0],b=state[1],c=state[2],d=state[3],e=state[4];
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k;
+        if (i < 20)      { f = (b & c) | ((~b) & d);           k = 0x5a827999; }
+        else if (i < 40) { f = b ^ c ^ d;                      k = 0x6ed9eba1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d);    k = 0x8f1bbcdc; }
+        else             { f = b ^ c ^ d;                      k = 0xca62c1d6; }
+        uint32_t tmp = sha1_rotl(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = sha1_rotl(b, 30); b = a; a = tmp;
+    }
+    state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d; state[4]+=e;
+}
+
+static void sha1_raw(const unsigned char* data, size_t len, unsigned char out[20]) {
+    uint32_t state[5] = { 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0 };
+    uint64_t bitlen = (uint64_t)len * 8;
+    size_t padded_len = ((len + 8) / 64 + 1) * 64;
+    unsigned char* msg = (unsigned char*)calloc(1, padded_len);
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    for (int i = 0; i < 8; i++) {
+        msg[padded_len - 1 - i] = (unsigned char)(bitlen >> (8*i)); // big-endian length
+    }
+    for (size_t off = 0; off < padded_len; off += 64) {
+        sha1_transform(state, msg + off);
+    }
+    free(msg);
+    for (int i = 0; i < 5; i++) {
+        out[i*4]   = (unsigned char)(state[i] >> 24);
+        out[i*4+1] = (unsigned char)(state[i] >> 16);
+        out[i*4+2] = (unsigned char)(state[i] >> 8);
+        out[i*4+3] = (unsigned char)(state[i]);
+    }
+}
+
+char* sha1Hash(const char* data) {
+    unsigned char out[20];
+    sha1_raw((const unsigned char*)data, strlen(data), out);
+    return tinox_bytes_to_hex(out, 20);
+}
+
+// Base64 über Rohbytes (die Tinox-Seite base64.tnx arbeitet auf Strings und
+// kann keine NUL-Bytes tragen — der SHA-1-Digest schon).
+static char* tinox_b64_encode(const unsigned char* in, size_t n) {
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t out_len = 4 * ((n + 2) / 3);
+    char* out = (char*)GC_malloc(out_len + 1);
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        if (i + 1 < n) v |= (uint32_t)in[i+1] << 8;
+        if (i + 2 < n) v |= (uint32_t)in[i+2];
+        out[o++] = tbl[(v >> 18) & 63];
+        out[o++] = tbl[(v >> 12) & 63];
+        out[o++] = (i + 1 < n) ? tbl[(v >> 6) & 63] : '=';
+        out[o++] = (i + 2 < n) ? tbl[v & 63] : '=';
+    }
+    out[o] = '\0';
+    return out;
+}
+
+// Sec-WebSocket-Accept (RFC 6455 §4.2.2): base64(sha1(key + GUID)). Komplett
+// in C, damit der binäre SHA-1-Digest nie durch einen Tinox-String muss.
+char* wsAcceptKey(const char* client_key) {
+    static const char* guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    size_t klen = strlen(client_key), glen = strlen(guid);
+    unsigned char* buf = (unsigned char*)malloc(klen + glen);
+    memcpy(buf, client_key, klen);
+    memcpy(buf + klen, guid, glen);
+    unsigned char digest[20];
+    sha1_raw(buf, klen + glen, digest);
+    free(buf);
+    return tinox_b64_encode(digest, 20);
+}
+
 // ---- Regex builtins ----
 
 #include <regex.h>
@@ -2294,6 +2384,61 @@ char* httpConnReadRequest(int64_t conn) {
 void httpConnSendRaw(int64_t conn, const char* data) {
     if (conn <= 0 || !data) return;
     conn_send_all((TinoxConn*)(intptr_t)conn, data, strlen(data));
+}
+
+// Wickelt einen nackten Socket-fd (z. B. Client-Seite via socketConnect) in
+// ein Plaintext-Conn-Handle, damit die httpConn*-Primitiven beidseitig
+// nutzbar sind (Tests, später WsClient).
+int64_t httpConnFromFd(int64_t fd) {
+    if (fd < 0) return -1;
+    TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    c->fd = (int)fd;
+    c->ssl = NULL;
+    return (int64_t)(intptr_t)c;
+}
+
+// ---- Binärsichere Conn-Primitiven (WebSocket-Frames u.ä.) ----
+// httpConnReadRequest/httpConnSendRaw sind C-String-basiert und reißen am
+// ersten NUL-Byte ab — Frame-Daten sind binär (Masking!). Diese Varianten
+// tragen die Länge explizit; Bytes laufen als Tinox-Array (ein Byte pro
+// i64-Slot, 0..255). Funktioniert auf Plain- UND TLS-Handles via conn_recv/
+// conn_send_all.
+
+// Liest EXAKT n Bytes (blockierend, loop über kurze reads). Rückgabe: Array
+// der gelesenen Bytes; Länge < n bedeutet EOF/Fehler mittendrin — der
+// Aufrufer MUSS die Länge prüfen (kein stilles Auffüllen).
+int64_t* httpConnReadN(int64_t conn, int64_t n) {
+    int64_t* nh = tinox_array_new(0, n > 0 ? n : 4);
+    if (conn <= 0 || n <= 0) return nh;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    unsigned char buf[4096];
+    int64_t remaining = n;
+    while (remaining > 0) {
+        size_t chunk = remaining < (int64_t)sizeof(buf) ? (size_t)remaining : sizeof(buf);
+        ssize_t got = conn_recv(c, (char*)buf, chunk);
+        if (got <= 0) break;
+        for (ssize_t i = 0; i < got; i++) {
+            tinox_array_push(nh, (int64_t)buf[i]);
+        }
+        remaining -= got;
+    }
+    return nh;
+}
+
+// Schreibt ein Byte-Array (Werte 0..255 je Slot) vollständig auf die Conn.
+// Rückgabe: geschriebene Bytes (== len) oder -1 bei ungültigem Handle.
+int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
+    if (conn <= 0 || !arr) return -1;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    TinoxArray* a = (TinoxArray*)arr;
+    if (a->len <= 0) return 0;
+    unsigned char* buf = (unsigned char*)malloc((size_t)a->len);
+    for (int64_t i = 0; i < a->len; i++) {
+        buf[i] = (unsigned char)(a->data[i] & 0xff);
+    }
+    conn_send_all(c, (const char*)buf, (size_t)a->len);
+    free(buf);
+    return a->len;
 }
 
 // Schließt eine Verbindung (TLS-shutdown + free + close).

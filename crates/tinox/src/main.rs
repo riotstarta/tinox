@@ -863,7 +863,7 @@ fn check(args: &[String]) {
             for route in &ann_result.route_entries {
                 eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
             }
-            println!("{}: no errors", &input_file);
+            println!("{}: no errors", input_file);
             std::process::exit(0);
         }
         Err(bag) => {
