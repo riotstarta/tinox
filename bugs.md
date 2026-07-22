@@ -2383,6 +2383,62 @@ Fundament + inkrementellem Pfad.
 
 ---
 
+## Typ-System-Vereinheitlichung — Phase 2: Export-zuerst + B2 Schritt 2 GELANDET
+
+**Status: GELANDET (2026-07-22).** Die in Phase 1 angekündigte Migration — und sie
+entsperrt tatsächlich B2 Schritt 2: `let bi = Box::make(42)` OHNE Annotation
+funktioniert jetzt end-to-end (Typecheck-Inferenz + Codegen-Marker-Propagierung),
+der in der Bug-53-Sondierung beschriebene „eigentliche tiefe B2-Kern".
+
+**Teil 1 — Codegen: Export-zuerst in `infer_struct_type`.** 8 der 10 Expr-Arten
+(EnumValue, MethodCall, Call, FieldAccess, Index, ArrayLiteral, MapLiteral, Ident)
+fragen jetzt ZUERST den reichen Export (`rich_marker`: `expr_value_types` →
+`valuetype_to_marker`), die lokale Heuristik füllt nur noch, wo der Checker nichts
+weiß. Jede Art einzeln migriert, je `make check` grün. **Bewusst NICHT migriert:
+`This`** — `ctx.current_struct` ist Emissions-KONTEXT (welche Spezialisierung
+gerade emittiert wird, `Box__i64`), keine Inferenz; der Checker sieht dort nur die
+generische Sicht (`Box<T>`), die Brücke würde `T` zu einer nicht existenten
+Spezialisierung mangeln. Empirisch abgesichert (T-typisierte Idents in generischen
+Methodenrümpfen bleiben korrekt — Probe, nicht nur Suite).
+
+**Teil 2 — die let/var-Inferenz-KOPIEN.** Die let-/var-Statements haben eine
+eigene Inferenz-Duplikation (nicht `infer_struct_type`!), die für EnumValue direkt
+`method_ret_class["Box_make"]` = erased `"Box"` nachschlägt — daran wäre die
+Migration vorbeigelaufen (Symptom: `@toString`-ICE, der Marker blieb `"Box"`).
+Gezielte Übersteuerung an beiden Stellen: der reiche Marker gewinnt genau dann,
+wenn die lokale Inferenz nur die erased generische BASIS kennt („Box") und der
+Export deren SPEZIALISIERUNG liefert („Box__i64"); kennt die lokale Inferenz
+nichts, ist der reiche Marker strikt besser als der bisherige
+`expr_markers`-Fallback (gleiche Quelle, verlustfreie Brücke). Alles andere bleibt
+bei der lokalen Sicht (schützt z.B. `List:C`-Kopien via Ident, wo der Checker nur
+`Array(Any)` kennt).
+
+**Teil 3 — Typecheck: Typargument-Inferenz (Bug-53-Sondierung re-gelandet).**
+Neues Register `generic_method_param_types` (`Box_make` → UNERASED Param-Typen,
+self trägt die Klassen-Typ-Params: `Named("Box",[Named("T")])`) + Helfer
+`unify_param`/`substitute_bindings`/`contains_type_param`. Am `::`-Call-Site:
+enthält der Rückgabetyp Typ-Params, werden sie gegen die Arg-Typen unifiziert
+(`make(42)`: `v: T` × `Int` → T=Int) und substituiert → `Named("Box",[Int])`.
+Konservativ: `Any`-Args binden nicht, Empfänger-Ausrichtung nach den zwei
+Bug-38-Call-Stilen, und nur wenn ALLE Typ-Params aufgelöst sind, wird das Ergebnis
+verwendet — sonst exakt das bisherige Verhalten. Der Phase-1-Unterschied zur
+Sondierung (die damals einen Codegen-ICE erzeugte): die Brücke trägt die
+Spezialisierung jetzt bis zum let/var-Marker durch.
+
+**Verifiziert:** let + var, `Box<Int64/String/Float64>`, zwei unabhängige
+Typ-Params (`Pair::make(1, "x")` → A=Int64, B=String), Kettenzugriff ohne Binding
+(`Box::make(9).value`); e2e-Test `tests/e2e/generic_typearg_inference.tnx`;
+`make check` voll grün nach jedem Migrationsschritt.
+
+**Noch offen (Phase 3…N):** die lokalen Heuristiken (inkl. der let/var-Kopien)
+schrittweise LÖSCHEN, wo der Export sie vollständig abdeckt; die verbleibende
+Lücke ist dort, wo der Checker erased Typen führt (`Array(Any)` vs Codegen
+`List:C`) — die schließt sich erst, wenn auch Signaturen/Container unerased
+exportiert werden. Unannotierte generische StructLiterale (`let b = Box { value:
+"x" }`) inferieren weiterhin nicht (vorbestehend, eigener Schritt).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

@@ -477,6 +477,13 @@ pub struct TypeChecker {
     /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
     /// Export an den Codegen über expr_markers() — TESTPLAN Phase 4.
     expr_types: HashMap<u32, ValueType>,
+    /// B2 Schritt 2: `ClassName_method` einer generischen Methode → ihre
+    /// UNERASED Param-Typen (self als `Named(Class, [T-Params])` vorangestellt
+    /// bei Instanzmethoden) + die Typ-Param-Namen (Klasse + Methode). Die
+    /// registrierte `FunctionSignature` erased Params zu `Any` — für die
+    /// Typargument-Inferenz am Call-Site (`Box::make(42)` → T=Int) braucht es
+    /// die volle Form als Bindungsquelle.
+    generic_method_param_types: HashMap<String, (Vec<ValueType>, Vec<String>)>,
 }
 
 impl TypeChecker {
@@ -1121,6 +1128,7 @@ impl TypeChecker {
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
+            generic_method_param_types: HashMap::new(),
         }
     }
 
@@ -1347,6 +1355,28 @@ impl TypeChecker {
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
                             self.method_uses_this.insert(key.clone());
+                        }
+                        // B2 Schritt 2: für generische Methoden zusätzlich die
+                        // UNERASED Param-Typen ablegen (self trägt die Klassen-
+                        // Typ-Params: `Named("Box", [Named("T")])`), damit der
+                        // Call-Site Typargumente aus den Args unifizieren kann.
+                        if !erase_params.is_empty() {
+                            let mut unerased: Vec<ValueType> = if method.static_ {
+                                vec![]
+                            } else {
+                                vec![ValueType::Named(
+                                    c.name.clone(),
+                                    c.type_params
+                                        .iter()
+                                        .map(|tp| ValueType::Named(tp.clone(), vec![]))
+                                        .collect(),
+                                )]
+                            };
+                            unerased.extend(
+                                method.params.iter().map(|p| Self::type_to_value(&p.param_type)),
+                            );
+                            self.generic_method_param_types
+                                .insert(key.clone(), (unerased, erase_params.clone()));
                         }
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
@@ -2771,6 +2801,43 @@ impl TypeChecker {
                             .to_error(),
                         );
                     }
+                    // B2 Schritt 2 — Typargument-Inferenz für nicht-annotierte
+                    // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
+                    // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
+                    // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
+                    // Nur aktiv, wenn der Rückgabetyp Typ-Params enthält UND
+                    // die Unifikation ALLE auflöst; sonst exakt das bisherige
+                    // Verhalten (sig.return_type).
+                    if let Some((param_tys, tparams)) =
+                        self.generic_method_param_types.get(&static_key).cloned()
+                    {
+                        if Self::contains_type_param(&sig.return_type, &tparams) {
+                            let arg_tys: Vec<ValueType> =
+                                args.iter().map(|a| self.infer_type(a)).collect();
+                            // Empfänger-Ausrichtung (Bug 38, zwei Call-Stile):
+                            // args deckungsgleich mit params (Empfänger dabei)
+                            // oder um den self-Param verschoben (namespace-Stil).
+                            let aligned: Option<&[ValueType]> =
+                                if arg_tys.len() == param_tys.len() {
+                                    Some(&param_tys[..])
+                                } else if arg_tys.len() + 1 == param_tys.len() {
+                                    Some(&param_tys[1..])
+                                } else {
+                                    None
+                                };
+                            if let Some(ps) = aligned {
+                                let mut bindings: HashMap<String, ValueType> = HashMap::new();
+                                for (p, a) in ps.iter().zip(arg_tys.iter()) {
+                                    Self::unify_param(p, a, &tparams, &mut bindings);
+                                }
+                                let resolved =
+                                    Self::substitute_bindings(&sig.return_type, &bindings);
+                                if !Self::contains_type_param(&resolved, &tparams) {
+                                    return resolved;
+                                }
+                            }
+                        }
+                    }
                     return sig.return_type.clone();
                 }
                 // Type check all arguments
@@ -3181,6 +3248,77 @@ impl TypeChecker {
     }
 
     /// Used during registration to erase type parameters to `Any`.
+    /// B2 Schritt 2 — Typargument-Inferenz am Call-Site: unifiziert einen
+    /// UNERASED Param-Typ gegen den inferierten Arg-Typ und sammelt Bindungen
+    /// für Typ-Params (`v: T` gegen `42: Int` → T=Int). `Any` als Arg trägt
+    /// keine Information und bindet nicht (Fallback bleibt permissiv). Die
+    /// erste Bindung gewinnt (kein Konflikt-Check — bei widersprüchlichen Args
+    /// meldet der normale Check den Fehler an anderer Stelle).
+    fn unify_param(
+        param: &ValueType,
+        arg: &ValueType,
+        tparams: &[String],
+        bindings: &mut HashMap<String, ValueType>,
+    ) {
+        match (param, arg) {
+            (ValueType::Named(n, _), _) if tparams.contains(n) => {
+                if !matches!(arg, ValueType::Any) {
+                    bindings.entry(n.clone()).or_insert_with(|| arg.clone());
+                }
+            }
+            (ValueType::Named(pn, pargs), ValueType::Named(an, aargs)) if pn == an => {
+                for (p, a) in pargs.iter().zip(aargs.iter()) {
+                    Self::unify_param(p, a, tparams, bindings);
+                }
+            }
+            (ValueType::Array(p), ValueType::Array(a)) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Map(p), ValueType::Map(a)) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Nullable(p), ValueType::Nullable(a)) => {
+                Self::unify_param(p, a, tparams, bindings)
+            }
+            (ValueType::Nullable(p), a) => Self::unify_param(p, a, tparams, bindings),
+            _ => {}
+        }
+    }
+
+    /// Ersetzt gebundene Typ-Params in einem Typ (`Named("Box", [Named("T")])`
+    /// mit T=Int → `Named("Box", [Int])`). Ungebundene bleiben stehen.
+    fn substitute_bindings(ty: &ValueType, bindings: &HashMap<String, ValueType>) -> ValueType {
+        match ty {
+            ValueType::Named(n, args) => {
+                if let Some(bound) = bindings.get(n) {
+                    bound.clone()
+                } else {
+                    ValueType::Named(
+                        n.clone(),
+                        args.iter().map(|a| Self::substitute_bindings(a, bindings)).collect(),
+                    )
+                }
+            }
+            ValueType::Array(inner) => {
+                ValueType::Array(Box::new(Self::substitute_bindings(inner, bindings)))
+            }
+            ValueType::Map(v) => ValueType::Map(Box::new(Self::substitute_bindings(v, bindings))),
+            ValueType::Nullable(inner) => {
+                ValueType::Nullable(Box::new(Self::substitute_bindings(inner, bindings)))
+            }
+            _ => ty.clone(),
+        }
+    }
+
+    /// Enthält der Typ noch einen unaufgelösten Typ-Param?
+    fn contains_type_param(ty: &ValueType, tparams: &[String]) -> bool {
+        match ty {
+            ValueType::Named(n, args) => {
+                tparams.contains(n) || args.iter().any(|a| Self::contains_type_param(a, tparams))
+            }
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+                Self::contains_type_param(inner, tparams)
+            }
+            _ => false,
+        }
+    }
+
     fn type_to_value_erasing(ty: &Type, type_params: &[String]) -> ValueType {
         match ty {
             Type::Named(name) if type_params.contains(name) => ValueType::Any,

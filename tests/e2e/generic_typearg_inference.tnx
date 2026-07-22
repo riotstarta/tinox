@@ -1,0 +1,53 @@
+// B2 Schritt 2: Typargument-Inferenz für nicht-annotierte Bindungen.
+// `let bi = Box::make(42)` leitet T=Int aus den Args ab (Typecheck-Unifikation
+// unerased Params × Arg-Typen) und der Codegen trägt die Spezialisierung
+// (Box__i64) über die typisierte Wertbrücke bis zum let/var-Marker — die in
+// Bug 53 sondierte Verbindung der zwei Typ-Systeme. Deckt let + var, Int64/
+// String/Float64, zwei Typ-Params und Kettenzugriff ohne Binding ab.
+// expect: 42
+// expect: hi
+// expect: 2
+// expect: 3.5
+// expect: 7
+// expect: 1
+// expect: x
+// expect: 9
+
+class Box<T> {
+    var value: T;
+    fn make(v: T) -> Box<T> { return Box { value: v }; }
+}
+
+class Pair<A, B> {
+    var a: A;
+    var b: B;
+    fn make(a: A, b: B) -> Pair<A, B> { return Pair { a: a, b: b }; }
+}
+
+fn main() -> Int32 {
+    // let ohne Annotation: T=Int64 aus dem Argument
+    let bi = Box::make(42);
+    println(bi.value.toString());        // 42
+
+    // T=String: direkter Feld-Read + Methode auf dem aufgelösten T
+    let bs = Box::make("hi");
+    println(bs.value);                    // hi
+    println(bs.value.len().toString());  // 2
+
+    // T=Float64
+    let bf = Box::make(3.5);
+    println(bf.value.toString());        // 3.5
+
+    // var-Pfad nutzt dieselbe Brücke
+    var vi = Box::make(7);
+    println(vi.value.toString());        // 7
+
+    // Zwei Typ-Params unabhängig gebunden (A=Int64, B=String)
+    let p = Pair::make(1, "x");
+    println(p.a.toString());             // 1
+    println(p.b);                         // x
+
+    // Kettenzugriff ohne Binding: Marker direkt am Call-Ausdruck
+    println(Box::make(9).value.toString()); // 9
+    return 0;
+}

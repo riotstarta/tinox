@@ -680,13 +680,43 @@ impl CodeGen {
 
     /// Infer the struct/class type name for an expression (for nested field access).
     fn infer_struct_type(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
+        use tinox_parser::ExprKind;
+        // Type-system unification phase 2: for migrated expr kinds the rich typed
+        // export (full ValueType → marker, incl. generic specialization
+        // Box<Int> → Box__i64) is the PRIMARY source; the local heuristic only
+        // fills in where the checker has no type for the node.
+        //
+        // Deliberately NOT rich-first: This — ctx.current_struct is emission
+        // context (which specialization is being emitted, e.g. Box__i64), not an
+        // inference; the checker only ever sees the generic view (Box<T>) there,
+        // and bridging it would mangle T into a nonexistent specialization.
+        let rich_first = matches!(
+            &expr.node,
+            ExprKind::EnumValue { .. }
+                | ExprKind::MethodCall { .. }
+                | ExprKind::Call { .. }
+                | ExprKind::FieldAccess { .. }
+                | ExprKind::Index { .. }
+                | ExprKind::ArrayLiteral(_)
+                | ExprKind::MapLiteral(_)
+                | ExprKind::Ident(_)
+        );
+        if rich_first {
+            if let Some(m) = self.rich_marker(expr) {
+                return Some(m);
+            }
+        }
         self.infer_struct_type_local(expr, ctx)
-            // Rich typed export (type-system unification): full ValueType → marker,
-            // incl. generic specialization (Box<Int> → Box__i64). Preferred over the
-            // lossy expr_markers; still after the local heuristics, which migrate
-            // onto this over time. Greift nur, wenn die Heuristik nichts weiß.
-            .or_else(|| self.expr_value_types.get(&expr.id).and_then(|vt| self.valuetype_to_marker(vt)))
+            .or_else(|| self.rich_marker(expr))
             .or_else(|| self.expr_markers.get(&expr.id).cloned())
+    }
+
+    /// Marker from the rich typed export, if the checker recorded a type for
+    /// this node. The non-local half of `infer_struct_type`.
+    fn rich_marker(&self, expr: &tinox_parser::Expr) -> Option<String> {
+        self.expr_value_types
+            .get(&expr.id)
+            .and_then(|vt| self.valuetype_to_marker(vt))
     }
 
     fn infer_struct_type_local(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
@@ -3684,7 +3714,7 @@ impl CodeGen {
                     // interface name so vtable dispatch is used for method calls.
                     // Also infer class name from constructor/factory calls when no annotation is present.
                     // Use method_ret_class mapping built during pre-pass for accurate type inference.
-                    let inferred_struct = if struct_name.is_none() {
+                    let local_inferred = if struct_name.is_none() {
                         match &val.node {
                             ExprKind::EnumValue { enum_name, variant, .. } => {
                                 let method_key = format!("{}_{}", enum_name, variant);
@@ -3722,6 +3752,23 @@ impl CodeGen {
                             _ => None,
                         }
                     } else { struct_name.clone() };
+                    // Phase 2 der Typ-System-Vereinheitlichung: der reiche Export
+                    // übersteuert die lokale Inferenz genau dann, wenn sie nur die
+                    // ERASED generische Basis kennt ("Box") und der Checker die
+                    // Spezialisierung liefert ("Box__i64" — B2 Schritt 2:
+                    // `let bi = Box::make(42)`). Kennt die lokale Inferenz nichts,
+                    // ist der reiche Marker strikt besser als der bisherige
+                    // expr_markers-Fallback (gleiche Quelle, verlustfreie Brücke).
+                    let inferred_struct = match (local_inferred, self.rich_marker(val)) {
+                        (Some(l), Some(r))
+                            if self.generic_classes.contains_key(l.as_str())
+                                && r.starts_with(&format!("{}__", l)) =>
+                        {
+                            Some(r)
+                        }
+                        (None, r) => r,
+                        (l, _) => l,
+                    };
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
                             Some(ann.clone())
@@ -3894,7 +3941,7 @@ impl CodeGen {
                     ctx.locals.insert(name.clone(), (actual_ty.clone(), slot));
                     // Infer struct type from static method calls (EnumValue) and instance method calls.
                     // This ensures local_types is set so subsequent method calls dispatch correctly.
-                    let inferred_struct_var = if struct_name.is_none() {
+                    let local_inferred_var = if struct_name.is_none() {
                         match &val.node {
                             ExprKind::EnumValue { enum_name, variant, .. } => {
                                 let method_key = format!("{}_{}", enum_name, variant);
@@ -3929,6 +3976,19 @@ impl CodeGen {
                             _ => None,
                         }
                     } else { struct_name.clone() };
+                    // Phase 2 der Typ-System-Vereinheitlichung — wie im let-Pfad:
+                    // Spezialisierung aus dem reichen Export gewinnt über die
+                    // erased generische Basis; sonst bleibt die lokale Inferenz.
+                    let inferred_struct_var = match (local_inferred_var, self.rich_marker(val)) {
+                        (Some(l), Some(r))
+                            if self.generic_classes.contains_key(l.as_str())
+                                && r.starts_with(&format!("{}__", l)) =>
+                        {
+                            Some(r)
+                        }
+                        (None, r) => r,
+                        (l, _) => l,
+                    };
                     // If the declared type annotation is an interface, use it for vtable dispatch.
                     let effective_type = if let Some(Type::Named(ann)) = ty {
                         if self.known_interfaces.contains(ann.as_str()) {
