@@ -229,13 +229,11 @@ pub struct CodeGen {
     metric_entries: Vec<MetricEntry>,
     /// ORM entity entries from @Entity / @Table annotations
     entity_entries: Vec<EntityEntry>,
-    /// Marker-Tabelle aus dem Typecheck (NodeId → Marker, TESTPLAN Phase 4):
-    /// Fallback für infer_struct_type, wenn die lokalen Heuristiken nichts
-    /// liefern. ID 0 (synthetische Knoten) hat nie einen Eintrag.
-    expr_markers: HashMap<u32, String>,
     /// Rich per-expression types from the checker (type-system unification): the
-    /// full ValueType per node id, incl. generic args, alongside the lossy
-    /// `expr_markers`. Migration target for the codegen's own inference.
+    /// full ValueType per node id, incl. generic args. Since phase 3 the ONLY
+    /// checker→codegen type channel (the lossy flat marker table it replaced is
+    /// gone); consumed via `rich_marker`. ID 0 (synthetic nodes) never has an
+    /// entry.
     expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
@@ -313,7 +311,6 @@ impl CodeGen {
             json_serializable_classes: Vec::new(),
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
-            expr_markers: HashMap::new(),
             expr_value_types: HashMap::new(),
             db_url: None,
             metrics_path: None,
@@ -348,10 +345,6 @@ impl CodeGen {
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
         self.metrics_path = path;
-    }
-
-    pub fn set_expr_markers(&mut self, markers: HashMap<u32, String>) {
-        self.expr_markers = markers;
     }
 
     pub fn set_expr_value_types(&mut self, types: HashMap<u32, tinox_typecheck::ValueType>) {
@@ -718,7 +711,6 @@ impl CodeGen {
         }
         self.infer_struct_type_local(expr, ctx)
             .or_else(|| self.rich_marker(expr))
-            .or_else(|| self.expr_markers.get(&expr.id).cloned())
     }
 
     /// Marker from the rich typed export, if the checker recorded a type for
@@ -3766,9 +3758,8 @@ impl CodeGen {
                     // übersteuert die lokale Inferenz genau dann, wenn sie nur die
                     // ERASED generische Basis kennt ("Box") und der Checker die
                     // Spezialisierung liefert ("Box__i64" — B2 Schritt 2:
-                    // `let bi = Box::make(42)`). Kennt die lokale Inferenz nichts,
-                    // ist der reiche Marker strikt besser als der bisherige
-                    // expr_markers-Fallback (gleiche Quelle, verlustfreie Brücke).
+                    // `let bi = Box::make(42)`). Kennt die lokale Inferenz
+                    // nichts, greift der reiche Marker direkt.
                     let inferred_struct = match (local_inferred, self.rich_marker(val)) {
                         (Some(l), Some(r))
                             if self.generic_classes.contains_key(l.as_str())
@@ -3788,9 +3779,7 @@ impl CodeGen {
                     } else {
                         inferred_struct.clone().or_else(|| struct_name.clone())
                     }
-                    // Letzter Fallback: Typecheck-Tabelle (Phase 4) — nie
-                    // präziser als Annotation/lokale Inferenz, daher zuletzt
-                    .or_else(|| self.expr_markers.get(&val.id).cloned());
+                    ;
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {
@@ -4009,8 +3998,7 @@ impl CodeGen {
                     } else {
                         inferred_struct_var.clone().or_else(|| struct_name.clone())
                     }
-                    // Letzter Fallback: Typecheck-Tabelle (Phase 4)
-                    .or_else(|| self.expr_markers.get(&val.id).cloned());
+                    ;
                     if let Some(sn) = effective_type {
                         ctx.local_types.insert(name.clone(), sn);
                     } else {
@@ -4227,9 +4215,9 @@ impl CodeGen {
                 // inferred (fields, calls, literals, nested elements).
                 let iter_marker = if let ExprKind::Ident(n) = &iter.node {
                     ctx.local_types.get(n).cloned()
-                        // Fallback: Typecheck-Tabelle (unggestrippter Marker,
-                        // deshalb nicht infer_struct_type — das strippt List:)
-                        .or_else(|| self.expr_markers.get(&iter.id).cloned())
+                        // Fallback: reiche Brücke (ungestrippter Marker, deshalb
+                        // nicht infer_struct_type — das strippt List:)
+                        .or_else(|| self.rich_marker(iter))
                 } else {
                     self.infer_struct_type(iter, ctx)
                 };
@@ -4573,8 +4561,8 @@ impl CodeGen {
                     // Detect Map type for map[key] = val → tinox_map_set
                     let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
                         ctx.local_types.get(n.as_str()).cloned()
-                            // Fallback: Typecheck-Tabelle (ungestrippter Marker)
-                            .or_else(|| self.expr_markers.get(&obj.id).cloned())
+                            // Fallback: reiche Brücke (ungestrippter Marker)
+                            .or_else(|| self.rich_marker(obj))
                     } else {
                         // Felder/verschachtelte Ziele (this.m[k] = v)
                         self.infer_struct_type(obj, ctx)
@@ -5823,8 +5811,8 @@ impl CodeGen {
 
                 let declared_type = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
-                        // Fallback: Typecheck-Tabelle (ungestrippter Marker)
-                        .or_else(|| self.expr_markers.get(&obj.id).cloned()),
+                        // Fallback: reiche Brücke (ungestrippter Marker)
+                        .or_else(|| self.rich_marker(obj)),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
                 };
@@ -6760,10 +6748,10 @@ impl CodeGen {
                 // Find the struct type and field offset
                 let struct_name = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
-                        // Fallback: Typecheck-Tabelle — z. B. Klassen-Payloads
+                        // Fallback: reiche Brücke — z. B. Klassen-Payloads
                         // aus match-Bindungen, die bind_match_payload als
                         // "Other" (ungetypt) bindet
-                        .or_else(|| self.expr_markers.get(&obj.id).cloned()),
+                        .or_else(|| self.rich_marker(obj)),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
                 };

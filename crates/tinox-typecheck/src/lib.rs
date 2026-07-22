@@ -344,29 +344,6 @@ impl ValueType {
     /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Klasse",
     /// "Map"/"Map:<marker>". None für Typen ohne Marker-Semantik
     /// (Int, Bool, Any, …).
-    fn to_marker(&self) -> Option<String> {
-        match self {
-            ValueType::String => Some("String".to_string()),
-            ValueType::Float => Some("Float".to_string()),
-            ValueType::Named(c, _) => Some(c.clone()),
-            ValueType::Array(e) => Some(match e.as_ref() {
-                ValueType::String => "Array:String".to_string(),
-                ValueType::Float => "Array:Float".to_string(),
-                ValueType::Named(c, _) => format!("List:{}", c),
-                elem => match elem.to_marker() {
-                    Some(m) => format!("Array:{}", m),
-                    None => "Array".to_string(),
-                },
-            }),
-            ValueType::Map(v) => Some(match v.as_ref().to_marker() {
-                Some(m) => format!("Map:{}", m),
-                None => "Map".to_string(),
-            }),
-            ValueType::Nullable(inner) => inner.to_marker(),
-            _ => None,
-        }
-    }
-
     /// Anzeige für Fehlermeldungen — zeigt Element-/Value-Typen
     /// ("List<String>", "Map<String, Int64>"). Nicht für Dispatch-Keys
     /// verwenden, dafür ist to_string() da.
@@ -475,7 +452,9 @@ pub struct TypeChecker {
     method_uses_this: HashSet<String>,
     /// Inferierter Typ jeder besuchten Expression, gekeyed über die NodeId
     /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
-    /// Export an den Codegen über expr_markers() — TESTPLAN Phase 4.
+    /// Export an den Codegen über expr_value_types() — seit Phase 3 der
+    /// EINZIGE Typ-Kanal Typecheck→Codegen (die verlustbehaftete Marker-
+    /// Tabelle expr_markers ist entfernt).
     expr_types: HashMap<u32, ValueType>,
     /// B2 Schritt 2: `ClassName_method` einer generischen Methode → ihre
     /// UNERASED Param-Typen (self als `Named(Class, [T-Params])` vorangestellt
@@ -1138,15 +1117,6 @@ impl TypeChecker {
             expr_types: HashMap::new(),
             generic_method_param_types: HashMap::new(),
         }
-    }
-
-    /// Marker-Tabelle für den Codegen: NodeId → Marker-String (nur
-    /// Expressions, deren Typ Marker-Semantik hat). Nach check() abrufen.
-    pub fn expr_markers(&self) -> HashMap<u32, String> {
-        self.expr_types
-            .iter()
-            .filter_map(|(id, ty)| ty.to_marker().map(|m| (*id, m)))
-            .collect()
     }
 
     /// Rich per-expression type export (type-system unification): the full

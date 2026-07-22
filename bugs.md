@@ -2488,6 +2488,33 @@ beim Alt-Verhalten; e2e-Test `tests/e2e/generic_structlit_inference.tnx`;
 
 ---
 
+## Typ-System-Vereinheitlichung — Phase 3: der verlustbehaftete Marker-Kanal ist WEG
+
+**Status: GELANDET (2026-07-22).** Der in Phase 1 als Kern-Strukturschwäche
+benannte flache `HashMap<u32, String>`-Kanal (`expr_markers`: Typecheck →
+Codegen, verwarf generische Typargumente) ist vollständig ENTFERNT — Feld,
+Setter, beide `main.rs`-Übergaben, der Typecheck-Export `expr_markers()` und
+dessen einziger Konsument `ValueType::to_marker`. Es gibt seit Phase 3 genau
+EINEN Typ-Kanal: `expr_value_types()` (volle `ValueType` pro Node) über die
+Brücke `rich_marker`/`valuetype_to_marker`.
+
+**Warum löschbar ohne Risiko:** `valuetype_to_marker` hat exakt dieselbe
+Arm-Struktur wie das alte `to_marker` (String/Float/Named/Array/Map/Nullable →
+Some, Rest → None) — die Some-Domänen sind IDENTISCH, die Ausgabe ist nur
+reicher (Spezialisierung `Box__i64` statt Basis `Box`, sonst gleich). Jeder
+`expr_markers`-Fallback HINTER einem `rich_marker` war damit toter Code; die
+vier Stellen, die expr_markers noch DIREKT nutzten (for-Iterable, Index-
+Assignment, MethodCall-Empfänger, FieldAccess-Empfänger — alle: „ungestrippter
+Marker nach local_types"), sind 1:1 auf `rich_marker` umgestellt.
+
+**Noch offen (Phase 4):** die lokalen Heuristik-ARME selbst
+(`infer_struct_type_local` + die let/var-Kopien) sind weiterhin nötig, wo der
+Checker `Any` liefert (permissive Generik-Pfade) oder erased Container führt
+(`Array(Any)` wo der Codegen `List:C` weiß). Die schließen sich erst mit einem
+unerased Signatur-/Container-Export — dann können die Arme fallen.
+
+---
+
 ## Feature: Array `map`/`filter`/`forEach`/`reduce` mit Lambda-Argument
 
 **Status: IMPLEMENTIERT (2026-07-22).** Das in den Bugs 64/65 bewusst offen
