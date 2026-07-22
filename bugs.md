@@ -2434,8 +2434,57 @@ Typ-Params (`Pair::make(1, "x")` → A=Int64, B=String), Kettenzugriff ohne Bind
 schrittweise LÖSCHEN, wo der Export sie vollständig abdeckt; die verbleibende
 Lücke ist dort, wo der Checker erased Typen führt (`Array(Any)` vs Codegen
 `List:C`) — die schließt sich erst, wenn auch Signaturen/Container unerased
-exportiert werden. Unannotierte generische StructLiterale (`let b = Box { value:
-"x" }`) inferieren weiterhin nicht (vorbestehend, eigener Schritt).
+exportiert werden. ~~Unannotierte generische StructLiterale (`let b = Box { value:
+"x" }`) inferieren weiterhin nicht (vorbestehend, eigener Schritt).~~ → GELANDET,
+siehe nächster Abschnitt.
+
+---
+
+## Typargument-Inferenz für generische StructLiterale (B2-Fortsetzung)
+
+**Status: GELANDET (2026-07-22).** Der zweite häufige Konstruktions-Weg neben der
+Factory-Methode: `let bs = Box { value: "x" }` (unannotiert) funktioniert jetzt —
+und dabei stellte sich heraus, dass auch der ANNOTIERTE Fall
+(`let ba: Box<String> = Box { value: "hi" }`) schon immer kaputt war: der
+let-Pfad berechnete zwar die Spezialisierung aus der Annotation, aber der
+StructLiteral-Zweig ÜBERSCHRIEB `struct_name` danach wieder mit der generischen
+Basis („Box") → `@toString`-ICE bzw. Zeiger als Zahl. Direkte generische
+Literale gingen bisher also NUR über Factory-Calls.
+
+**Typecheck.** Der StructLiteral-Arm unifiziert die Feld-Initialisierer-Typen
+gegen die UNERASED Feld-Deklarationstypen (`"Box.value"` → `Named("T")` in
+`symbols.variables`, dieselbe `unify_param`-Maschine wie am `::`-Call-Site) →
+`Named("Box", [String])`. Nur wenn ALLE Typ-Params gebunden sind, trägt das
+Ergebnis Args; sonst bisheriges Verhalten (leere Args, permissiv).
+
+**Codegen.** Der StructLiteral-Arm löst den Emissions-Namen auf: Alias aus dem
+annotierten let-Pfad (Bug 20.2), sonst reicher Export → `ensure_generic_class_
+specialization_with_bindings` (registriert Layout/Feldtypen/named type
+on-demand) → das Literal wird als `Box__i8P` emittiert statt als Basis. Der
+let/var-Marker kommt dann über die Phase-2-Übersteuerung (Spezialisierung
+gewinnt über erased Basis) automatisch richtig an.
+
+**Neue Wache `contains_scoped_type_param`** (gilt auch für die
+EnumValue-Inferenz): eine Bindung an einen Typ-Param des UMGEBENDEN Scopes
+(`Box { value: this.item }` in `Holder<U>` → T=`Named("U")`) zählt NICHT als
+aufgelöst — sie ist erst nach Monomorphisierung konkret; als „aufgelöst"
+weitergereicht würde der Codegen eine stille Falsch-Spezialisierung mangeln
+(U → i64*). Der `Any`-Guard von `unify_param` deckte den Param-Fall schon ab
+(erased Params binden nicht), die Wache schließt den Feld-Fall.
+
+**Dabei bestätigter vorbestehender Bug (git-stash-geprüft, NICHT neu):** ein
+T-typisierter Wert, der durch eine generische Factory-INSTANZMETHODE einer
+ANDEREN Klasse fließt (`Holder<U>::wrap() -> Box<U>` mit
+`return Box { value: this.item }`), kommt als Zeiger-Zahl heraus (silent
+garbage, `4263940`) — der Literal-Marker im generischen Rumpf bleibt die Basis,
+die U-Bindung des Empfängers erreicht die Literal-Emission nicht. Verwandt mit
+den B1-Phase-4-Funden (T-Feld im generischen Rumpf). Eigener Komplex; Repro als
+Notiz hier statt eigener Bugnummer, bis er drankommt.
+
+**Verifiziert:** unannotiert + annotiert, let + var, `Box<Int64/String>`, zwei
+Typ-Params (`Pair { a: "eins", b: 2.5 }`); Scope-Param-Fall bleibt konservativ
+beim Alt-Verhalten; e2e-Test `tests/e2e/generic_structlit_inference.tnx`;
+`make check` voll grün.
 
 ---
 

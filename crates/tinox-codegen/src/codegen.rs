@@ -6794,6 +6794,45 @@ impl CodeGen {
                 }
             }
             ExprKind::StructLiteral { name, fields } => {
+                // Effektiver Emissions-Name für generische Klassen: die
+                // SPEZIALISIERUNG statt der Basis. Quelle ist der Alias aus dem
+                // annotierten let-Pfad (Bug 20.2), sonst der reiche Export
+                // (`Box { value: "x" }` → Named("Box",[String]) → Box__i8P);
+                // ensure… registriert Layout/Feldtypen/named type on-demand.
+                // Ohne Typargumente bleibt es bei der Basis (bisheriges
+                // Verhalten, layout-identisch).
+                let resolved_name: String = if self.generic_classes.contains_key(name.as_str()) {
+                    if let Some(alias) = self.type_param_aliases.get(name.as_str()) {
+                        alias.clone()
+                    } else if let Some(tinox_typecheck::ValueType::Named(_, targs)) =
+                        self.expr_value_types.get(&expr.id).cloned()
+                    {
+                        if targs.is_empty() {
+                            name.clone()
+                        } else {
+                            let gc = self.generic_classes.get(name.as_str()).cloned();
+                            match gc {
+                                Some(gc) => {
+                                    let bindings: HashMap<String, String> = gc
+                                        .type_params
+                                        .iter()
+                                        .zip(targs.iter())
+                                        .map(|(tp, a)| (tp.clone(), Self::valuetype_to_llvm(a)))
+                                        .collect();
+                                    self.ensure_generic_class_specialization_with_bindings(
+                                        name, &bindings,
+                                    )?
+                                }
+                                None => name.clone(),
+                            }
+                        }
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    name.clone()
+                };
+                let name = &resolved_name;
                 let ptr = self.temp();
                 let layout = self.struct_layouts.get(name).cloned().unwrap_or_default();
                 let size = layout.len() * 8;

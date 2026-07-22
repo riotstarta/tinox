@@ -2548,10 +2548,39 @@ impl TypeChecker {
                 ValueType::Named(class.clone(), vec![])
             }
             ExprKind::StructLiteral { name, fields } => {
-                for (_, field_expr) in fields {
-                    self.infer_type(field_expr);
+                // B2: für generische Klassen die Typargumente aus den Feld-
+                // Initialisierern unifizieren (`Box { value: "x" }` →
+                // `Named("Box", [String])`). Bindungsquelle sind die UNERASED
+                // Feld-Deklarationstypen (`"Box.value"` → `Named("T")` in
+                // symbols.variables). Nur wenn ALLE Typ-Params gebunden werden,
+                // trägt das Ergebnis Args — sonst exakt das bisherige Verhalten
+                // (leere Args, permissiv).
+                let tparams = self.class_type_params.get(name).cloned();
+                let mut bindings: HashMap<String, ValueType> = HashMap::new();
+                for (fname, field_expr) in fields {
+                    let ft = self.infer_type(field_expr);
+                    if let Some(tps) = &tparams {
+                        let decl = self
+                            .symbols
+                            .variables
+                            .get(&format!("{}.{}", name, fname))
+                            .map(|(t, _)| t.clone());
+                        if let Some(decl_ty) = decl {
+                            Self::unify_param(&decl_ty, &ft, tps, &mut bindings);
+                        }
+                    }
                 }
-                ValueType::Named(name.clone(), vec![])
+                let targs = match &tparams {
+                    Some(tps)
+                        if !tps.is_empty()
+                            && tps.iter().all(|tp| bindings.contains_key(tp))
+                            && !bindings.values().any(|v| self.contains_scoped_type_param(v)) =>
+                    {
+                        tps.iter().map(|tp| bindings[tp].clone()).collect()
+                    }
+                    _ => vec![],
+                };
+                ValueType::Named(name.clone(), targs)
             }
             ExprKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
@@ -2832,7 +2861,9 @@ impl TypeChecker {
                                 }
                                 let resolved =
                                     Self::substitute_bindings(&sig.return_type, &bindings);
-                                if !Self::contains_type_param(&resolved, &tparams) {
+                                if !Self::contains_type_param(&resolved, &tparams)
+                                    && !self.contains_scoped_type_param(&resolved)
+                                {
                                     return resolved;
                                 }
                             }
@@ -3314,6 +3345,23 @@ impl TypeChecker {
             }
             ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
                 Self::contains_type_param(inner, tparams)
+            }
+            _ => false,
+        }
+    }
+
+    /// Enthält der Typ einen Typ-Param des UMGEBENDEN Scopes (`Named("U")` im
+    /// Rumpf von `Holder<U>`)? Solche Bindungen sind erst nach Monomorphisierung
+    /// konkret — als „aufgelöst" weitergereicht würde der Codegen daraus eine
+    /// stille Falsch-Spezialisierung mangeln (U → i64*).
+    fn contains_scoped_type_param(&self, ty: &ValueType) -> bool {
+        match ty {
+            ValueType::Named(n, args) => {
+                self.type_param_scope.contains(n)
+                    || args.iter().any(|a| self.contains_scoped_type_param(a))
+            }
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+                self.contains_scoped_type_param(inner)
             }
             _ => false,
         }
