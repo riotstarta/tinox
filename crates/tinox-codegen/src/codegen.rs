@@ -8401,8 +8401,11 @@ impl CodeGen {
             Some(env_typed)
         };
         if let Some(ref env) = env_ptr_name {
-            params_str.push_str(&format!(", i64* {}", env));
-            fn_type_str.push_str(", i64*");
+            // Only prepend a comma when there are declared params — a no-arg
+            // capturing lambda otherwise produced `(, i64*)` (invalid IR).
+            let sep = if params_str.is_empty() { "" } else { ", " };
+            params_str.push_str(&format!("{}i64* {}", sep, env));
+            fn_type_str.push_str(&format!("{}i64*", sep));
             let env_name = env.trim_start_matches('%');
             lambda_ctx
                 .locals
