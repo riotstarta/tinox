@@ -8461,7 +8461,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
         let lambda_body = std::mem::replace(&mut self.ir, saved_ir);
+        // A nested lambda in the body appended its own definition to self.lambda_ir
+        // during body generation. Preserve it — resetting straight to
+        // saved_lambda_ir would drop the inner lambda, leaving its `@__lambda_N`
+        // reference undefined (Bug 65).
+        let inner_lambdas = std::mem::take(&mut self.lambda_ir);
         let mut new_lambda_ir = saved_lambda_ir;
+        new_lambda_ir.push_str(&inner_lambdas);
         new_lambda_ir.push_str(&lambda_body);
         self.lambda_ir = new_lambda_ir;
         self.temp_count = saved_temp;

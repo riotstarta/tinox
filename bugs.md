@@ -2316,6 +2316,33 @@ sind durch.
 
 ---
 
+## Bugs 64–65 — Closures/Lambdas: ungültige Signatur & verlorene verschachtelte Lambdas
+
+**Status: BEIDE GEFIXT (2026-07-21).** Revierwechsel zu Closures/Lambdas. Einfaches
+Lambda, Capture-mit-Arg, higher-order (Lambda als Arg), und Escape (Closure-Factory,
+Lambda-Rückgabe) funktionierten bereits — zwei ICEs in Randfällen gefunden.
+
+**Bug 64 — no-arg capturing Lambda → ungültige Signatur.** `fnc() -> T { return
+captured; }` (0 Params, aber Capture) erzeugte `define … (, i64*)` — ein führendes
+Komma, weil der Capture-Env-Param mit `", i64*"` an einen leeren `params_str`
+angehängt wurde. Fix: Komma nur bei nicht-leerer Param-Liste. (Capture-Semantik ist
+by-value — der Wert zum Definitionszeitpunkt.)
+
+**Bug 65 — verschachtelte Lambdas → inneres Lambda verloren.** Ein Lambda in einem
+Lambda-Body erzeugte `use of undefined value @__lambda_N`. `gen_lambda` speichert
+`self.lambda_ir`, generiert den Body (ein verschachteltes Lambda hängt seine
+Definition an `self.lambda_ir` an) und setzte danach `self.lambda_ir` STUR auf den
+gespeicherten Vor-Zustand zurück → das innere Lambda ging verloren, seine Referenz
+blieb undefiniert. Fix: das aktuelle `self.lambda_ir` (inneres Lambda) vor dem Reset
+bewahren und voranstellen. Funktioniert bis zu beliebiger Tiefe (dreifach getestet).
+
+**Verifiziert:** no-arg-Capture (by-value → 1), mehrere Captures (30), verschachtelt
+(21), dreifach verschachtelt (117); e2e-Tests `noarg_capture_lambda.tnx`,
+`nested_lambda.tnx`; `make check` grün. **Nicht abgedeckt:** `List.map()`/`.filter()`
+mit Lambda (`Array_map` ist nicht implementiert — eigenes Feature, kein Bug).
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

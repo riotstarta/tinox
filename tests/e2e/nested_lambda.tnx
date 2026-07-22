@@ -1,0 +1,25 @@
+// Bug 65: ein Lambda innerhalb eines Lambdas verlor seine Definition — das äußere
+// gen_lambda setzte self.lambda_ir auf den Zustand VOR dem äußeren Lambda zurück
+// und verwarf das während der Body-Generierung emittierte innere Lambda → dessen
+// @__lambda_N-Referenz war undefiniert (ICE). Fix bewahrt die inneren Lambdas.
+// expect: 21
+// expect: 117
+fn main() -> Int32 {
+    // zweifach verschachtelt
+    let outer: fnc(Int64) -> Int64 = fnc(x: Int64) -> Int64 {
+        let inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2; };
+        return inner(x) + 1;
+    };
+    println(outer(10).toString());   // inner(10)=20, +1 = 21
+
+    // dreifach verschachtelt
+    let a: fnc() -> Int64 = fnc() -> Int64 {
+        let b: fnc() -> Int64 = fnc() -> Int64 {
+            let c: fnc() -> Int64 = fnc() -> Int64 { return 7; };
+            return c() + 10;
+        };
+        return b() + 100;
+    };
+    println(a().toString());          // 7 -> 17 -> 117
+    return 0;
+}
