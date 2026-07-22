@@ -675,6 +675,14 @@ impl TypeChecker {
         symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
         symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::any_array() });
         symbols.functions.insert("Array_insert".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)], return_type: ValueType::Nothing });
+        // Lambda-basierte Array-Methoden (map/filter/forEach/reduce). Die
+        // Signaturen sind bewusst permissiv (Fn-Arg, Any-Ergebnis) — der
+        // Ergebnis-Elementtyp wird im MethodCall-Arm aus dem Lambda verfeinert
+        // (map: Lambda-Rückgabetyp, filter: Eingabe-Elementtyp).
+        symbols.functions.insert("Array_map".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_filter".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::any_array() });
+        symbols.functions.insert("Array_forEach".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::Nothing });
+        symbols.functions.insert("Array_reduce".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("init".to_string(), ValueType::Any), ("f".to_string(), ValueType::Fn)], return_type: ValueType::Any });
         // List<T> is the same as Array at runtime — mirror all Array_* builtins under List_*
         for (arr_key, sig) in symbols.functions.iter().filter(|(k, _)| k.starts_with("Array_")).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() {
             let list_key = arr_key.replacen("Array_", "List_", 1);
@@ -2384,6 +2392,31 @@ impl TypeChecker {
                 let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().cloned());
+                // map/filter/forEach/reduce mit Lambda-Argument: den Lambda-
+                // Param VOR check_call an den Element-Typ des Arrays binden.
+                // infer_type memoisiert per Node-Id — check_call würde den
+                // Body sonst zuerst mit Any-Params inferieren und die arme
+                // Typisierung festschreiben (auch für den Codegen-Export).
+                let mut array_lambda_ret: Option<ValueType> = None;
+                if let ValueType::Array(elem) = &obj_ty {
+                    let lam = match method.as_str() {
+                        "map" | "filter" | "forEach" => args.first(),
+                        "reduce" => args.get(1),
+                        _ => None,
+                    };
+                    if let Some(lam) = lam {
+                        let hints: Vec<ValueType> = if method.as_str() == "reduce" {
+                            let acc = args
+                                .first()
+                                .map(|a| self.infer_type(a))
+                                .unwrap_or(ValueType::Any);
+                            vec![acc, (**elem).clone()]
+                        } else {
+                            vec![(**elem).clone()]
+                        };
+                        array_lambda_ret = self.infer_lambda_with_param_hints(lam, &hints);
+                    }
+                }
                 let generic_ret = self.check_call(&func_expr, &call_args, expr.span);
                 // Receiver-abhängige Ergebnistypen, die statische Signaturen
                 // nicht ausdrücken können: erst check_call (validiert die
@@ -2401,6 +2434,27 @@ impl TypeChecker {
                         if **e != ValueType::Any =>
                     {
                         ValueType::Array(e.clone())
+                    }
+                    // map: Ergebnis-Elementtyp aus dem Lambda-Rückgabetyp;
+                    // ohne verwertbare Inferenz permissiv Array(Any).
+                    (ValueType::Array(_), "map") => {
+                        let ret_elem = match array_lambda_ret {
+                            Some(ValueType::Nothing) | Some(ValueType::Never) | None => {
+                                ValueType::Any
+                            }
+                            Some(t) => t,
+                        };
+                        ValueType::Array(Box::new(ret_elem))
+                    }
+                    // filter behält den Eingabe-Elementtyp.
+                    (ValueType::Array(e), "filter") => ValueType::Array(e.clone()),
+                    (ValueType::Array(_), "forEach") => ValueType::Nothing,
+                    // reduce: Ergebnis = Typ des Startwerts; Fallback Elementtyp.
+                    (ValueType::Array(e), "reduce") => {
+                        match args.first().map(|a| self.infer_type(a)) {
+                            Some(ValueType::Any) | None => (**e).clone(),
+                            Some(t) => t,
+                        }
                     }
                     _ => generic_ret,
                 }
@@ -3235,6 +3289,39 @@ impl TypeChecker {
 
     fn type_to_value(ty: &Type) -> ValueType {
         ValueType::from_parser_type(ty)
+    }
+
+    /// Rückgabetyp eines Lambda-Literals mit Param-Typ-Hints inferieren
+    /// (Array map/filter/forEach/reduce): jeder unannotierte Param wird an
+    /// seinen Hint gebunden, dann wird der Body inferiert (memoisiert per
+    /// Node-Id — die reiche Typisierung bleibt für spätere Inferenz und den
+    /// Codegen-Export erhalten). None, wenn der Ausdruck kein Lambda ist.
+    fn infer_lambda_with_param_hints(
+        &mut self,
+        expr: &Expr,
+        hints: &[ValueType],
+    ) -> Option<ValueType> {
+        let ExprKind::Lambda { params, ret_type, body } = &expr.node else {
+            return None;
+        };
+        let saved_vars = self.symbols.enter_scope();
+        for (i, p) in params.iter().enumerate() {
+            let declared = Self::type_to_value(&p.param_type);
+            let bound = if declared == ValueType::Any {
+                hints.get(i).cloned().unwrap_or(ValueType::Any)
+            } else {
+                declared
+            };
+            self.symbols.variables.insert(p.name.clone(), (bound, false));
+        }
+        // Return-Statements im Body gehören zum Lambda (wie im Lambda-Arm
+        // von infer_type_inner), nicht zur umgebenden Funktion.
+        let lambda_ret = ret_type.as_ref().map(Self::type_to_value);
+        let saved_ret = std::mem::replace(&mut self.current_return_type, lambda_ret.clone());
+        let body_ty = self.infer_type(body);
+        self.current_return_type = saved_ret;
+        self.symbols.exit_scope(saved_vars);
+        Some(lambda_ret.unwrap_or(body_ty))
     }
 
     /// Substitute a class's type parameters with concrete instance type args
