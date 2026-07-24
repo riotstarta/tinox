@@ -607,6 +607,33 @@ let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest
 
 Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in `bugs.md` (Abschnitt „Feature: AMQP-0-9-1-Client").
 
+### AMQP-1.0 Client
+
+Die Standardbibliothek enthält zusätzlich einen eigenständigen AMQP-1.0-**Client** (`amqp10`, kein gemeinsamer Code mit `amqp091` — komplett anderes Typsystem und eine dreistufige Connection→Session→Link-Hierarchie mit kreditbasierter Flow-Control statt 0-9-1s Connection→Channel-Modell):
+
+```tinox
+import tinox.core.amqp10;
+
+let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+let session = Amqp10Session::begin(conn);
+var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
+
+var body: List<Int64> = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+sender.publish(body, "text/plain");
+sender.detach();
+
+var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
+receiver.grantCredit(10);
+let m = receiver.nextMessage();       // blockierender Pull, wartet auf transfer
+if m.ok {
+    receiver.ack(m.deliveryId);
+}
+conn.close();
+```
+
+Bewusste v1-Lücken: nur eine Session/ein Link pro Zweck (kein Pool), nur SASL PLAIN (kein SCRAM), Delivery-State nur `accepted` (kein `rejected`/`released`/`modified`), keine Transaktionen, keine Link-Recovery, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. Details und Architektur in `bugs.md` (Abschnitt „Feature: AMQP-1.0-Client").
+
 ## Feature-Übersicht
 
 | Feature                      | Status     |
@@ -638,6 +665,7 @@ Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Ex
 | REST Framework (stdlib)     | ✅ Fertig  |
 | WebSocket Server (stdlib)   | ✅ Fertig (v1) |
 | AMQP-0-9-1 Client (stdlib)  | ✅ Fertig (v1) |
+| AMQP-1.0 Client (stdlib)    | ✅ Fertig (v1) |
 | LSP (tinox-lsp)              | ✅ Fertig  |
 | Eclipse Plugin               | ✅ Fertig  |
 | File I/O                     | ✅ Fertig  |
@@ -669,7 +697,7 @@ tinox/
 | Kategorie    | Module                                              |
 |--------------|-----------------------------------------------------|
 | HTTP         | `http_server`, `rest_framework`, `mini_http`, `websocket` |
-| Messaging    | `amqp091`                                            |
+| Messaging    | `amqp091`, `amqp10`                                  |
 | Daten        | `json`, `csv`, `xml`, `regex`                       |
 | Sicherheit   | `crypto`, `jwt`, `bcrypt`                           |
 | Collections  | `collections`, `queue`, `stack`, `linkedlist`       |

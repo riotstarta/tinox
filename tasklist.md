@@ -391,21 +391,41 @@ genauso funktionieren):
       Body-Section gefunden wurde, statt still einen leeren Body zu
       melden.
 
-## Phase 7 — Härtung + Abschluss
+## Phase 7 — Härtung + Abschluss ✅
 
-- [ ] 7.1 Grenzfälle analog zu 0-9-1 Phase 5.2: leere Message-Bodies,
-      Multi-Frame-Transfer-Grenzen, `str8`/`sym8`-255-Byte-Grenze
-      (Pendant zu 0-9-1s `shortstr`-Limit — hier aber mit `str32`/`sym32`
-      als eingebautem Fallback statt hartem Fehler, da AMQP 1.0 selbst
-      schon zwei Größenklassen kennt; prüfen ob v1 dennoch nur `str8`/
-      `sym8` schreibt und > 255 Byte hart ablehnt, um den Encoder simpel
-      zu halten, oder ob automatisches Umschalten auf die 32-Bit-Form
-      sinnvoller ist — Design-Entscheidung bei Phase 7, nicht vorab
-      festgelegt).
-- [ ] 7.2 bugs.md-Abschnitt „Feature: AMQP-1.0-Client" (Architektur +
-      Vergleich zu 0-9-1 + bewusste Lücken, Stil wie bei den vorherigen
-      Features). README.md + docs.html analog zu 0-9-1 ergänzen
-      (`amqp10` in der Messaging-Kategorie neben `amqp091`).
+- [x] 7.1 Grenzfälle analog zu 0-9-1 Phase 5.2: leere Message-Bodies,
+      Multi-Frame-Transfer-Grenzen, `str8`/`sym8`-255-Byte-Grenze.
+      **Design-Entscheidung (bestätigt statt neu getroffen):** der Writer
+      schreibt seit Phase 2.2 bereits IMMER die volle 32-Bit-Form
+      (`vbin32`/`str32`/`sym32`), nie die komprimierten 8-Bit-Kurzformen —
+      es gibt also, anders als ursprünglich als offene Frage vermerkt,
+      KEINE separate Design-Entscheidung zu treffen: eine
+      255-Byte-Schreibgrenze existiert schlicht nicht (kein
+      Bug-71-artiger Silent-Truncate-Risikopunkt wie bei 0-9-1s
+      `shortstr`). Neuer e2e-Test `tests/e2e/amqp10_edge_cases.tnx`
+      bestätigt das empirisch (>255-Byte-String/Symbol/Binary-Rundtrip
+      über den Writer) statt es nur in der Doku zu behaupten, plus
+      Reader-seitige `str8`/`sym8`/`vbin8`-Kurzform-Tests exakt an der
+      255-Byte- und 0-Byte-Grenze (von Hand gebaute Bytes, der Writer
+      schreibt diese Formen nie). Zusätzlich: leerer Message-Body im
+      vollen Publish/Consume-Roundtrip gegen einen simulierten Broker,
+      UND eine gezielte Off-by-one-Absicherung für
+      `Amqp10Link::publish()`s Multi-Frame-Split — ein Byte unter dem
+      `max-frame-size`-Cutoff ergibt genau 1 Frame, ein Byte drüber genau
+      2 (Overhead wird zur LAUFZEIT über echtes `encodeMessageBody()`
+      gemessen statt hart codiert, damit der Test robust gegen
+      Änderungen an der Section-Kodierung bleibt). 25× stabil wiederholt.
+- [x] 7.2 bugs.md-Abschnitt „Feature: AMQP-1.0-Client" ergänzt
+      (Architektur + Vergleich zu 0-9-1 + bewusste Lücken + vollständige
+      Verifikations-Übersicht, Stil wie bei den vorherigen Features).
+      README.md (neuer Abschnitt „AMQP-1.0 Client" + Feature-Tabelle +
+      Messaging-Kategorie) und docs.html (neue `#mod-amqp10`-Sektion mit
+      Klassen-/Methoden-Tabelle + Beispiel, Nav-Link, Übersichts-Karte)
+      analog zu 0-9-1 ergänzt. Neues Beispielprogramm
+      `examples/amqp10_publish_consume.tnx` (analog zu
+      `amqp_publish_consume.tnx`), live gegen `rabbitmq:4-management`
+      verifiziert (volle Publish→Consume→Ack-Sequenz über eine echte
+      Queue).
 
 ---
 

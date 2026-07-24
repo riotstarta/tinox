@@ -3127,6 +3127,117 @@ kein Blocker.
 
 ---
 
+## Feature: AMQP-1.0-Client — `tinox.core.amqp10`
+
+**Status: IMPLEMENTIERT (2026-07-24), v1.** Roadmap/Status in `tasklist.md`.
+Reiner **Client** (kein Broker) für das AMQP-1.0-Protokoll (OASIS-Standard,
+z. B. ActiveMQ Artemis, Azure Service Bus, RabbitMQ 4.x nativ) —
+eigenständiges Modul `crates/tinox-core/amqp10.tnx`, **kein gemeinsamer
+Code mit `amqp091.tnx`** außer demselben Transport-Grundmuster (TCP-Dial
+über `httpConnFromFd`/binärsicheres `httpConnReadN`/`httpConnWriteBytes`).
+Protokoll- und datenmodell-technisch ein komplett anderes Tier als 0-9-1:
+generisches Typsystem mit Formatcode-Präfix statt fester Feld-Tags, eigener
+Frame-Aufbau, eigene SASL-Framing-Schicht, dreistufige
+`Connection`→`Session`→`Link`-Hierarchie mit kreditbasierter Flow-Control
+(`flow`/`link-credit`, PFLICHT für jeden Transfer) statt 0-9-1s einfachem
+`Connection`→`Channel`-Modell mit unbegrenztem Publish. Beispiel
+`examples/amqp10_publish_consume.tnx`.
+
+```tinox
+import tinox.core.amqp10;
+
+let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+let session = Amqp10Session::begin(conn);
+var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
+
+var body: List<Int64> = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+sender.publish(body, "text/plain");
+sender.detach();
+
+var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
+receiver.grantCredit(10);
+let m = receiver.nextMessage();       // blockierender Pull
+if m.ok { receiver.ack(m.deliveryId); }
+conn.close();
+```
+
+**Architektur.** `Amqp10Value`-Enum (20 Varianten) als generischer,
+rekursiver Werte-Codec — EIN Typsystem für Performatives, SASL-Frames UND
+Message-Sections, anders als 0-9-1s zwei getrennte Codecs (Methodenargumente
+vs. Field-Table). `Amqp10Writer`/`Amqp10Reader` als Byte-Builder/-Cursor;
+der Writer nutzt bewusst IMMER die volle 32-Bit-Form für variable-length
+Typen (`vbin32`/`str32`/`sym32`, nie die komprimierten 8-Bit-Kurzformen) —
+dadurch existiert anders als bei 0-9-1s `shortstr` KEINE 255-Byte-
+Schreibgrenze, die einen Bug-71-artigen Silent-Truncate-Fund ermöglichen
+würde (per `amqp10_edge_cases.tnx` empirisch bestätigt, nicht nur behauptet);
+der Reader liest trotzdem alle Kurzformen, weil Broker sie nutzen dürfen.
+`Amqp10Described` (Descriptor + Wert) ist der generische Baustein für
+Performatives (`encodePerformative`/`decodePerformative`, EINE Funktion für
+alle 9 Performative-Typen statt 0-9-1s methodenspezifischem
+`encodeMethodPayload`) UND für Message-Sections (`properties`/`data`/
+`amqp-value`). `Amqp10Link::publish()` splittet den Body bei
+`max-frame-size` auf mehrere `transfer`-Frames (`more`-Flag statt 0-9-1s
+impliziter Fortsetzung durch Frame-Grenzen) und wartet intern via
+`awaitFlow()` auf Credit, falls erschöpft — kreditbasierte Flow-Control hat
+kein Äquivalent in 0-9-1 (dort nur grobes `basic.qos`/`prefetchCount`).
+
+**Härte-Verhalten (Projektlinie: kein Silent-Garbage):** Protokollfehler
+(Frame-Header-Verletzungen, unerwartete Performative-Struktur) →
+`frameType -2`/`descriptor -1`, kein stiller Fortschritt; jede öffentliche
+Methode liefert `.errorMessage`/`.ok == false` statt eines Hängers oder
+falschen Erfolgs. **Bug 71 (s. o.) ist das Kern-Beispiel dieser Linie:**
+`nextMessage()` erkannte ursprünglich nur `data`-Body-Sections und lieferte
+bei `amqp-value`-Sections `ok=true` mit leerem Body — gefixt durch Erkennen
+beider Section-Typen UND einen harten `ok=false`-Fehlschlag, wenn gar keine
+Body-Section gefunden wird (deckt auch den in v1 nicht unterstützten dritten
+Typ `amqp-sequence` als sichtbaren statt stillen Fehler ab). **Bug 70 (s.
+o.):** `initial-delivery-count` ist laut Spec PFLICHT bei `role=Sender` —
+fehlte ursprünglich, ließ RabbitMQ 4.x mit `function_clause` abstürzen; nur
+über Live-Verifikation gegen einen echten Broker auffindbar, kein
+Simulated-Broker-Test hätte das strikte serverseitige Pattern-Matching
+nachgebildet.
+
+**Bewusste v1-Lücken (s. tasklist.md „Später"):** nur eine Session/ein Link
+pro Verbindung (kein Pool), nur SASL PLAIN (kein `sasl-challenge`/
+`-response` für SCRAM & Co.), Delivery-State nur `accepted` (kein
+`rejected`/`released`/`modified`), keine Transaktionen (`txn-id`,
+`declare`/`discharge`), keine Link-Recovery/-Resumption (`unsettled`-Map
+beim `attach`), **keine Multi-Frame-Reassembly beim Empfang** (`nextMessage()`
+erkennt `more=true` und meldet einen harten Fehler statt nur den ersten Teil
+zurückzugeben — Sender-seitiges Splitting UND -Reassembly beim Senden sind
+implementiert und getestet, nur die Empfangsrichtung nicht), keine
+Annotation-getriebene Consumer-API (dieselbe Lambda-als-Methodenparam-
+Baustelle wie bei 0-9-1 und WS v1), kein Heartbeat (`empty`-AMQP-Frame als
+Keepalive)/Auto-Reconnect.
+
+**Verifiziert:** Automatisierte Loopback-e2e-Tests (simulierter Broker via
+`spawn`/`await`, kein Docker in `make check` nötig): `amqp10_phase1_handshake.
+tnx`, `amqp10_typesystem.tnx` (30 Formatcode-Rundtrips + Kurzformen +
+Array-Decoding + Fehlerpfade), `amqp10_frame_codec.tnx`,
+`amqp10_sasl_negotiation.tnx`, `amqp10_connection_session_link.tnx`,
+`amqp10_transfer_flow.tnx` (Multi-Frame-Publish + Credit-Erschöpfung +
+Consume/Ack-Roundtrip), `amqp10_edge_cases.tnx` (Phase 7: leere Message-
+Bodies im vollen Publish/Consume-Roundtrip, exakte Multi-Frame-
+Split-Grenze — ein Byte unter `max-frame-size`-Cutoff = 1 Frame, ein Byte
+drüber = 2 Frames, per zur Laufzeit gemessenem `encodeMessageBody()`-
+Overhead statt hart codierter Byte-Zahlen — sowie str8/sym8/vbin8 an der
+255-Byte-Grenze und >255-Byte-Rundtrips über den Writer). Jeder
+`spawn`/`await`-Test 10-25× stabil wiederholt (Bug-68-Vorsicht). LIVE gegen
+echtes RabbitMQ (Docker, `rabbitmq:4-management` — natives AMQP 1.0 im
+Core-Broker seit Version 4.0, kein Plugin nötig; die alte
+`rabbitmq:3-management` + `rabbitmq_amqp1_0`-Plugin-Kombination ist als
+Referenz ungeeignet, s. Bug 70): voller
+Connect→Begin→Attach→Publish→Detach→Attach→Consume→Ack→Detach→End→Close-
+Ablauf über eine echte Queue, inkl. `amqp10_publish_consume.tnx`-
+Beispielprogramm manuell live verifiziert. **Cross-Check mit
+`python-qpid-proton`** (unabhängiger Python-AMQP-1.0-Client, analog zu
+`pika` bei 0-9-1) in BEIDE Richtungen (Tinox published → Proton konsumiert,
+und umgekehrt) — bestätigt Wire-Kompatibilität mit einer Implementierung
+außerhalb des eigenen Codes und deckte Bug 71 auf. `make check` grün.
+
+---
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

@@ -499,6 +499,7 @@
 
     <li class="section-label">Messaging</li>
     <li><a href="#mod-amqp091">amqp091</a></li>
+    <li><a href="#mod-amqp10">amqp10</a></li>
 
     <li class="section-label">Datenformate</li>
     <li><a href="#mod-json">json</a></li>
@@ -1145,7 +1146,9 @@
       <div class="card">
         <h4>Messaging</h4>
         <p><code>amqp091</code> – AMQP-0-9-1-Client (kein Broker) für
-        Message-Queue-Broker wie RabbitMQ: Connect, Channel, Publish/Consume.</p>
+        Message-Queue-Broker wie RabbitMQ: Connect, Channel, Publish/Consume.
+        <code>amqp10</code> – eigenständiger AMQP-1.0-Client mit
+        Connection/Session/Link-Hierarchie und kreditbasierter Flow-Control.</p>
       </div>
       <div class="card">
         <h4>Datenformate</h4>
@@ -2066,6 +2069,71 @@ conn.close();
     kein Heartbeat-Sender/Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
     <code>connectTls</code> (verifiziert nur gegen die System-CA-Stores). AMQP
     1.0 ist nicht Teil dieses Moduls.
+  </p>
+  </div>
+
+  <div class="mod-section" id="mod-amqp10">
+
+  <h2>amqp10</h2>
+  <p class="import-hint"><code>import tinox.core.amqp10;</code></p>
+  <p>
+    AMQP-1.0-<strong>Client</strong> (kein Broker), eigenständiges Modul ohne
+    gemeinsamen Code mit <code>amqp091</code> — komplett anderes Typsystem
+    (generischer Formatcode-Codec statt fester Feld-Tags) und eine
+    dreistufige <code>Connection</code>→<code>Session</code>→<code>Link</code>-
+    Hierarchie mit kreditbasierter Flow-Control (<code>flow</code>/
+    <code>link-credit</code>) statt 0-9-1s einfachem
+    <code>Connection</code>→<code>Channel</code>-Modell. v1: eine
+    Session/ein Link pro Zweck, nur SASL PLAIN.
+  </p>
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>Amqp10Connection::connect</code></td><td><code>fn connect(host: String, port: Int64, user: String, pass: String) -&gt; Amqp10Connection</code></td><td>SASL-Header + PLAIN-Negotiation, dann AMQP-Header + <code>open</code>. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> bei jedem Fehlschlag.</td></tr>
+      <tr><td><code>Amqp10Connection::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Schließt die Verbindung spec-konform (<code>close</code> senden).</td></tr>
+      <tr><td><code>Amqp10Session::begin</code></td><td><code>fn begin(connection: Amqp10Connection) -&gt; Amqp10Session</code></td><td>Öffnet eine Session auf der Verbindung (v1: fester Kanal 1, kein Pool).</td></tr>
+      <tr><td><code>Amqp10Session::end</code></td><td><code>fn end() -&gt; Nothing</code></td><td>Beendet die Session (<code>end</code> senden).</td></tr>
+      <tr><td><code>Amqp10Link::attach</code></td><td><code>fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -&gt; Amqp10Link</code></td><td>Hängt einen Sender- (<code>role=false</code>) oder Receiver-Link (<code>role=true</code>) an die angegebene Adresse (RabbitMQ 4.x: <code>/queues/&lt;name&gt;</code>, „AMQP Address v2").</td></tr>
+      <tr><td><code>Amqp10Link::detach</code></td><td><code>fn detach() -&gt; Nothing</code></td><td>Löst den Link wieder (<code>detach</code> senden).</td></tr>
+      <tr><td><code>Amqp10Link::awaitFlow</code></td><td><code>fn awaitFlow() -&gt; Nothing</code></td><td>Liest ein <code>flow</code>-Frame und aktualisiert <code>linkCredit</code>. Wird von <code>publish()</code> intern aufgerufen, wenn kein Credit mehr da ist.</td></tr>
+      <tr><td><code>Amqp10Link::grantCredit</code></td><td><code>fn grantCredit(amount: Int64) -&gt; Nothing</code></td><td>Sendet <code>flow</code> mit <code>link-credit</code> (Receiver-seitig, vor <code>nextMessage()</code> nötig).</td></tr>
+      <tr><td><code>Amqp10Link::publish</code></td><td><code>fn publish(body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Published eine Nachricht (<code>settled=true</code>, fire-and-forget). Wartet bei erschöpftem Credit automatisch auf ein neues <code>flow</code>; splittet den Body bei Überschreiten von <code>max-frame-size</code> auf mehrere <code>transfer</code>-Frames (<code>more=true</code>).</td></tr>
+      <tr><td><code>Amqp10Link::nextMessage</code></td><td><code>fn nextMessage() -&gt; Amqp10Message</code></td><td>Blockierender Pull der nächsten Nachricht (setzt <code>grantCredit()</code> voraus). Dekodiert <code>data</code>- UND <code>amqp-value</code>-Body-Sections. Reassembliert KEINE Multi-Frame-Transfers beim Empfang (v1-Lücke).</td></tr>
+      <tr><td><code>Amqp10Link::ack</code></td><td><code>fn ack(deliveryId: Int64) -&gt; Nothing</code></td><td>Bestätigt eine per <code>nextMessage()</code> erhaltene Nachricht (<code>disposition</code> mit <code>state=accepted</code>).</td></tr>
+      <tr><td><code>Amqp10Message</code></td><td><code>{ body: List&lt;Int64&gt;, contentType: String, deliveryId: Int64, ok: Bool, errorMessage: String }</code></td><td>Eine per <code>nextMessage()</code> empfangene Nachricht. <code>ok == false</code> bei jedem Fehler (inkl. keiner erkannten Body-Section), <code>errorMessage</code> beschreibt die Ursache.</td></tr>
+    </tbody>
+  </table>
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.amqp10;
+
+let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+let session = Amqp10Session::begin(conn);
+var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
+
+var body: List&lt;Int64&gt; = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+sender.publish(body, "text/plain");
+sender.detach();
+
+var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
+receiver.grantCredit(10);
+let m = receiver.nextMessage();
+if m.ok {
+    receiver.ack(m.deliveryId);
+}
+conn.close();
+</code></pre>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> mehrere Sessions/Links pro
+    Verbindung (v1: je genau einer), <code>sasl-challenge</code>/
+    <code>-response</code>-Mehrrunden-Mechanismen wie SCRAM (nur PLAIN),
+    Delivery-State jenseits von <code>accepted</code> (kein
+    <code>rejected</code>/<code>released</code>/<code>modified</code>),
+    Transaktionen, Link-Recovery/Resumption, Multi-Frame-Reassembly beim
+    Empfang, Annotation-getriebene Consumer-API, Heartbeat/Auto-Reconnect.
   </p>
   </div>
 
