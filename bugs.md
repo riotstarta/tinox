@@ -2574,6 +2574,40 @@ eine per Management-HTTP-API angelegte Testqueue verifiziert. e2e-Test
 `tests/e2e/amqp10_connection_session_link.tnx` (simulierter Broker) 15-20×
 stabil. `make check` grün.
 
+**Bug 71 — `Amqp10Link::nextMessage()` kannte nur `data`-Body-Sections,
+lieferte bei `amqp-value`-Sections `ok=true` mit LEEREM Body zurück
+(Silent-Garbage).** Entdeckt beim Live-Cross-Check von AMQP-1.0 Phase 6
+(s. tasklist.md) mit `python-qpid-proton` als unabhängigem Client:
+Tinox→Proton lief beim ersten Versuch, aber Proton→Tinox lieferte einen
+leeren String, obwohl `ok=true` gemeldet wurde. Root Cause: die AMQP-1.0-
+Spec erlaubt für den Nachrichtenkörper ENTWEDER eine `data`-Section
+(0x75, Rohbytes) ODER eine `amqp-value`-Section (0x77, ein einzelner
+getypter AMQP-Wert). `python-qpid-proton` kodiert `Message(body="...")`
+(einen einfachen String) als `amqp-value` mit einem `StrVal` darin —
+`nextMessage()` prüfte ursprünglich NUR auf `data` (0x75) und ignorierte
+`amqp-value` (0x77) stillschweigend, sodass `body` leer blieb, obwohl die
+Nachricht korrekt empfangen und dekodiert werden konnte. Klassisches
+Silent-Garbage-Muster: kein Fehler, einfach falsches (leeres) Ergebnis.
+**Fix:** `amqp-value` (0x77) wird jetzt zusätzlich zu `data` (0x75)
+erkannt (`StrVal` wird byteweise in den Body konvertiert, `BinaryVal`
+direkt übernommen) — UND `nextMessage()` liefert jetzt hart `ok=false`,
+wenn NACH dem Durchlauf aller Message-Sections gar keine erkannte
+Body-Section gefunden wurde, statt weiterhin still einen leeren Body zu
+meldet. Damit ist ein zukünftig auftretender, noch unbekannter dritter
+Body-Section-Typ (`amqp-sequence`, 0x76 — v1 bewusst nicht unterstützt,
+s. tasklist.md „Später") ein sichtbarer Fehler statt eines erneuten
+Silent-Garbage-Falls.
+
+**Verifiziert:** kompletter Live-Cross-Check gegen `rabbitmq:4-management`
+mit `python-qpid-proton` 0.40.0 (venv) in BEIDE Richtungen — Tinox
+publiziert (`data`-Section) → Proton konsumiert den korrekten Text +
+Content-Type; Proton publiziert (`amqp-value`-Section) → Tinox konsumiert
+denselben Text + Content-Type korrekt (vor dem Fix: leerer String).
+Zusätzlich voller Tinox-zu-Tinox-Live-Roundtrip (Publish→Consume→Ack→
+sauberes Schließen) gegen eine echte Queue. e2e-Test
+`tests/e2e/amqp10_transfer_flow.tnx` (simulierter Broker, Multi-Frame-
+Transfer + Credit-Erschöpfung) 25× stabil. `make check` grün.
+
 ## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
 
 **Status: PHASE 1 GELANDET (2026-07-22).** Angriff auf die #1-Struktur-Schwäche

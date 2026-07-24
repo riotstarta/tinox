@@ -761,6 +761,43 @@ namespace tinox.core.amqp10
         }
 
         /*
+         * Baut den Frame-Body einer Nachricht (Phase 6, §3.2): eine
+         * `properties`-Section (0x73, nur `content-type` gesetzt, alle
+         * davorliegenden Felder als Platzhalter — Listenfelder dürfen nur
+         * am ENDE weggelassen werden) gefolgt von einer `data`-Section
+         * (0x75, Rohbytes-Body). v1 nutzt bewusst NUR diese zwei Sections
+         * (kein `header`, keine `application-properties`) — analog zu
+         * 0-9-1s Content-Type/Body-Konzept, aber als eigene Described-
+         * Type-Sections statt eines separaten Content-Header-Frames.
+         */
+        fn encodeMessageBody(body: List<Int64>, contentType: String) -> List<Int64>
+        {
+            let w = Amqp10Writer::new();
+            var propFields: List<Amqp10Value> = [
+                Amqp10Value::NullVal, // message-id
+                Amqp10Value::NullVal, // user-id
+                Amqp10Value::NullVal, // to
+                Amqp10Value::NullVal, // subject
+                Amqp10Value::NullVal, // reply-to
+                Amqp10Value::NullVal, // correlation-id
+                Amqp10Value::SymbolVal(contentType)
+            ];
+            let propDesc = Amqp10Described { descriptor: 0x73, value: Amqp10Value::ListVal(propFields) };
+            w.writeDescribed(propDesc);
+            let dataDesc = Amqp10Described { descriptor: 0x75, value: Amqp10Value::BinaryVal(body) };
+            w.writeDescribed(dataDesc);
+            return w.bytes;
+        }
+
+        /* 4-Byte-Big-Endian-Encoding eines Zählers als delivery-tag
+         * (binary, beliebige Byte-Folge laut Spec — muss nur innerhalb
+         * unsettled Deliveries auf demselben Link eindeutig sein). */
+        fn deliveryTagBytes(n: Int64) -> List<Int64>
+        {
+            return [(n >> 24) & 0xFF, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF];
+        }
+
+        /*
          * SASL-PLAIN-Response: "\0user\0pass" als Rohbytes — identische
          * Byte-Struktur zu 0-9-1s Amqp091::saslPlainResponse, aber neu
          * implementiert im neuen Modul (kein Cross-Import zwischen den
@@ -966,6 +1003,7 @@ namespace tinox.core.amqp10
     {
         var conn: Int64;
         var chanId: Int64;
+        var maxFrameSize: Int64;
         var errorMessage: String;
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
@@ -981,13 +1019,13 @@ namespace tinox.core.amqp10
 
             let f = Amqp10::readFrame(connection.conn);
             if f.frameType != 0 {
-                return Amqp10Session { conn: connection.conn, chanId: -1, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x11 {
-                return Amqp10Session { conn: connection.conn, chanId: -1, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString() };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString() };
             }
-            return Amqp10Session { conn: connection.conn, chanId: 1, errorMessage: "" };
+            return Amqp10Session { conn: connection.conn, chanId: 1, maxFrameSize: connection.maxFrameSize, errorMessage: "" };
         }
 
         /*
@@ -1003,6 +1041,21 @@ namespace tinox.core.amqp10
     }
 
     /*
+     * Eine per Amqp10Link::nextMessage() empfangene Nachricht (Phase 6).
+     * ok == false bei jedem Fehler (falscher Frame-/Performative-Typ) —
+     * errorMessage beschreibt dann die Ursache, analog zu 0-9-1s
+     * AmqpMessage091. `deliveryId` wird für Amqp10Link::ack() gebraucht.
+     */
+    class Amqp10Message
+    {
+        var body: List<Int64>;
+        var contentType: String;
+        var deliveryId: Int64;
+        var ok: Bool;
+        var errorMessage: String;
+    }
+
+    /*
      * Ein Link auf einer Amqp10Session (§2.7.4) — explizite, gerichtete
      * Sender- ODER Receiver-Rolle mit `source`/`target`-Adressen, kein
      * Äquivalent in 0-9-1 (dort laufen `basic.publish`/`basic.consume`
@@ -1015,6 +1068,9 @@ namespace tinox.core.amqp10
         var conn: Int64;
         var chanId: Int64;
         var handle: Int64;
+        var maxFrameSize: Int64;
+        var linkCredit: Int64;
+        var deliveryCount: Int64;
         var errorMessage: String;
 
         /*
@@ -1062,13 +1118,13 @@ namespace tinox.core.amqp10
 
             let f = Amqp10::readFrame(session.conn);
             if f.frameType != 0 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x12 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString() };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString() };
             }
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: 0, errorMessage: "" };
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: 0, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "" };
         }
 
         /*
@@ -1082,6 +1138,269 @@ namespace tinox.core.amqp10
             let detachBody = Amqp10::encodePerformative(0x16, detachFields);
             Amqp10::writeFrame(this.conn, 0, this.chanId, detachBody);
             Amqp10::readFrame(this.conn);
+        }
+
+        /*
+         * Liest EIN Frame und erwartet ein `flow` (0x13) — RabbitMQ
+         * schickt es z. B. unaufgefordert direkt nach einem Sender-Attach
+         * (live gegen echten Broker gefunden, s. bugs.md Bug 70/Phase-5-
+         * Live-Erkenntnisse). Aktualisiert `this.linkCredit` aus dem
+         * `link-credit`-Feld (Position 6). v1 hat noch KEINEN echten
+         * Frame-Dispatcher (der genau dafür in der Sondierung als
+         * Phase-6-Bedarf vermerkt wurde) — wer auf `flow` wartet, MUSS
+         * also sicher sein, dass als Nächstes wirklich nur `flow` kommen
+         * kann (hier: direkt nach Attach oder wenn Credit erschöpft ist).
+         */
+        fn awaitFlow() -> Nothing
+        {
+            let f = Amqp10::readFrame(this.conn);
+            if f.frameType != 0 {
+                this.errorMessage = "erwartete AMQP-Frame (type=0) beim Warten auf flow, bekam frameType=" + f.frameType.toString();
+                return;
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x13 {
+                this.errorMessage = "erwartete flow (0x13), bekam descriptor=" + p.descriptor.toString();
+                return;
+            }
+            // Feldpositionen: next-incoming-id(0), incoming-window(1),
+            // next-outgoing-id(2), outgoing-window(3), handle(4),
+            // delivery-count(5), link-credit(6).
+            if p.fields.len() > 6 {
+                match p.fields[6] { UIntVal(n) => { this.linkCredit = n; } _ => {} }
+            }
+        }
+
+        /*
+         * Sendet `flow` und vergibt `amount` Link-Credit an den Broker
+         * (Receiver-Rolle — der Broker darf uns danach bis zu `amount`
+         * `transfer`s schicken). Kein Äquivalent in 0-9-1, wo
+         * `basic.consume` sofort unbegrenzt liefert; hier zwingend, sonst
+         * schickt der Broker gar nichts.
+         */
+        fn grantCredit(amount: Int64) -> Nothing
+        {
+            var flowFields: List<Amqp10Value> = [
+                Amqp10Value::NullVal,               // next-incoming-id (v1 ungetrackt)
+                Amqp10Value::UIntVal(2147483647),   // incoming-window
+                Amqp10Value::UIntVal(0),            // next-outgoing-id
+                Amqp10Value::UIntVal(2147483647),   // outgoing-window
+                Amqp10Value::UIntVal(this.handle),
+                Amqp10Value::UIntVal(this.deliveryCount),
+                Amqp10Value::UIntVal(amount)
+            ];
+            let flowBody = Amqp10::encodePerformative(0x13, flowFields);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, flowBody);
+            this.linkCredit = amount;
+        }
+
+        /*
+         * Published eine Nachricht (Sender-Rolle). Wartet ggf. auf `flow`,
+         * wenn kein Credit vorhanden ist (kreditbasierte Flow-Control ist
+         * bei AMQP 1.0 für JEDEN Transfer zwingend, s. tasklist.md Phase
+         * 6 — anders als 0-9-1, wo Publish immer sofort geht). v1:
+         * `settled=true` (fire-and-forget wie 0-9-1s v1-Publish ohne
+         * Publisher-Confirms, kein Disposition-Roundtrip pro Nachricht).
+         * Body wird bei Überschreiten von `max-frame-size` auf mehrere
+         * `transfer`-Frames mit `more=true` aufgeteilt (funktionales
+         * Äquivalent zu 0-9-1s Multi-Frame-Body-Splitting, anderer
+         * Mechanismus: `more`-Flag statt impliziter Fortsetzung).
+         */
+        fn publish(body: List<Int64>, contentType: String) -> Nothing
+        {
+            if this.linkCredit <= 0 {
+                this.awaitFlow();
+                if this.errorMessage.len() > 0 {
+                    return;
+                }
+                if this.linkCredit <= 0 {
+                    this.errorMessage = "kein Link-Credit trotz flow-Frame erhalten";
+                    return;
+                }
+            }
+
+            let msgBytes = Amqp10::encodeMessageBody(body, contentType);
+            let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
+
+            // Grober, aber sicherer Overhead-Puffer für die Transfer-
+            // Performative-Hülle selbst (Handle/Delivery-Id/Tag/Flags) —
+            // v1 schätzt hier bewusst großzügig statt exakt zu rechnen.
+            var maxBodyPerFrame: Int64 = this.maxFrameSize - 64;
+            if maxBodyPerFrame < 1 {
+                maxBodyPerFrame = 1;
+            }
+
+            var offset: Int64 = 0;
+            var isFirst: Bool = true;
+            while offset < msgBytes.len() || isFirst {
+                var remaining: Int64 = msgBytes.len() - offset;
+                var chunkSize: Int64 = remaining;
+                if chunkSize > maxBodyPerFrame {
+                    chunkSize = maxBodyPerFrame;
+                }
+                var more: Bool = false;
+                if (offset + chunkSize) < msgBytes.len() {
+                    more = true;
+                }
+                var chunk: List<Int64> = [];
+                for i in 0..chunkSize {
+                    chunk.push(msgBytes[offset + i]);
+                }
+
+                var transferFields: List<Amqp10Value> = [
+                    Amqp10Value::UIntVal(this.handle),
+                    Amqp10Value::UIntVal(this.deliveryCount),
+                    Amqp10Value::BinaryVal(deliveryTag),
+                    Amqp10Value::UIntVal(0),      // message-format
+                    Amqp10Value::BoolVal(true),   // settled
+                    Amqp10Value::BoolVal(more)
+                ];
+                let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+                var fullFrame: List<Int64> = [];
+                for i in 0..transferBody.len() {
+                    fullFrame.push(transferBody[i]);
+                }
+                for i in 0..chunk.len() {
+                    fullFrame.push(chunk[i]);
+                }
+                Amqp10::writeFrame(this.conn, 0, this.chanId, fullFrame);
+
+                offset = offset + chunkSize;
+                isFirst = false;
+            }
+
+            this.linkCredit = this.linkCredit - 1;
+            this.deliveryCount = this.deliveryCount + 1;
+        }
+
+        /*
+         * Blockierender Pull der nächsten Nachricht (Receiver-Rolle,
+         * setzt grantCredit() voraus). v1 setzt KEIN Multi-Frame-
+         * Reassembling für empfangene Transfers um (Gegenstück zum
+         * Sender-seitigen Splitting) — das ist eine bewusste v1-Lücke
+         * (s. tasklist.md „Später"), weil der hier genutzte Test-/
+         * Live-Broker-Rundtrip mit den in v1 verwendeten Nachrichten-
+         * größen nie mehrere Transfer-Frames pro Delivery erzeugt;
+         * `more=true` wird erkannt und als Fehler gemeldet statt
+         * stillschweigend nur den ersten Teil zurückzugeben.
+         */
+        fn nextMessage() -> Amqp10Message
+        {
+            let f = Amqp10::readFrame(this.conn);
+            if f.frameType != 0 {
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+            }
+            let r = Amqp10Reader::new(f.body);
+            let v = r.readValue();
+            var descriptor: Int64 = -1;
+            var fields: List<Amqp10Value> = [];
+            match v
+            {
+                DescribedVal(d) => {
+                    match d.value { ListVal(fl) => { descriptor = d.descriptor; fields = fl; } _ => {} }
+                }
+                _ => {}
+            }
+            if descriptor != 0x14 {
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete transfer (0x14), bekam descriptor=" + descriptor.toString() };
+            }
+            var deliveryId: Int64 = -1;
+            if fields.len() > 1 {
+                match fields[1] { UIntVal(n) => { deliveryId = n; } _ => {} }
+            }
+            if fields.len() > 5 {
+                match fields[5] {
+                    BoolVal(more) => {
+                        if more {
+                            return Amqp10Message { body: [], contentType: "", deliveryId: deliveryId, ok: false, errorMessage: "Multi-Frame-Transfer (more=true) wird in v1 nicht zusammengesetzt" };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Rest des Frame-Bodys nach der Performative sind die
+            // Message-Sections (properties/data ODER amqp-value), roh
+            // weiterlesen.
+            //
+            // Live-Cross-Check-Fund (python-qpid-proton, s. bugs.md):
+            // andere Implementierungen kodieren einen einfachen String-
+            // Body NICHT zwingend als `data`-Section (0x75, Rohbytes) —
+            // Proton nutzt fuer `Message(body="...")` eine `amqp-value`-
+            // Section (0x77) mit einem `StrVal` darin. Ohne Behandlung
+            // dieses Falls kaeme hier ein leerer Body zurueck, OBWOHL
+            // `ok=true` gemeldet wuerde — genau das Silent-Garbage-Muster,
+            // das dieses Projekt vermeiden will. v1 behandelt deshalb
+            // BEIDE Formen UND schlaegt hart fehl (ok=false), wenn gar
+            // keine erkannte Body-Section gefunden wurde, statt
+            // stillschweigend einen leeren Body zurueckzugeben.
+            let restBytes = r.readRawBytes(r.remaining());
+            var body: List<Int64> = [];
+            var contentType: String = "";
+            var bodyFound: Bool = false;
+            let mr = Amqp10Reader::new(restBytes);
+            while mr.remaining() > 0 {
+                let sv = mr.readValue();
+                match sv
+                {
+                    DescribedVal(sd) => {
+                        if sd.descriptor == 0x75 {
+                            match sd.value { BinaryVal(b) => { body = b; bodyFound = true; } _ => {} }
+                        }
+                        if sd.descriptor == 0x77 {
+                            match sd.value {
+                                BinaryVal(b) => { body = b; bodyFound = true; }
+                                StrVal(s) => {
+                                    for i in 0..s.len() {
+                                        body.push(s.charCodeAt(i) & 0xFF);
+                                    }
+                                    bodyFound = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if sd.descriptor == 0x73 {
+                            match sd.value {
+                                ListVal(propFields) => {
+                                    if propFields.len() > 6 {
+                                        match propFields[6] { SymbolVal(s) => { contentType = s; } _ => {} }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !bodyFound {
+                return Amqp10Message { body: [], contentType: contentType, deliveryId: deliveryId, ok: false, errorMessage: "keine erkannte Body-Section (data/amqp-value) im Transfer gefunden" };
+            }
+
+            this.deliveryCount = this.deliveryCount + 1;
+            this.linkCredit = this.linkCredit - 1;
+            return Amqp10Message { body: body, contentType: contentType, deliveryId: deliveryId, ok: true, errorMessage: "" };
+        }
+
+        /*
+         * Bestätigt eine per nextMessage() erhaltene Nachricht (Receiver-
+         * Rolle) — sendet `disposition` mit `state=accepted`, `settled=
+         * true`. AMQP-1.0-Äquivalent zu 0-9-1s `basic.ack`, hier mit
+         * granularerem Delivery-State-Modell (v1 nutzt nur `accepted`,
+         * s. tasklist.md „Später" für rejected/released/modified).
+         */
+        fn ack(deliveryId: Int64) -> Nothing
+        {
+            let acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+            var dispFields: List<Amqp10Value> = [
+                Amqp10Value::BoolVal(true),                    // role: true=receiver
+                Amqp10Value::UIntVal(deliveryId),              // first
+                Amqp10Value::NullVal,                          // last (nur diese eine Delivery)
+                Amqp10Value::BoolVal(true),                    // settled
+                Amqp10Value::DescribedVal(acceptedDesc)        // state: accepted
+            ];
+            let dispBody = Amqp10::encodePerformative(0x15, dispFields);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, dispBody);
         }
     }
 }

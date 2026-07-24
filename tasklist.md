@@ -333,35 +333,63 @@ genauso funktionieren):
       prüfen die Antwort ohnehin nicht, deshalb hier noch kein sichtbares
       Symptom, aber ein wichtiger Design-Hinweis für Phase 6).
 
-## Phase 6 — Transfer/Flow/Disposition (Publish/Consume)
+## Phase 6 — Transfer/Flow/Disposition (Publish/Consume) ✅
 
-- [ ] 6.1 `flow` senden (Sender-seitig: Credit anfordern/Fenster
-      aktualisieren) und empfangen (Receiver-seitig: verfügbares
-      `link-credit` tracken) — das kreditbasierte Gegenstück zu 0-9-1s
+- [x] 6.1 `Amqp10Link::awaitFlow()` (liest ein `flow`, aktualisiert
+      `this.linkCredit` aus Feld 6) + `grantCredit(amount)` (sendet
+      `flow`, Receiver-seitig) — das kreditbasierte Gegenstück zu 0-9-1s
       `basic.qos`, aber hier zwingend für JEDEN Transfer nötig (kein
       Transfer ohne Credit erlaubt, im Gegensatz zu 0-9-1, wo Publish
-      immer sofort geht).
-- [ ] 6.2 Message-Encoding: `header`/`properties`/`application-properties`/
-      Body-Section (`data` für Rohbytes, analog zum 0-9-1-Content-Type/
-      Body-Konzept, aber als eigene Described-Type-Sections statt eines
-      Content-Header-Frames + separater Body-Frames).
-- [ ] 6.3 `transfer` senden (Publish): Performative + Message-Sections im
-      selben Frame-Body (kein separates Content-Header-Frame wie bei
-      0-9-1) — bei Überschreiten von `max-frame-size` auf mehrere
-      `transfer`-Frames mit `more=true`-Flag aufteilen (funktionales
-      Äquivalent zu 0-9-1s Multi-Frame-Body-Splitting aus
-      `amqp_edge_cases.tnx`, aber anderer Mechanismus: `more`-Flag statt
-      impliziter Fortsetzung durch Frame-Grenzen).
-- [ ] 6.4 `transfer` empfangen (Consume) + `disposition` senden (Ack/Settle
-      — das AMQP-1.0-Äquivalent zu 0-9-1s `basic.ack`, aber mit
-      granularerem Delivery-State-Modell: `accepted`/`rejected`/
-      `released`/`modified`, v1 nutzt nur `accepted`).
-- [ ] 6.5 e2e-Tests: Publish/Consume-Roundtrip inkl. Multi-Frame-Transfer
-      (analog `amqp_edge_cases.tnx`), Credit-Erschöpfung (Sender wartet
-      korrekt auf `flow` bevor er weiter sendet).
-- [ ] 6.6 **Live-Cross-Check** analog zu 0-9-1s `pika`-Verifikation — hier
-      `python-qpid-proton` als unabhängiger Client, BEIDE Richtungen
-      (Tinox publiziert → Proton konsumiert, und umgekehrt).
+      immer sofort geht). `Amqp10Session`/`Amqp10Link` um `maxFrameSize`/
+      `linkCredit`/`deliveryCount` erweitert (durchgereicht von
+      `Amqp10Connection`).
+- [x] 6.2 `Amqp10::encodeMessageBody(body, contentType)`: `properties`-
+      Section (0x73, nur `content-type` gesetzt, 6 `NullVal`-Platzhalter
+      davor) + `data`-Section (0x75, Rohbytes) — analog zum 0-9-1-
+      Content-Type/Body-Konzept, aber als eigene Described-Type-Sections
+      statt eines Content-Header-Frames + separater Body-Frames. Kein
+      `header`/`application-properties` in v1.
+- [x] 6.3 `Amqp10Link::publish(body, contentType)`: Performative +
+      Message-Sections im selben Frame-Body (kein separates Content-
+      Header-Frame wie bei 0-9-1). Wartet via `awaitFlow()` auf Credit,
+      falls erschöpft. Bei Überschreiten von `max-frame-size` (grober,
+      sicherer 64-Byte-Overhead-Puffer für die Transfer-Hülle) auf
+      mehrere `transfer`-Frames mit `more=true` aufgeteilt — funktionales
+      Äquivalent zu 0-9-1s Multi-Frame-Body-Splitting, anderer
+      Mechanismus (`more`-Flag statt impliziter Fortsetzung durch
+      Frame-Grenzen). v1: `settled=true` (fire-and-forget wie 0-9-1s
+      v1-Publish ohne Publisher-Confirms).
+- [x] 6.4 `Amqp10Link::nextMessage()` (empfängt `transfer`, dekodiert
+      `data`- ODER `amqp-value`-Body-Section, s. Live-Cross-Check-Fund
+      unten) + `ack(deliveryId)` (sendet `disposition` mit
+      `state=accepted`, `settled=true`) — AMQP-1.0-Äquivalent zu 0-9-1s
+      `basic.ack`, mit granularerem Delivery-State-Modell (v1 nutzt nur
+      `accepted`, s. „Später" für rejected/released/modified). v1
+      reassembliert KEINE Multi-Frame-Transfers beim Empfang (bewusste
+      Lücke, s. „Später") — `more=true` wird erkannt und als Fehler
+      gemeldet statt nur den ersten Teil zurückzugeben.
+- [x] 6.5 e2e-Test `tests/e2e/amqp10_transfer_flow.tnx` (simulierter
+      Broker, `spawn`/`await`): Publish/Consume-Roundtrip inkl.
+      Multi-Frame-Transfer (Broker setzt gesplittete Transfers wieder
+      zusammen) UND Credit-Erschöpfung (Broker vergibt nur 1 Credit,
+      zweiter `publish()`-Aufruf muss intern korrekt auf ein neues `flow`
+      warten, bevor er sendet — verifiziert über einen Marker, den der
+      Broker erst nach dem zweiten `flow` sieht). 25× stabil wiederholt
+      (Bug-68-Vorsicht, `spawn`/`await` + mehrere Attach/Detach-Zyklen).
+- [x] 6.6 **Live gegen echten RabbitMQ-4.x-Broker verifiziert**
+      (Publish→Consume→Ack→sauberes Schließen über eine echte Queue) UND
+      **Live-Cross-Check mit `python-qpid-proton`** (unabhängiger
+      Client) in BEIDE Richtungen: Tinox publiziert → Proton konsumiert,
+      UND Proton publiziert → Tinox konsumiert.
+      **Echter Interop-Bug gefunden + gefixt (bugs.md):** Proton kodiert
+      einen einfachen String-Body NICHT als `data`-Section (0x75,
+      Rohbytes), sondern als `amqp-value`-Section (0x77) mit einem
+      `StrVal` darin — `nextMessage()` kannte nur `data` und lieferte
+      dafür `ok=true` mit LEEREM Body zurück (Silent-Garbage). Gefixt:
+      `amqp-value` mit `StrVal`/`BinaryVal` wird jetzt ebenfalls dekodiert,
+      UND `nextMessage()` liefert `ok=false`, wenn gar keine erkannte
+      Body-Section gefunden wurde, statt still einen leeren Body zu
+      melden.
 
 ## Phase 7 — Härtung + Abschluss
 

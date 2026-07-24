@@ -1,0 +1,256 @@
+// AMQP-1.0 Phase 6 (tasklist.md): Transfer/Flow/Disposition. Ein per
+// `spawn` gestarteter simulierter Broker (async fn) spielt gegen den
+// echten Client-Code: Sender-Link publiziert EINE grosse Nachricht (wird
+// wegen kleinem max-frame-size auf mehrere Transfer-Frames mit more=true
+// gesplittet, der Broker setzt sie manuell wieder zusammen) UND eine
+// zweite, kleine Nachricht NACHDEM das anfaengliche Credit (1) erschoepft
+// ist -- testet, dass Amqp10Link::publish() korrekt auf ein neues `flow`
+// wartet, statt einfach durchzulaufen. Danach haengt derselbe Client als
+// Receiver an, vergibt Credit, empfaengt eine vom Broker zurueckgespiegelte
+// Nachricht und bestaetigt sie per ack().
+//
+// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
+// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// expect: ok-connect
+// expect: ok-publish1
+// expect: ok-publish2
+// expect: ok-consume
+// expect: ok-contenttype
+// expect: ok-broker-reassembled
+// expect: ok-broker-saw-second-flow
+// expect: ok-broker-saw-ack
+// expect: ok-broker-saw-all
+
+import tinox.core.amqp10;
+import tinox.core.socket;
+
+async fn fakeBroker(srv: Int64) -> Int64 {
+    let sconn = httpServerAcceptConnHandle(srv);
+
+    // --- SASL-Header + Negotiation ---
+    httpConnReadN(sconn, 8);
+    httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
+    let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+    Amqp10::writeFrame(sconn, 1, 0, mechBody);
+    Amqp10::readFrame(sconn);
+    let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+    Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+
+    // --- AMQP-Header ---
+    httpConnReadN(sconn, 8);
+    httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+
+    // --- open / open-ok: kleines max-frame-size erzwingt Splitting ---
+    Amqp10::readFrame(sconn);
+    var openFields: List<Amqp10Value> = [
+        Amqp10Value::StrVal("fake-broker"),
+        Amqp10Value::NullVal,
+        Amqp10Value::UIntVal(100),
+        Amqp10Value::UShortVal(2047)
+    ];
+    Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+
+    // --- begin / begin-ok ---
+    let fBegin = Amqp10::readFrame(sconn);
+    var beginFields: List<Amqp10Value> = [
+        Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
+        Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
+    ];
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
+
+    // --- attach (Sender) / attach-ok + flow(credit=1) ---
+    let fAttach1 = Amqp10::readFrame(sconn);
+    let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
+    var okAttach1: Bool = pAttach1.descriptor == 0x12;
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach1.fields));
+    var flow1Fields: List<Amqp10Value> = [
+        Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
+        Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(0),
+        Amqp10Value::UIntVal(1)
+    ];
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flow1Fields));
+
+    // --- Transfer(s) fuer Nachricht 1 lesen, bis more=false ---
+    var msg1Bytes: List<Int64> = [];
+    var more1: Bool = true;
+    var frameCount1: Int64 = 0;
+    while more1 {
+        let fT = Amqp10::readFrame(sconn);
+        frameCount1 = frameCount1 + 1;
+        let r = Amqp10Reader::new(fT.body);
+        let v = r.readValue();
+        match v {
+            DescribedVal(d) => {
+                match d.value {
+                    ListVal(tf) => {
+                        more1 = false;
+                        if tf.len() > 5 {
+                            match tf[5] { BoolVal(b) => { more1 = b; } _ => {} }
+                        }
+                    }
+                    _ => { more1 = false; }
+                }
+            }
+            _ => { more1 = false; }
+        }
+        let rest = r.readRawBytes(r.remaining());
+        for i in 0..rest.len() { msg1Bytes.push(rest[i]); }
+    }
+    var okReassembled: Bool = frameCount1 > 1;
+
+    // --- Credit erschoepft: neues flow(credit=1) senden, dann Transfer 2 lesen ---
+    var flow2Fields: List<Amqp10Value> = [
+        Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
+        Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(1),
+        Amqp10Value::UIntVal(1)
+    ];
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flow2Fields));
+    // Nachricht 2 ist zwar ein kurzer 3-Byte-Body, aber die properties-
+    // Section (Content-Type "text/plain" + 6 Platzhalter-Felder) traegt
+    // selbst schon ueber 30 Byte Overhead -- bei max-frame-size=100
+    // splittet der Client sie deshalb ebenfalls, dieselbe
+    // Reassembly-Schleife wie bei Nachricht 1 wird gebraucht.
+    var okSecondFlow: Bool = true;
+    var more2: Bool = true;
+    while more2 {
+        let fT2 = Amqp10::readFrame(sconn);
+        let r2 = Amqp10Reader::new(fT2.body);
+        let v2 = r2.readValue();
+        match v2 {
+            DescribedVal(d2) => {
+                match d2.value {
+                    ListVal(tf2) => {
+                        if tf2.len() < 1 { okSecondFlow = false; }
+                        more2 = false;
+                        if tf2.len() > 5 {
+                            match tf2[5] { BoolVal(b2) => { more2 = b2; } _ => {} }
+                        }
+                    }
+                    _ => { more2 = false; okSecondFlow = false; }
+                }
+            }
+            _ => { more2 = false; okSecondFlow = false; }
+        }
+    }
+
+    // --- detach / detach-ok (Sender-Link) ---
+    let fDetach1 = Amqp10::readFrame(sconn);
+    let pDetach1 = Amqp10::decodePerformative(fDetach1.body);
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
+
+    // --- attach (Receiver) / attach-ok ---
+    let fAttach2 = Amqp10::readFrame(sconn);
+    let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
+    var okAttach2: Bool = pAttach2.descriptor == 0x12;
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
+
+    // --- flow vom Client (Credit-Vergabe) lesen ---
+    Amqp10::readFrame(sconn);
+
+    // --- Broker "published" eine kleine Antwort-Nachricht an den Client ---
+    let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain"); // "ABC"
+    var replyTransferFields: List<Amqp10Value> = [
+        Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(0),
+        Amqp10Value::BinaryVal([1]), Amqp10Value::UIntVal(0),
+        Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
+    ];
+    let replyTransferBody = Amqp10::encodePerformative(0x14, replyTransferFields);
+    var replyFrame: List<Int64> = [];
+    for i in 0..replyTransferBody.len() { replyFrame.push(replyTransferBody[i]); }
+    for i in 0..replyMsg.len() { replyFrame.push(replyMsg[i]); }
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, replyFrame);
+
+    // --- disposition (ack) vom Client lesen ---
+    let fDisp = Amqp10::readFrame(sconn);
+    let pDisp = Amqp10::decodePerformative(fDisp.body);
+    var okAck: Bool = pDisp.descriptor == 0x15;
+
+    // --- detach / end / close ---
+    let fDetach2 = Amqp10::readFrame(sconn);
+    let pDetach2 = Amqp10::decodePerformative(fDetach2.body);
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach2.fields));
+    Amqp10::readFrame(sconn);
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x17, []));
+    Amqp10::readFrame(sconn);
+    Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x18, []));
+
+    httpConnClose(sconn);
+
+    if okReassembled {
+        println("ok-broker-reassembled");
+    }
+    if okSecondFlow {
+        println("ok-broker-saw-second-flow");
+    }
+    if okAck {
+        println("ok-broker-saw-ack");
+    }
+    var allOk: Int64 = 0;
+    if okAttach1 { if okAttach2 { if okAck {
+        allOk = 1;
+    } } }
+    return allOk;
+}
+
+fn main() -> Int32 {
+    let srv = httpServerCreate(47629);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+    let handle = spawn fakeBroker(srv);
+
+    let conn = Amqp10Connection::connect("127.0.0.1", 47629, "guest", "guest");
+    if conn.conn <= 0 {
+        println("connect fehlgeschlagen: " + conn.errorMessage);
+        return 1;
+    }
+    println("ok-connect");
+
+    let session = Amqp10Session::begin(conn);
+    var link = Amqp10Link::attach(session, "pub-link", false, "test-target");
+
+    // Nachricht 1: groesser als max-frame-size(100)-64 -> Multi-Frame-Split.
+    var bigBody: List<Int64> = [];
+    for i in 0..60 { bigBody.push(65); }
+    link.publish(bigBody, "text/plain");
+    if link.errorMessage.len() == 0 {
+        println("ok-publish1");
+    }
+
+    // Nachricht 2: Credit ist jetzt erschoepft (nur 1 vergeben) -> publish()
+    // MUSS intern auf ein neues flow warten, bevor sie rausgeht.
+    link.publish([1, 2, 3], "text/plain");
+    if link.errorMessage.len() == 0 {
+        println("ok-publish2");
+    }
+
+    link.detach();
+
+    let subLink = Amqp10Link::attach(session, "sub-link", true, "test-source");
+    subLink.grantCredit(5);
+    let m = subLink.nextMessage();
+    if m.ok {
+        var text: String = "";
+        for i in 0..m.body.len() { text = text + fromCharCode(m.body[i]); }
+        if text == "ABC" {
+            println("ok-consume");
+        }
+        if m.contentType == "text/plain" {
+            println("ok-contenttype");
+        }
+        subLink.ack(m.deliveryId);
+    }
+    subLink.detach();
+
+    session.end();
+    conn.close();
+
+    let brokerOk = await handle;
+    if brokerOk == 1 {
+        println("ok-broker-saw-all");
+    }
+
+    httpServerClose(srv);
+    return 0;
+}
