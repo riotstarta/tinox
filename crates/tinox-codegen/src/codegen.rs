@@ -5594,7 +5594,13 @@ impl CodeGen {
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         "fromCharCode" => {
-                            let (code, code_ty) = self.gen_expr(&args[0], ctx)?;
+                            // Bug 66: NICHT self.gen_expr(&args[0], ctx) erneut aufrufen —
+                            // args[0] wurde oben im generischen Call-Vorlauf (Zeile ~5163ff)
+                            // bereits einmal ausgewertet (arg_vals/arg_types). Ein zweiter
+                            // Aufruf würde ein seiteneffektbehaftetes Argument (z. B. eine
+                            // Methode, die internen State mutiert) doppelt ausführen. S. bugs.md.
+                            let code = arg_vals[0].clone();
+                            let code_ty = arg_types[0].clone();
                             let code_i64 = if code_ty == "i64" || code_ty.is_empty() { code } else {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = zext {} {} to i64", c, code_ty, code).unwrap();

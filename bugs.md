@@ -2341,7 +2341,39 @@ bewahren und voranstellen. Funktioniert bis zu beliebiger Tiefe (dreifach getest
 `nested_lambda.tnx`; `make check` grün. **Nicht abgedeckt:** `List.map()`/`.filter()`
 mit Lambda (`Array_map` ist nicht implementiert — eigenes Feature, kein Bug).
 
----
+**Bug 66 — `fromCharCode(seiteneffektbehafteter Ausdruck)` wertete das Argument
+zweimal aus.** Entdeckt beim Bau des AMQP-0-9-1-Field-Value-Decoders
+(`amqp091.tnx`, `AmqpReader091::rawStr`): `s = s + fromCharCode(this.octet())`
+ließ `this.pos` bei JEDER Iteration um 2 statt 1 vorrücken, und der jeweils
+ERSTE gelesene Byte-Wert ging verloren (nur der zweite, verschobene Read floss
+ins Ergebnis ein) — bei einem `AmqpReader091` über `[65, 66]` lieferte
+`fromCharCode(r.octet())` `'B'` statt `'A'`, `r.pos` stand danach bei 2 statt 1.
+Root Cause: `gen_expr` für `ExprKind::Call` wertet ALLE Argumente generisch vorab
+aus (`arg_vals`/`arg_types`, für die meisten Builtin-Arme gedacht), aber der
+`"fromCharCode"`-Zweig rief zusätzlich `self.gen_expr(&args[0], ctx)` NOCH EINMAL
+auf, statt die bereits berechneten `arg_vals[0]`/`arg_types[0]` zu verwenden —
+bei einem reinen Ausdruck (Literal, Feldzugriff) harmlos redundant, bei einem
+Ausdruck mit Seiteneffekt (hier: ein Methodenaufruf, der `this.pos` mutiert)
+eine stille doppelte Ausführung mit falschem Ergebnis. Fix in
+`crates/tinox-codegen/src/codegen.rs` (`"fromCharCode"`-Arm): `arg_vals[0]`/
+`arg_types[0]` wiederverwenden statt erneut zu evaluieren.
+
+**Verifiziert:** `fromCharCode(r.octet())` über `[65,66]` liefert jetzt `'A'` +
+`pos=1` (vorher `'B'` + `pos=2`); AMQP-Field-Table-Decoder-Rundtrip (Phase 2,
+s. „Feature: AMQP-0-9-1-Client" unten) funktioniert seitdem korrekt. `make
+check` grün.
+
+**Nicht behoben (bewusst außerhalb dieses Fixes, gleicher Bug-Klasse):** der
+generische Vorlauf-Pattern in `ExprKind::Call` betrifft laut Code-Lektüre
+mutmaßlich weitere Builtin-Arme, die ebenfalls `self.gen_expr(&args[N], ctx)`
+erneut aufrufen statt `arg_vals[N]`/`arg_types[N]` zu nutzen (u. a. gesichtet:
+`deleteFile`, `processExit`, `dirList`, `regexFindAll`/`regexSplit` — Liste beim
+Lesen nicht vollständig durchsucht). Nur bei Argumenten mit Seiteneffekt
+beobachtbar (die meisten Aufrufstellen im bestehenden Code sind reine
+Ausdrücke, daher unauffällig geblieben). Gezielt statt pauschal gefixt, um
+keinen großen ungetesteten Refactor über viele Match-Arme zu riskieren — bei
+Bedarf (neuer Bugreport) denselben Fix (arg_vals/arg_types wiederverwenden)
+auf den jeweiligen Arm anwenden.
 
 ## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
 

@@ -3,6 +3,7 @@
 // über die binärsicheren Primitiven; Server-Seite nutzt die websocket.tnx-API.
 // Deckt ab: 101-Handshake mit RFC-6455-Beispiel-Key, Text-Frame klein,
 // Ping->automatisches Pong, 126er-Längenpfad (200 Bytes) in beide Richtungen,
+// Payload-Länge 0, exakte 125/126-Grenze der Längenkodierung (5.2),
 // Close-Echo, Handshake-Ablehnung (falsche Version -> accept == -1).
 // expect: ok-accept
 // expect: 1
@@ -12,6 +13,9 @@
 // expect: ok-pong
 // expect: 1 200 65
 // expect: ok-big
+// expect: ok-empty
+// expect: ok-125
+// expect: ok-boundary126
 // expect: 8
 // expect: ok-close
 // expect: ok-reject
@@ -103,6 +107,65 @@ fn main() -> Int32 {
                     if body.len() == 200 {
                         if body[199] == 66 {
                             println("ok-big");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 5.2 Grenzfall: Payload-Länge 0 (leerer Text-Frame), Maske [9,9,9,9] ---
+    httpConnWriteBytes(cconn, [129, 128, 9, 9, 9, 9]);
+    let fEmpty = Ws::readMessage(conn);
+    if fEmpty.opcode == 1 {
+        if fEmpty.payload.len() == 0 {
+            if Ws::text(fEmpty) == "" {
+                Ws::sendText(conn, "");
+                let emptyEcho = httpConnReadN(cconn, 2);
+                if emptyEcho.len() == 2 {
+                    if emptyEcho[0] == 129 {
+                        if emptyEcho[1] == 0 {
+                            println("ok-empty");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 5.2 Grenzfall: exakt 125 Bytes (letzter Wert vor der 126er-Erweiterung) ---
+    var out125: List<Int64> = [];
+    for i in 0..125 {
+        out125.push(67);
+    }
+    Ws::sendBinary(conn, out125);
+    let hdr125 = httpConnReadN(cconn, 2);
+    let body125 = httpConnReadN(cconn, 125);
+    if hdr125[0] == 130 {
+        if hdr125[1] == 125 {
+            if body125.len() == 125 {
+                if body125[124] == 67 {
+                    println("ok-125");
+                }
+            }
+        }
+    }
+
+    // --- 5.2 Grenzfall: exakt 126 Bytes (erster Wert MIT 16-Bit-Erweiterung) ---
+    var out126: List<Int64> = [];
+    for i in 0..126 {
+        out126.push(68);
+    }
+    Ws::sendBinary(conn, out126);
+    let hdr126 = httpConnReadN(cconn, 4);
+    let body126 = httpConnReadN(cconn, 126);
+    if hdr126[0] == 130 {
+        if hdr126[1] == 126 {
+            if hdr126[2] == 0 {
+                if hdr126[3] == 126 {
+                    if body126.len() == 126 {
+                        if body126[125] == 68 {
+                            println("ok-boundary126");
                         }
                     }
                 }
