@@ -2721,6 +2721,32 @@ TCP-Socket, killt den Prozess danach — NICHT über den golden-test-Harness
 `RUN_TIMEOUT` reißen würde. `make check` grün (inkl. `cargo clippy -D
 warnings` auf dem neuen Testbinary).
 
+**Nachtrag (2026-07-23) — `wss://` (TLS):** `WsServer::listenTls(port, certPath,
+keyPath)` + `WsServer::acceptTls(srv)` ergänzt, exakt das Muster von
+`HttpServer::listenTls` (Feature 34) übertragen: `httpServerCreateTls`/
+`httpServerAcceptTls` statt `httpServerCreate`/`httpServerAcceptConnHandle`,
+danach läuft derselbe `Ws::handshake`/Frame-Code unverändert weiter — die
+Vermutung aus der ursprünglichen WS-Roadmap-Notiz („sollte über `listenTls`
+fast gratis sein") hat sich bestätigt: die Runtime brauchte **keine
+Änderung**, weil `httpConnReadN`/`httpConnWriteBytes`/`httpConnReadRequest`/
+`httpConnSendRaw`/`httpConnClose` schon vorher TLS-transparent über
+`conn_recv`/`conn_send`/`conn_close` liefen (`TinoxConn{fd, ssl}`, `ssl==NULL`
+= Plaintext). Reiner `.tnx`-Zusatz, kein `runtime.c`-Diff. Braucht wie HTTPS
+OpenSSL gelinkt — seit 2026-07-24 Standard-Build-Default (vorher Opt-in via
+`TINOX_TLS=1`, s.u.); mit `TINOX_TLS=0` liefert `listenTls` sauber `-1` mit
+stderr-Diagnose statt Linkfehler (verifiziert). Beispiel `examples/wss_echo.tnx`.
+
+**Verifiziert:** self-signed Testzertifikat; `openssl s_client` handelt TLS
+aus (Zertifikat wird korrekt präsentiert), ein anschließender Plain-HTTP-
+Request über die TLS-Verbindung wird vom WS-Handshake korrekt mit `400 Bad
+Request` abgelehnt (kein `Upgrade`-Header) — exakt das gleiche Verhalten wie
+bei einer Plaintext-Verbindung, nur über TLS transportiert. Python
+`websockets` 16.1.1 als unabhängiger Client (`ssl.PROTOCOL_TLS_CLIENT`,
+`CERT_NONE` fürs Testzert): kompletter `wss://`-Handshake +
+Text-Message-Roundtrip erfolgreich. Mit `TINOX_TLS=0` (kein OpenSSL gelinkt):
+`listenTls` liefert `-1` mit `"httpServerCreateTls: runtime ohne TLS gebaut"`
+auf stderr, kein Crash, kein Linkfehler. `make check` grün.
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests
