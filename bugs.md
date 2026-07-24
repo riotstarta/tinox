@@ -900,21 +900,52 @@ außerdem zwei nie existierende `JsonValue`-Methoden auf:
   `json_obj_map_create`) teilen sich dieselbe `TinoxMap`-Struct, nur der
   Allokator unterscheidet sich, daher direkt wiederverwendbar.
 
-**Wichtiger Fund dabei, NICHT gefixt (Scope-Grenze):** `Json::parse()`
-liefert `JsonValue`-Zeiger in einen **`__thread`-lokalen Arena-Puffer, der
-bei jedem `jsonParse()`-Aufruf zurückgesetzt wird** (Kommentar im Code:
-„valid until the next call"). Ein Payload, der aus mehreren einzelnen
+**Wichtiger Fund dabei, GEFIXT am 2026-07-24 (damals bewusst als
+Scope-Grenze zurückgestellt):** `Json::parse()` lieferte `JsonValue`-Zeiger
+in einen **`__thread`-lokalen Arena-Puffer, der bei jedem
+`jsonParse()`-Aufruf zurückgesetzt wurde** (Kommentar im Code: „valid
+until the next call"). Ein Payload, der aus mehreren einzelnen
 `Json::parse(...)`-Aufrufen zusammengebaut wird (z. B. pro Feld je ein
-Parse), korrumpiert bereits gespeicherte `JsonValue`s beim nächsten Parse —
+Parse), korrumpierte bereits gespeicherte `JsonValue`s beim nächsten Parse —
 beobachtet als leerer String bei `decoded["sub"].getString()`, sobald
 danach `Json::parse("9999999999")` für ein zweites Feld lief. **Kein**
 Problem für den Hauptpfad (`Jwt::decode`/`extractPayload` parsen den
-kompletten Payload in einem einzigen Aufruf — verifiziert, funktioniert
-korrekt) oder für `Json::parse(vollständigerJsonString)` generell. Ist ein
-generisches Lebensdauer-Risiko der gesamten `tinox.core.json`-API, nicht
-JWT-spezifisch — verdient einen eigenen, gründlichen Fix (Arena
-abschaffen oder GC-Heap-Fallback), nicht im Rahmen von „Ghost-Builtins"
-nebenbei erledigt.
+kompletten Payload in einem einzigen Aufruf) oder für
+`Json::parse(vollständigerJsonString)` generell. War ein generisches
+Lebensdauer-Risiko der gesamten `tinox.core.json`-API, nicht JWT-spezifisch.
+
+**Fix (2026-07-24):** Arena komplett abgeschafft (wie damals als eine der
+zwei Optionen vorgeschlagen) statt eines GC-Heap-Fallbacks nur für
+langlebige Werte — `json_arena_alloc()` (runtime.c) ruft jetzt direkt
+`malloc()` auf (via die bestehenden Redirect-Makros am Dateianfang
+identisch mit `GC_malloc()`), kein `__thread`-Puffer, kein Reset mehr in
+`jsonParse()`. Jeder `JsonValue`-Knoten, jede Objekt-Map und jeder
+String-Puffer aus einem Parse ist damit ein eigenständiges,
+GC-verwaltetes Objekt mit normaler Lebensdauer (so lange erreichbar),
+exakt wie jeder andere Tinox-Wert — kein spezielles "nur bis zum nächsten
+Parse gültig"-Verhalten mehr. Der generische Mixed-Type-Array-Pfad
+(`JSON_ARRAY`) nutzte bereits vorher `malloc()` statt der Arena (Inkonsistenz
+im Ursprungscode) — jetzt sind alle Pfade einheitlich. `borrowed_keys=1`
+bei Objekt-Maps bleibt bestehen (weiterhin sinnvoll: Keys kommen schon als
+frische, individuelle Allokation aus dem String-Parser, kein erneutes
+`strdup()` nötig — nur die Bedeutung als reiner Kopier-Vermeidungs-Trick
+statt eines Lebensdauer-Tricks hat sich geändert).
+
+**Verifiziert:** Faithful Repro (`Json::parse()` eines String-Werts, dann
+ein unabhängiger zweiter `Json::parse()`-Aufruf, dann `.getString()` auf
+dem ERSTEN Wert — exakt das `decoded["sub"].getString()`-Muster) lieferte
+vor dem Fix nachweislich `""` (leerer String) statt des korrekten Werts;
+nach dem Fix korrekt. Dasselbe Muster zusätzlich für ein Objekt
+(verschachtelte Felder über `getField()`, nach mehreren weiteren Parses
+gelesen) und ein `JSON_INT_ARRAY`-Fastpath-Array reproduziert und
+gefixt — alle drei Fälle lieferten vor dem Fix `0`/`""` statt der
+korrekten Werte. Neuer e2e-Test `tests/e2e/json_parse_lifetime.tnx`
+deckt alle drei Fälle ab (String/Objekt/Int-Array, jeweils Wert-Lesen nach
+mehreren zwischenzeitlichen, unabhängigen `Json::parse()`-Aufrufen);
+gegen den ungefixten Code manuell gegengeprüft (schlägt dort in allen drei
+Fällen exakt wie erwartet fehl). `make check` komplett grün (betrifft
+`json`, `jwt`, `rest_framework` und jedes andere Modul, das
+`tinox.core.json` nutzt).
 
 **Entdeckungsweg (Werkzeugkoffer für zukünftige `extern fn`-Fälle):** Tinox
 unterstützt getypte Extern-Deklarationen (`extern fn name(args) -> Ret;`,

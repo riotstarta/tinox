@@ -2990,22 +2990,20 @@ void tinox_HttpServer_listen(int64_t* server) {
 #define JSON_OBJECT    6
 #define JSON_INT_ARRAY 7  // fast-path: arr_val points to int64 values, arr_val[-1]=len
 
-// Arena allocator: all JsonValue nodes + string data for one parse live here.
-// Reset per jsonParse() call — valid until the next call.
-typedef struct { char* buf; size_t used; size_t cap; } JsonArena;
-static __thread JsonArena g_json_arena;
-
+// JsonValue-Knoten + String-/Map-Daten eines Parse leben auf dem normalen
+// GC-Heap (malloc()/GC_malloc(), s. Redirect-Makros oben) statt in einem
+// separaten Arena-Puffer. Frueher lief hier ein `__thread`-lokaler Arena-
+// Allocator, dessen "used"-Zeiger bei JEDEM jsonParse()-Aufruf auf 0
+// zurueckgesetzt wurde ("valid until the next call", Kommentar im
+// ursprünglichen Code) — jeder JsonValue/jede Map aus einem FRUEHEREN
+// Parse, dessen Referenz laenger lebte (z. B. mehrere Parses zu einem
+// Objekt zusammengesetzt), wurde beim naechsten jsonParse()-Aufruf auf
+// DEMSELBEN Thread durch neue Allokationen ueberschrieben -- Silent-
+// Garbage/Use-after-free (bugs.md, Bug-24-Fund). Der GC verwaltet die
+// Lebensdauer jetzt individuell pro Objekt wie ueberall sonst im Runtime —
+// kein spezielles "nur bis zum naechsten Parse gueltig"-Verhalten mehr.
 static void* json_arena_alloc(size_t size) {
-    size = (size + 7) & ~(size_t)7;
-    if (g_json_arena.used + size > g_json_arena.cap) {
-        size_t nc = g_json_arena.cap ? g_json_arena.cap * 2 : 65536;
-        while (nc < g_json_arena.used + size) nc *= 2;
-        g_json_arena.buf = (char*)realloc(g_json_arena.buf, nc);
-        g_json_arena.cap = nc;
-    }
-    void* p = g_json_arena.buf + g_json_arena.used;
-    g_json_arena.used += size;
-    return p;
+    return malloc(size);
 }
 
 typedef struct TinoxJsonValue {
@@ -3028,7 +3026,11 @@ static TinoxJsonValue* json_alloc(int64_t type) {
 
 #define json_skip_ws(p) ({ const char* _p = (p); while (*_p == ' ' || *_p == '\t' || *_p == '\r' || *_p == '\n') _p++; _p; })
 
-// JSON-object map: all memory from arena, keys not strdup'd (no leaks on arena reset)
+// JSON-object map: keys kommen bereits als frische, individuelle
+// json_arena_alloc()-Allokationen aus json_parse_string_raw() -- kein
+// erneutes strdup() noetig, borrowed_keys=1 ist reine Vermeidung
+// redundanter Kopien, kein Lebensdauer-Trick mehr (s. Kommentar bei
+// json_arena_alloc oben).
 static void* json_obj_map_create(void) {
     TinoxMap* m = (TinoxMap*)json_arena_alloc(sizeof(TinoxMap));
     m->cap = 4;
@@ -3117,7 +3119,7 @@ static TinoxJsonValue* json_parse_value(const char** p) {
     }
     if (**p == '{') {
         TinoxJsonValue* v = json_alloc(JSON_OBJECT);
-        v->obj_val = json_obj_map_create(); // arena-allocated, no strdup for keys
+        v->obj_val = json_obj_map_create(); // GC-heap-allocated, no strdup for keys
         (*p)++; // skip '{'
         *p = json_skip_ws(*p);
         while (**p && **p != '}') {
@@ -3245,7 +3247,6 @@ static TinoxJsonValue* json_parse_value(const char** p) {
 
 int64_t* jsonParse(const char* text) {
     if (!text) return (int64_t*)json_alloc(JSON_NULL);
-    g_json_arena.used = 0;  // reset arena — previous parse tree is invalidated
     const char* p = text;
     return (int64_t*)json_parse_value(&p);
 }
@@ -3374,10 +3375,9 @@ void* jsonGetObject(int64_t* value) {
 
 // Wrap an existing Map<String, JsonValue> handle as a JsonValue object.
 // TinoxMap has the same layout whether allocated via tinox_map_create()
-// (GC heap, used by user Map<K,V> values) or json_obj_map_create() (the
-// parser's per-call arena) — safe to reuse the caller's map directly.
-// Heap-allocated (not arena), so — unlike parser-produced JsonValues —
-// this one survives past the next jsonParse() call.
+// (used by user Map<K,V> values) or json_obj_map_create() (the JSON
+// parser) — both GC-heap-allocated (s. json_arena_alloc oben), safe to
+// reuse the caller's map directly.
 int64_t* jsonFromMap(void* map) {
     TinoxJsonValue* v = (TinoxJsonValue*)malloc(sizeof(TinoxJsonValue));
     v->type = JSON_OBJECT;
