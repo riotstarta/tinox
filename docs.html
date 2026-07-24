@@ -490,6 +490,7 @@
     <li class="section-label">HTTP &amp; Netzwerk</li>
     <li><a href="#mod-http_server">http_server</a></li>
     <li><a href="#mod-http2_server">http2_server</a></li>
+    <li><a href="#mod-websocket">websocket</a></li>
     <li><a href="#mod-hpack">hpack</a></li>
     <li><a href="#mod-http">http</a></li>
     <li><a href="#mod-rest">rest</a></li>
@@ -1114,6 +1115,10 @@
         <tr><td><code>@deprecated("msg")</code></td><td>Alle</td><td>Deprecation-Warnung</td></tr>
         <tr><td><code>@Command("name")</code></td><td>Klasse</td><td>CLI-Kommando</td></tr>
         <tr><td><code>@annotation</code></td><td>Klasse</td><td>Eigene Annotation definieren</td></tr>
+        <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Klasse</td><td>WebSocket: generiert einen Accept/Message-Loop als <code>main</code> (nur bei genau einer Endpoint-Klasse und ohne eigenes <code>main</code>)</td></tr>
+        <tr><td><code>@OnOpen</code></td><td>Methode</td><td>WebSocket: Aufruf bei neuer Verbindung, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnClose</code></td><td>Methode</td><td>WebSocket: Aufruf beim Verbindungsende, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
       </tbody>
     </table>
   </section>
@@ -1130,8 +1135,9 @@
       <div class="card">
         <h4>HTTP &amp; Web</h4>
         <p><code>http_server</code>, <code>rest</code>, <code>rest_framework</code>,
-        <code>http</code> – vollständiger HTTP/1.1-Server mit Routing, Middleware und
-        Content-Negotiation.</p>
+        <code>http</code>, <code>websocket</code> – vollständiger HTTP/1.1-Server mit
+        Routing, Middleware und Content-Negotiation, plus WebSocket-Server nach
+        RFC 6455.</p>
       </div>
       <div class="card">
         <h4>Datenformate</h4>
@@ -1871,6 +1877,110 @@ server.delete("/users/:id", ctx => {
 // Blockierend starten — verarbeitet HTTP/2-Verbindungen mit
 // vollem RFC-7540-Framing, HPACK-Komprimierung und Stream-Multiplexing
 server.listen();
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-websocket">
+
+  <h2>websocket</h2>
+  <p class="import-hint"><code>import tinox.core.websocket;</code></p>
+  <p>
+    WebSocket-Server nach RFC 6455, aufgebaut auf der Conn-Handle-Architektur des
+    HTTP-Servers. Der textuelle Handshake (Upgrade-Request, <code>Sec-WebSocket-Accept</code>)
+    läuft über die bestehenden C-String-Pfade, die binären Frames über
+    längenbasierte Byte-Primitiven, damit NUL-Bytes und Masking korrekt
+    behandelt werden. v1 ist bewusst eine explizite Schleifen-API
+    (kein Lambda-Handler) und bedient pro Server eine Verbindung nach der
+    anderen (kein epoll für WS).
+  </p>
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>WsServer::listen</code></td><td><code>fn listen(port: Int64) -&gt; Int64</code></td><td>Öffnet den Server-Socket. Gibt das Server-Handle zurück (&lt; 0 bei Bind-Fehler, z. B. Port belegt).</td></tr>
+      <tr><td><code>WsServer::accept</code></td><td><code>fn accept(srv: Int64) -&gt; Int64</code></td><td>Akzeptiert die nächste Verbindung und führt den RFC-6455-Handshake durch. Gibt das Conn-Handle zurück oder <code>-1</code>, wenn der Handshake fehlschlägt (Verbindung ist dann bereits geschlossen).</td></tr>
+      <tr><td><code>WsServer::listenTls</code></td><td><code>fn listenTls(port: Int64, certPath: String, keyPath: String) -&gt; Int64</code></td><td><code>wss://</code>-Variante von <code>listen</code>. OpenSSL ist standardmäßig gelinkt; mit <code>TINOX_TLS=0</code> gebaut liefert diese Funktion <code>-1</code> mit stderr-Diagnose statt eines Linkfehlers.</td></tr>
+      <tr><td><code>WsServer::acceptTls</code></td><td><code>fn acceptTls(srv: Int64) -&gt; Int64</code></td><td><code>wss://</code>-Variante von <code>accept</code>: TLS-Handshake + anschließend derselbe RFC-6455-Handshake über dasselbe Conn-Handle.</td></tr>
+      <tr><td><code>Ws::readMessage</code></td><td><code>fn readMessage(conn: Int64) -&gt; WsFrame</code></td><td>Liest die nächste Daten-Nachricht (blockierend). Beantwortet Ping automatisch mit Pong und quittiert Close mit Close (liefert den Close-Frame zum Beenden der Schleife zurück).</td></tr>
+      <tr><td><code>Ws::sendText</code></td><td><code>fn sendText(conn: Int64, s: String) -&gt; Nothing</code></td><td>Sendet einen Text-Frame (Opcode 1).</td></tr>
+      <tr><td><code>Ws::sendBinary</code></td><td><code>fn sendBinary(conn: Int64, bytes: List&lt;Int64&gt;) -&gt; Nothing</code></td><td>Sendet einen Binary-Frame (Opcode 2), ein Byte pro Listen-Slot.</td></tr>
+      <tr><td><code>Ws::sendPing</code></td><td><code>fn sendPing(conn: Int64) -&gt; Nothing</code></td><td>Sendet einen Ping-Frame.</td></tr>
+      <tr><td><code>Ws::sendClose</code></td><td><code>fn sendClose(conn: Int64, code: Int64) -&gt; Nothing</code></td><td>Sendet einen Close-Frame mit dem angegebenen Statuscode.</td></tr>
+      <tr><td><code>Ws::close</code></td><td><code>fn close(conn: Int64) -&gt; Nothing</code></td><td>Schließt die zugrunde liegende Verbindung.</td></tr>
+      <tr><td><code>Ws::text</code></td><td><code>fn text(f: WsFrame) -&gt; String</code></td><td>Wandelt den Payload eines Frames in einen String um (byte-basiert).</td></tr>
+      <tr><td><code>WsFrame</code></td><td><code>{ fin: Bool, opcode: Int64, payload: List&lt;Int64&gt; }</code></td><td>Ein gelesener Frame. Opcode wie RFC 6455 (1 Text, 2 Binary, 8 Close, 9 Ping, 10 Pong); zusätzlich <code>-1</code> = Verbindung zu/EOF, <code>-2</code> = Protokollfehler (Verbindung wurde bereits mit Close beantwortet).</td></tr>
+    </tbody>
+  </table>
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.websocket;
+
+let srv: Int64 = WsServer::listen(8790);
+
+while true {
+    let conn: Int64 = WsServer::accept(srv);
+    if conn <= 0 { continue; }
+
+    while true {
+        let f: WsFrame = Ws::readMessage(conn);
+        if f.opcode == 1 {
+            Ws::sendText(conn, "echo: " + Ws::text(f));
+            continue;
+        }
+        if f.opcode == 2 {
+            Ws::sendBinary(conn, f.payload);
+            continue;
+        }
+        break; // Close (8), EOF (-1) oder Protokollfehler (-2)
+    }
+    Ws::close(conn);
+}
+</code></pre>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> keine Fragmentierung/Continuation-Frames
+    (→ Close 1003), kein Client (<code>WsClient</code>) und kein
+    permessage-deflate. Payload-Cap 16&nbsp;MB. <code>wss://</code> (TLS) wird
+    unterstützt, s. <code>listenTls</code>/<code>acceptTls</code> oben.
+  </p>
+  <h3>wss:// (TLS)</h3>
+  <p>
+    <code>listenTls</code>/<code>acceptTls</code> ersetzen <code>listen</code>/<code>accept</code>
+    1:1 — der restliche Code (Handshake, <code>readMessage</code>, <code>sendText</code> etc.)
+    bleibt unverändert, weil die zugrunde liegenden Conn-Handle-Primitiven schon
+    transparent für TLS- und Plaintext-Verbindungen sind:
+  </p>
+  <pre><code>import tinox.core.websocket;
+
+let srv = WsServer::listenTls(<span class="num">8791</span>, <span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>);
+if srv < <span class="num">0</span> { <span class="kw">return</span> <span class="num">1</span>; } <span class="cmt">// Port belegt, TINOX_TLS=0 gebaut, oder Cert/Key ungueltig</span>
+
+<span class="kw">let</span> conn = WsServer::acceptTls(srv); <span class="cmt">// TLS- + WS-Handshake</span>
+</code></pre>
+  <p>
+    OpenSSL ist standardmäßig gelinkt, genau wie bei
+    <code>HttpServer::listenTls</code> — kein Extra-Flag nötig. Opt-out per
+    <code>TINOX_TLS=0</code>, falls kein OpenSSL zum Bauen verfügbar ist.
+  </p>
+  <h3>Annotation-getriebene Variante</h3>
+  <p>
+    Alternativ generiert der Compiler den kompletten Loop selbst — siehe
+    <a href="#annotationen">Annotationen</a> (<code>@WebsocketEndpoint</code>/<code>@OnOpen</code>/
+    <code>@OnMessage</code>/<code>@OnClose</code>). Gilt nur, wenn die Datei kein eigenes
+    <code>main</code> definiert und genau eine <code>@WebsocketEndpoint</code>-Klasse enthält
+    (mehrere sind ein Compile-Fehler, kein stilles Ignorieren):
+  </p>
+  <pre><code>import tinox.core.websocket;
+
+<span class="ann">@WebsocketEndpoint</span>(<span class="str">"/echo"</span>, <span class="num">8793</span>)
+<span class="kw">class</span> <span class="type">EchoEndpoint</span>
+{
+    <span class="ann">@OnMessage</span>
+    <span class="kw">fn</span> <span class="fn">onMessage</span>(conn: Int64, msg: String) -> Nothing
+    {
+        Ws::sendText(conn, <span class="str">"echo: "</span> + msg);
+    }
+}
 </code></pre>
   </div>
 

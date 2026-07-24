@@ -2607,6 +2607,88 @@ Text-Frames (RFC verlangt Close 1007 — akzeptierte Abweichung in v1).
 
 ---
 
+## Feature: WebSocket-Annotationen — `@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`
+
+**Status: IMPLEMENTIERT (2026-07-22), v1.** Roadmap in `tasklist.md` Phase 6.
+Analog zum nativen `@GET`/`@Path`-REST-Routing (echte Compiler-Verarbeitung,
+kein Runtime-Reflection) generiert der Compiler für eine
+`@WebsocketEndpoint`-Klasse einen kompletten Accept/Handshake/Message-Loop als
+`main` — der User muss die explizite `WsServer::listen/accept` +
+`Ws::readMessage`-Schleife (v1-Basis-API, s. oben) nicht mehr von Hand
+schreiben:
+
+```tinox
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/echo", 8793)
+class EchoEndpoint
+{
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing { println("Client verbunden"); }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        Ws::sendText(conn, "echo: " + msg);
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing { println("Client getrennt"); }
+}
+```
+
+**Architektur.** `annotations.rs`: Registry-Einträge `@WebsocketEndpoint(path[, port])`
+(Class), `@OnOpen`/`@OnMessage`/`@OnClose` (Method, je 0 Args); Extraktion in
+`WsEndpointInfo` (analog `RouteInfo`/`extract_route_from_method`). `codegen.rs`:
+`emit_ws_code()` generiert `tinox_main` handgeschrieben als LLVM-IR — eine
+Transliteration von `examples/ws_echo.tnx`, die die bereits kompilierten
+`Ws::*`/`WsServer::*`-Funktionen direkt beim mangled Namen aufruft
+(`{Class}_{method}`, gleiches Muster wie die REST-Route-Shims und die
+DI-Getter/Factories). Opcode-1-Frames (Text) gehen an `@OnMessage`; alles
+andere (Binary, Close, EOF, Protokollfehler — Ping/Pong sind schon in
+`Ws::readMessage` selbst behandelt) beendet die Verbindung und ruft
+`@OnClose`. Feldzugriff auf `WsFrame.opcode` über die vom Compiler bereits
+emittierte benannte Struct `%class.WsFrame` (kein Byte-Offset-Hack wie beim
+älteren HttpContext-Pfad in `emit_route_code`, da `WsFrame` schon einen
+LLVM-Named-Type hat).
+
+**Warum voller Auto-Loop statt Handler-Registrierung:** ein von Codegen
+synthetisierter `serve()`-Aufruf könnte vom User-Code NICHT aufgerufen werden
+— der Typechecker kennt Methoden, die annotation-getrieben erst in Codegen
+entstehen, nicht (dasselbe gilt bereits für DI-`_di_get`/`_di_create` und die
+REST-Route-Shims: die werden nirgends aus typgeprüftem Tinox-Quellcode heraus
+aufgerufen). Einzig gangbarer Weg im bestehenden Compiler-Aufbau: Codegen
+generiert `main` direkt (exakt das Muster, das `emit_route_code` für REST
+schon nutzt, `if !self.has_main`).
+
+**Bewusste v1-Grenzen (direkte Folge des obigen):**
+- **Genau EIN `@WebsocketEndpoint` pro Programm.** Mehrere Endpoint-Klassen sind
+  ein harter Compile-Fehler (in `main.rs`, vor Codegen) statt eines still nur
+  den ersten bedienenden Verhaltens — passt zur Projektlinie „kein
+  Silent-Garbage".
+- **Kein eigenes `main` möglich**, wenn die Annotation den Loop übernehmen
+  soll (wie bei REST-Auto-`main`). Wer volle Kontrolle braucht (mehrere
+  Endpoints, eigene Startup-Logik), nutzt weiter die explizite v1-Basis-API.
+- Fehlt `import tinox.core.websocket;`, bricht der Compiler mit einer klaren
+  Panic-Meldung ab (Guard in `emit_ws_code`, prüft `%class.WsFrame` bekannt) —
+  bewusst hart statt eines kryptischen Linker-Fehlers.
+- Port: optionales zweites Annotation-Argument (`@WebsocketEndpoint(path, port)`),
+  sonst `TINOX_PORT`-Env-Var, sonst 8080 (gleiche Fallback-Kette wie
+  REST-Auto-`main`).
+- Nur Text-Frames (Opcode 1) lösen `@OnMessage` aus; Binary-Frames beenden
+  die Verbindung wie Close (kein `@OnBinaryMessage` in v1); kein `@OnError`.
+
+**Verifiziert:** 65 Annotation-Unit-Tests in `annotations.rs` (inkl.
+`test_process_ws_endpoint_full`, `_only_on_message`, `_default_port`,
+Validierungsfehler für falsche Targets/fehlende Args). Neuer Integrationstest
+`crates/tinox/tests/ws_annotations.rs`: baut `examples/ws_echo_annotated.tnx`,
+startet den generierten Server als Hintergrundprozess, fährt einen echten
+RFC-6455-Handshake + maskierten Text-Frame-Roundtrip über einen rohen
+TCP-Socket, killt den Prozess danach — NICHT über den golden-test-Harness
+(e2e.rs), weil ein Auto-Loop-`main` nie von selbst zurückkehrt und dessen
+`RUN_TIMEOUT` reißen würde. `make check` grün (inkl. `cargo clippy -D
+warnings` auf dem neuen Testbinary).
+
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
 Diese Fixes wurden in `crates/tinox-codegen/src/codegen.rs` vorgenommen, um die Tests

@@ -427,6 +427,10 @@ Der Compiler validiert Annotations (unbekannte Annotations oder falsche Platzier
 | `@Consumes`    | Method               | Erwarteter Request Content-Type        |
 | `@StatusCode`  | Method               | Default HTTP-Statuscode               |
 | `@Auth`         | Method, Class        | Authentifizierung ("bearer"/"basic")   |
+| `@WebsocketEndpoint("/path"[, port])` | Class    | WebSocket: generiert einen Accept/Message-Loop als `main` |
+| `@OnOpen`       | Method               | WebSocket: Aufruf bei neuer Verbindung |
+| `@OnMessage`    | Method               | WebSocket: Aufruf pro Text-Nachricht   |
+| `@OnClose`      | Method               | WebSocket: Aufruf beim Verbindungsende |
 
 Beide Schreibweisen sind gleichwertig:
 
@@ -522,6 +526,56 @@ class UserController
 }
 ```
 
+### WebSocket Server
+
+Die Standardbibliothek enthält einen WebSocket-Server nach RFC 6455 (`websocket`), aufgebaut auf der Conn-Handle-Schicht des HTTP-Servers. v1 ist eine explizite Schleifen-API (kein Lambda-Handler), bedient eine Verbindung nach der anderen:
+
+```tinox
+import tinox.core.websocket;
+
+let srv: Int64 = WsServer::listen(8790);
+
+while true {
+    let conn: Int64 = WsServer::accept(srv);   // inkl. Handshake
+    if conn <= 0 { continue; }
+
+    while true {
+        let f: WsFrame = Ws::readMessage(conn); // Ping/Pong + Close automatisch
+        if f.opcode == 1 {
+            Ws::sendText(conn, "echo: " + Ws::text(f));
+            continue;
+        }
+        break; // Close (8), EOF (-1) oder Protokollfehler (-2)
+    }
+    Ws::close(conn);
+}
+```
+
+Bewusste v1-Lücken: keine Fragmentierung, kein Client, kein permessage-deflate.
+
+`wss://` (TLS) wird ebenfalls unterstützt, per `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (sonst identische API). OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig (Opt-out per `TINOX_TLS=0`, falls kein OpenSSL verfügbar ist):
+
+```tinox
+let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
+let conn = WsServer::acceptTls(srv);   // inkl. TLS- + WS-Handshake
+```
+
+Alternativ annotation-getrieben (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): der Compiler generiert den kompletten Loop als `main` — kein Handshake/readMessage-Code nötig. Gilt nur, wenn die Datei kein eigenes `main` definiert und genau eine `@WebsocketEndpoint`-Klasse enthält (mehrere sind ein Compile-Fehler):
+
+```tinox
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/echo", 8793)
+class EchoEndpoint
+{
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        Ws::sendText(conn, "echo: " + msg);
+    }
+}
+```
+
 ## Feature-Übersicht
 
 | Feature                      | Status     |
@@ -551,6 +605,7 @@ class UserController
 | Annotations                 | ✅ Fertig  |
 | HTTP Server (stdlib)        | ✅ Fertig  |
 | REST Framework (stdlib)     | ✅ Fertig  |
+| WebSocket Server (stdlib)   | ✅ Fertig (v1) |
 | LSP (tinox-lsp)              | ✅ Fertig  |
 | Eclipse Plugin               | ✅ Fertig  |
 | File I/O                     | ✅ Fertig  |
@@ -581,7 +636,7 @@ tinox/
 
 | Kategorie    | Module                                              |
 |--------------|-----------------------------------------------------|
-| HTTP         | `http_server`, `rest_framework`, `mini_http`        |
+| HTTP         | `http_server`, `rest_framework`, `mini_http`, `websocket` |
 | Daten        | `json`, `csv`, `xml`, `regex`                       |
 | Sicherheit   | `crypto`, `jwt`, `bcrypt`                           |
 | Collections  | `collections`, `queue`, `stack`, `linkedlist`       |

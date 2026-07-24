@@ -1716,6 +1716,26 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
+    if ann_result.ws_endpoints.len() > 1 {
+        return Err(format!(
+            "found {} @WebsocketEndpoint classes ({}); v1 supports exactly one auto-run WebSocket endpoint per program",
+            ann_result.ws_endpoints.len(),
+            ann_result.ws_endpoints.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let ws_endpoints: Vec<tinox_codegen::WsEndpointEntry> = ann_result
+        .ws_endpoints
+        .iter()
+        .map(|e| tinox_codegen::WsEndpointEntry {
+            class_name: e.class_name.clone(),
+            path: e.path.clone(),
+            port: e.port,
+            on_open: e.on_open.clone(),
+            on_message: e.on_message.clone(),
+            on_close: e.on_close.clone(),
+        })
+        .collect();
+
     let di_components: Vec<tinox_codegen::DiComponentInfo> = ann_result.di_components
         .iter()
         .map(|c| tinox_codegen::DiComponentInfo {
@@ -1832,6 +1852,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
     codegen.set_entity_entries(entity_entries);
+    codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_db_url(read_database_config().map(|c| c.url));
     codegen
         .gen(&ast)

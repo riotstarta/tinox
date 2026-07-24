@@ -155,6 +155,16 @@ pub enum MetricKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct WsEndpointInfo {
+    pub class_name: String,
+    pub path: String,
+    pub port: Option<i64>,
+    pub on_open: Option<String>,
+    pub on_message: Option<String>,
+    pub on_close: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct MetricInfo {
     pub kind: MetricKind,
     /// Custom label from the annotation argument, e.g. @Timed("my_label").
@@ -184,6 +194,7 @@ pub struct AnnotationProcessingResult {
     pub test_entries: Vec<TestInfo>,
     pub metric_entries: Vec<MetricInfo>,
     pub entity_entries: Vec<EntityInfo>,
+    pub ws_endpoints: Vec<WsEndpointInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -305,6 +316,48 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks a class as an annotation definition".to_string(),
+            },
+        );
+
+        // WebSocket endpoint annotations
+        registry.insert(
+            "WebsocketEndpoint".to_string(),
+            AnnotationInfo {
+                name: "WebsocketEndpoint".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 1,
+                max_args: 2,
+                description: "@WebsocketEndpoint(\"/path\"[, port]) — marks a class as a WebSocket endpoint; the compiler generates an auto-run accept/message loop as `main` (port defaults to the TINOX_PORT env var, else 8080). Only valid when the file defines no `main` and has exactly one @WebsocketEndpoint class.".to_string(),
+            },
+        );
+        registry.insert(
+            "OnOpen".to_string(),
+            AnnotationInfo {
+                name: "OnOpen".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks the method called once a WebSocket connection is accepted; signature fn(conn: Int64) -> Nothing".to_string(),
+            },
+        );
+        registry.insert(
+            "OnMessage".to_string(),
+            AnnotationInfo {
+                name: "OnMessage".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks the method called for each incoming text message; signature fn(conn: Int64, msg: String) -> Nothing".to_string(),
+            },
+        );
+        registry.insert(
+            "OnClose".to_string(),
+            AnnotationInfo {
+                name: "OnClose".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks the method called when the connection ends (Close/EOF/protocol error); signature fn(conn: Int64) -> Nothing".to_string(),
             },
         );
 
@@ -683,12 +736,22 @@ impl AnnotationProcessor {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
         let mut di_scope: Option<DiScope> = None;
+        let mut ws_endpoint_path: Option<String> = None;
+        let mut ws_endpoint_port: Option<i64> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
                 "Path" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         class_base_path = Some(s.clone());
+                    }
+                }
+                "WebsocketEndpoint" => {
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
+                        ws_endpoint_path = Some(s.clone());
+                    }
+                    if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.get(1) {
+                        ws_endpoint_port = Some(*p);
                     }
                 }
                 "Auth" => {
@@ -884,6 +947,30 @@ impl AnnotationProcessor {
                     _ => {}
                 }
             }
+        }
+
+        if let Some(path) = ws_endpoint_path {
+            let mut on_open: Option<String> = None;
+            let mut on_message: Option<String> = None;
+            let mut on_close: Option<String> = None;
+            for method in &class.methods {
+                for ann in &method.annotations {
+                    match ann.name.as_str() {
+                        "OnOpen" => on_open = Some(method.name.clone()),
+                        "OnMessage" => on_message = Some(method.name.clone()),
+                        "OnClose" => on_close = Some(method.name.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            result.ws_endpoints.push(WsEndpointInfo {
+                class_name: class.name.clone(),
+                path,
+                port: ws_endpoint_port,
+                on_open,
+                on_message,
+                on_close,
+            });
         }
     }
 
@@ -1802,6 +1889,78 @@ namespace web {
 "#);
         assert_eq!(result.route_entries.len(), 1);
         assert_eq!(result.route_entries[0].method, "GET");
+    }
+
+    // --- process: @WebsocketEndpoint / @OnOpen / @OnMessage / @OnClose ---
+
+    #[test]
+    fn test_process_ws_endpoint_full() {
+        let result = proc(r#"
+@WebsocketEndpoint("/echo", 8790)
+class EchoEndpoint {
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing {}
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing {}
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing {}
+}
+"#);
+        assert_eq!(result.ws_endpoints.len(), 1);
+        let ep = &result.ws_endpoints[0];
+        assert_eq!(ep.class_name, "EchoEndpoint");
+        assert_eq!(ep.path, "/echo");
+        assert_eq!(ep.port, Some(8790));
+        assert_eq!(ep.on_open.as_deref(), Some("onOpen"));
+        assert_eq!(ep.on_message.as_deref(), Some("onMessage"));
+        assert_eq!(ep.on_close.as_deref(), Some("onClose"));
+    }
+
+    #[test]
+    fn test_process_ws_endpoint_default_port() {
+        let result = proc("@WebsocketEndpoint(\"/chat\")\nclass ChatEndpoint { @OnMessage\nfn handle(conn: Int64, msg: String) -> Nothing {} }");
+        assert_eq!(result.ws_endpoints[0].port, None);
+    }
+
+    #[test]
+    fn test_process_ws_endpoint_only_on_message() {
+        let result = proc(r#"
+@WebsocketEndpoint("/chat")
+class ChatEndpoint {
+    @OnMessage
+    fn handle(conn: Int64, msg: String) -> Nothing {}
+}
+"#);
+        let ep = &result.ws_endpoints[0];
+        assert!(ep.on_open.is_none());
+        assert_eq!(ep.on_message.as_deref(), Some("handle"));
+        assert!(ep.on_close.is_none());
+    }
+
+    #[test]
+    fn test_process_no_ws_endpoint_without_annotation() {
+        let result = proc("class Plain { fn onMessage(conn: Int64, msg: String) -> Nothing {} }");
+        assert!(result.ws_endpoints.is_empty());
+    }
+
+    #[test]
+    fn test_validate_server_endpoint_on_class_ok() {
+        let errors = valid("@WebsocketEndpoint(\"/x\")\nclass E {}");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_validate_server_endpoint_missing_arg_err() {
+        let errors = valid("@WebsocketEndpoint\nclass E {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("requires at least"));
+    }
+
+    #[test]
+    fn test_validate_on_message_on_function_err() {
+        let errors = valid("@OnMessage\nfn f() -> Nothing {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
     }
 
     // --- custom annotation ---

@@ -117,6 +117,17 @@ pub struct AnnotationInfo {
     pub metric_entries: Vec<MetricEntry>,
 }
 
+/// WebSocket endpoint entry produced by @WebsocketEndpoint annotation processing.
+#[derive(Debug, Clone)]
+pub struct WsEndpointEntry {
+    pub class_name: String,
+    pub path: String,
+    pub port: Option<i64>,
+    pub on_open: Option<String>,
+    pub on_message: Option<String>,
+    pub on_close: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -229,6 +240,8 @@ pub struct CodeGen {
     metric_entries: Vec<MetricEntry>,
     /// ORM entity entries from @Entity / @Table annotations
     entity_entries: Vec<EntityEntry>,
+    /// WebSocket endpoints from @WebsocketEndpoint annotation processing
+    ws_endpoints: Vec<WsEndpointEntry>,
     /// Rich per-expression types from the checker (type-system unification): the
     /// full ValueType per node id, incl. generic args. Since phase 3 the ONLY
     /// checker→codegen type channel (the lossy flat marker table it replaced is
@@ -311,6 +324,7 @@ impl CodeGen {
             json_serializable_classes: Vec::new(),
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
+            ws_endpoints: Vec::new(),
             expr_value_types: HashMap::new(),
             db_url: None,
             metrics_path: None,
@@ -353,6 +367,10 @@ impl CodeGen {
 
     pub fn set_entity_entries(&mut self, entries: Vec<EntityEntry>) {
         self.entity_entries = entries;
+    }
+
+    pub fn set_ws_endpoints(&mut self, endpoints: Vec<WsEndpointEntry>) {
+        self.ws_endpoints = endpoints;
     }
 
     pub fn set_db_url(&mut self, url: Option<String>) {
@@ -1420,6 +1438,9 @@ impl CodeGen {
         // Emit REST route shims and registration function
         self.emit_route_code();
 
+        // Emit the auto-run accept/message loop for a @WebsocketEndpoint class
+        self.emit_ws_code();
+
         // Emit DI globals, getters, factories, and startup initializer
         self.emit_di_code();
 
@@ -1762,6 +1783,91 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
         }
+    }
+
+    /// Generates an auto-run `main` for a single `@WebsocketEndpoint`-annotated class:
+    /// a listen/accept/readMessage loop that calls the class's `@OnOpen`/`@OnMessage`/
+    /// `@OnClose` methods directly by their mangled `{Class}_{method}` symbol —
+    /// this is a compiler-generated transliteration of the explicit v1 loop
+    /// (`examples/ws_echo.tnx`), calling the already-compiled `Ws`/`WsServer`
+    /// static methods from `tinox.core.websocket` (which the file must import).
+    ///
+    /// Only fires when there is exactly one endpoint and no user `main` (mirrors
+    /// the REST auto-main in `emit_route_code`); more than one endpoint is a hard
+    /// error raised before codegen runs (see main.rs), so this defensively no-ops
+    /// instead of silently picking one. A REST auto-main (routes present) wins by
+    /// running first and setting `has_main`.
+    fn emit_ws_code(&mut self) {
+        if self.ws_endpoints.is_empty() || self.has_main || self.ws_endpoints.len() > 1 {
+            return;
+        }
+        let ep = self.ws_endpoints[0].clone();
+
+        // No `declare` here for WsServer_listen/accept/Ws_readMessage/Ws_text/Ws_close:
+        // they are `define`d by tinox.core.websocket itself (required import, checked
+        // below) — a redundant `declare` of an already-`define`d function is rejected
+        // by the IR verifier gate as an "invalid redefinition".
+        if !self.class_named_types.contains("WsFrame") {
+            panic!("@WebsocketEndpoint requires `import tinox.core.websocket;` (WsFrame type not found)");
+        }
+
+        let inst_size = self.struct_layouts.get(ep.class_name.as_str())
+            .map(|f| (f.len().max(1) * 8) as i64)
+            .unwrap_or(8);
+        let port = ep.port
+            .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
+            .unwrap_or(8080);
+
+        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
+        writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+
+        writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
+        writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %conn_open").unwrap();
+
+        writeln!(&mut self.lambda_ir, "conn_open:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+        writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+        if let Some(ref on_open) = ep.on_open {
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
+        }
+        writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+
+        // opcode 1 (text) → @OnMessage; anything else (binary, close, EOF,
+        // protocol error — Ping/Pong are already auto-handled inside
+        // Ws::readMessage and never reach here) ends the connection.
+        writeln!(&mut self.lambda_ir, "msg_loop:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+        writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
+        writeln!(&mut self.lambda_ir, "  %is_text = icmp eq i64 %opcode, 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %handle_text, label %conn_end").unwrap();
+
+        writeln!(&mut self.lambda_ir, "handle_text:").unwrap();
+        if let Some(ref on_message) = ep.on_message {
+            writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
+        }
+        writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "conn_end:").unwrap();
+        if let Some(ref on_close) = ep.on_close {
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
+        }
+        writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+        writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        self.has_main = true;
     }
 
     fn emit_di_code(&mut self) {
