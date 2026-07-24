@@ -578,7 +578,7 @@ class EchoEndpoint
 
 ### AMQP-0-9-1 Client
 
-Die Standardbibliothek enthält einen AMQP-0-9-1-**Client** (`amqp091`, kein Broker) für Message-Queue-Broker wie RabbitMQ. v1 ist eine explizite Publish/Consume-API (kein Lambda-Handler), ein fester Channel pro Verbindung, nur Klartext `amqp://` (kein TLS):
+Die Standardbibliothek enthält einen AMQP-0-9-1-**Client** (`amqp091`, kein Broker) für Message-Queue-Broker wie RabbitMQ. v1 ist eine explizite Publish/Consume-API (kein Lambda-Handler), ein fester Channel pro Verbindung. `amqps://` (TLS) wird unterstützt:
 
 ```tinox
 import tinox.core.amqp091;
@@ -599,7 +599,13 @@ if m.ok {
 conn.close();
 ```
 
-Bewusste v1-Lücken: kein TLS (`amqps://`), kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in `bugs.md` (Abschnitt „Feature: AMQP-0-9-1-Client").
+`amqps://` (TLS) läuft über `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` statt `connect` (sonst identische API). OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig; `verify=true` prüft die Broker-Zertifikatskette + den Hostnamen gegen die System-CA-Stores, `verify=false` ist ein bewusster Opt-out für selbstsignierte Testzertifikate:
+
+```tinox
+let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
+```
+
+Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in `bugs.md` (Abschnitt „Feature: AMQP-0-9-1-Client").
 
 ## Feature-Übersicht
 

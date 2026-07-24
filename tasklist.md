@@ -52,12 +52,13 @@ Zwei Protokollversionen, **sequenziell, 0-9-1 zuerst**:
   (Längenpräfix + beliebige Bytes) — dieselbe Grundlage trägt.
 - `socket.tnx`: `socketCreateTcp()` + `socketConnect(fd, host, port)` zum
   Verbindungsaufbau zum Broker vorhanden.
-- **Blocker 1 — kein TLS-Client:** nur `HttpServer::listenTls` (Server-Accept)
-  existiert; kein `connectTls`/Client-Handshake. Blockiert `amqps://`
-  (Port 5671) UND AMQP-1.0-über-TLS. v1 = Klartext `amqp://` (Port 5672) für
-  beide Protokollversionen; TLS-Client als eigener Folgetask (s. „Später" —
-  analog zur WS-wss-Lücke, aber hier härter: AMQP wird in der Praxis oft nur
-  mit TLS betrieben, das ist eine echte Einschränkung für produktiven Einsatz).
+- **Blocker 1 — kein TLS-Client (behoben, s. Phase 6):** ursprünglich existierte
+  nur `HttpServer::listenTls` (Server-Accept), kein `connectTls`/Client-
+  Handshake — blockierte `amqps://` (Port 5671) für den produktiven Einsatz.
+  Seit Phase 6 (2026-07-24) behoben: `httpConnFromFdTls` (runtime.c) +
+  `Amqp091::dialTls`/`AmqpConnection091::connectTls` (amqp091.tnx). AMQP-1.0-
+  über-TLS profitiert automatisch mit, sobald AMQP 1.0 selbst umgesetzt ist
+  (gleiche Transport-Schicht).
 - **Blocker 2 — Field-Value-Encoder (0-9-1):** Methodenargumente sind
   typmarkiert (bit/octet/short/long/longlong/shortstr/longstr/table/
   timestamp/decimal/boolean …), verschachtelt in Field-Tables (z. B.
@@ -285,7 +286,55 @@ Rundtrip-Assertion auf den Body-Inhalt).
 
 ---
 
-## Später
+## Phase 6 — `amqps://` (TLS-Client) ✅
+
+Blocker 1 aus dem Befund (s. o.) war zwischenzeitlich hinfällig geworden: TLS
+ist seit 2026-07-24 Standard-Build-Default (OpenSSL immer gelinkt, Opt-out
+per `TINOX_TLS=0`), und es fehlte nur noch eine Client-seitige
+Handshake-Primitive (bisher gab es nur `httpServerAcceptTls`, Server-seitig).
+
+- [x] 6.1 `httpConnFromFdTls(fd, host, verify) -> Int64` (runtime.c): neuer
+      globaler Builtin, Gegenstück zu `httpServerAcceptTls` für ausgehende
+      Verbindungen — führt den TLS-Handshake als CLIENT (`SSL_connect`,
+      eigener `g_tls_client_ctx` mit `TLS_client_method()`, getrennt vom
+      Server-`SSL_CTX`) auf einem bereits per `socketConnect` verbundenen fd
+      durch. SNI wird immer gesetzt; `verify=true` prüft Zertifikatskette +
+      Hostname gegen die System-CA-Stores (`SSL_CTX_set_default_verify_paths`
+      + `SSL_set1_host`), `verify=false` ist ein explizit benannter Opt-out
+      für selbstsignierte Testzertifikate. In typecheck (`symbols.functions`)
+      + codegen (`declare i64 @httpConnFromFdTls(i64, i8*, i1)`) registriert.
+- [x] 6.2 `Amqp091::dialTls(host, port, verify) -> Int64` +
+      `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)
+      -> AmqpConnection091` (amqp091.tnx). `connect()`/`connectTls()` wurden
+      auf einen gemeinsamen Kern `finishHandshake(conn, vhost, user, pass)`
+      refaktoriert — der komplette `connection.start/-ok/tune/-ok/open/-ok`-
+      Handshake läuft ausschließlich über `httpConn*`-Primitiven und ist
+      damit TLS-/Plaintext-transparent, ganz ohne Duplikation (analog zur
+      WS-`listenTls`-Erkenntnis: „sollte fast gratis sein" — hier ebenso
+      bestätigt, nur clientseitig).
+- [x] 6.3 Verifiziert (manueller Loopback-Test, analog zur HTTPS/WSS-Praxis
+      — nicht Teil von `make check`, s. u.): kompletter Fake-Broker-Roundtrip
+      (declare/bind/qos/publish/consume/deliver/ack, 6/6 `expect`-Zeilen)
+      über `httpServerCreateTls`+`connectTls(verify: false)` mit
+      selbstsigniertem Testzertifikat — Client UND Server-Seite sind
+      identischer Code wie die bestehenden Plaintext-Loopback-Tests, nur der
+      `dial`/`listen`-Aufruf ist ausgetauscht. Zusätzlich `verify=true` gegen
+      denselben selbstsignierten Cert getestet: Handshake schlägt korrekt mit
+      `certificate verify failed` / TLS-Alert `unknown ca` fehl — beweist,
+      dass die Verifikation echt greift und kein Blindflag ist. Beispiel
+      `examples/amqps_publish_consume.tnx` (braucht echten Broker mit
+      TLS-Listener, analog zu `amqp_publish_consume.tnx`).
+      **Nicht automatisiert:** wie HTTPS (Feature 34) und WSS bräuchte ein
+      committeter e2e-Test ein Testzertifikat als Fixture — aus Konsistenz
+      mit der bestehenden Praxis bewusst nur manuell verifiziert, kein
+      Blocker.
+
+**AMQP-0-9-1-Client-Feature inkl. TLS abgeschlossen.**
+
+---
+
+## Später (bewusst außerhalb v1)
+
 - [ ] **AMQP 1.0** — eigene Roadmap-Phase (Grobskizze, wird erst detailliert
       geplant sobald 0-9-1 steht):
   - Typsystem-Codec (Primitives mit variabler Breite, described types,
@@ -301,10 +350,6 @@ Rundtrip-Assertion auf den Body-Inhalt).
   - Transfer/Flow/Disposition-Nachrichtenfluss für Publish/Consume.
   - **Kein gemeinsamer Code mit `amqp091.tnx`** außer der Transport-Schicht
     (Conn-Handle-Dial) — eigenes Modul `amqp10.tnx`.
-- [ ] TLS-Client (`amqps://`, Port 5671) — braucht eine neue
-      Runtime-Primitive (`socketConnectTls`/Client-Handshake), existiert noch
-      nirgends im Repo (bisher nur Server-TLS via `listenTls`). Blockiert
-      BEIDE Protokollversionen für produktiven Einsatz.
 - [ ] Publisher-Confirms (`confirm.select` + `basic.ack`/`basic.nack` vom
       Broker), Transaktionen (`tx.select`/`tx.commit`/`tx.rollback`).
 - [ ] Mehrere Channels gleichzeitig (Multiplexing, Nebenläufigkeit) statt des

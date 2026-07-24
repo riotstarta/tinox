@@ -171,9 +171,9 @@ namespace tinox.core.http_server
         /**
          * Starts the server with TLS/HTTPS enabled.
          *
-         * Requires the runtime to be built with TLS support (-DTINOX_TLS,
-         * linked against OpenSSL). Without it, httpServerCreateTls returns -1
-         * and this call throws.
+         * OpenSSL is linked by default (opt-out via TINOX_TLS=0 at build
+         * time). Without it, httpServerCreateTls returns -1 and this call
+         * throws.
          *
          * Certificate and key must both be PEM files. certPath may contain the
          * full certificate chain (leaf first).
@@ -189,7 +189,7 @@ namespace tinox.core.http_server
             this.socketHandle = httpServerCreateTls(this.port, certPath, keyPath);
             if this.socketHandle < 0
             {
-                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS-Setup fehlgeschlagen — Runtime ohne -DTINOX_TLS gebaut, oder Cert/Key ungültig)";
+                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS-Setup fehlgeschlagen — Runtime mit TINOX_TLS=0 gebaut, oder Cert/Key ungültig)";
             }
             this.running = true;
             while this.running

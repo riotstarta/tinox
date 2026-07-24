@@ -987,6 +987,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @httpConnReadRequest(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnSendRaw(i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnFromFd(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpConnFromFdTls(i64, i8*, i1)").unwrap();
         writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();

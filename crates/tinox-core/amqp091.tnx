@@ -414,6 +414,23 @@ namespace tinox.core.amqp091
         }
 
         /*
+         * amqps:// — TLS-Variante von dial() (Broker-Standardport 5671).
+         * OpenSSL ist standardmäßig gelinkt (s. HttpServer::listenTls); mit
+         * TINOX_TLS=0 gebaut liefert httpConnFromFdTls -1. verify=true prüft
+         * die Zertifikatskette + den Hostnamen gegen die System-CA-Stores
+         * (Standardfall für echte Broker-Zertifikate); verify=false ist ein
+         * bewusster Opt-out für selbstsignierte Testzertifikate.
+         */
+        fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if !socketConnect(fd, host, port) {
+                return -1;
+            }
+            return httpConnFromFdTls(fd, host, verify);
+        }
+
+        /*
          * Sendet den 8-Byte-Protokoll-Header (AMQP 0-9-1 §4.2.2):
          * "AMQP" 0x00 0x00 0x09 0x01.
          */
@@ -590,6 +607,36 @@ namespace tinox.core.amqp091
             if conn <= 0 {
                 return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen" };
             }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * amqps:// — TLS-Variante von connect() (Broker-Standardport 5671).
+         * Sonst identisch zu connect(): teilt sich den gesamten Handshake
+         * (finishHandshake), weil dieser ausschließlich über httpConn*
+         * läuft — TLS- und Plaintext-transparent (s. dial/dialTls).
+         * verify=true (empfohlen für echte Broker-Zertifikate) prüft die
+         * Zertifikatskette + den Hostnamen gegen die System-CA-Stores;
+         * verify=false ist ein bewusster Opt-out für selbstsignierte
+         * Testzertifikate.
+         */
+        fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -> AmqpConnection091
+        {
+            let conn = Amqp091::dialTls(host, port, verify);
+            if conn <= 0 {
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen (TLS)" };
+            }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * Gemeinsamer Handshake-Kern von connect()/connectTls() nach dem
+         * dial: Protokoll-Header + connection.start/-ok/tune/-ok/open/-ok
+         * (§1.4.2.1). `conn` ist ein bereits verbundenes Handle (Plaintext
+         * ODER TLS — beide sind über httpConn* transparent).
+         */
+        fn finishHandshake(conn: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+        {
             Amqp091::sendProtocolHeader(conn);
 
             // --- connection.start ---

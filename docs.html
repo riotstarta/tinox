@@ -1999,9 +1999,9 @@ if srv < <span class="num">0</span> { <span class="kw">return</span> <span class
   <p>
     AMQP-0-9-1-<strong>Client</strong> (kein Broker) für Message-Queue-Broker
     wie RabbitMQ. Baut auf derselben binärsicheren Conn-Handle-Architektur wie
-    der WebSocket-Server auf. v1: ein fester Channel pro Verbindung, nur
-    Klartext <code>amqp://</code> (Port 5672, kein TLS), explizite
-    Publish/Consume-API (kein Lambda-Handler). AMQP 1.0 ist ein eigenes,
+    der WebSocket-Server auf. v1: ein fester Channel pro Verbindung, explizite
+    Publish/Consume-API (kein Lambda-Handler). <code>amqps://</code> (TLS)
+    wird über <code>connectTls</code> unterstützt. AMQP 1.0 ist ein eigenes,
     späteres Modul mit komplett anderem Typsystem.
   </p>
   <h3>Klassen &amp; Methoden</h3>
@@ -2011,6 +2011,7 @@ if srv < <span class="num">0</span> { <span class="kw">return</span> <span class
     </thead>
     <tbody>
       <tr><td><code>AmqpConnection091::connect</code></td><td><code>fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -&gt; AmqpConnection091</code></td><td>Verbindet, führt SASL-PLAIN-Auth + Negotiation durch. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> bei jedem Fehlschlag (Auth-Fehler, unbekannter vhost, Verbindungsfehler).</td></tr>
+      <tr><td><code>AmqpConnection091::connectTls</code></td><td><code>fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -&gt; AmqpConnection091</code></td><td><code>amqps://</code>-Variante von <code>connect</code> (Broker-Standardport 5671). OpenSSL ist standardmäßig gelinkt. <code>verify=true</code> prüft Zertifikatskette + Hostname gegen die System-CA-Stores, <code>verify=false</code> ist ein bewusster Opt-out für selbstsignierte Testzertifikate.</td></tr>
       <tr><td><code>AmqpConnection091::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Schließt die Verbindung spec-konform (<code>connection.close</code> + <code>close-ok</code> abwarten).</td></tr>
       <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Öffnet einen Channel auf der Verbindung (v1: fester Channel 1, kein Pool).</td></tr>
       <tr><td><code>AmqpChannel091::declareQueue</code></td><td><code>fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -&gt; String</code></td><td>Deklariert eine Queue, liefert den (ggf. server-generierten) Namen oder <code>""</code> bei Fehler.</td></tr>
@@ -2041,12 +2042,30 @@ if m.ok {
 }
 conn.close();
 </code></pre>
+  <h3>amqps:// (TLS)</h3>
   <p>
-    <strong>Bewusste v1-Lücken:</strong> kein TLS-Client (<code>amqps://</code>),
-    kein Multi-Channel, kein <code>exchange.declare</code> (nur Default-Exchange
-    und broker-vordefinierte Exchanges wie <code>amq.direct</code>), keine
+    <code>connectTls</code> ersetzt <code>connect</code> 1:1 — der restliche
+    Code bleibt unverändert, weil der komplette Handshake über dieselben
+    TLS-/Plaintext-transparenten Conn-Primitiven läuft:
+  </p>
+  <pre><code>let conn = AmqpConnection091::connectTls(<span class="str">"broker.example.com"</span>, <span class="num">5671</span>, <span class="str">"/"</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>, <span class="kw">true</span>);
+<span class="cmt">// verify=true prueft Zertifikatskette + Hostname gegen System-CA-Stores;</span>
+<span class="cmt">// verify=false ist ein bewusster Opt-out fuer selbstsignierte Testzertifikate.</span>
+</code></pre>
+  <p>
+    OpenSSL ist standardmäßig gelinkt, genau wie bei
+    <code>HttpServer::listenTls</code>/<code>WsServer::listenTls</code> — kein
+    Extra-Flag nötig. Opt-out per <code>TINOX_TLS=0</code>, falls kein OpenSSL
+    zum Bauen verfügbar ist.
+  </p>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> kein Multi-Channel, kein
+    <code>exchange.declare</code> (nur Default-Exchange und
+    broker-vordefinierte Exchanges wie <code>amq.direct</code>), keine
     Publisher-Confirms/Transaktionen, keine Annotation-getriebene Consumer-API,
-    kein Heartbeat-Sender/Auto-Reconnect. AMQP 1.0 ist nicht Teil dieses Moduls.
+    kein Heartbeat-Sender/Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
+    <code>connectTls</code> (verifiziert nur gegen die System-CA-Stores). AMQP
+    1.0 ist nicht Teil dieses Moduls.
   </p>
   </div>
 

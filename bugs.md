@@ -1328,15 +1328,16 @@ statt eines fds und nutzt `httpConn*`; `listen()` (Plaintext) und das neue
 `listenTls()` teilen sich diesen Handler — der einzige Unterschied ist
 `httpServerAcceptConnHandle` vs. `httpServerAcceptTls`.
 
-**Build — opt-in per `TINOX_TLS=1`** (main.rs): setzt `-DTINOX_TLS` beim
-Runtime-Compile und linkt `-lssl -lcrypto`. Default-Build bleibt bewusst
-OpenSSL-frei (Zeile-1651-Design). Ohne das Flag liefern die `*Tls`-Funktionen -1
-mit klarer stderr-Diagnose statt eines Linkfehlers.
+**Build — standardmäßig an** (main.rs): setzt `-DTINOX_TLS` beim
+Runtime-Compile und linkt `-lssl -lcrypto`. **Seit 2026-07-24 Default** (SSL ist
+Standard, kein Grund für Opt-in); Opt-out per `TINOX_TLS=0`, falls kein OpenSSL
+zum Bauen verfügbar ist. Ohne OpenSSL (`TINOX_TLS=0`) liefern die `*Tls`-Funktionen
+-1 mit klarer stderr-Diagnose statt eines Linkfehlers.
 
 **Verifiziert:** self-signed Cert, `curl -k https://localhost:8443/hello` → 200
 „Hallo ueber TLS!", 404-Routing, `openssl s_client` handelt TLSv1.3 /
 AES-256-GCM aus; Plain-HTTP gegen den TLS-Port wird korrekt abgewiesen
-(`tls_validate_record_header:http request`). Default-Build ohne Flag: Plaintext
+(`tls_validate_record_header:http request`). Mit `TINOX_TLS=0`: Plaintext
 `listen()` unverändert grün, kein OpenSSL gelinkt; `listenTls` bricht sauber ab
 (kein Crash). `make check` voll grün.
 
@@ -2812,6 +2813,14 @@ Text-Message-Roundtrip erfolgreich. Mit `TINOX_TLS=0` (kein OpenSSL gelinkt):
 `listenTls` liefert `-1` mit `"httpServerCreateTls: runtime ohne TLS gebaut"`
 auf stderr, kein Crash, kein Linkfehler. `make check` grün.
 
+**Nachtrag (2026-07-24) — TLS jetzt Standard-Default:** `main.rs` linkt
+OpenSSL jetzt ohne gesetzte Env-Var (`TINOX_TLS` nur noch zum expliziten
+Abschalten via `TINOX_TLS=0`, z.B. auf Systemen ohne OpenSSL-Dev-Libs).
+Begründung: TLS ist der De-facto-Standard, ein Opt-in-Flag war unnötige
+Reibung. Verifiziert: Default-Build linkt `libssl.so.3`/`libcrypto.so.3`
+(`ldd`), `wss_echo` Beispiel akzeptiert TLS-Handshake ohne jegliche Env-Var
+(`openssl s_client -connect localhost:8791` → TLSv1.3, CN=localhost).
+
 ---
 
 ## Feature: AMQP-0-9-1-Client — `tinox.core.amqp091`
@@ -2876,10 +2885,9 @@ Frame statt eines harten Fehlers. Gefixt: `shortstr()` setzt jetzt ein
 `publish` VOR dem Senden prüfen und stattdessen hart mit leerem Ergebnis +
 `errorMessage` abbrechen — kein Byte geht in diesem Fall auf die Leitung.
 
-**Bewusste v1-Lücken (s. tasklist.md „Später"):** kein TLS-Client (nur
-Klartext `amqp://`, Port 5672 — `amqps://` bräuchte eine neue
-`socketConnectTls`-Primitive, existiert noch nirgends im Repo), kein
-Multi-Channel (ein fester Channel pro Verbindung), kein `exchange.declare`
+**Bewusste v1-Lücken (s. tasklist.md „Später"):** `amqps://` (TLS) ist seit
+Phase 6 (Nachtrag unten) implementiert. Weiterhin offen: kein Multi-Channel
+(ein fester Channel pro Verbindung), kein `exchange.declare`
 (nur Default-Exchange + broker-vordefinierte Exchanges wie `amq.direct`),
 keine Publisher-Confirms/Transaktionen, keine Annotation-getriebene
 Consumer-API (explizite Poll-Schleife wie bei WS v1, gleiche Begründung:
@@ -2912,6 +2920,45 @@ Aufrufsequenz fehlerfrei. Praktisch unerreichbar im v1-Client (überlange
 Namen werden IMMER clientseitig ohne Netzwerkaufruf verworfen), deshalb kein
 Blocker — die ausgelieferten Tests vermeiden das auslösende Muster bewusst
 (s. Kommentare in `amqp_edge_cases.tnx`/`amqp_shortstr_limits.tnx`).
+
+**Nachtrag (2026-07-24) — `amqps://` (TLS-Client, tasklist.md Phase 6):**
+`AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` +
+`Amqp091::dialTls(host, port, verify)` ergänzt. Anders als `wss://`
+(Server-seitige TLS-Variante von `listen()`) ist der AMQP-Client ein
+**TLS-Client** — dafür gab es noch keine Runtime-Primitive, nur
+`httpServerAcceptTls` (Server-Accept). Neu: `httpConnFromFdTls(fd, host,
+verify)` (runtime.c) — Gegenstück für ausgehende Verbindungen, führt
+`SSL_connect` über einen eigenen `g_tls_client_ctx`
+(`TLS_client_method()`, getrennt vom Server-`SSL_CTX`) auf einem bereits
+per `socketConnect` verbundenen fd durch. SNI wird immer gesetzt;
+`verify=true` prüft Zertifikatskette + Hostname gegen die
+System-CA-Stores (`SSL_CTX_set_default_verify_paths` + `SSL_set1_host`),
+`verify=false` ist ein explizit benannter Opt-out für selbstsignierte
+Testzertifikate (kein globaler CA-Bundle-Parameter in v1 — s. Lücken
+oben). `connect()`/`connectTls()` teilen sich seitdem den kompletten
+Handshake über einen neuen gemeinsamen Kern `finishHandshake(conn, vhost,
+user, pass)` (vorher Duplikat-Risiko) — funktioniert TLS-transparent, weil
+ausschließlich über `httpConn*`-Primitiven gearbeitet wird, exakt dieselbe
+Erkenntnis wie beim WS-`listenTls`-Nachtrag, nur jetzt für die
+Client-Seite bestätigt. TLS ist seit demselben Tag Standard-Build-Default
+(OpenSSL immer gelinkt, s. Nachtrag beim WS-Feature oben) — kein
+Extra-Build-Flag für `amqps://` nötig.
+
+**Verifiziert:** manueller Fake-Broker-Loopback-Test (analog zu
+`amqp_publish_consume_loopback.tnx`, aber `httpServerCreateTls` +
+`connectTls(verify: false)` mit selbstsigniertem Testzertifikat statt
+Plaintext) — voller declare/bind/qos/publish/consume/deliver/ack-Roundtrip,
+alle 6 erwarteten Ausgaben korrekt. Zusätzlich `verify=true` gegen
+denselben selbstsignierten Cert getestet: Handshake schlägt korrekt mit
+`certificate verify failed` (TLS-Alert `unknown ca`) fehl — beweist, dass
+die Verifikation echt greift statt nur ein Blindflag zu sein. Beispiel
+`examples/amqps_publish_consume.tnx`. `make check` grün.
+**Nicht automatisiert** (wie Feature 34/HTTPS und die WSS-Ergänzung): ein
+committeter e2e-Test bräuchte ein Testzertifikat als Fixture — aus
+Konsistenz mit der bestehenden Praxis bewusst nur manuell verifiziert,
+kein Blocker.
+
+---
 
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 

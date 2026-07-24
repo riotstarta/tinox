@@ -791,6 +791,7 @@ impl TypeChecker {
         symbols.functions.insert("httpConnReadRequest".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("httpConnSendRaw".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
         symbols.functions.insert("httpConnFromFd".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpConnFromFdTls".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("host".to_string(), ValueType::String), ("verify".to_string(), ValueType::Bool)], return_type: ValueType::Int });
         // Binärsichere Conn-Primitiven (WebSocket-Frames): Bytes als Array<Int64>
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });

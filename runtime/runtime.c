@@ -2156,7 +2156,8 @@ typedef struct { int fd; void* ssl; } TinoxConn;   // ssl==NULL => Plaintext
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-static SSL_CTX* g_tls_ctx = NULL;
+static SSL_CTX* g_tls_ctx = NULL;        // Server-Seite (listenTls)
+static SSL_CTX* g_tls_client_ctx = NULL; // Client-Seite (dialTls, z.B. amqps://)
 
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
     if (c->ssl) return (ssize_t)SSL_read((SSL*)c->ssl, buf, (int)n);
@@ -2395,6 +2396,53 @@ int64_t httpConnFromFd(int64_t fd) {
     c->fd = (int)fd;
     c->ssl = NULL;
     return (int64_t)(intptr_t)c;
+}
+
+// Wickelt einen bereits verbundenen Socket-fd (Client-Seite, z.B. via
+// socketConnect) in ein TLS-Conn-Handle: fuehrt den Handshake als TLS-CLIENT
+// durch (Gegenstueck zu httpServerAcceptTls, das Server-seitig akzeptiert).
+// Fuer ausgehende Verbindungen wie amqps:// (s. amqp091.tnx: Amqp091::dialTls).
+// host wird immer als SNI gesendet; verify=true prueft zusaetzlich die
+// Zertifikatskette UND den Hostnamen gegen die System-CA-Stores (Standardfall
+// fuer echte Broker-Zertifikate) -- verify=false ist ein bewusster,
+// explizit benannter Opt-out fuer selbstsignierte Testzertifikate.
+int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
+#ifdef TINOX_TLS
+    if (fd < 0) return -1;
+    if (!g_tls_client_ctx) {
+        SSL_library_init();
+        SSL_load_error_strings();
+        OpenSSL_add_ssl_algorithms();
+        g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+        if (!g_tls_client_ctx) { close((int)fd); return -1; }
+        SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+        SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+    }
+    SSL* ssl = SSL_new(g_tls_client_ctx);
+    if (!ssl) { close((int)fd); return -1; }
+    SSL_set_tlsext_host_name(ssl, host); // SNI
+    if (verify) {
+        SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+        SSL_set1_host(ssl, host); // Hostname muss zum Peer-Zertifikat passen
+    } else {
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+    }
+    SSL_set_fd(ssl, (int)fd);
+    if (SSL_connect(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_free(ssl);
+        close((int)fd);
+        return -1;
+    }
+    TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    c->fd = (int)fd;
+    c->ssl = ssl;
+    return (int64_t)(intptr_t)c;
+#else
+    (void)fd; (void)host; (void)verify;
+    fprintf(stderr, "httpConnFromFdTls: runtime ohne TLS gebaut (TINOX_TLS=0)\n");
+    return -1;
+#endif
 }
 
 // ---- Binärsichere Conn-Primitiven (WebSocket-Frames u.ä.) ----

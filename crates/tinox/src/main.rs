@@ -1962,10 +1962,10 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         .map(|v| v.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
 
-    // HTTPS/TLS-Server: opt-in per TINOX_TLS=1. Aktiviert den TLS-Code in
-    // runtime.c (-DTINOX_TLS) und linkt OpenSSL (-lssl -lcrypto). Default-Build
-    // bleibt bewusst OpenSSL-frei.
-    let tls_enabled = std::env::var("TINOX_TLS").map(|v| v == "1" || v == "true").unwrap_or(false);
+    // HTTPS/TLS-Server: standardmäßig an. Aktiviert den TLS-Code in runtime.c
+    // (-DTINOX_TLS) und linkt OpenSSL (-lssl -lcrypto). Opt-out per
+    // TINOX_TLS=0, falls z.B. kein OpenSSL zum Bauen verfügbar ist.
+    let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
 
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
     if db_driver == "postgres" {
