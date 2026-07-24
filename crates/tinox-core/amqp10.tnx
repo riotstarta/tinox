@@ -560,6 +560,18 @@ namespace tinox.core.amqp10
         var fields: List<Amqp10Value>;
     }
 
+    /*
+     * Ergebnis von Amqp10::negotiateSasl (Phase 4). ok == false bei jedem
+     * Fehlschlag (falscher Frame-Typ, unerwartete Performative, PLAIN nicht
+     * angeboten, sasl-outcome-code != 0) — errorMessage beschreibt dann die
+     * Ursache, analog zu 0-9-1s errorMessage-Feld-Konvention.
+     */
+    class Amqp10SaslResult
+    {
+        var ok: Bool;
+        var errorMessage: String;
+    }
+
     class Amqp10
     {
         /*
@@ -746,6 +758,106 @@ namespace tinox.core.amqp10
                 _ => {}
             }
             return Amqp10Performative { descriptor: descriptor, fields: fields };
+        }
+
+        /*
+         * SASL-PLAIN-Response: "\0user\0pass" als Rohbytes — identische
+         * Byte-Struktur zu 0-9-1s Amqp091::saslPlainResponse, aber neu
+         * implementiert im neuen Modul (kein Cross-Import zwischen den
+         * beiden AMQP-Modulen).
+         */
+        fn saslPlainResponse(user: String, pass: String) -> List<Int64>
+        {
+            var bytes: List<Int64> = [];
+            bytes.push(0);
+            for i in 0..user.len() {
+                bytes.push(user.charCodeAt(i) & 0xFF);
+            }
+            bytes.push(0);
+            for i in 0..pass.len() {
+                bytes.push(pass.charCodeAt(i) & 0xFF);
+            }
+            return bytes;
+        }
+
+        /*
+         * SASL-Negotiation (Descriptor-Codes s. tasklist.md-Sondierung):
+         * sasl-mechanisms (0x40) empfangen -> PLAIN suchen -> sasl-init
+         * (0x41) senden -> sasl-outcome (0x44) empfangen -> code prüfen.
+         * Läuft NACH dem SASL-Protokoll-Header (sendSaslProtocolHeader +
+         * checkProtocolHeaderEcho, Phase 1) auf DERSELBEN Verbindung, auf
+         * der danach der AMQP-Header + `open` folgen (Phase 5). v1: nur
+         * PLAIN, keine sasl-challenge/-response-Runde (nur für
+         * Mechanismen wie SCRAM nötig).
+         */
+        fn negotiateSasl(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
+        {
+            // --- sasl-mechanisms empfangen ---
+            let f1 = Amqp10::readFrame(conn);
+            if f1.frameType != 1 {
+                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1), bekam frameType=" + f1.frameType.toString() };
+            }
+            let p1 = Amqp10::decodePerformative(f1.body);
+            if p1.descriptor != 0x40 {
+                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-mechanisms (0x40), bekam descriptor=" + p1.descriptor.toString() };
+            }
+            if p1.fields.len() < 1 {
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms ohne Mechanismen-Feld" };
+            }
+            var hasPlain: Bool = false;
+            match p1.fields[0]
+            {
+                // sasl-server-mechanisms ist laut Spec immer ein
+                // symbol-array (auch bei genau einem Mechanismus) —
+                // ListVal ist der generische Rueckgabetyp von
+                // Amqp10Reader::readArray. Der SymbolVal-Zweig ist reine
+                // Verteidigung gegen abweichende Broker, nicht spec-noetig.
+                ListVal(mechs) => {
+                    for i in 0..mechs.len() {
+                        match mechs[i] {
+                            SymbolVal(s) => { if s == "PLAIN" { hasPlain = true; } }
+                            _ => {}
+                        }
+                    }
+                }
+                SymbolVal(s) => { if s == "PLAIN" { hasPlain = true; } }
+                _ => {}
+            }
+            if !hasPlain {
+                return Amqp10SaslResult { ok: false, errorMessage: "Broker bietet SASL-Mechanismus PLAIN nicht an" };
+            }
+
+            // --- sasl-init senden: mechanism, initial-response, hostname(null) ---
+            var initFields: List<Amqp10Value> = [
+                Amqp10Value::SymbolVal("PLAIN"),
+                Amqp10Value::BinaryVal(Amqp10::saslPlainResponse(user, pass)),
+                Amqp10Value::NullVal
+            ];
+            let initBody = Amqp10::encodePerformative(0x41, initFields);
+            Amqp10::writeFrame(conn, 1, 0, initBody);
+
+            // --- sasl-outcome empfangen ---
+            let f2 = Amqp10::readFrame(conn);
+            if f2.frameType != 1 {
+                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1), bekam frameType=" + f2.frameType.toString() };
+            }
+            let p2 = Amqp10::decodePerformative(f2.body);
+            if p2.descriptor != 0x44 {
+                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-outcome (0x44), bekam descriptor=" + p2.descriptor.toString() };
+            }
+            if p2.fields.len() < 1 {
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome ohne code-Feld" };
+            }
+            var code: Int64 = -1;
+            match p2.fields[0]
+            {
+                UByteVal(n) => { code = n; }
+                _ => {}
+            }
+            if code != 0 {
+                return Amqp10SaslResult { ok: false, errorMessage: "SASL-Auth fehlgeschlagen, sasl-outcome-code=" + code.toString() };
+            }
+            return Amqp10SaslResult { ok: true, errorMessage: "" };
         }
     }
 }

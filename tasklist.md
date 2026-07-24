@@ -240,22 +240,35 @@ genauso funktionieren):
       (AMQP-1.0-spezifisch, kein 0-9-1-Äquivalent) + alle vier
       Protokollfehler-Fälle + EOF. 10× stabil wiederholt.
 
-## Phase 4 — SASL-Negotiation
+## Phase 4 — SASL-Negotiation ✅
 
-- [ ] 4.1 `sasl-mechanisms` empfangen (Broker bietet Mechanismen an, Liste
-      von `symbol`-Werten) — v1 sucht `PLAIN` in der Liste, sonst harter
+- [x] 4.1 `sasl-mechanisms` (Descriptor `0x40`) empfangen — Broker bietet
+      Mechanismen als `symbol-array` an (laut Spec immer ein Array, auch
+      bei genau einem Mechanismus); v1 sucht `PLAIN` darin, sonst harter
       Fehler (analog zu 0-9-1s `mechanisms.contains("PLAIN")`-Check).
-- [ ] 4.2 `sasl-init` senden: Mechanism-Name (`symbol`) + `initial-response`
-      (`binary`, dieselbe SASL-PLAIN-Byte-Struktur `\0user\0pass` wie bei
-      0-9-1 — `Amqp091::saslPlainResponse` als Vorlage, aber neu
-      implementiert im neuen Modul) + optionales `hostname`.
-- [ ] 4.3 `sasl-outcome` empfangen und `code`-Feld prüfen (0 = ok, alles
-      andere = harter Auth-Fehler mit `errorMessage`). NICHT unterstützt:
+      Zusätzlich ein `SymbolVal`-Fallback für den (spec-widrigen, aber
+      defensiv abgefangenen) Fall eines nackten Einzelwerts ohne
+      Array-Hülle.
+- [x] 4.2 `sasl-init` (`0x41`) senden: `SymbolVal("PLAIN")` +
+      `BinaryVal(saslPlainResponse(user, pass))` (dieselbe
+      SASL-PLAIN-Byte-Struktur `\0user\0pass` wie bei 0-9-1 —
+      `Amqp10::saslPlainResponse`, neu implementiert, kein Cross-Import
+      zwischen den AMQP-Modulen) + `NullVal` für das optionale
+      `hostname`-Feld.
+- [x] 4.3 `sasl-outcome` (`0x44`) empfangen, `code`-Feld (`UByteVal`)
+      prüfen (0 = ok, alles andere = harter Auth-Fehler mit
+      `errorMessage`, die den Code nennt). NICHT unterstützt:
       `sasl-challenge`/`sasl-response`-Runden (nur für Mechanismen wie
-      SCRAM nötig, v1 bleibt bei PLAIN, das braucht keine Challenge-Runde).
-- [ ] 4.4 e2e-Test: erfolgreiche Negotiation (simulierter Broker via
-      `spawn`/`await`, Muster wie `amqp_connection_negotiation.tnx`),
-      abgelehnte Auth (`sasl-outcome` code != 0) → sauberer Fehler.
+      SCRAM nötig, v1 bleibt bei PLAIN).
+      `Amqp10::negotiateSasl(conn, user, pass) -> Amqp10SaslResult`
+      bündelt 4.1-4.3 zu einem wiederverwendbaren Baustein für Phase 5.
+- [x] 4.4 e2e-Test `tests/e2e/amqp10_sasl_negotiation.tnx` (simulierter
+      Broker via `spawn`/`await`, Muster wie
+      `amqp_connection_negotiation.tnx`): erfolgreiche Negotiation
+      (inkl. Prüfung, dass der Broker tatsächlich `PLAIN` im `sasl-init`
+      sieht) UND abgelehnte Auth (`sasl-outcome` code = 1) → sauberer
+      Fehler mit dem Code in `errorMessage`. 20× stabil wiederholt
+      (Bug-68-Vorsicht, da `spawn`/`await` beteiligt ist).
 
 ## Phase 5 — Connection/Session/Link-Handshake
 
