@@ -490,11 +490,16 @@
     <li class="section-label">HTTP &amp; Network</li>
     <li><a href="#mod-http_server">http_server</a></li>
     <li><a href="#mod-http2_server">http2_server</a></li>
+    <li><a href="#mod-websocket">websocket</a></li>
     <li><a href="#mod-hpack">hpack</a></li>
     <li><a href="#mod-http">http</a></li>
     <li><a href="#mod-rest">rest</a></li>
     <li><a href="#mod-rest_framework">rest_framework</a></li>
     <li><a href="#mod-socket">socket</a></li>
+
+    <li class="section-label">Messaging</li>
+    <li><a href="#mod-amqp091">amqp091</a></li>
+    <li><a href="#mod-amqp10">amqp10</a></li>
 
     <li class="section-label">Data Formats</li>
     <li><a href="#mod-json">json</a></li>
@@ -1128,8 +1133,16 @@
       <div class="card">
         <h4>HTTP &amp; Web</h4>
         <p><code>http_server</code>, <code>rest</code>, <code>rest_framework</code>,
-        <code>http</code> – complete HTTP/1.1 server with routing, middleware, and
-        content negotiation.</p>
+        <code>http</code>, <code>websocket</code> – complete HTTP/1.1 server with
+        routing, middleware, and content negotiation, plus a WebSocket server per
+        RFC 6455.</p>
+      </div>
+      <div class="card">
+        <h4>Messaging</h4>
+        <p><code>amqp091</code> – AMQP-0-9-1 client (no broker) for
+        message-queue brokers like RabbitMQ: connect, channel, publish/consume.
+        <code>amqp10</code> – standalone AMQP-1.0 client with a
+        connection/session/link hierarchy and credit-based flow control.</p>
       </div>
       <div class="card">
         <h4>Data Formats</h4>
@@ -1868,6 +1881,252 @@ server.delete("/users/:id", ctx => {
 // full RFC-7540 framing, HPACK compression, and stream multiplexing
 server.listen();
 </code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-websocket">
+
+  <h2>websocket</h2>
+  <p class="import-hint"><code>import tinox.core.websocket;</code></p>
+  <p>
+    WebSocket server per RFC 6455, built on the HTTP server's conn-handle
+    architecture. The textual handshake (upgrade request,
+    <code>Sec-WebSocket-Accept</code>) runs over the existing C-string paths,
+    the binary frames over length-based byte primitives so NUL bytes and
+    masking are handled correctly. v1 is deliberately an explicit polling-loop
+    API (no lambda handler) and serves one connection at a time per server
+    (no epoll for WS).
+  </p>
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>WsServer::listen</code></td><td><code>fn listen(port: Int64) -&gt; Int64</code></td><td>Opens the server socket. Returns the server handle (&lt; 0 on bind failure, e.g. port already in use).</td></tr>
+      <tr><td><code>WsServer::accept</code></td><td><code>fn accept(srv: Int64) -&gt; Int64</code></td><td>Accepts the next connection and performs the RFC 6455 handshake. Returns the conn handle, or <code>-1</code> if the handshake fails (the connection is already closed in that case).</td></tr>
+      <tr><td><code>WsServer::listenTls</code></td><td><code>fn listenTls(port: Int64, certPath: String, keyPath: String) -&gt; Int64</code></td><td><code>wss://</code> variant of <code>listen</code>. OpenSSL is linked by default; when built with <code>TINOX_TLS=0</code> this function returns <code>-1</code> with a stderr diagnostic instead of a link error.</td></tr>
+      <tr><td><code>WsServer::acceptTls</code></td><td><code>fn acceptTls(srv: Int64) -&gt; Int64</code></td><td><code>wss://</code> variant of <code>accept</code>: TLS handshake followed by the same RFC 6455 handshake over the same conn handle.</td></tr>
+      <tr><td><code>Ws::readMessage</code></td><td><code>fn readMessage(conn: Int64) -&gt; WsFrame</code></td><td>Reads the next data message (blocking). Automatically answers Ping with Pong and acknowledges Close with Close (returns the close frame so the caller can end its loop).</td></tr>
+      <tr><td><code>Ws::sendText</code></td><td><code>fn sendText(conn: Int64, s: String) -&gt; Nothing</code></td><td>Sends a text frame (opcode 1).</td></tr>
+      <tr><td><code>Ws::sendBinary</code></td><td><code>fn sendBinary(conn: Int64, bytes: List&lt;Int64&gt;) -&gt; Nothing</code></td><td>Sends a binary frame (opcode 2), one byte per list slot.</td></tr>
+      <tr><td><code>Ws::sendPing</code></td><td><code>fn sendPing(conn: Int64) -&gt; Nothing</code></td><td>Sends a ping frame.</td></tr>
+      <tr><td><code>Ws::sendClose</code></td><td><code>fn sendClose(conn: Int64, code: Int64) -&gt; Nothing</code></td><td>Sends a close frame with the given status code.</td></tr>
+      <tr><td><code>Ws::close</code></td><td><code>fn close(conn: Int64) -&gt; Nothing</code></td><td>Closes the underlying connection.</td></tr>
+      <tr><td><code>Ws::text</code></td><td><code>fn text(f: WsFrame) -&gt; String</code></td><td>Converts a frame's payload to a string (byte-based).</td></tr>
+      <tr><td><code>WsFrame</code></td><td><code>{ fin: Bool, opcode: Int64, payload: List&lt;Int64&gt; }</code></td><td>A frame that was read. Opcode as per RFC 6455 (1 text, 2 binary, 8 close, 9 ping, 10 pong); additionally <code>-1</code> = connection closed/EOF, <code>-2</code> = protocol error (the connection has already been answered with a close).</td></tr>
+    </tbody>
+  </table>
+  <h3>Example</h3>
+  <pre><code>import tinox.core.websocket;
+
+let srv: Int64 = WsServer::listen(8790);
+
+while true {
+    let conn: Int64 = WsServer::accept(srv);
+    if conn <= 0 { continue; }
+
+    while true {
+        let f: WsFrame = Ws::readMessage(conn);
+        if f.opcode == 1 {
+            Ws::sendText(conn, "echo: " + Ws::text(f));
+            continue;
+        }
+        if f.opcode == 2 {
+            Ws::sendBinary(conn, f.payload);
+            continue;
+        }
+        break; // Close (8), EOF (-1), or protocol error (-2)
+    }
+    Ws::close(conn);
+}
+</code></pre>
+  <p>
+    <strong>Deliberate v1 gaps:</strong> no fragmentation/continuation frames
+    (→ close 1003), no client (<code>WsClient</code>), and no
+    permessage-deflate. Payload cap 16&nbsp;MB. <code>wss://</code> (TLS) is
+    supported, see <code>listenTls</code>/<code>acceptTls</code> above.
+  </p>
+  <h3>wss:// (TLS)</h3>
+  <p>
+    <code>listenTls</code>/<code>acceptTls</code> replace <code>listen</code>/<code>accept</code>
+    1:1 — the rest of the code (handshake, <code>readMessage</code>, <code>sendText</code>, etc.)
+    stays unchanged, because the underlying conn-handle primitives are already
+    transparent for TLS and plaintext connections:
+  </p>
+  <pre><code>import tinox.core.websocket;
+
+let srv = WsServer::listenTls(<span class="num">8791</span>, <span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>);
+if srv < <span class="num">0</span> { <span class="kw">return</span> <span class="num">1</span>; } <span class="cmt">// port in use, built with TINOX_TLS=0, or invalid cert/key</span>
+
+<span class="kw">let</span> conn = WsServer::acceptTls(srv); <span class="cmt">// TLS + WS handshake</span>
+</code></pre>
+  <p>
+    OpenSSL is linked by default, just like with
+    <code>HttpServer::listenTls</code> — no extra flag needed. Opt out via
+    <code>TINOX_TLS=0</code> if no OpenSSL is available for building.
+  </p>
+  <h3>Annotation-driven variant</h3>
+  <p>
+    Alternatively, the compiler generates the entire loop itself — see
+    <a href="#annotationen">Annotations</a> (<code>@WebsocketEndpoint</code>/<code>@OnOpen</code>/
+    <code>@OnMessage</code>/<code>@OnClose</code>). Only applies if the file defines no
+    <code>main</code> of its own and contains exactly one <code>@WebsocketEndpoint</code>
+    class (more than one is a compile error, not silently ignored):
+  </p>
+  <pre><code>import tinox.core.websocket;
+
+<span class="ann">@WebsocketEndpoint</span>(<span class="str">"/echo"</span>, <span class="num">8793</span>)
+<span class="kw">class</span> <span class="type">EchoEndpoint</span>
+{
+    <span class="ann">@OnMessage</span>
+    <span class="kw">fn</span> <span class="fn">onMessage</span>(conn: Int64, msg: String) -> Nothing
+    {
+        Ws::sendText(conn, <span class="str">"echo: "</span> + msg);
+    }
+}
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-amqp091">
+
+  <h2>amqp091</h2>
+  <p class="import-hint"><code>import tinox.core.amqp091;</code></p>
+  <p>
+    AMQP-0-9-1 <strong>client</strong> (no broker) for message-queue brokers
+    like RabbitMQ. Built on the same binary-safe conn-handle architecture as
+    the WebSocket server. v1: a fixed channel per connection, an explicit
+    publish/consume API (no lambda handler). <code>amqps://</code> (TLS) is
+    supported via <code>connectTls</code>. AMQP 1.0 is a separate, later
+    module with a completely different type system.
+  </p>
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>AmqpConnection091::connect</code></td><td><code>fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -&gt; AmqpConnection091</code></td><td>Connects, performs SASL PLAIN auth + negotiation. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> on any failure (auth failure, unknown vhost, connection error).</td></tr>
+      <tr><td><code>AmqpConnection091::connectTls</code></td><td><code>fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -&gt; AmqpConnection091</code></td><td><code>amqps://</code> variant of <code>connect</code> (broker default port 5671). OpenSSL is linked by default. <code>verify=true</code> checks the certificate chain + hostname against the system CA stores, <code>verify=false</code> is a deliberate opt-out for self-signed test certificates.</td></tr>
+      <tr><td><code>AmqpConnection091::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Closes the connection per spec (<code>connection.close</code>, waits for <code>close-ok</code>).</td></tr>
+      <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Opens a channel on the connection (v1: fixed channel 1, no pool).</td></tr>
+      <tr><td><code>AmqpChannel091::declareQueue</code></td><td><code>fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -&gt; String</code></td><td>Declares a queue, returns the (possibly server-generated) name, or <code>""</code> on failure.</td></tr>
+      <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Binds a queue to an exchange. Binding to the default exchange (<code>""</code>) is forbidden by spec (the broker responds with an error) — queues are implicitly bound there under their own name.</td></tr>
+      <tr><td><code>AmqpChannel091::qos</code></td><td><code>fn qos(prefetchCount: Int64) -&gt; Bool</code></td><td>Sets the prefetch limit before <code>consume()</code>.</td></tr>
+      <tr><td><code>AmqpChannel091::publish</code></td><td><code>fn publish(exchange: String, routingKey: String, body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Publishes a message (no return value, asynchronous per spec). The body is automatically split across multiple frames at <code>frameMax</code>.</td></tr>
+      <tr><td><code>AmqpChannel091::consume</code></td><td><code>fn consume(queue: String) -&gt; String</code></td><td>Registers the client as a consumer, returns the consumer tag, or <code>""</code> on failure.</td></tr>
+      <tr><td><code>AmqpChannel091::nextMessage</code></td><td><code>fn nextMessage() -&gt; AmqpMessage091</code></td><td>Blocking pull of the next message (requires <code>consume()</code>). Automatically reassembles body frames.</td></tr>
+      <tr><td><code>AmqpChannel091::ack</code></td><td><code>fn ack(deliveryTag: Int64) -&gt; Nothing</code></td><td>Acknowledges a message received via <code>nextMessage()</code>.</td></tr>
+      <tr><td><code>AmqpMessage091</code></td><td><code>{ deliveryTag: Int64, exchange: String, routingKey: String, contentType: String, body: List&lt;Int64&gt;, ok: Bool, errorMessage: String }</code></td><td>A message received via <code>nextMessage()</code>. <code>ok == false</code> on any failure, <code>errorMessage</code> describes the cause.</td></tr>
+    </tbody>
+  </table>
+  <h3>Example</h3>
+  <pre><code>import tinox.core.amqp091;
+
+let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+let ch = AmqpChannel091::open(conn);
+let queueName = ch.declareQueue("my-queue", true, false, false);
+
+var body: List&lt;Int64&gt; = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+ch.publish("", queueName, body, "text/plain");
+
+ch.consume(queueName);
+let m = ch.nextMessage();
+if m.ok {
+    ch.ack(m.deliveryTag);
+}
+conn.close();
+</code></pre>
+  <h3>amqps:// (TLS)</h3>
+  <p>
+    <code>connectTls</code> replaces <code>connect</code> 1:1 — the rest of
+    the code stays unchanged, because the whole handshake runs over the same
+    TLS-/plaintext-transparent conn primitives:
+  </p>
+  <pre><code>let conn = AmqpConnection091::connectTls(<span class="str">"broker.example.com"</span>, <span class="num">5671</span>, <span class="str">"/"</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>, <span class="kw">true</span>);
+<span class="cmt">// verify=true checks the certificate chain + hostname against the system CA stores;</span>
+<span class="cmt">// verify=false is a deliberate opt-out for self-signed test certificates.</span>
+</code></pre>
+  <p>
+    OpenSSL is linked by default, just like with
+    <code>HttpServer::listenTls</code>/<code>WsServer::listenTls</code> — no
+    extra flag needed. Opt out via <code>TINOX_TLS=0</code> if no OpenSSL is
+    available for building.
+  </p>
+  <p>
+    <strong>Deliberate v1 gaps:</strong> no multi-channel support, no
+    <code>exchange.declare</code> (only the default exchange and
+    broker-predefined exchanges like <code>amq.direct</code>), no publisher
+    confirms/transactions, no annotation-driven consumer API, no heartbeat
+    sender/auto-reconnect, no dedicated CA-bundle parameter for
+    <code>connectTls</code> (verifies only against the system CA stores).
+    AMQP 1.0 is not part of this module.
+  </p>
+  </div>
+
+  <div class="mod-section" id="mod-amqp10">
+
+  <h2>amqp10</h2>
+  <p class="import-hint"><code>import tinox.core.amqp10;</code></p>
+  <p>
+    AMQP-1.0 <strong>client</strong> (no broker), a standalone module with no
+    code shared with <code>amqp091</code> — a completely different type
+    system (a generic format-code codec instead of fixed field tags) and a
+    three-level <code>Connection</code>→<code>Session</code>→<code>Link</code>
+    hierarchy with credit-based flow control (<code>flow</code>/
+    <code>link-credit</code>) instead of 0-9-1's simple
+    <code>Connection</code>→<code>Channel</code> model. v1: one session/one
+    link per purpose, SASL PLAIN only.
+  </p>
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>Amqp10Connection::connect</code></td><td><code>fn connect(host: String, port: Int64, user: String, pass: String) -&gt; Amqp10Connection</code></td><td>SASL header + PLAIN negotiation, then AMQP header + <code>open</code>. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> on any failure.</td></tr>
+      <tr><td><code>Amqp10Connection::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Closes the connection per spec (sends <code>close</code>).</td></tr>
+      <tr><td><code>Amqp10Session::begin</code></td><td><code>fn begin(connection: Amqp10Connection) -&gt; Amqp10Session</code></td><td>Opens a session on the connection (v1: fixed channel 1, no pool).</td></tr>
+      <tr><td><code>Amqp10Session::end</code></td><td><code>fn end() -&gt; Nothing</code></td><td>Ends the session (sends <code>end</code>).</td></tr>
+      <tr><td><code>Amqp10Link::attach</code></td><td><code>fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -&gt; Amqp10Link</code></td><td>Attaches a sender (<code>role=false</code>) or receiver link (<code>role=true</code>) to the given address (RabbitMQ 4.x: <code>/queues/&lt;name&gt;</code>, "AMQP Address v2").</td></tr>
+      <tr><td><code>Amqp10Link::detach</code></td><td><code>fn detach() -&gt; Nothing</code></td><td>Detaches the link again (sends <code>detach</code>).</td></tr>
+      <tr><td><code>Amqp10Link::awaitFlow</code></td><td><code>fn awaitFlow() -&gt; Nothing</code></td><td>Reads a <code>flow</code> frame and updates <code>linkCredit</code>. Called internally by <code>publish()</code> when no credit remains.</td></tr>
+      <tr><td><code>Amqp10Link::grantCredit</code></td><td><code>fn grantCredit(amount: Int64) -&gt; Nothing</code></td><td>Sends <code>flow</code> with <code>link-credit</code> (receiver-side, needed before <code>nextMessage()</code>).</td></tr>
+      <tr><td><code>Amqp10Link::publish</code></td><td><code>fn publish(body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Publishes a message (<code>settled=true</code>, fire-and-forget). Automatically waits for a new <code>flow</code> if credit is exhausted; splits the body across multiple <code>transfer</code> frames (<code>more=true</code>) once <code>max-frame-size</code> is exceeded.</td></tr>
+      <tr><td><code>Amqp10Link::nextMessage</code></td><td><code>fn nextMessage() -&gt; Amqp10Message</code></td><td>Blocking pull of the next message (requires <code>grantCredit()</code>). Decodes both <code>data</code> AND <code>amqp-value</code> body sections. Does NOT reassemble multi-frame transfers on receive (v1 gap).</td></tr>
+      <tr><td><code>Amqp10Link::ack</code></td><td><code>fn ack(deliveryId: Int64) -&gt; Nothing</code></td><td>Acknowledges a message received via <code>nextMessage()</code> (<code>disposition</code> with <code>state=accepted</code>).</td></tr>
+      <tr><td><code>Amqp10Message</code></td><td><code>{ body: List&lt;Int64&gt;, contentType: String, deliveryId: Int64, ok: Bool, errorMessage: String }</code></td><td>A message received via <code>nextMessage()</code>. <code>ok == false</code> on any failure (including no recognized body section), <code>errorMessage</code> describes the cause.</td></tr>
+    </tbody>
+  </table>
+  <h3>Example</h3>
+  <pre><code>import tinox.core.amqp10;
+
+let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+let session = Amqp10Session::begin(conn);
+var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
+
+var body: List&lt;Int64&gt; = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+sender.publish(body, "text/plain");
+sender.detach();
+
+var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
+receiver.grantCredit(10);
+let m = receiver.nextMessage();
+if m.ok {
+    receiver.ack(m.deliveryId);
+}
+conn.close();
+</code></pre>
+  <p>
+    <strong>Deliberate v1 gaps:</strong> multiple sessions/links per
+    connection (v1: exactly one each), <code>sasl-challenge</code>/
+    <code>-response</code> multi-round mechanisms like SCRAM (PLAIN only),
+    delivery state beyond <code>accepted</code> (no
+    <code>rejected</code>/<code>released</code>/<code>modified</code>),
+    transactions, link recovery/resumption, multi-frame reassembly on
+    receive, annotation-driven consumer API, heartbeat/auto-reconnect.
+  </p>
   </div>
 
   <div class="mod-section" id="mod-hpack">

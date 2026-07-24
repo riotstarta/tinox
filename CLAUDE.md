@@ -94,6 +94,15 @@ nicht per angenommener Nummer.
 - Commit-Messages in diesem Projekt sind auf Deutsch (technische Prosa
   im Stil der alten bugs.md-Einträge: Root Cause, Fix, Verifiziert),
   auch wenn Issues auf Englisch sind — beides bewusst so.
+- **`docs.html` (Deutsch) und `docs_en.html` (Englisch) sind bewusst
+  parallel gepflegte Dubletten** — bei jeder neuen `<div class="mod-
+  section">` in `docs.html` (neues Stdlib-Modul) IMMER auch
+  `docs_en.html` ergänzen (Nav-Link, Übersichts-Karte falls vorhanden,
+  Modul-Sektion übersetzt). War schon einmal seit Mai wochenlang out of
+  sync (WebSocket/AMQP-091/AMQP-1.0 fehlten in der EN-Version bis
+  2026-07-25) — nicht wieder passieren lassen. Quick-Check bei Zweifel:
+  `grep -oE 'id="mod-[a-z0-9_]+"' docs.html | sort -u` gegen dieselbe
+  Zeile für `docs_en.html` diffen, muss leer sein.
 
 ## Runtime-Eigenheiten (nicht offensichtlich aus dem Code)
 

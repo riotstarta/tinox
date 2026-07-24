@@ -164,7 +164,7 @@ let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
 
 ---
 
-## Phase 2 — Codegen: SQL-Konstanten + Mapping + Lambda→SQL
+## Phase 2 — Codegen: SQL-Konstanten + Mapping + Lambda→SQL ✅
 
 **Datei:** `crates/tinox-codegen/src/codegen.rs`
 
