@@ -1392,12 +1392,14 @@ fatal: `main` (runtime.c) prüft nach `tinox_main()` den globalen Slot
 Verifiziert: Repro unten meldet jetzt `Uncaught error: geworfen` und Exit 1;
 `try`/`catch`-Fälle unverändert grün (Exit 0). `make check` grün.
 
-**Bewusst noch offen (tiefere Design-Schwäche, s.u.):** der throw macht weiterhin
-einen *stillen Funktions-Return* mit Default-Wert, statt sofort zu unwinden — der
-Code zwischen throw und Programmende läuft also noch mit Default-Werten durch
-(im Repro erscheint `nach go` vor dem Abbruch). Der Fix garantiert nur, dass ein
-uncaught throw das Programm am Ende nicht mit Erfolg (Exit 0) verlässt. Echtes
-sofortiges Unwinding wäre der v2-Fix (setjmp/longjmp oder Result-Rückgabe-ABI).
+**War bewusst offen gelassen (tiefere Design-Schwäche), GEFIXT in [[Bug 40]]:**
+der throw machte an dieser Stelle noch einen *stillen Funktions-Return* mit
+Default-Wert, statt sofort zu unwinden — der Code zwischen throw und
+Programmende lief also noch mit Default-Werten durch (im Repro erschien
+`nach go` vor dem Abbruch). Dieser Fix garantierte nur, dass ein uncaught
+throw das Programm am Ende nicht mit Erfolg (Exit 0) verlässt. Echtes
+sofortiges Unwinding kam mit Bug 40 (Statement-Granularität, kein
+setjmp/longjmp).
 
 ---
 
@@ -1446,14 +1448,14 @@ catch e:String{…}` fängt, überspringt Folgecode, exit 0). Der Bug betrifft
 sichtbare Slot `__tinox_err` geprüft; bei != 0 → `fprintf(stderr, "Uncaught
 error: %s", (char*)err)` + `return 1`. Damit sind uncaught throws laut+fatal
 statt still. (Der Wert ist typgeprüft String-oder-Error; als String gedruckt —
-der Normalfall.) **Bekannte Zusatzschwäche desselben Designs (noch offen):** der
-Slot wird nur an `try`-Body-Statement-Grenzen konsumiert und der throw returned
-still mit Default — ein `throw` in einer Zwischenfunktion propagiert nur, weil
-deren Aufruf zufällig als Statement in einem `try`-Body steht; dazwischenliegende
-Frames laufen vorher noch mit Default-Rückgabewerten zu Ende (verzögerte/
-unpräzise Propagierung). Ein robuster v2-Fix würde `@__tinox_err` auch nach jedem
-potenziell werfenden Call außerhalb von `try` prüfen oder auf echtes Unwinding
-via setjmp/longjmp bzw. Result-Rückgabe-ABI umstellen.
+der Normalfall.) **Bekannte Zusatzschwäche desselben Designs, GEFIXT in
+[[Bug 40]]:** der Slot wurde an dieser Stelle nur an `try`-Body-Statement-
+Grenzen konsumiert und der throw returnte still mit Default — ein `throw`
+in einer Zwischenfunktion propagierte nur, weil deren Aufruf zufällig als
+Statement in einem `try`-Body stand; dazwischenliegende Frames liefen vorher
+noch mit Default-Rückgabewerten zu Ende (verzögerte/unpräzise Propagierung).
+Bug 40 prüft `@__tinox_err` seitdem nach jedem potenziell werfenden Call auf
+Statement-Granularität, auch außerhalb von `try`.
 
 **Gefunden bei:** Feature 34 (HTTPS) — `HttpServer::listenTls` wirft bei
 fehlgeschlagenem TLS-Setup; der Diagnose-Kanal ist dort deshalb bewusst die
@@ -1791,8 +1793,12 @@ Fluss; `try`-`catch`-`finally` mit gefangenem Fehler → **kein** Re-throw
 (unverändert). e2e-Regressionstest `tests/e2e/try_finally_rethrow.tnx`;
 `make check` voll grün.
 
-Damit ist die Exception-Semantik vollständig: uncaught→fatal (35), sofortiges
-Unwinding (40), defer-Cleanup auf Fehlerpfaden (41), finally+re-throw (42).
+Damit ist die Exception-Semantik weitgehend vollständig: uncaught→fatal (35),
+sofortiges Unwinding (40), defer-Cleanup auf escapenden Fehlerpfaden (41),
+finally+re-throw (42) — defer-Cleanup bei LOKAL (in derselben Funktion)
+gefangenen throws blieb noch eine Lücke, s. Bug 41s „War noch offen, GEFIXT
+am 2026-07-24" oben. Bewusst weiterhin offen: Sub-Statement-Granularität in
+zusammengesetzten Ausdrücken wie `a()+b()` (s. Bug 40 „Bewusst noch offen (v3)").
 
 ---
 
