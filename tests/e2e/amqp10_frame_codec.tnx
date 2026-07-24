@@ -1,0 +1,141 @@
+// AMQP-1.0 Phase 3 (tasklist.md): Frame-Codec + Performative-Hülle.
+// In-memory Encode/Decode-Rundtrip fuer encodePerformative/decodePerformative
+// (keine Verbindung noetig) + echter Frame-Rundtrip ueber eine Loopback-Conn
+// (Muster wie amqp_frame_codec.tnx bei 0-9-1) + Protokollfehler-Faelle
+// (size < 8, doff < 2, headerBytes > size, Payload-Cap, EOF) + Extended-
+// Header-Skip (doff > 2, AMQP-1.0-spezifisch, kein 0-9-1-Aequivalent).
+// expect: ok-performative-roundtrip
+// expect: ok-performative-multi-field
+// expect: ok-performative-bad-shape
+// expect: ok-frame-roundtrip
+// expect: ok-frame-extended-header-skip
+// expect: ok-frame-bad-size
+// expect: ok-frame-bad-doff
+// expect: ok-frame-header-exceeds-size
+// expect: ok-frame-cap
+// expect: ok-frame-eof
+
+import tinox.core.amqp10;
+import tinox.core.socket;
+
+fn main() -> Int32 {
+    // --- Performative-Envelope: In-memory Rundtrip ---
+    let body1 = Amqp10::encodePerformative(0x10, [Amqp10Value::StrVal("container-id")]);
+    let p1 = Amqp10::decodePerformative(body1);
+    if p1.descriptor == 0x10 {
+        if p1.fields.len() == 1 {
+            match p1.fields[0] {
+                StrVal(s) => { if s == "container-id" { println("ok-performative-roundtrip"); } }
+                _ => {}
+            }
+        }
+    }
+
+    // --- Mehrere positionelle Felder gemischten Typs ---
+    var fields2: List<Amqp10Value> = [
+        Amqp10Value::UShortVal(2047),
+        Amqp10Value::UIntVal(131072),
+        Amqp10Value::BoolVal(true)
+    ];
+    let body2 = Amqp10::encodePerformative(0x13, fields2); // flow
+    let p2 = Amqp10::decodePerformative(body2);
+    if p2.descriptor == 0x13 {
+        if p2.fields.len() == 3 {
+            var ok1: Bool = false;
+            var ok2: Bool = false;
+            var ok3: Bool = false;
+            match p2.fields[0] { UShortVal(n) => { ok1 = n == 2047; } _ => {} }
+            match p2.fields[1] { UIntVal(n) => { ok2 = n == 131072; } _ => {} }
+            match p2.fields[2] { BoolVal(b) => { ok3 = b; } _ => {} }
+            if ok1 { if ok2 { if ok3 { println("ok-performative-multi-field"); } } }
+        }
+    }
+
+    // --- Kaputte Struktur: kein Described Type, sondern ein rohes UIntVal ---
+    let w3 = Amqp10Writer::new();
+    w3.writeUint(42);
+    let p3 = Amqp10::decodePerformative(w3.bytes);
+    if p3.descriptor == -1 {
+        if p3.fields.len() == 0 {
+            println("ok-performative-bad-shape");
+        }
+    }
+
+    // --- Echter Frame-Rundtrip ueber Loopback ---
+    let srv = httpServerCreate(47625);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+    let cfd = socketCreateTcp();
+    socketConnect(cfd, "127.0.0.1", 47625);
+    let cconn = httpConnFromFd(cfd);
+    let sconn = httpServerAcceptConnHandle(srv);
+
+    let openBody = Amqp10::encodePerformative(0x10, [Amqp10Value::StrVal("tinox-client")]);
+    Amqp10::writeFrame(cconn, 0, 0, openBody);
+    let f = Amqp10::readFrame(sconn);
+    if f.frameType == 0 {
+        if f.chanId == 0 {
+            let decoded = Amqp10::decodePerformative(f.body);
+            if decoded.descriptor == 0x10 {
+                match decoded.fields[0] {
+                    StrVal(s) => { if s == "tinox-client" { println("ok-frame-roundtrip"); } }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // --- Extended Header (doff=3): 4 Byte Fuellwerte werden uebersprungen ---
+    // size=14 (8 Fixed-Header + 4 Extended + 2 Body), doff=3, type=0, chanId=0
+    httpConnWriteBytes(cconn, [0, 0, 0, 14, 3, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD, 9, 9]);
+    let fExt = Amqp10::readFrame(sconn);
+    if fExt.frameType == 0 {
+        if fExt.body.len() == 2 {
+            if fExt.body[0] == 9 {
+                if fExt.body[1] == 9 {
+                    println("ok-frame-extended-header-skip");
+                }
+            }
+        }
+    }
+
+    // --- Protokollfehler: size < 8 (kleiner als der Fixed-Header) ---
+    httpConnWriteBytes(cconn, [0, 0, 0, 4, 2, 0, 0, 0]);
+    let fBadSize = Amqp10::readFrame(sconn);
+    if fBadSize.frameType == -2 {
+        println("ok-frame-bad-size");
+    }
+
+    // --- Protokollfehler: doff < 2 (Header kann nicht kleiner als 8 Byte sein) ---
+    httpConnWriteBytes(cconn, [0, 0, 0, 8, 1, 0, 0, 0]);
+    let fBadDoff = Amqp10::readFrame(sconn);
+    if fBadDoff.frameType == -2 {
+        println("ok-frame-bad-doff");
+    }
+
+    // --- Protokollfehler: doff*4 (Header) groesser als size (Gesamtgroesse) ---
+    httpConnWriteBytes(cconn, [0, 0, 0, 8, 3, 0, 0, 0]);
+    let fHdrExceeds = Amqp10::readFrame(sconn);
+    if fHdrExceeds.frameType == -2 {
+        println("ok-frame-header-exceeds-size");
+    }
+
+    // --- Payload-Cap ueberschritten (> 16 MB, kein echter Read der Riesenmenge) ---
+    httpConnWriteBytes(cconn, [1, 0, 0, 16, 2, 0, 0, 0]);
+    let fCap = Amqp10::readFrame(sconn);
+    if fCap.frameType == -2 {
+        println("ok-frame-cap");
+    }
+
+    httpConnClose(cconn);
+    let fEof = Amqp10::readFrame(sconn);
+    if fEof.frameType == -1 {
+        println("ok-frame-eof");
+    }
+
+    httpConnClose(sconn);
+    httpServerClose(srv);
+    return 0;
+}

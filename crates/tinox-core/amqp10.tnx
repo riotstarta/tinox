@@ -531,6 +531,35 @@ namespace tinox.core.amqp10
         }
     }
 
+    /*
+     * Ein gelesenes AMQP-1.0-Frame (§2.3.1 der Sondierung in tasklist.md).
+     * frameType: 0 = AMQP-Frame, 1 = SASL-Frame (Broker darf beide auf
+     * derselben Verbindung schicken, je nach Negotiation-Phase);
+     * zusätzlich als Lese-Ergebnis: -1 = Verbindung zu/EOF, -2 =
+     * Protokollfehler (unplausible size/doff, s. Amqp10::readFrame).
+     */
+    class Amqp10Frame
+    {
+        var frameType: Int64;
+        var chanId: Int64;
+        var body: List<Int64>;
+    }
+
+    /*
+     * Eine dekodierte Performative-Hülle (§2.3.1: jede der 9 Performatives
+     * ist ein Described List — EIN generisches Encoding für alle, anders
+     * als 0-9-1s classId+methodId+methodenspezifisches Feld-Schema).
+     * descriptor: -1 = Decode-Fehler (unerwartete Struktur — s.
+     * Amqp10::decodePerformative). fields sind POSITIONELL, die
+     * Feldbedeutung ergibt sich aus der jeweiligen Performative-Spec
+     * (Phase 5/6), nicht aus diesem generischen Baustein.
+     */
+    class Amqp10Performative
+    {
+        var descriptor: Int64;
+        var fields: List<Amqp10Value>;
+    }
+
     class Amqp10
     {
         /*
@@ -603,6 +632,120 @@ namespace tinox.core.amqp10
                 }
             }
             return true;
+        }
+
+        /*
+         * Liest EIN Frame (§2.3.1): size(4B) | doff(1B) | type(1B) |
+         * chanId(2B) | [extended header, (doff-2)*4 Byte] | body. `size`
+         * ist die GESAMTgröße inkl. der 8 Fixed-Header-Bytes (anders als
+         * 0-9-1s `long`, das nur die Payload-Länge zählt). Extended Header
+         * wird gelesen und verworfen (v1 nutzt ihn nicht, aber Broker
+         * dürfen ihn setzen — überspringen statt zu crashen). Fehlerhafte
+         * size/doff (kleiner als der Fixed-Header, oder header > size)
+         * sind ein harter Protokollfehler (-2) statt Silent-Garbage, exakt
+         * wie 0-9-1s Frame-Terminator-Check.
+         */
+        fn readFrame(conn: Int64) -> Amqp10Frame
+        {
+            let bad = Amqp10Frame { frameType: -1, chanId: 0, body: [] };
+            let hdr = httpConnReadN(conn, 8);
+            if hdr.len() < 8 {
+                return bad;
+            }
+            let size = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
+            let doff = hdr[4];
+            let frameType = hdr[5];
+            let chanId = (hdr[6] << 8) | hdr[7];
+            if size < 8 || doff < 2 {
+                return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
+            }
+            let headerBytes = doff * 4;
+            if headerBytes > size {
+                return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
+            }
+            let extendedBytes = headerBytes - 8;
+            if extendedBytes > 0 {
+                let ext = httpConnReadN(conn, extendedBytes);
+                if ext.len() < extendedBytes {
+                    return bad;
+                }
+            }
+            let bodyBytes = size - headerBytes;
+            if bodyBytes > 16777216 {
+                return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
+            }
+            var body: List<Int64> = [];
+            if bodyBytes > 0 {
+                let raw = httpConnReadN(conn, bodyBytes);
+                if raw.len() < bodyBytes {
+                    return bad;
+                }
+                body = raw;
+            }
+            return Amqp10Frame { frameType: frameType, chanId: chanId, body: body };
+        }
+
+        /*
+         * Schreibt ein Frame (§2.3.1). v1: `doff` immer 2 (kein Extended
+         * Header) — die Runde 0/1-Frame-Type-Unterscheidung (AMQP/SASL)
+         * entscheidet der Aufrufer je nach Handshake-Phase.
+         */
+        fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, body: List<Int64>) -> Nothing
+        {
+            let w = Amqp10Writer::new();
+            w.pushU32(8 + body.len());
+            w.pushU8(2);
+            w.pushU8(frameType);
+            w.pushU16(chanId);
+            w.pushRawBytes(body);
+            httpConnWriteBytes(conn, w.bytes);
+        }
+
+        /*
+         * Baut den Frame-Body einer Performative (§2.3.1): Described Type
+         * mit `descriptorCode` (als smallulong) + einem ListVal der
+         * positionellen Felder — EIN generischer Baustein für alle 9
+         * Performatives, anders als 0-9-1s methodenspezifisches
+         * encodeMethodPayload (classId+methodId+eigenes Argument-Schema
+         * pro Methode).
+         */
+        fn encodePerformative(descriptorCode: Int64, fields: List<Amqp10Value>) -> List<Int64>
+        {
+            let w = Amqp10Writer::new();
+            let d = Amqp10Described { descriptor: descriptorCode, value: Amqp10Value::ListVal(fields) };
+            w.writeDescribed(d);
+            return w.bytes;
+        }
+
+        /*
+         * Zerlegt einen Frame-Body in Descriptor-Code + positionelle
+         * Felder. Erwartet EXAKT die Struktur, die encodePerformative
+         * erzeugt (Described Type über einer ListVal) — jede Abweichung
+         * (kein Described Type, Wert ist keine Liste, nicht-numerischer
+         * Descriptor) ist ein harter Fehler: descriptor -1, leere fields,
+         * kein Best-Effort-Parsing.
+         */
+        fn decodePerformative(body: List<Int64>) -> Amqp10Performative
+        {
+            let r = Amqp10Reader::new(body);
+            let v = r.readValue();
+            var descriptor: Int64 = -1;
+            var fields: List<Amqp10Value> = [];
+            match v
+            {
+                DescribedVal(d) => {
+                    match d.value
+                    {
+                        ListVal(innerFields) => {
+                            descriptor = d.descriptor;
+                            fields = innerFields;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            return Amqp10Performative { descriptor: descriptor, fields: fields };
         }
     }
 }

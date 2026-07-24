@@ -207,24 +207,38 @@ genauso funktionieren):
       **Kompletter `make check`-Lauf grün** (kritisch, weil der Fix JEDES
       Enum im gesamten Projekt betrifft, nicht nur AMQP 1.0).
 
-## Phase 3 — Frame-Codec + Performative-Hülle
+## Phase 3 — Frame-Codec + Performative-Hülle ✅
 
-- [ ] 3.1 Generisches Frame lesen/schreiben: `size|doff|type|channel|
-      [extended-header]|body`. v1: `doff` immer `2` beim Schreiben (kein
-      Extended-Header), aber `doff > 2` beim Lesen korrekt überspringen
-      (Broker darf ihn nutzen).
-- [ ] 3.2 Performative-Hülle: jede der 9 Performatives ist ein Described
-      List — generischer `encodePerformative(descriptorCode, fields:
-      List<Amqp10Value>)`/`decodePerformative(payload) -> (Int64,
-      List<Amqp10Value>)`-Baustein (analog zu 0-9-1s
-      `encodeMethodPayload`/`decodeMethodPayload`, aber EIN Descriptor-Code
-      statt ZWEI IDs (`classId`+`methodId`), und Felder sind positionell in
-      einer Liste statt eines eigenen Feld-Table-Schemas pro Methode —
-      AMQP 1.0 nutzt für alle 9 Performatives dasselbe generische
-      List-Encoding, die Feldbedeutung ergibt sich rein aus der Position).
-- [ ] 3.3 e2e-Test: Frame-Rundtrip mit synthetischen Performative-Payloads,
-      Protokollfehler-Fälle (fehlerhafte Frame-Size, kaputter Described-
-      Type-Header) → harter Fehler statt Silent-Garbage.
+- [x] 3.1 `Amqp10Frame`-Klasse (`frameType`/`chanId`/`body` — Feld hieß
+      ursprünglich `channel`, kollidiert wie bei 0-9-1 mit dem
+      Concurrency-Keyword, umbenannt zu `chanId`). `Amqp10::readFrame`/
+      `writeFrame`: `size|doff|type|chanId|[extended-header]|body`. `size`
+      ist die GESAMTgröße inkl. der 8 Fixed-Header-Bytes (anders als
+      0-9-1s `long`, das nur die Payload-Länge zählt). v1 schreibt `doff`
+      immer `2` (kein Extended Header), liest aber `doff > 2` korrekt und
+      überspringt die zusätzlichen Bytes (Broker darf ihn nutzen).
+      Harte Protokollfehler (`frameType -2`) bei `size < 8`, `doff < 2`,
+      `doff*4 > size` oder Payload > 16-MB-Cap — analog zu 0-9-1s
+      Frame-Terminator-Check, kein Silent-Garbage.
+- [x] 3.2 `Amqp10Performative`-Klasse (`descriptor`/`fields`) +
+      `Amqp10::encodePerformative(descriptorCode, fields: List<Amqp10Value>)
+      -> List<Int64>`/`decodePerformative(body) -> Amqp10Performative` —
+      EIN generischer Baustein für alle 9 Performatives (Described Type
+      über einer `ListVal`), anders als 0-9-1s methodenspezifisches
+      `encodeMethodPayload` (classId+methodId+eigenes Argument-Schema pro
+      Methode). Bei unerwarteter Struktur (kein Described Type, Wert ist
+      keine Liste) hart `descriptor: -1` statt Best-Effort-Parsing.
+      **Rückgabetyp-Korrektur:** ursprünglich als Tuple `(Int64,
+      List<Amqp10Value>)` geplant — Tuple-Rückgabetypen sind im Projekt
+      an keiner Stelle genutzt/getestet (nur Tuple-Literale + `.0`/`.1`-
+      Zugriff), also stattdessen eine Klasse mit benannten Feldern
+      (bewährtes Muster, kein Risiko eines unentdeckten Codegen-Lecks).
+- [x] 3.3 e2e-Test `tests/e2e/amqp10_frame_codec.tnx`: In-memory
+      Performative-Rundtrip (einzelnes + gemischt-typisiertes Multi-Feld)
+      + kaputte Struktur (rohes `UIntVal` statt Described Type) + echter
+      Frame-Rundtrip über Loopback-Conn + Extended-Header-Skip
+      (AMQP-1.0-spezifisch, kein 0-9-1-Äquivalent) + alle vier
+      Protokollfehler-Fälle + EOF. 10× stabil wiederholt.
 
 ## Phase 4 — SASL-Negotiation
 
