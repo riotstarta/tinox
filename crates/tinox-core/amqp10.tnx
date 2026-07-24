@@ -16,6 +16,521 @@ import tinox.core.socket;
 
 namespace tinox.core.amqp10
 {
+    /*
+     * Ein generischer AMQP-1.0-Wert (Phase 2, tasklist.md). Anders als
+     * 0-9-1s AmqpFieldValue091 (nur für Field-Table-Einträge) wird dieser
+     * Typ für ALLES genutzt: Performative-Felder, Message-Sections, sogar
+     * die Performative-Hülle selbst (Phase 3) — AMQP 1.0 hat EIN Typsystem
+     * für den gesamten Frame-Body statt getrennter Method-Argument- und
+     * Field-Table-Kodierungen.
+     *
+     * Bewusste v1-Lücken (Formatcodes werden vom Reader erkannt und mit
+     * korrektem Byte-Skip verarbeitet, aber der Wert selbst kommt als
+     * ErrorVal zurück statt echt dekodiert zu werden — kein Silent-Garbage,
+     * der Cursor bleibt trotzdem synchron für nachfolgende Felder):
+     * `float`/`double` (IEEE-754-Bit-Konvertierung bräuchte einen
+     * Bitcast-Primitive, den es in der Runtime nicht gibt, und die
+     * Kern-Performatives nutzen laut Spec nirgends float/double — nur
+     * Message-Bodies könnten das theoretisch tun), `decimal32/64/128`
+     * (praktisch nie genutzt, noch exotischer als float/double).
+     *
+     * MapVal ist eine FLACHE Liste (key0, val0, key1, val1, ...) statt
+     * eines Tinox-Map<K,V> — AMQP-1.0-Map-Keys sind beliebige Werte, kein
+     * einheitlicher K-Typ wie bei 0-9-1s immer-String-Keys.
+     */
+    enum Amqp10Value
+    {
+        NullVal;
+        BoolVal(Bool);
+        UByteVal(Int64);
+        UShortVal(Int64);
+        UIntVal(Int64);
+        ULongVal(Int64);
+        ByteVal(Int64);
+        ShortVal(Int64);
+        IntVal(Int64);
+        LongVal(Int64);
+        CharVal(Int64);       // UTF-32-Codepoint, roh (kein Tinox-String)
+        TimestampVal(Int64);  // ms seit Unix-Epoch
+        UuidVal(List<Int64>); // exakt 16 rohe Bytes
+        BinaryVal(List<Int64>);
+        StrVal(String);
+        SymbolVal(String);
+        ListVal(List<Amqp10Value>);
+        MapVal(List<Amqp10Value>);      // flach: key,val,key,val,...
+        DescribedVal(Amqp10Described);  // Performatives/SASL-Frames/Sections
+        ErrorVal(String);
+    }
+
+    /*
+     * Ein Described-Type-Wert (§1.2 des Typsystems): Formatcode 0x00 +
+     * Descriptor + Wert. v1 beschränkt den Descriptor auf Int64 (numerisch,
+     * als smallulong kodiert) — deckt alle 9 Performatives, die 5
+     * SASL-Frame-Typen und die 9 Message-Section-Typen ab (alle nutzen
+     * numerische ulong-Descriptoren laut Spec, s. tasklist.md-Sondierung);
+     * symbol-Descriptoren (die andere von der Spec erlaubte Form) kommen
+     * im AMQP-Kernprotokoll nicht vor.
+     */
+    class Amqp10Described
+    {
+        var descriptor: Int64;
+        var value: Amqp10Value;
+    }
+
+    /*
+     * Byte-Builder für die AMQP-1.0-Typsystem-Kodierung (Big-Endian).
+     * Schreibt IMMER die volle Breite (kein smalluint/uint0/etc.-Picking —
+     * das ist nur eine optionale Größenoptimierung, kein Korrektheits-
+     * erfordernis) UND bei variabler Breite (Binary/String/Symbol/List/Map)
+     * IMMER die 32-Bit-Form — anders als 0-9-1s shortstr/longstr-Zwei-
+     * Methoden-Unterscheidung gibt es hier keinen Größen-Cutover-Zweig und
+     * keine künstliche 255-Byte-Fehlergrenze: die 32-Bit-Form ist für JEDE
+     * Länge spec-konform, kostet nur ein paar Bytes mehr bei kleinen
+     * Werten. Der Reader MUSS trotzdem alle Kurzformen lesen können, weil
+     * der Broker sie nutzen darf (asymmetrisch wie bei 0-9-1).
+     */
+    class Amqp10Writer
+    {
+        var bytes: List<Int64>;
+
+        fn new() -> Amqp10Writer
+        {
+            return Amqp10Writer { bytes: [] };
+        }
+
+        fn pushU8(v: Int64) -> Nothing
+        {
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn pushU16(v: Int64) -> Nothing
+        {
+            this.bytes.push((v >> 8) & 0xFF);
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn pushU32(v: Int64) -> Nothing
+        {
+            this.bytes.push((v >> 24) & 0xFF);
+            this.bytes.push((v >> 16) & 0xFF);
+            this.bytes.push((v >> 8) & 0xFF);
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn pushU64(v: Int64) -> Nothing
+        {
+            var shift: Int64 = 56;
+            while shift >= 0 {
+                this.bytes.push((v >> shift) & 0xFF);
+                shift = shift - 8;
+            }
+        }
+
+        fn pushRawStr(s: String) -> Nothing
+        {
+            for i in 0..s.len() {
+                this.bytes.push(s.charCodeAt(i) & 0xFF);
+            }
+        }
+
+        fn pushRawBytes(data: List<Int64>) -> Nothing
+        {
+            for i in 0..data.len() {
+                this.bytes.push(data[i] & 0xFF);
+            }
+        }
+
+        fn writeNull() -> Nothing
+        {
+            this.pushU8(0x40);
+        }
+
+        fn writeBoolean(v: Bool) -> Nothing
+        {
+            this.pushU8(0x56);
+            if v {
+                this.pushU8(1);
+            } else {
+                this.pushU8(0);
+            }
+        }
+
+        fn writeUbyte(v: Int64) -> Nothing
+        {
+            this.pushU8(0x50);
+            this.pushU8(v);
+        }
+
+        fn writeUshort(v: Int64) -> Nothing
+        {
+            this.pushU8(0x60);
+            this.pushU16(v);
+        }
+
+        fn writeUint(v: Int64) -> Nothing
+        {
+            this.pushU8(0x70);
+            this.pushU32(v);
+        }
+
+        fn writeUlong(v: Int64) -> Nothing
+        {
+            this.pushU8(0x80);
+            this.pushU64(v);
+        }
+
+        fn writeByte(v: Int64) -> Nothing
+        {
+            this.pushU8(0x51);
+            this.pushU8(v);
+        }
+
+        fn writeShort(v: Int64) -> Nothing
+        {
+            this.pushU8(0x61);
+            this.pushU16(v);
+        }
+
+        fn writeInt(v: Int64) -> Nothing
+        {
+            this.pushU8(0x71);
+            this.pushU32(v);
+        }
+
+        fn writeLong(v: Int64) -> Nothing
+        {
+            this.pushU8(0x81);
+            this.pushU64(v);
+        }
+
+        fn writeChar(v: Int64) -> Nothing
+        {
+            this.pushU8(0x73);
+            this.pushU32(v);
+        }
+
+        fn writeTimestamp(v: Int64) -> Nothing
+        {
+            this.pushU8(0x83);
+            this.pushU64(v);
+        }
+
+        /* `bytes` muss exakt 16 Elemente haben (Aufrufer-Verantwortung,
+         * analog zu 0-9-1s ungeprüften Bounds-Annahmen bei Frame-Payloads). */
+        fn writeUuid(uuidBytes: List<Int64>) -> Nothing
+        {
+            this.pushU8(0x98);
+            this.pushRawBytes(uuidBytes);
+        }
+
+        fn writeBinary(data: List<Int64>) -> Nothing
+        {
+            this.pushU8(0xb0);
+            this.pushU32(data.len());
+            this.pushRawBytes(data);
+        }
+
+        fn writeString(s: String) -> Nothing
+        {
+            this.pushU8(0xb1);
+            this.pushU32(s.len());
+            this.pushRawStr(s);
+        }
+
+        fn writeSymbol(s: String) -> Nothing
+        {
+            this.pushU8(0xb3);
+            this.pushU32(s.len());
+            this.pushRawStr(s);
+        }
+
+        fn writeList(items: List<Amqp10Value>) -> Nothing
+        {
+            let inner = Amqp10Writer::new();
+            for i in 0..items.len() {
+                inner.writeValue(items[i]);
+            }
+            this.pushU8(0xd0);
+            this.pushU32(4 + inner.bytes.len());
+            this.pushU32(items.len());
+            this.pushRawBytes(inner.bytes);
+        }
+
+        /* `pairs` ist flach (key0, val0, key1, val1, ...) — MUSS eine
+         * gerade Anzahl Elemente haben (Aufrufer-Verantwortung). */
+        fn writeMap(pairs: List<Amqp10Value>) -> Nothing
+        {
+            let inner = Amqp10Writer::new();
+            for i in 0..pairs.len() {
+                inner.writeValue(pairs[i]);
+            }
+            this.pushU8(0xd1);
+            this.pushU32(4 + inner.bytes.len());
+            this.pushU32(pairs.len());
+            this.pushRawBytes(inner.bytes);
+        }
+
+        /* Descriptor immer als smallulong (0x53 + 1 Byte) — alle in v1
+         * genutzten Descriptor-Codes sind < 256 (Performatives 0x10-0x18,
+         * SASL 0x40-0x44, Sections 0x70-0x78), s. Amqp10Described. */
+        fn writeDescribed(d: Amqp10Described) -> Nothing
+        {
+            this.pushU8(0x00);
+            this.pushU8(0x53);
+            this.pushU8(d.descriptor);
+            this.writeValue(d.value);
+        }
+
+        fn writeValue(v: Amqp10Value) -> Nothing
+        {
+            match v
+            {
+                NullVal => { this.writeNull(); }
+                BoolVal(b) => { this.writeBoolean(b); }
+                UByteVal(n) => { this.writeUbyte(n); }
+                UShortVal(n) => { this.writeUshort(n); }
+                UIntVal(n) => { this.writeUint(n); }
+                ULongVal(n) => { this.writeUlong(n); }
+                ByteVal(n) => { this.writeByte(n); }
+                ShortVal(n) => { this.writeShort(n); }
+                IntVal(n) => { this.writeInt(n); }
+                LongVal(n) => { this.writeLong(n); }
+                CharVal(n) => { this.writeChar(n); }
+                TimestampVal(n) => { this.writeTimestamp(n); }
+                UuidVal(b) => { this.writeUuid(b); }
+                BinaryVal(b) => { this.writeBinary(b); }
+                StrVal(s) => { this.writeString(s); }
+                SymbolVal(s) => { this.writeSymbol(s); }
+                ListVal(items) => { this.writeList(items); }
+                MapVal(pairs) => { this.writeMap(pairs); }
+                DescribedVal(d) => { this.writeDescribed(d); }
+                ErrorVal(_msg) => {
+                    // Ein ErrorVal wird nie gesendet (nur Decode-Ergebnis) —
+                    // kein Silent-Garbage: harter Null-Marker statt Schweigen,
+                    // falls doch versehentlich re-encodiert wird (analog zu
+                    // 0-9-1s AmqpFieldValue091::ErrorVal-Handling).
+                    this.writeNull();
+                }
+            }
+        }
+    }
+
+    /*
+     * Gegenstück zu Amqp10Writer: liest big-endian aus `bytes` ab einer
+     * internen Cursor-Position `pos`. Formatcode-getrieben — anders als
+     * 0-9-1s AmqpReader091 (Aufrufer sagt, WELCHEN Typ er an dieser
+     * Position erwartet) bestimmt hier IMMER der nächste Formatcode-Byte
+     * selbst den Typ (readValue()). Kein Bounds-Check auf Array-Ebene
+     * (Aufrufer MUSS die Frame-Größe vorher kennen, analog zu 0-9-1).
+     */
+    class Amqp10Reader
+    {
+        var bytes: List<Int64>;
+        var pos: Int64;
+
+        fn new(bytes: List<Int64>) -> Amqp10Reader
+        {
+            return Amqp10Reader { bytes: bytes, pos: 0 };
+        }
+
+        fn remaining() -> Int64
+        {
+            return this.bytes.len() - this.pos;
+        }
+
+        fn readU8() -> Int64
+        {
+            let v = this.bytes[this.pos];
+            this.pos = this.pos + 1;
+            return v;
+        }
+
+        fn readU16() -> Int64
+        {
+            let hi = this.readU8();
+            let lo = this.readU8();
+            return (hi << 8) | lo;
+        }
+
+        fn readU32() -> Int64
+        {
+            var v: Int64 = 0;
+            for i in 0..4 {
+                v = (v << 8) | this.readU8();
+            }
+            return v;
+        }
+
+        fn readU64() -> Int64
+        {
+            var v: Int64 = 0;
+            for i in 0..8 {
+                v = (v << 8) | this.readU8();
+            }
+            return v;
+        }
+
+        fn toSigned8(v: Int64) -> Int64
+        {
+            if v >= 128 {
+                return v - 256;
+            }
+            return v;
+        }
+
+        fn toSigned16(v: Int64) -> Int64
+        {
+            if v >= 32768 {
+                return v - 65536;
+            }
+            return v;
+        }
+
+        fn toSigned32(v: Int64) -> Int64
+        {
+            if v >= 2147483648 {
+                return v - 4294967296;
+            }
+            return v;
+        }
+
+        fn readRawStr(n: Int64) -> String
+        {
+            var s: String = "";
+            for i in 0..n {
+                let b = this.readU8();
+                s = s + fromCharCode(b);
+            }
+            return s;
+        }
+
+        fn readRawBytes(n: Int64) -> List<Int64>
+        {
+            var out: List<Int64> = [];
+            for i in 0..n {
+                out.push(this.readU8());
+            }
+            return out;
+        }
+
+        /* Liest EINEN Wert des angegebenen Formatcodes (ohne den Codebyte
+         * selbst zu lesen — der ist bei Array-Elementen NUR EINMAL vor
+         * allen Elementen vorhanden, s. readArray). readValue() ist der
+         * normale Einstiegspunkt (liest den Codebyte selbst); dieser hier
+         * ist der gemeinsame Kern für beide Fälle. */
+        fn readValueOfCode(code: Int64) -> Amqp10Value
+        {
+            if code == 0x40 { return Amqp10Value::NullVal; }
+            if code == 0x41 { return Amqp10Value::BoolVal(true); }
+            if code == 0x42 { return Amqp10Value::BoolVal(false); }
+            if code == 0x56 { return Amqp10Value::BoolVal(this.readU8() != 0); }
+            if code == 0x50 { return Amqp10Value::UByteVal(this.readU8()); }
+            if code == 0x60 { return Amqp10Value::UShortVal(this.readU16()); }
+            if code == 0x70 { return Amqp10Value::UIntVal(this.readU32()); }
+            if code == 0x52 { return Amqp10Value::UIntVal(this.readU8()); }
+            if code == 0x43 { return Amqp10Value::UIntVal(0); }
+            if code == 0x80 { return Amqp10Value::ULongVal(this.readU64()); }
+            if code == 0x53 { return Amqp10Value::ULongVal(this.readU8()); }
+            if code == 0x44 { return Amqp10Value::ULongVal(0); }
+            if code == 0x51 { return Amqp10Value::ByteVal(this.toSigned8(this.readU8())); }
+            if code == 0x61 { return Amqp10Value::ShortVal(this.toSigned16(this.readU16())); }
+            if code == 0x71 { return Amqp10Value::IntVal(this.toSigned32(this.readU32())); }
+            if code == 0x54 { return Amqp10Value::IntVal(this.toSigned8(this.readU8())); }
+            if code == 0x81 { return Amqp10Value::LongVal(this.readU64()); }
+            if code == 0x55 { return Amqp10Value::LongVal(this.toSigned8(this.readU8())); }
+            if code == 0x73 { return Amqp10Value::CharVal(this.readU32()); }
+            if code == 0x83 { return Amqp10Value::TimestampVal(this.readU64()); }
+            if code == 0x98 { return Amqp10Value::UuidVal(this.readRawBytes(16)); }
+            if code == 0xa0 { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU8())); }
+            if code == 0xb0 { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU32())); }
+            if code == 0xa1 { return Amqp10Value::StrVal(this.readRawStr(this.readU8())); }
+            if code == 0xb1 { return Amqp10Value::StrVal(this.readRawStr(this.readU32())); }
+            if code == 0xa3 { return Amqp10Value::SymbolVal(this.readRawStr(this.readU8())); }
+            if code == 0xb3 { return Amqp10Value::SymbolVal(this.readRawStr(this.readU32())); }
+            if code == 0x45 { return Amqp10Value::ListVal([]); }
+            if code == 0xc0 { return this.readList(this.readU8(), this.readU8()); }
+            if code == 0xd0 { return this.readList(this.readU32(), this.readU32()); }
+            if code == 0xc1 { return this.readMap(this.readU8(), this.readU8()); }
+            if code == 0xd1 { return this.readMap(this.readU32(), this.readU32()); }
+            if code == 0xe0 { return this.readArray(this.readU8(), this.readU8()); }
+            if code == 0xf0 { return this.readArray(this.readU32(), this.readU32()); }
+            if code == 0x00 { return this.readDescribed(); }
+            // float/double/decimal32/64/128: nicht unterstützt (s.
+            // Amqp10Value-Kommentar) — Cursor trotzdem korrekt weiterrücken
+            // (kein Resync-Verlust für nachfolgende Felder), aber der Wert
+            // selbst ist ein harter Fehlermarker statt Silent-Garbage.
+            if code == 0x72 { this.readU32(); return Amqp10Value::ErrorVal("float nicht unterstuetzt in v1"); }
+            if code == 0x82 { this.readU64(); return Amqp10Value::ErrorVal("double nicht unterstuetzt in v1"); }
+            if code == 0x74 { this.readU32(); return Amqp10Value::ErrorVal("decimal32 nicht unterstuetzt in v1"); }
+            if code == 0x84 { this.readU64(); return Amqp10Value::ErrorVal("decimal64 nicht unterstuetzt in v1"); }
+            if code == 0x94 { this.readRawBytes(16); return Amqp10Value::ErrorVal("decimal128 nicht unterstuetzt in v1"); }
+            // Unbekannter Formatcode: Breite unbekannt, Cursor kann NICHT
+            // sicher resynchronisiert werden — fataler Fehler, Aufrufer MUSS
+            // das gesamte Decodieren abbrechen (analog zu 0-9-1s frameType -2).
+            return Amqp10Value::ErrorVal("unbekannter Formatcode: " + code.toString());
+        }
+
+        fn readValue() -> Amqp10Value
+        {
+            return this.readValueOfCode(this.readU8());
+        }
+
+        fn readList(size: Int64, count: Int64) -> Amqp10Value
+        {
+            var items: List<Amqp10Value> = [];
+            for i in 0..count {
+                items.push(this.readValue());
+            }
+            return Amqp10Value::ListVal(items);
+        }
+
+        fn readMap(size: Int64, count: Int64) -> Amqp10Value
+        {
+            var pairs: List<Amqp10Value> = [];
+            for i in 0..count {
+                pairs.push(this.readValue());
+            }
+            return Amqp10Value::MapVal(pairs);
+        }
+
+        /* Array-Elemente teilen sich EINEN Formatcode (nach size+count),
+         * jedes Element selbst hat KEIN eigenes Codebyte mehr — deshalb
+         * readValueOfCode(elementCode) statt readValue() in der Schleife. */
+        fn readArray(size: Int64, count: Int64) -> Amqp10Value
+        {
+            let elementCode = this.readU8();
+            var items: List<Amqp10Value> = [];
+            for i in 0..count {
+                items.push(this.readValueOfCode(elementCode));
+            }
+            return Amqp10Value::ListVal(items);
+        }
+
+        /* Descriptor wird generisch als Amqp10Value gelesen (Spec erlaubt
+         * jeden Wert als Descriptor), aber v1 akzeptiert NUR numerische
+         * Descriptoren (s. Amqp10Described) — alles andere ist ein harter
+         * Fehler statt eines stillschweigend ignorierten Descriptors. */
+        fn readDescribed() -> Amqp10Value
+        {
+            let descVal = this.readValue();
+            var descriptor: Int64 = -1;
+            var descOk: Bool = false;
+            match descVal
+            {
+                UByteVal(n) => { descriptor = n; descOk = true; }
+                UShortVal(n) => { descriptor = n; descOk = true; }
+                UIntVal(n) => { descriptor = n; descOk = true; }
+                ULongVal(n) => { descriptor = n; descOk = true; }
+                _ => {}
+            }
+            let inner = this.readValue();
+            if !descOk {
+                return Amqp10Value::ErrorVal("Described-Type mit nicht-numerischem Descriptor (v1 nicht unterstuetzt)");
+            }
+            return Amqp10Value::DescribedVal(Amqp10Described { descriptor: descriptor, value: inner });
+        }
+    }
+
     class Amqp10
     {
         /*

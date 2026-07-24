@@ -150,37 +150,62 @@ genauso funktionieren):
       `amqp_phase1_handshake.tnx` (0-9-1), 10× stabil wiederholt.
       stdlib_smoke-Eintrag `amqp10` ergänzt (dial gegen unbelegten Port).
 
-## Phase 2 — Typsystem-Codec (Kernstück)
+## Phase 2 — Typsystem-Codec (Kernstück) ✅
 
-- [ ] 2.1 `Amqp10Writer`: primitive Encoder-Methoden für alle Fixed-Width-
+- [x] 2.1 `Amqp10Writer`: primitive Encoder-Methoden für alle Fixed-Width-
       Typen (`null`, `boolean`, `ubyte`, `ushort`, `uint`, `ulong`, `byte`,
-      `short`, `int`, `long`, `float`, `double`, `char`, `timestamp`,
-      `uuid`) — v1 nutzt bewusst NUR die volle Breite (kein
-      `smalluint`/`smallulong`/`uint0`/etc.-Kompressions-Picking beim
-      Schreiben, das ist reine Größenoptimierung und für einen Client
-      nicht protokollrelevant; der DECODER muss trotzdem ALLE Varianten
-      lesen können, weil der Broker sie nutzt — asymmetrisch wie bei
-      0-9-1s `octet`/`short`/`long` versus dessen einheitlichem Schreiben).
-- [ ] 2.2 `Amqp10Writer`: variable-width Typen (`binary` vbin8/vbin32,
-      `string` str8/str32, `symbol` sym8/sym32) — Grenzentscheidung
-      8-Bit-vs-32-Bit-Präfix nach Länge, analog zur 0-9-1-
-      `shortstr`/`longstr`-Unterscheidung aber mit einem harten Cutover
-      statt zwei getrennter Aufrufer-Methoden.
-- [ ] 2.3 `Amqp10Writer`: compound Typen (`list8`/`list32`, `map8`/`map32`)
-      — rekursiv über ein `Amqp10Value`-Enum (analog zu 0-9-1s
-      `AmqpFieldValue091`, aber mit deutlich mehr Varianten und
-      generischerer Nutzung, da AMQP 1.0 dieses Enum für ALLES nutzt, nicht
-      nur für Feld-Tables).
-- [ ] 2.4 `Amqp10Reader`: Decoder für ALLE Formatcode-Varianten aus der
-      Sondierungs-Tabelle oben (inkl. der komprimierten Kurzformen
-      `smalluint`/`uint0`/etc., die der Broker beim Senden nutzen darf).
-      Described-Type-Decoding (`0x00` + Descriptor + Wert) als generischer
-      Baustein, den Phase 3 (Performatives) UND Phase 6 (Message-Sections)
-      beide wiederverwenden.
-- [ ] 2.5 e2e-Test: Rundtrip-Encode/Decode für jeden Formatcode einzeln +
-      verschachtelte List/Map-Kombinationen (analog `amqp_frame_codec.tnx`
-      Phase 2.4 bei 0-9-1, aber deutlich mehr Formatcode-Varianten
-      abzudecken).
+      `short`, `int`, `long`, `char`, `timestamp`, `uuid`) — v1 nutzt
+      bewusst NUR die volle Breite beim Schreiben (kein
+      `smalluint`/`smallulong`/`uint0`/etc.-Kompressions-Picking, reine
+      Größenoptimierung, kein Korrektheitserfordernis); der DECODER liest
+      trotzdem ALLE Kurzformen, weil der Broker sie nutzen darf.
+      **v1-Lücke (bewusst, s. `Amqp10Value`-Kommentar):** `float`/`double`/
+      `decimal32/64/128` werden NICHT kodiert/dekodiert (kein
+      IEEE-754-Bitcast-Primitive in der Runtime, und die Kern-Performatives
+      nutzen laut Spec nirgends float/double) — der Decoder erkennt die
+      Formatcodes und überspringt sie korrekt (Cursor bleibt synchron),
+      liefert aber `ErrorVal` statt eines echten Werts.
+- [x] 2.2 `Amqp10Writer`: variable-width Typen (`binary`/`string`/`symbol`)
+      — **Design-Abweichung von der ursprünglichen Planung:** kein
+      8-vs-32-Bit-Cutover im Writer. Die 32-Bit-Form (`vbin32`/`str32`/
+      `sym32`) ist für JEDE Länge spec-konform (kostet nur ein paar Bytes
+      mehr bei kleinen Werten) — der Writer schreibt sie IMMER, kein
+      Größen-Zweig, keine künstliche Fehlergrenze wie bei 0-9-1s
+      255-Byte-`shortstr`-Limit. Der Reader muss trotzdem beide Formen
+      lesen können. Dieselbe Vereinfachung gilt für List/Map (immer
+      `list32`/`map32`, nie `list0`/`list8`/`map8`).
+- [x] 2.3 `Amqp10Writer`/`Amqp10Reader`: compound Typen (`list`/`map`) +
+      **Array-Decoding** (`array8`/`array32`, ursprünglich nicht explizit
+      geplant, aber nötig — Broker-Felder wie `sasl-server-mechanisms`
+      oder `offered-capabilities` sind `symbol`-Arrays, die Phase 4/5
+      lesen müssen können) — rekursiv über `Amqp10Value`-Enum (analog zu
+      0-9-1s `AmqpFieldValue091`, aber generischer: AMQP 1.0 nutzt dieses
+      EINE Typsystem für Performatives, Message-Sections UND Feld-Tables).
+      `MapVal` ist eine FLACHE `List<Amqp10Value>` (key,val,key,val,...)
+      statt `Map<K,V>`, weil AMQP-1.0-Map-Keys beliebige Werte sein dürfen
+      (kein einheitlicher K-Typ wie bei 0-9-1s Immer-String-Keys).
+      Described-Type-Encoding/-Decoding (`0x00` + Descriptor + Wert) als
+      generischer Baustein für Phase 3 (Performatives) + Phase 6
+      (Message-Sections). `Amqp10Described`-Klasse: v1 beschränkt den
+      Descriptor auf `Int64` (numerisch, als `smallulong` kodiert) — deckt
+      alle Performatives/SASL-Frames/Sections ab (alle nutzen laut Spec
+      numerische Descriptoren), Symbol-Descriptoren sind ein v1-Nicht-Ziel.
+- [x] 2.4 (in 2.3 gelandet, s. o.) — `Amqp10Reader`-Decoder für ALLE
+      Formatcode-Varianten inkl. der komprimierten Kurzformen.
+- [x] 2.5 e2e-Test `tests/e2e/amqp10_typesystem.tnx`: Rundtrip
+      Encode/Decode für jeden unterstützten Formatcode (30 Prüfungen) +
+      verschachtelte List/Map-Kombinationen + Kurzformen, die NUR der
+      Reader kennen muss (von Hand gebaute Bytes, da der Writer sie nie
+      schreibt) + Array-Decoding + Fehlerpfade (`float`, unbekannter
+      Formatcode). 10× stabil wiederholt.
+      **Echter Compiler-Bug gefunden + gefixt (Bug 69, bugs.md):**
+      Enum-Diskriminatoren wurden als Zeichensummen-Checksumme des
+      Variantennamens berechnet — `"UShortVal"` und `"BinaryVal"`
+      kollidierten (beide summieren auf 904), wodurch `match` die falsche
+      Sibling-Variante traf (Silent-Garbage, kein Fehler). Gefixt in
+      `codegen.rs` mit FNV-1a-Hash statt Zeichensumme (vier Call-Sites).
+      **Kompletter `make check`-Lauf grün** (kritisch, weil der Fix JEDES
+      Enum im gesamten Projekt betrifft, nicht nur AMQP 1.0).
 
 ## Phase 3 — Frame-Codec + Performative-Hülle
 

@@ -2441,6 +2441,74 @@ oben), das ist also kein Aufruf-Pattern, das reale Nutzung dieses Features
 provozieren würde — dokumentiert für den Fall, dass er in einem anderen
 Feature erneut auftaucht.
 
+**Bug 69 — Enum-Diskriminator kollidierte bei gleicher Zeichensumme des
+Variantennamens → falsche Sibling-Variante wird gematcht (Silent-Garbage,
+kein Fehler).** Entdeckt beim Bau des AMQP-1.0-Typsystem-Codecs
+(`amqp10.tnx`, `Amqp10Value`-Enum mit 20 Varianten). Root Cause: der
+Enum-Diskriminator (die Laufzeit-Kennung, welche Variante ein `i64`
+repräsentiert — entweder der Wert selbst bei argument-losen Varianten oder
+das Tag-Wort an Offset 0 eines heap-allozierten Payloads) wurde als reine
+Zeichensummen-Checksumme des Variantennamens berechnet
+(`variant.chars().map(|c| c as i64).sum()`, `codegen.rs`, vier Call-Sites:
+Enum-Konstruktion mit/ohne Argumente, `Pattern::Ident`- und
+`Pattern::EnumVariant`-Matching). Diese Checksumme ist extrem
+kollisionsanfällig — jedes Anagramm UND jede andere zeichensummen-gleiche
+Namenskombination kollidiert. Minimal-Repro: `"UShortVal"` und
+`"BinaryVal"` summieren BEIDE auf exakt 904 (`U+S+h+o+r+t+V+a+l` =
+`B+i+n+a+r+y+V+a+l` = 904, reine Zufalls-Koinzidenz der ASCII-Werte). Bei
+zwei Varianten DESSELBEN Enums mit kollidierender Summe matcht ein `match`
+auf die eine Variante fälschlich den `case`-Zweig der anderen — kein
+Compile- oder Laufzeitfehler, einfach falsches Verhalten (hier: ein
+`BinaryVal`-Payload wurde als `UShortVal`-Fall behandelt, der `List<Int64>`-
+Inhalt ging verloren, `w.bytes.len()` lieferte 1 statt der erwarteten 9).
+Sehr schwer zu debuggen, weil Ursache (Namenskollision) und Symptom (falsch
+zusammengebauter Byte-Puffer) völlig unzusammenhängend wirken — gefunden
+über systematisches Bisektieren bis zu einer 3-Varianten-Minimalreproduktion
+und Diff der generierten LLVM-IR (einzige Differenz zwischen einer
+funktionierenden und einer kaputten Variante: eine einzelne
+`icmp eq i64 %x, 904`-Konstante).
+
+**Fix (zweistufig, nach einer selbst verursachten Regression korrigiert):**
+erster Versuch ersetzte die Zeichensumme pauschal an allen vier Call-Sites
+durch einen FNV-1a-64-Bit-Hash — das behob die Kollision, brach aber eine
+ANDERE, bis dahin unentdeckte Invarianz: der Match-Codegen unterscheidet
+bei `Pattern::EnumVariant` mit einem `icmp ugt i64 val, 65535`-Check, ob
+ein Laufzeit-`i64` ein Zeiger auf eine Payload-Variante (immer eine echte
+Heap-Adresse, praktisch immer > 65535) oder ein rohes Literal einer
+argument-losen Variante ist (MUSS < 65536 bleiben, sonst hält der Codegen
+eine argument-lose Instanz fälschlich für einen Zeiger und dereferenziert
+eine Zufallsadresse). Die Zeichensumme hielt diese Grenze implizit ein
+(Summen realistischer Bezeichnernamen bleiben klein); ein voller 64-Bit-
+Hash tut das NICHT — `AmqpFieldValue091::VoidVal` (argument-los) bekam
+dadurch einen Diskriminator > 65535 und `amqp_frame_codec.tnx` segfaultete
+beim `make check`-Lauf nach dem ersten Fix-Versuch. Endgültiger Fix: ZWEI
+Hilfsfunktionen — `enum_discriminator` (unbeschränkter FNV-1a-Hash, für
+Payload-Varianten, deren Diskriminator nur per Heap-Load+Vergleich genutzt
+wird) und `enum_discriminator_noarg` (`FNV-1a % 65536`, für argument-lose
+Varianten, deren Diskriminator DIREKT als roher Wert verglichen wird und
+deshalb die 65535-Grenze einhalten MUSS). Die vier Call-Sites wählen je
+nach Arität (hat die konstruierte/gematchte Variante Argumente oder
+nicht) die passende Funktion. Kollisionen sind damit praktisch
+ausgeschlossen (kryptographisch nicht sicher, aber für kurze, von
+Menschen gewählte Bezeichnernamen astronomisch unwahrscheinlich) statt
+eine Frage der Namenslänge/-zusammensetzung zu sein — bei WEITERHIN
+respektierter 65535-Zeiger-Grenze. **Bewusst NICHT behoben:** Enum-
+Varianten sind laut bestehendem Design GLOBAL nach Namen geschlüsselt
+(nicht pro Enum, s. Kommentar bei `register_variant_payloads`) — ein
+Diskriminator, der zusätzlich den Enum-Namen mit einbezieht (härtere,
+aber invasivere Lösung), würde eine neue Registry-Infrastruktur brauchen,
+die es noch nicht gibt. Der FNV-1a-Fix behebt das AKUTE Kollisionsrisiko
+bei minimaler, gut abgegrenzter Änderung statt einen größeren, riskanteren
+Umbau zu erzwingen — analog zur
+Projektlinie bei Bug 66 ("gezielt statt pauschal gefixt").
+
+**Verifiziert:** Minimalreproduktion (`UShortVal`/`BinaryVal`-Kollision)
+lokal nachgestellt UND als vollständiger 30-Fälle-Rundtrip-Test
+`tests/e2e/amqp10_typesystem.tnx` verifiziert (jeder unterstützte
+AMQP-1.0-Formatcode einzeln + verschachtelte Werte), 10× stabil
+wiederholt. Kompletter `make check`-Lauf grün (kritisch hier, weil die
+Änderung JEDES Enum im gesamten Projekt betrifft, nicht nur AMQP 1.0).
+
 ## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
 
 **Status: PHASE 1 GELANDET (2026-07-22).** Angriff auf die #1-Struktur-Schwäche

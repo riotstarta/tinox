@@ -592,6 +592,55 @@ impl CodeGen {
         marker.strip_prefix("Map:").map(|m| m.to_string())
     }
 
+    fn fnv1a(name: &str) -> u64 {
+        let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
+        for b in name.bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3); // FNV-1a 64-bit prime
+        }
+        hash
+    }
+
+    /// Discriminator for a variant WITH payload arguments: identifies which
+    /// variant a heap-allocated `[disc, payload...]` block represents (the
+    /// tag word at offset 0). Range is UNCONSTRAINED — safe because payload
+    /// variants are always accessed via the tag word loaded FROM that heap
+    /// block, never compared as a raw top-level scalar (see the
+    /// `icmp ugt i64 val, 65535` pointer-vs-literal guard in
+    /// `Pattern::EnumVariant` codegen, which relies on payload-variant
+    /// instances always being real heap addresses, i.e. large).
+    ///
+    /// Bug (found 2026-07-24 while building the AMQP-1.0 type-system codec,
+    /// s. bugs.md Bug 69): the previous scheme summed the variant name's
+    /// character codes, a weak checksum where any two variant names with an
+    /// equal sum (not just anagrams) collide, e.g. `"UShortVal"` and
+    /// `"BinaryVal"` both sum to 904. A collision within the SAME enum means
+    /// the wrong sibling variant is silently matched — no error, just
+    /// corrupted control flow. Variant discriminators are (by existing
+    /// design, s. `register_variant_payloads`) keyed globally by name only,
+    /// not scoped per-enum, so a proper index-based fix would need a
+    /// broader registry; FNV-1a is the smaller, well-contained fix.
+    fn enum_discriminator(name: &str) -> i64 {
+        Self::fnv1a(name) as i64
+    }
+
+    /// Discriminator for a variant WITHOUT payload arguments: the enum
+    /// instance IS this raw i64 (no heap allocation). MUST stay <= 65535 —
+    /// match codegen uses exactly that threshold to decide whether a raw
+    /// i64 is a no-arg-variant literal or a pointer to a payload variant
+    /// (`icmp ugt i64 val, 65535`, s. `enum_discriminator` above). A value
+    /// of 65536 or more here would make a no-arg instance indistinguishable
+    /// from a heap pointer, so the runtime would try to dereference it —
+    /// segfault on an essentially-random "address" (this was a real
+    /// regression while fixing Bug 69: switching ALL FOUR discriminator
+    /// call sites to unconstrained FNV-1a broke `AmqpFieldValue091::VoidVal`
+    /// this way; `amqp_frame_codec.tnx` segfaulted). Reduced modulo 65536
+    /// instead of the plain character-sum for the same collision-resistance
+    /// reasoning as `enum_discriminator`, just range-constrained.
+    fn enum_discriminator_noarg(name: &str) -> i64 {
+        (Self::fnv1a(name) % 65536) as i64
+    }
+
     /// Classify an enum variant payload type for match-binding purposes.
     /// List payloads carry their full container marker so element access
     /// inside the match arm dispatches correctly.
@@ -7318,8 +7367,7 @@ impl CodeGen {
 
                 if args.is_empty() {
                     // Simple enum variant without arguments
-                    // Use variant hash as discriminator or a simple mapping
-                    let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+                    let discriminator = Self::enum_discriminator_noarg(variant);
                     Ok((format!("{}", discriminator), "i64".to_string()))
                 } else {
                     // Enum variant with arguments
@@ -7336,7 +7384,7 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
 
                     // Store discriminator at index 0
-                    let discriminator = variant.chars().map(|c| c as i64).sum::<i64>();
+                    let discriminator = Self::enum_discriminator(variant);
                     let disc_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -7703,8 +7751,10 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
                         }
                         Pattern::Ident(name, _, _) if self.known_enum_variants.contains(name) => {
-                            // Bare enum variant name (e.g. `North` instead of `Dir::North`)
-                            let discriminator = name.chars().map(|c| c as i64).sum::<i64>();
+                            // Bare enum variant name (e.g. `North` instead of `Dir::North`) —
+                            // always a no-arg variant (has-arg variants require `Variant(x)`
+                            // syntax and hit Pattern::EnumVariant below instead).
+                            let discriminator = Self::enum_discriminator_noarg(name);
                             let val_i64 = if val_ty.ends_with('*') || val_ty == "ptr" {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
@@ -7774,7 +7824,14 @@ impl CodeGen {
                             // puts the name in `enum_name` and leaves `variant` empty.
                             // When written as `Enum::Variant(args)`, the name is in `variant`.
                             let disc_name = if variant.is_empty() { enum_name } else { variant };
-                            let discriminator = disc_name.chars().map(|c| c as i64).sum::<i64>();
+                            // args here are the PATTERN's own bindings (`Variant(x, y)`), which
+                            // mirror the variant's declared arity — has-args vs. no-args must use
+                            // the matching discriminator scheme (s. enum_discriminator_noarg).
+                            let discriminator = if args.is_empty() {
+                                Self::enum_discriminator_noarg(disc_name)
+                            } else {
+                                Self::enum_discriminator(disc_name)
+                            };
 
                             // Normalize the match subject to i64 so all arms use the same
                             // pointer-range-guarded logic regardless of the subject's LLVM type.
