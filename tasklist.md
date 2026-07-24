@@ -7,13 +7,15 @@ von oben), nach Abschluss hier abhaken und ggf. Notizen ergänzen.**
 Status: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig · `[-]` bewusst gestrichen
 
 Arbeitsregeln (Projektkonvention): nach jedem Schritt `make check` komplett
-grün; Features/Bugs in bugs.md dokumentieren (Stil: Status/Ursache/Verifiziert);
-e2e-Tests unter `tests/e2e/*.tnx` mit `// expect:`-Direktiven; kein
-Silent-Garbage — im Zweifel harter Fehler.
+grün; abgeschlossene Features/gefixte Bugs in `bugs_fixed.md` dokumentieren
+(Stil: Status/Ursache/Verifiziert), `bugs.md` enthält NUR noch aktuell
+offene Punkte (seit 2026-07-25 getrennt); e2e-Tests unter `tests/e2e/*.tnx`
+mit `// expect:`-Direktiven; kein Silent-Garbage — im Zweifel harter
+Fehler.
 
 Vorheriges Feature (AMQP-0-9-1-Client inkl. `amqps://`) ist komplett fertig
-und in `bugs.md` archiviert (Suche „Feature: AMQP-0-9-1-Client"). Diese Datei
-startet frisch für AMQP 1.0.
+und in `bugs_fixed.md` archiviert (Suche „Feature: AMQP-0-9-1-Client").
+Diese Datei startet frisch für AMQP 1.0.
 
 ---
 
