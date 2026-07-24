@@ -1708,10 +1708,58 @@ aus verschachteltem Loop (ALLE Scopes); mehrere defers in LIFO-Reihenfolge;
 normaler `return`-Pfad unverändert. e2e-Regressionstest
 `tests/e2e/defer_on_throw.tnx`; `make check` voll grün.
 
-**Bewusst noch offen:** defer-Scopes zwischen throw und einem `catch` in
-DERSELBEN Funktion (teilweises Unwinding innerhalb eines Frames) — der Fix deckt
-das Entweichen aus dem Frame ab (der häufige Ressourcen-Fall: Funktion öffnet
-Ressource, `defer close`, ruft etwas das wirft). Verwandt: [[Bug 40]].
+**War noch offen, GEFIXT am 2026-07-24:** defer-Scopes zwischen throw und
+einem `catch` in DERSELBEN Funktion (teilweises Unwinding innerhalb eines
+Frames) — der obige Fix deckte nur das Entweichen aus dem Frame ab (throw
+→ `ret`); ein lokal gefangener throw (throw → `br` zu einem `catch_bb`
+DERSELBEN Funktion) übersprang defer-Scopes, die INNERHALB des try-Bodys
+registriert wurden, komplett. Verwandt: [[Bug 40]].
+
+**Root Cause.** `emit_post_stmt_throw_check` und der `StmtKind::Throw`-
+Codegen sprangen bei lokalem `error_catch` (`ctx.error_catch` gesetzt)
+direkt per `br label %catch_bb` — anders als der Escape-Pfad (`else`-Zweig,
+kein `error_catch`), der vor dem `ret` `emit_unwind_defers` aufruft, fehlte
+hier jeder Defer-Aufruf. Minimal-Repro: `try { defer { cleanup(); }
+risky(); } catch e: String { ... }` — `cleanup()` lief NIE, weder vor noch
+nach dem `catch`-Block.
+
+**Fix.** `ctx.error_catch` um ein drittes Feld erweitert: die
+`defer_stack`-Tiefe beim Betreten des zugehörigen `try`-Bodys (VOR dem
+Block-Push des try-Bodys selbst). Neuer Helper `emit_unwind_defers_to(ctx,
+depth)` (Geschwister von `emit_unwind_defers`) läuft vor jedem Sprung zu
+einem lokalen `catch_bb` durch alle defer-Scopes, die SEIT dieser Tiefe
+geöffnet wurden (innerster zuerst) — an allen drei Sprungstellen ergänzt:
+`StmtKind::Throw`, `emit_post_stmt_throw_check`, und dem Re-throw-zum-
+äußeren-catch-Pfad in `gen_try_stmt` (verschachtelte try/catch in
+derselben Funktion). **Wichtige Design-Entscheidung, nach einer selbst
+gefundenen Regression korrigiert:** der erste Versuch ließ
+`emit_unwind_defers_to` `ctx.defer_stack` per `split_off` ABSCHNEIDEN
+(truncaten) — das brach einen ANDEREN, äußeren `defer` (registriert vor
+dem `try`): der Codegen läuft nach einem `br`/Terminator im Rust-Code
+trotzdem weiter durch die (an der Laufzeit unerreichbaren) Restanweisungen
+des try-Bodys, und dessen eigener Block-Handler poppt am Ende UNBEDINGT
+seinen eigenen Scope von `defer_stack` — bei vorzeitig abgeschnittenem
+Stack poppte das dann den FALSCHEN (äußeren) Scope und führte ihn
+verfrüht (in totem Code) aus, sodass er beim echten Funktionsende fehlte.
+`ctx.defer_stack` ist eine reine Codegen-Zeit-Buchführung, die dem
+lexikalischen Nesting folgt — sie MUSS mit der normalen Block-Exit-Logik
+im Gleichschritt bleiben, unabhängig davon, ob der erzeugte IR-Pfad an der
+Laufzeit erreichbar ist. Endgültiger Fix (wie `emit_unwind_defers`):
+`defer_stack` NICHT mutieren, nur die Scopes ab `depth` lesen/ausführen —
+der reguläre Block-Exit-Code räumt den Stack danach korrekt selbst auf.
+
+**Verifiziert:** neuer e2e-Test `tests/e2e/defer_local_catch.tnx`, vier
+Fälle: mehrere defers im selben Scope (LIFO vor lokalem catch); ein
+äußerer (Funktions-Scope-)defer läuft NICHT vorzeitig, nur der
+try-interne; verschachtelte Blocks innerhalb des try (beide Scopes,
+innerster zuerst); verschachteltes try ohne eigenen catch (nur finally)
+innerhalb eines äußeren try/catch — defer läuft vor finally, finally vor
+dem Re-throw, kein Doppel-Lauf des inneren defers. Gegen den ungefixten
+Codegen gegengeprüft: alle try-internen defers fehlten komplett (der
+äußere lief korrekt, nur verzögert). Bestehende Regressionstests
+(`defer_on_throw.tnx`, `try_finally_rethrow.tnx`, `throw_unwinding.tnx`)
+unverändert grün. `make check` komplett grün (Codegen-Änderung an einem
+zentralen, ueberall genutzten Mechanismus).
 
 ---
 

@@ -4345,9 +4345,12 @@ impl CodeGen {
                 } else {
                     val
                 };
-                if let Some((catch_bb, error_var)) = &ctx.error_catch {
-                    let (catch_bb, error_var) = (catch_bb.clone(), error_var.clone());
+                if let Some((catch_bb, error_var, depth)) = &ctx.error_catch {
+                    let (catch_bb, error_var, depth) = (catch_bb.clone(), error_var.clone(), *depth);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, error_var).unwrap();
+                    // Run defer scopes opened inside this try's body before
+                    // jumping to the local catch handler (Bug 41 follow-up).
+                    self.emit_unwind_defers_to(ctx, depth)?;
                     writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
                 } else {
                     // No enclosing try in this function: park the error in the
@@ -9385,9 +9388,12 @@ impl CodeGen {
         let cont_bb = self.new_bb("throwcont");
         writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, err_bb, cont_bb).unwrap();
         writeln!(&mut self.ir, "{}:", err_bb).unwrap();
-        if let Some((catch_bb, error_var)) = ctx.error_catch.clone() {
+        if let Some((catch_bb, error_var, depth)) = ctx.error_catch.clone() {
             writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
             writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
+            // Run defer scopes opened inside this try's body before jumping
+            // to the local catch handler (Bug 41 follow-up).
+            self.emit_unwind_defers_to(ctx, depth)?;
             writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
         } else {
             // Propagating out of this frame — run pending defers first (Bug 41).
@@ -9600,7 +9606,10 @@ impl CodeGen {
         writeln!(&mut self.ir, "br label %{}", try_bb).unwrap();
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
         let old_error_catch = ctx.error_catch.take();
-        ctx.error_catch = Some((catch_bb.clone(), error_var.clone()));
+        // Depth BEFORE the try body's own Block pushes its defer scope — a
+        // local throw unwinds everything opened since here (Bug 41 follow-up).
+        let try_defer_depth = ctx.defer_stack.len();
+        ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
         // The body runs with error_catch set: per-statement throw-checks inside
         // (emitted by the Block handler and other nested scopes) branch to this
         // try's catch (Bug 40). A trailing check covers a single-statement body
@@ -9719,9 +9728,14 @@ impl CodeGen {
             let rethrow_bb = self.new_bb("rethrow");
             writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, rethrow_bb, end_bb).unwrap();
             writeln!(&mut self.ir, "{}:", rethrow_bb).unwrap();
-            if let Some((outer_catch, outer_error_var)) = ctx.error_catch.clone() {
-                // Hand the error to the enclosing try in this function.
+            if let Some((outer_catch, outer_error_var, outer_depth)) = ctx.error_catch.clone() {
+                // Hand the error to the enclosing try in this function. Run
+                // any defer scopes opened since the OUTER try's entry (Bug
+                // 41 follow-up) — this try's own scope is already resolved
+                // by this point (either via emit_unwind_defers_to on the
+                // throw path, or the try body's normal Block-exit pop).
                 writeln!(&mut self.ir, "store i64 {}, i64* {}", ev, outer_error_var).unwrap();
+                self.emit_unwind_defers_to(ctx, outer_depth)?;
                 writeln!(&mut self.ir, "br label %{}", outer_catch).unwrap();
             } else {
                 // Propagate out of this frame: park in the global slot, run
@@ -9761,6 +9775,38 @@ impl CodeGen {
             return Ok(());
         }
         let scopes: Vec<Vec<Stmt>> = ctx.defer_stack.iter().rev().cloned().collect();
+        if scopes.iter().all(|s| s.is_empty()) {
+            return Ok(());
+        }
+        ctx.in_defer_exec = true;
+        for scope in scopes {
+            for stmt in scope.into_iter().rev() {
+                self.gen_stmt_body(&Box::new(stmt), ctx)?;
+            }
+        }
+        ctx.in_defer_exec = false;
+        Ok(())
+    }
+
+    /// Run the defer scopes opened SINCE `depth` (i.e. those pushed after
+    /// entering a `try` body), innermost first — for a throw that is
+    /// caught LOCALLY (jumps to this function's own catch_bb) rather than
+    /// escaping the frame (bugs.md, Bug 41 follow-up: "defer zwischen
+    /// throw und catch in derselben Funktion"). Like emit_unwind_defers,
+    /// defer_stack is left INTACT (not truncated) — this codegen walk
+    /// keeps visiting the try body's remaining statements after emitting
+    /// the `br` to catch_bb (they become unreachable IR at the LLVM level,
+    /// but the Rust-side Block handler still runs to completion and pops
+    /// its own scope there). Truncating here would double-pop: the Block
+    /// handler's own (dead-code) pop would then remove the WRONG scope
+    /// (an outer one) once this try's scope had already vanished,
+    /// silently losing outer `defer`s that must still run at their own
+    /// later exit point.
+    fn emit_unwind_defers_to(&mut self, ctx: &mut GenCtx, depth: usize) -> Result<(), ErrorBag> {
+        if ctx.in_defer_exec || ctx.defer_stack.len() <= depth {
+            return Ok(());
+        }
+        let scopes: Vec<Vec<Stmt>> = ctx.defer_stack[depth..].iter().rev().cloned().collect();
         if scopes.iter().all(|s| s.is_empty()) {
             return Ok(());
         }
@@ -11090,7 +11136,11 @@ pub struct GenCtx {
     local_types: HashMap<String, String>,
     break_target: Option<String>,
     continue_target: Option<String>,
-    error_catch: Option<(String, String)>,
+    /// (catch_bb, error_var, defer_stack depth at try-entry). The saved depth
+    /// lets a local throw unwind exactly the defer scopes opened inside this
+    /// try's body before jumping to catch_bb (Bug 41 follow-up — see
+    /// emit_unwind_defers_to).
+    error_catch: Option<(String, String, usize)>,
     defer_stack: Vec<Vec<Stmt>>,
     in_defer_exec: bool,
     /// LLVM return type of the current function (for casting return values)
