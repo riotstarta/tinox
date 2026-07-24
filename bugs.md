@@ -2401,10 +2401,11 @@ außerhalb des AMQP-Scopes) — Workaround im AMQP-e2e-Test: die betroffene
 Rückgabetypen als `Int64` prüfen (vermutlich betrifft es auch `String`/
 Klassen-Rückgabetypen, ungetestet).
 
-**Bug 68 — `spawn`/`await`-Loopback: nachfolgender Netzwerkaufruf crasht mit
-„array index out of bounds", wenn ein VORHERIGER, clientseitig verworfener
-Aufruf (kein Byte auf die Leitung) UND ein GROSSER (>~100 Byte) String-Wert
-im Spiel sind.** Entdeckt bei Phase-5.2-Grenzfalltests des AMQP-0-9-1-Clients
+**Bug 68 — GEFIXT (2026-07-24, nachtraeglich untersucht).** `spawn`/`await`-
+Loopback: nachfolgender Netzwerkaufruf crasht mit „array index out of
+bounds", wenn ein VORHERIGER, clientseitig verworfener Aufruf (kein Byte
+auf die Leitung) UND ein GROSSER (>~100 Byte) String-Wert im Spiel sind.
+Entdeckt bei Phase-5.2-Grenzfalltests des AMQP-0-9-1-Clients
 (`declareQueue`/`bindQueue` mit Namen an der `shortstr`-Grenze). Minimal-Repro
 (gekürzt, vollständige Fassung war
 `tests/e2e/amqp_edge_cases.tnx`-Vorstufe, s. Log Phase 5.2):
@@ -2431,15 +2432,78 @@ der Bug tritt NUR in Kombination mit der `spawn`/`await`-Kooperativ-
 Schedulung auf. Deutet auf einen Speicher-/Buffer-Bug in der Async-Runtime
 oder im Codegen der Async-Transformation hin (nicht auf einen Logikfehler
 im AMQP-Code selbst) — vermutlich verwandt mit Bug 67 (dieselbe Baustelle:
-`spawn`/`await`), aber ein anderes Symptom. **NICHT untersucht/gefixt**
-(tiefer Runtime-/Codegen-Bug, außerhalb des AMQP-Feature-Scopes; würde eine
-Untersuchung der LLVM-IR der Async-Transformation bzw. des
-`httpConnReadN`/`httpConnWriteBytes`-Laufzeitcodes erfordern). **Praktisch
-unerreichbar im v1-AMQP-Client:** v1 verwirft überlange (>255 Byte) Namen
-IMMER clientseitig ohne Netzwerkaufruf (s. `AmqpWriter091::shortstr()`-Fix
-oben), das ist also kein Aufruf-Pattern, das reale Nutzung dieses Features
-provozieren würde — dokumentiert für den Fall, dass er in einem anderen
-Feature erneut auftaucht.
+`spawn`/`await`), aber ein anderes Symptom.
+
+**Root Cause (nachtraeglich gefunden, 2026-07-24).** `spawn` startet einen
+echten POSIX-Thread (`pthread_create` in `tinox_task_spawn`, runtime.c) —
+kein kompilierter Coroutine-State-Machine-Umbau, echte Parallelitaet. Der
+Boehm-GC haelt bei einer Kollision ALLE Threads per Signal an ("Stop the
+world" — auf diesem System per `gdb` bestaetigt: `SIGPWR`). Blockiert ein
+Thread GENAU in diesem Moment in einem `recv()`/`send()` (ueber die
+binaersicheren `httpConnReadN`/`httpConnWriteBytes`-Primitiven), wird der
+Syscall durch dieses Signal unterbrochen (`errno=EINTR`) — ein voellig
+normaler, laut POSIX jederzeit moeglicher Vorgang bei EINEM beliebigen
+Signal, nicht nur bei eigenen Handlern. `conn_recv`/`conn_send` (runtime.c)
+prüften das Rückgabeergebnis bisher nicht auf `EINTR`, sondern behandelten
+JEDEN `got <= 0`-Fall wie ein abgebrochene Verbindung (`break` in der
+Lese-Schleife von `httpConnReadN`) — ein zur Unzeit unterbrochener,
+ansonsten völlig gesunder Read/Write wurde also als EOF fehlinterpretiert,
+der Frame kam nur teilweise (oft: gar nicht) an. Das Silent-Garbage-Muster
+setzte sich fort, bis ein `AmqpReader091` irgendwann versuchte, aus einem
+leeren `payload`-Array zu lesen — der eigentliche, weit vom wahren Fehler
+entfernte Absturzpunkt (`tinox_array_get`, "index out of bounds: 0
+(length 0)"). Per Direktinstrumentierung von `httpConnReadN` (temporärer
+`errno`-Debug-Print) UND Backtrace-Analyse (`addr2line` auf einen
+manuellen SIGSEGV-Handler mit `backtrace()`, da `coredumpctl` in dieser
+Umgebung keine Dumps liefert) verifiziert: der Crash trat im simulierten
+BROKER-Thread beim Dekodieren eines leeren `queue.bind`-Frame-Payloads
+auf, waehrend der CLIENT (Hauptthread) exakt zur selben Zeit den
+korrekten, 504 Byte langen Frame korrekt geschrieben hatte — der Frame kam
+nie vollständig an, weil der Broker-Thread mitten im Lesen unterbrochen
+wurde. **Warum "deterministisch pro Länge, nicht zeitabhängig":** die
+relative Timing-Verschiebung zwischen "wie lange braucht der Aufbau des
+zusätzlichen, clientseitig verworfenen 300-Byte-Strings" (Allokations-
+Druck, der eine GC-Kollision auslöst) und "wie weit ist der Broker-Thread
+inzwischen mit seinem blockierenden Read" ist auf ein und derselben
+Maschine bei gleicher Codepfadlänge erstaunlich reproduzierbar — es ist
+trotzdem ein echtes Race, nur eines mit sehr stabiler Auflösung auf einem
+gegebenen System (was die urspüngliche Einschätzung "nicht racy" relativiert:
+es IST ein Race, nur kein chaotisch flackerndes).
+
+**Fix:** `conn_recv`/`conn_send` (runtime.c, TLS- UND Plaintext-Variante)
+retryen jetzt in einer Schleife, solange `errno == EINTR` (bei TLS via
+`SSL_get_error(...) == SSL_ERROR_SYSCALL`) — Standard-POSIX-Praxis für
+JEDEN blockierenden Syscall in einem Programm, das Signale empfangen
+könnte (hier: durch den GC selbst, unabhängig vom eigenen Code). Kein
+Silent-Garbage mehr: eine durch ein Signal unterbrochene, aber sonst
+intakte Verbindung wird jetzt zu Ende gelesen/geschrieben, statt als
+Verbindungsabbruch fehlgedeutet zu werden.
+
+**Bewusst NICHT als Fix übernommen:** ein erster Versuch registrierte
+gespawnte Threads zusätzlich manuell beim GC (`GC_register_my_thread`/
+`GC_unregister_my_thread` in einem C-Trampolin um `tinox_task_spawn`,
+plus dasselbe für den HTTP-Worker-Pool) — ausgehend von der (falschen)
+Hypothese, ein unregistrierter Thread sei für den GC unsichtbar und
+könne dadurch Objekte verlieren. Diese Änderung behob den ursprünglichen
+Crash NICHT (identisches Verhalten bei 20/20 Wiederholungen) und führte
+STATTDESSEN einen NEUEN, schwereren Segfault tief in den GC-Allokations-
+Internals ein (vermutlich eine Inkompatibilität mit dem hier aktiven
+Parallel-Marking, mehrere `GC-marker-N`-Threads) — wieder entfernt, nachdem
+der EINTR-Fix sich isoliert getestet (20/20 grün ohne die Registrierung)
+als vollständig ausreichend erwies. Lehre: die naheliegendste GC-bezogene
+Erklärung war hier ein Holzweg, der tatsächliche Fehler lag eine Ebene
+tiefer in der Signal-Interaktion, nicht in fehlender Thread-Sichtbarkeit.
+
+**Verifiziert:** Originalgetreue Rekonstruktion des Minimal-Repros
+(`declareQueue(240)` → `declareQueue(300)` verworfen → `bindQueue(...)`)
+crashte VOR dem Fix deterministisch bei Länge 240/250 (20/20
+Wiederholungen), NICHT bei 50/100/150/200/230 — nach dem Fix 30/30
+Wiederholungen grün bei JEDER dieser Längen. Neuer e2e-Test
+`tests/e2e/bug68_eintr_short_read.tnx` (simulierter Broker via
+`spawn`/`await`, 240-Byte-`shortstr` + verworfener 300-Byte-Aufruf +
+`bindQueue`) 40× stabil. Kompletter `make check`-Lauf grün (kritisch, da
+`conn_recv`/`conn_send` von JEDEM netzwerkbasierten Modul genutzt werden:
+HTTP-Server, WebSocket, `amqp091`, `amqp10`).
 
 **Bug 69 — Enum-Diskriminator kollidierte bei gleicher Zeichensumme des
 Variantennamens → falsche Sibling-Variante wird gematcht (Silent-Garbage,
@@ -3076,17 +3140,21 @@ mit `pika` (unabhängiger Python-AMQP-Client) in BEIDE Richtungen (Tinox
 published → pika konsumiert, und umgekehrt) — bestätigt Wire-Kompatibilität
 mit einer Implementierung außerhalb des eigenen Codes. `make check` grün.
 
-**Bug 68 gefunden bei der Testkonstruktion (bugs.md, NICHT gefixt, anderes
-Subsystem):** eine frühere Testfassung kombinierte einen `queue.declare`-
-Aufruf mit langem (~150+ Byte) Namen MIT einem clientseitig verworfenen
-`declareQueue`-Aufruf (>255 Byte) im selben `spawn`/`await`-Loopback-Ablauf —
-legte einen nichtdeterministischen Absturz („array index out of bounds") in
-der Async-Runtime frei, reproduzierbar auch ganz ohne AMQP-Semantik. Isoliert
-außerhalb von `spawn`/`await` (gegen echtes RabbitMQ) läuft dieselbe
-Aufrufsequenz fehlerfrei. Praktisch unerreichbar im v1-Client (überlange
-Namen werden IMMER clientseitig ohne Netzwerkaufruf verworfen), deshalb kein
-Blocker — die ausgelieferten Tests vermeiden das auslösende Muster bewusst
-(s. Kommentare in `amqp_edge_cases.tnx`/`amqp_shortstr_limits.tnx`).
+**Bug 68 gefunden bei der Testkonstruktion, GEFIXT am 2026-07-24 (s. den
+vollständigen Eintrag weiter oben):** eine frühere Testfassung kombinierte
+einen `queue.declare`-Aufruf mit langem (~150+ Byte) Namen MIT einem
+clientseitig verworfenen `declareQueue`-Aufruf (>255 Byte) im selben
+`spawn`/`await`-Loopback-Ablauf — legte einen Absturz („array index out
+of bounds") frei, dessen wahre Ursache ein durch das GC-"Stop the
+world"-Signal unterbrochener (`EINTR`), aber als Verbindungsabbruch
+fehlgedeuteter `recv()`/`send()` in `conn_recv`/`conn_send` war (Root
+Cause + Fix s. oben). Praktisch unerreichbar im v1-AMQP-091-Client
+(überlange Namen werden IMMER clientseitig ohne Netzwerkaufruf
+verworfen), deshalb war es dort kein Blocker — die ausgelieferten Tests
+vermieden das auslösende Muster bewusst (s. Kommentare in
+`amqp_edge_cases.tnx`/`amqp_shortstr_limits.tnx`), betraf aber potenziell
+JEDES Modul mit `spawn`/`await` + blockierendem Netzwerk-I/O, nicht nur
+AMQP.
 
 **Nachtrag (2026-07-24) — `amqps://` (TLS-Client, tasklist.md Phase 6):**
 `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` +

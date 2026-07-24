@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <time.h>
+#include <errno.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #endif
@@ -2159,25 +2160,59 @@ typedef struct { int fd; void* ssl; } TinoxConn;   // ssl==NULL => Plaintext
 static SSL_CTX* g_tls_ctx = NULL;        // Server-Seite (listenTls)
 static SSL_CTX* g_tls_client_ctx = NULL; // Client-Seite (dialTls, z.B. amqps://)
 
+// EINTR-Retry (Bug 68): jeder blockierende recv/send kann durch EIN
+// beliebiges Signal unterbrochen werden (errno=EINTR), nicht nur durch
+// eigene Handler -- insbesondere das interne "Stop the world"-Signal, mit
+// dem der Boehm-GC alle Threads waehrend einer Kollision anhaelt (per
+// `gdb` bestaetigt: SIGPWR). Sobald ein `spawn`-Task auf einem zweiten
+// echten Thread (pthread_create, s. tinox_task_spawn) parallel genug
+// alloziert, um eine Kollision auszuloesen, WAEHREND ein anderer Thread in
+// httpConnReadN/httpConnWriteBytes blockiert liest/schreibt, wird dieser
+// Read/Write per Signal unterbrochen. Ohne Retry-Schleife sah der
+// Aufrufer das als abgebrochene Verbindung (got<=0) und brach den Frame
+// vorzeitig ab -- ein leerer/unvollstaendiger Payload lief dann still bis
+// zu einem spaeteren, voellig unzusammenhaengend wirkenden
+// Bounds-Check-Crash weiter (Silent-Garbage bis zum Absturz).
+// Deterministisch reproduzierbar bei ausreichend Allokations-Druck neben
+// einem `spawn`-Task, s. bugs.md.
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
-    if (c->ssl) return (ssize_t)SSL_read((SSL*)c->ssl, buf, (int)n);
-    return recv(c->fd, buf, n, 0);
+    if (c->ssl) {
+        int r;
+        do { r = SSL_read((SSL*)c->ssl, buf, (int)n); }
+        while (r <= 0 && SSL_get_error((SSL*)c->ssl, r) == SSL_ERROR_SYSCALL && errno == EINTR);
+        return (ssize_t)r;
+    }
+    ssize_t r;
+    do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
+    return r;
 }
 static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
-    if (c->ssl) return (ssize_t)SSL_write((SSL*)c->ssl, buf, (int)n);
-    return send(c->fd, buf, n, MSG_NOSIGNAL);
+    if (c->ssl) {
+        int r;
+        do { r = SSL_write((SSL*)c->ssl, buf, (int)n); }
+        while (r <= 0 && SSL_get_error((SSL*)c->ssl, r) == SSL_ERROR_SYSCALL && errno == EINTR);
+        return (ssize_t)r;
+    }
+    ssize_t r;
+    do { r = send(c->fd, buf, n, MSG_NOSIGNAL); } while (r < 0 && errno == EINTR);
+    return r;
 }
 static void conn_close(TinoxConn* c) {
     if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
 }
 #else
-// Plaintext-only Fallback — identische Semantik ohne OpenSSL.
+// Plaintext-only Fallback — identische Semantik ohne OpenSSL. Zum
+// EINTR-Retry s. Kommentar bei der TLS-Variante oben (Bug 68).
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
-    return recv(c->fd, buf, n, 0);
+    ssize_t r;
+    do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
+    return r;
 }
 static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
-    return send(c->fd, buf, n, MSG_NOSIGNAL);
+    ssize_t r;
+    do { r = send(c->fd, buf, n, MSG_NOSIGNAL); } while (r < 0 && errno == EINTR);
+    return r;
 }
 static void conn_close(TinoxConn* c) {
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }

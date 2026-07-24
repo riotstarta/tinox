@@ -1,0 +1,139 @@
+// Regressionstest fuer Bug 68 (bugs.md): `spawn`-Tasks laufen als echte
+// POSIX-Threads. Der Boehm-GC haelt bei einer Kollision ALLE Threads per
+// Signal an ("Stop the world", auf diesem System SIGPWR). Blockiert ein
+// Thread gerade in einem recv()/send() ueber die binaersicheren
+// Conn-Primitiven (httpConnReadN/httpConnWriteBytes), wird der Syscall
+// durch dieses Signal unterbrochen (errno=EINTR) -- OHNE Retry-Schleife
+// sah conn_recv/conn_send das faelschlich als abgebrochene Verbindung an,
+// der Frame wurde vorzeitig (leer) abgeschnitten, und die Silent-Garbage
+// lief bis zu einem spaeter voellig unzusammenhaengend wirkenden
+// Bounds-Check-Crash weiter.
+//
+// Reproduktion: eine 240-Byte-`shortstr` (Queue-Name) in queue.declare,
+// gefolgt von einem clientseitig verworfenen 300-Byte-Aufruf (kein
+// Netzwerk-I/O, aber Allokations-Druck -- erhoeht die Chance, dass eine
+// GC-Kollision GENAU waehrend des naechsten blockierenden Lese-Aufrufs
+// des simulierten Brokers laeuft), dann queue.bind -- dort crashte es im
+// Originalbefund deterministisch. Fix: EINTR-Retry-Schleife in
+// conn_recv/conn_send (runtime.c).
+// expect: ok-connect
+// expect: ok-declare1
+// expect: ok-declare2-rejected
+// expect: ok-bind
+// expect: ok-broker-saw-all
+
+import tinox.core.amqp091;
+import tinox.core.socket;
+
+fn makeName(n: Int64) -> String {
+    var s: String = "";
+    var i: Int64 = 0;
+    while i < n {
+        s = s + "q";
+        i = i + 1;
+    }
+    return s;
+}
+
+async fn fakeBroker(srv: Int64) -> Int64 {
+    let sconn = httpServerAcceptConnHandle(srv);
+    httpConnReadN(sconn, 8);
+
+    let w1 = AmqpWriter091::new();
+    w1.octet(0);
+    w1.octet(9);
+    var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
+    w1.fieldTable(emptyProps);
+    w1.longstr("PLAIN");
+    w1.longstr("en_US");
+    Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
+    Amqp091::readFrame(sconn);
+
+    let w2 = AmqpWriter091::new();
+    w2.short(2047);
+    w2.long(131072);
+    w2.short(60);
+    Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes));
+    Amqp091::readFrame(sconn);
+
+    Amqp091::readFrame(sconn); // connection.open
+    let w3 = AmqpWriter091::new();
+    w3.shortstr("");
+    Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
+
+    Amqp091::readFrame(sconn); // channel.open
+    let w4 = AmqpWriter091::new();
+    w4.longstr("");
+    Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
+
+    // queue.declare (240-Byte-Name) -> declare-ok
+    let fDecl = Amqp091::readFrame(sconn);
+    let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
+    var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10;
+    let rDecl = AmqpReader091::new(mDecl.args);
+    rDecl.short();
+    let seenName = rDecl.shortstr();
+
+    let w5 = AmqpWriter091::new();
+    w5.shortstr(seenName);
+    w5.long(0);
+    w5.long(0);
+    Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, w5.bytes));
+
+    // queue.bind -> bind-ok (der Aufruf, der im Originalbefund crashte)
+    let fBind = Amqp091::readFrame(sconn);
+    let mBind = Amqp091::decodeMethodPayload(fBind.payload);
+    var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20;
+
+    let w6 = AmqpWriter091::new();
+    Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 21, w6.bytes));
+
+    httpConnClose(sconn);
+
+    var allOk: Int64 = 0;
+    if ok1 { if ok2 { allOk = 1; } }
+    return allOk;
+}
+
+fn main() -> Int32 {
+    let srv = httpServerCreate(47641);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+    let handle = spawn fakeBroker(srv);
+
+    let c = AmqpConnection091::connect("127.0.0.1", 47641, "/", "guest", "guest");
+    if c.conn > 0 {
+        println("ok-connect");
+    }
+    let ch = AmqpChannel091::open(c);
+
+    let queueName = ch.declareQueue(makeName(240), true, false, false);
+    if queueName.len() == 240 {
+        println("ok-declare1");
+    }
+
+    // Verworfen ohne Netzwerk-I/O (>255 Byte) -- der zusaetzliche
+    // Allokations-Druck (300 Ein-Zeichen-Konkatenationen) ist Teil der
+    // urspruenglichen Reproduktion.
+    let skipped = ch.declareQueue(makeName(300), true, false, false);
+    if skipped.len() == 0 {
+        if ch.errorMessage.len() > 0 {
+            println("ok-declare2-rejected");
+        }
+    }
+
+    let bound = ch.bindQueue(queueName, "amq.direct", queueName);
+    if bound {
+        println("ok-bind");
+    }
+
+    let brokerOk = await handle;
+    if brokerOk == 1 {
+        println("ok-broker-saw-all");
+    }
+
+    httpServerClose(srv);
+    return 0;
+}
