@@ -1,0 +1,73 @@
+// AMQP-0-9-1-Publish/Consume-Beispiel (tasklist.md Phase 4.6).
+// Braucht einen laufenden Broker, z. B.:
+//   docker run -d --name rabbitmq -p 5672:5672 rabbitmq:3-management
+// Start:  tinox run examples/amqp_publish_consume.tnx
+//
+// Verbindet sich, deklariert eine durable Queue, published 3 Nachrichten
+// ueber den Default-Exchange (Routing-Key = Queue-Name -- Queues sind dort
+// implizit unter ihrem eigenen Namen gebunden, ein explizites queue.bind
+// waere fuer den Default-Exchange sogar ein Protokollfehler), konsumiert sie
+// zurueck und acked jede einzeln.
+
+import tinox.core.amqp091;
+
+fn main() -> Int32 {
+    let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+    if conn.conn <= 0 {
+        println("Verbindung fehlgeschlagen: " + conn.errorMessage);
+        return 1;
+    }
+
+    let ch = AmqpChannel091::open(conn);
+    if ch.chanId <= 0 {
+        println("Channel fehlgeschlagen: " + ch.errorMessage);
+        return 1;
+    }
+
+    let queueName = ch.declareQueue("tinox-demo-queue", true, false, false);
+    if queueName.len() == 0 {
+        println("queue.declare fehlgeschlagen: " + ch.errorMessage);
+        return 1;
+    }
+    println("Queue: " + queueName);
+
+    ch.qos(10);
+
+    var i: Int64 = 0;
+    while i < 3 {
+        var body: List<Int64> = [];
+        let text = "Nachricht #" + i.toString();
+        for j in 0..text.len() {
+            body.push(text.charCodeAt(j) & 0xFF);
+        }
+        ch.publish("", queueName, body, "text/plain");
+        println("gesendet: " + text);
+        i = i + 1;
+    }
+
+    let consumerTag = ch.consume(queueName);
+    if consumerTag.len() == 0 {
+        println("basic.consume fehlgeschlagen: " + ch.errorMessage);
+        return 1;
+    }
+
+    var received: Int64 = 0;
+    while received < 3 {
+        let m = ch.nextMessage();
+        if !m.ok {
+            println("Empfang fehlgeschlagen: " + m.errorMessage);
+            return 1;
+        }
+        var text: String = "";
+        for j in 0..m.body.len() {
+            text = text + fromCharCode(m.body[j]);
+        }
+        println("empfangen: " + text + " (Tag " + m.deliveryTag.toString() + ")");
+        ch.ack(m.deliveryTag);
+        received = received + 1;
+    }
+
+    conn.close();
+    println("fertig");
+    return 0;
+}

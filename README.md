@@ -576,6 +576,31 @@ class EchoEndpoint
 }
 ```
 
+### AMQP-0-9-1 Client
+
+Die Standardbibliothek enthält einen AMQP-0-9-1-**Client** (`amqp091`, kein Broker) für Message-Queue-Broker wie RabbitMQ. v1 ist eine explizite Publish/Consume-API (kein Lambda-Handler), ein fester Channel pro Verbindung, nur Klartext `amqp://` (kein TLS):
+
+```tinox
+import tinox.core.amqp091;
+
+let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+let ch = AmqpChannel091::open(conn);
+let queueName = ch.declareQueue("my-queue", true, false, false);
+
+var body: List<Int64> = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+ch.publish("", queueName, body, "text/plain");
+
+ch.consume(queueName);
+let m = ch.nextMessage();       // blockierender Pull
+if m.ok {
+    ch.ack(m.deliveryTag);
+}
+conn.close();
+```
+
+Bewusste v1-Lücken: kein TLS (`amqps://`), kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in `bugs.md` (Abschnitt „Feature: AMQP-0-9-1-Client").
+
 ## Feature-Übersicht
 
 | Feature                      | Status     |
@@ -606,6 +631,7 @@ class EchoEndpoint
 | HTTP Server (stdlib)        | ✅ Fertig  |
 | REST Framework (stdlib)     | ✅ Fertig  |
 | WebSocket Server (stdlib)   | ✅ Fertig (v1) |
+| AMQP-0-9-1 Client (stdlib)  | ✅ Fertig (v1) |
 | LSP (tinox-lsp)              | ✅ Fertig  |
 | Eclipse Plugin               | ✅ Fertig  |
 | File I/O                     | ✅ Fertig  |
@@ -637,6 +663,7 @@ tinox/
 | Kategorie    | Module                                              |
 |--------------|-----------------------------------------------------|
 | HTTP         | `http_server`, `rest_framework`, `mini_http`, `websocket` |
+| Messaging    | `amqp091`                                            |
 | Daten        | `json`, `csv`, `xml`, `regex`                       |
 | Sicherheit   | `crypto`, `jwt`, `bcrypt`                           |
 | Collections  | `collections`, `queue`, `stack`, `linkedlist`       |

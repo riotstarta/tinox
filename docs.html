@@ -497,6 +497,9 @@
     <li><a href="#mod-rest_framework">rest_framework</a></li>
     <li><a href="#mod-socket">socket</a></li>
 
+    <li class="section-label">Messaging</li>
+    <li><a href="#mod-amqp091">amqp091</a></li>
+
     <li class="section-label">Datenformate</li>
     <li><a href="#mod-json">json</a></li>
     <li><a href="#mod-xml">xml</a></li>
@@ -1138,6 +1141,11 @@
         <code>http</code>, <code>websocket</code> – vollständiger HTTP/1.1-Server mit
         Routing, Middleware und Content-Negotiation, plus WebSocket-Server nach
         RFC 6455.</p>
+      </div>
+      <div class="card">
+        <h4>Messaging</h4>
+        <p><code>amqp091</code> – AMQP-0-9-1-Client (kein Broker) für
+        Message-Queue-Broker wie RabbitMQ: Connect, Channel, Publish/Consume.</p>
       </div>
       <div class="card">
         <h4>Datenformate</h4>
@@ -1982,6 +1990,64 @@ if srv < <span class="num">0</span> { <span class="kw">return</span> <span class
     }
 }
 </code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-amqp091">
+
+  <h2>amqp091</h2>
+  <p class="import-hint"><code>import tinox.core.amqp091;</code></p>
+  <p>
+    AMQP-0-9-1-<strong>Client</strong> (kein Broker) für Message-Queue-Broker
+    wie RabbitMQ. Baut auf derselben binärsicheren Conn-Handle-Architektur wie
+    der WebSocket-Server auf. v1: ein fester Channel pro Verbindung, nur
+    Klartext <code>amqp://</code> (Port 5672, kein TLS), explizite
+    Publish/Consume-API (kein Lambda-Handler). AMQP 1.0 ist ein eigenes,
+    späteres Modul mit komplett anderem Typsystem.
+  </p>
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>AmqpConnection091::connect</code></td><td><code>fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -&gt; AmqpConnection091</code></td><td>Verbindet, führt SASL-PLAIN-Auth + Negotiation durch. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> bei jedem Fehlschlag (Auth-Fehler, unbekannter vhost, Verbindungsfehler).</td></tr>
+      <tr><td><code>AmqpConnection091::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Schließt die Verbindung spec-konform (<code>connection.close</code> + <code>close-ok</code> abwarten).</td></tr>
+      <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Öffnet einen Channel auf der Verbindung (v1: fester Channel 1, kein Pool).</td></tr>
+      <tr><td><code>AmqpChannel091::declareQueue</code></td><td><code>fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -&gt; String</code></td><td>Deklariert eine Queue, liefert den (ggf. server-generierten) Namen oder <code>""</code> bei Fehler.</td></tr>
+      <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Bindet eine Queue an einen Exchange. Binden an den Default-Exchange (<code>""</code>) ist laut Spec verboten (Broker antwortet mit Fehler) — Queues sind dort implizit unter ihrem eigenen Namen gebunden.</td></tr>
+      <tr><td><code>AmqpChannel091::qos</code></td><td><code>fn qos(prefetchCount: Int64) -&gt; Bool</code></td><td>Setzt das Prefetch-Limit vor <code>consume()</code>.</td></tr>
+      <tr><td><code>AmqpChannel091::publish</code></td><td><code>fn publish(exchange: String, routingKey: String, body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Published eine Nachricht (kein Rückgabewert, per Spec asynchron). Body wird bei <code>frameMax</code> automatisch auf mehrere Frames verteilt.</td></tr>
+      <tr><td><code>AmqpChannel091::consume</code></td><td><code>fn consume(queue: String) -&gt; String</code></td><td>Registriert den Client als Consumer, liefert den Consumer-Tag oder <code>""</code> bei Fehler.</td></tr>
+      <tr><td><code>AmqpChannel091::nextMessage</code></td><td><code>fn nextMessage() -&gt; AmqpMessage091</code></td><td>Blockierender Pull der nächsten Nachricht (setzt <code>consume()</code> voraus). Setzt Body-Frames automatisch wieder zusammen.</td></tr>
+      <tr><td><code>AmqpChannel091::ack</code></td><td><code>fn ack(deliveryTag: Int64) -&gt; Nothing</code></td><td>Bestätigt eine per <code>nextMessage()</code> erhaltene Nachricht.</td></tr>
+      <tr><td><code>AmqpMessage091</code></td><td><code>{ deliveryTag: Int64, exchange: String, routingKey: String, contentType: String, body: List&lt;Int64&gt;, ok: Bool, errorMessage: String }</code></td><td>Eine per <code>nextMessage()</code> empfangene Nachricht. <code>ok == false</code> bei jedem Fehler, <code>errorMessage</code> beschreibt die Ursache.</td></tr>
+    </tbody>
+  </table>
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.amqp091;
+
+let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+let ch = AmqpChannel091::open(conn);
+let queueName = ch.declareQueue("my-queue", true, false, false);
+
+var body: List&lt;Int64&gt; = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+ch.publish("", queueName, body, "text/plain");
+
+ch.consume(queueName);
+let m = ch.nextMessage();
+if m.ok {
+    ch.ack(m.deliveryTag);
+}
+conn.close();
+</code></pre>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> kein TLS-Client (<code>amqps://</code>),
+    kein Multi-Channel, kein <code>exchange.declare</code> (nur Default-Exchange
+    und broker-vordefinierte Exchanges wie <code>amq.direct</code>), keine
+    Publisher-Confirms/Transaktionen, keine Annotation-getriebene Consumer-API,
+    kein Heartbeat-Sender/Auto-Reconnect. AMQP 1.0 ist nicht Teil dieses Moduls.
+  </p>
   </div>
 
   <div class="mod-section" id="mod-hpack">

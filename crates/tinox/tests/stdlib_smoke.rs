@@ -452,6 +452,17 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "amqp091",
+        imports: &["tinox.core.amqp091"],
+        // Kein echter Broker im Smoke-Gate — 127.0.0.1 auf einem Port ohne
+        // Listener liefert ein schnelles "connection refused" (kein DNS,
+        // keine Latenz), deckt aber den kompletten Codegen-Pfad des Moduls
+        // ab (dial -> socketCreateTcp/socketConnect/httpConnFromFd).
+        body: "println(Amqp091::dial(\"127.0.0.1\", 39217));",
+        expects: &["-1"],
+        contains: &[],
+    },
+    Smoke {
         key: "websocket",
         imports: &["tinox.core.websocket"],
         // Reine Codec-Logik ohne Socket (die volle Strecke inkl. Handshake

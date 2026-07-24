@@ -1,0 +1,96 @@
+// AMQP-0-9-1 Phase 5.2 (tasklist.md): `shortstr`-Laengengrenze.
+// AMQP-0-9-1-`shortstr`-Werte (Queue-/Exchange-/Routing-Key-Namen,
+// Content-Type) haben eine 1-Byte-Laengenpraefix -> hartes Maximum von
+// 255 Byte. Beim Testen dieser Grenze wurde ein echter Bug gefunden (s.
+// bugs.md, "Bug 66"-Nachbar-Fund, kein eigener Bug-Eintrag noetig):
+// `AmqpWriter091::shortstr()` schrieb die Laenge unmaskiert per
+// `octet(s.len())`, was bei > 255 Byte durch das `& 0xFF` in `octet()`
+// still einen zu KLEINEN Laengen-Praefix erzeugte, waehrend die vollen
+// Rohbytes trotzdem folgten -- ein korrupter Frame statt eines harten
+// Fehlers (Verstoss gegen "kein Silent-Garbage"). Gefixt: `shortstr()`
+// setzt jetzt ein `tooLong`-Flag (`hasError()`), das `declareQueue`/
+// `bindQueue`/`consume`/`publish` VOR dem Senden pruefen und stattdessen
+// hart mit leerem Ergebnis + `errorMessage` abbrechen -- kein Byte geht
+// in diesem Fall auf die Leitung.
+//
+// Bewusst OHNE Netzwerk/spawn-Broker: die Pruefung selbst ist rein
+// clientseitig (kein Frame wird je gesendet), ein `AmqpChannel091` mit
+// Dummy-Handles (`conn`/`chanId` = -1) reicht. Vermeidet damit auch Bug 68
+// (bugs.md) -- eine nichtdeterministische Async-Runtime-Instabilitaet,
+// die beim Kombinieren von langen shortstr-Werten mit spawn/await
+// gefunden wurde (s. amqp_edge_cases.tnx).
+//
+// Der 255-Byte-Grenzfall (gueltig, NICHT abgelehnt) wurde zusaetzlich
+// live gegen echtes RabbitMQ verifiziert (queue.declare + queue.bind mit
+// 255-Byte-Namen, erfolgreich), s. tasklist.md Log Phase 5.2.
+// expect: ok-declare-boundary-valid
+// expect: ok-declare-rejected
+// expect: ok-bind-rejected
+// expect: ok-consume-rejected
+// expect: ok-publish-rejected
+
+import tinox.core.amqp091;
+
+fn makeName(n: Int64) -> String {
+    var s: String = "";
+    var i: Int64 = 0;
+    while i < n {
+        s = s + "q";
+        i = i + 1;
+    }
+    return s;
+}
+
+fn main() -> Int32 {
+    let name255 = makeName(255);
+    let name256 = makeName(256);
+
+    // Grenzfall: genau 255 Byte -- MUSS als gueltig behandelt werden
+    // (dial schlaegt zwar fehl, conn=-1, aber die shortstr-Laengenpruefung
+    // selbst darf NICHT anschlagen; die Encodierung erreicht in diesem
+    // Fall den Punkt VOR dem Senden ohne Fehlermeldung).
+    let chBoundary = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let rBoundary = chBoundary.declareQueue(name255, true, false, false);
+    // conn=-1 laesst den eigentlichen Netzwerkaufruf natuerlich fehlschlagen
+    // (kein echter Socket) -- entscheidend ist NUR, dass die Laengenpruefung
+    // selbst NICHT anschlaegt (die "zu lang"-Fehlermeldung darf nicht
+    // auftauchen; jeder andere Fehler ist hier erwartet und irrelevant).
+    if !chBoundary.errorMessage.contains("zu lang") {
+        println("ok-declare-boundary-valid");
+    }
+
+    // 256 Byte: jenseits des shortstr-Maximums -- muss hart clientseitig
+    // abgelehnt werden.
+    let ch1 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let r1 = ch1.declareQueue(name256, true, false, false);
+    if r1 == "" {
+        if ch1.errorMessage.len() > 0 {
+            println("ok-declare-rejected");
+        }
+    }
+
+    let ch2 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let r2 = ch2.bindQueue(name256, "x", "y");
+    if r2 == false {
+        if ch2.errorMessage.len() > 0 {
+            println("ok-bind-rejected");
+        }
+    }
+
+    let ch3 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let r3 = ch3.consume(name256);
+    if r3 == "" {
+        if ch3.errorMessage.len() > 0 {
+            println("ok-consume-rejected");
+        }
+    }
+
+    let ch4 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    var body: List<Int64> = [];
+    ch4.publish(name256, "y", body, "");
+    if ch4.errorMessage.len() > 0 {
+        println("ok-publish-rejected");
+    }
+
+    return 0;
+}

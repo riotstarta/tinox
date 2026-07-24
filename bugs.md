@@ -2375,6 +2375,71 @@ keinen großen ungetesteten Refactor über viele Match-Arme zu riskieren — bei
 Bedarf (neuer Bugreport) denselben Fix (arg_vals/arg_types wiederverwenden)
 auf den jeweiligen Arm anwenden.
 
+**Bug 67 — `async fn ... -> Bool` + `await`: Ergebnistyp verloren, immer
+Int64.** Entdeckt beim Bau des AMQP-0-9-1-Loopback-e2e-Tests (Phase 3, ein
+per `spawn` gestarteter simulierter Broker sollte `Bool` zurückgeben).
+Minimal-Repro:
+```tinox
+async fn checkIt(x: Int64) -> Bool { return x > 5; }
+fn main() -> Int32 {
+    let h = spawn checkIt(10);
+    let result = await h;
+    if result { println("yes"); }   // Type error: expected Bool, found Int64
+    return 0;
+}
+```
+`await h` wird vom Typechecker als `Int64` geführt, unabhängig vom
+deklarierten `Bool`-Rückgabetyp der `async fn` — vermutlich behandelt die
+Spawn/Await-Handle-Verdrahtung (Task-Ergebnis-Marshaling) den Payload
+pauschal als `Int64` (das einzige bisher in Doku/Tests vorkommende
+Beispiel, `async fn fetchData(id: Int64) -> Int64`, nutzt zufällig genau
+diesen Typ). **NICHT untersucht/gefixt** (anderes Subsystem als Bug 66,
+außerhalb des AMQP-Scopes) — Workaround im AMQP-e2e-Test: die betroffene
+`async fn` gibt `Int64` (0/1) statt `Bool` zurück, Aufrufer vergleicht mit
+`== 1`. Bei Bedarf: Typecheck/Codegen für `spawn`/`await` auf andere
+Rückgabetypen als `Int64` prüfen (vermutlich betrifft es auch `String`/
+Klassen-Rückgabetypen, ungetestet).
+
+**Bug 68 — `spawn`/`await`-Loopback: nachfolgender Netzwerkaufruf crasht mit
+„array index out of bounds", wenn ein VORHERIGER, clientseitig verworfener
+Aufruf (kein Byte auf die Leitung) UND ein GROSSER (>~100 Byte) String-Wert
+im Spiel sind.** Entdeckt bei Phase-5.2-Grenzfalltests des AMQP-0-9-1-Clients
+(`declareQueue`/`bindQueue` mit Namen an der `shortstr`-Grenze). Minimal-Repro
+(gekürzt, vollständige Fassung war
+`tests/e2e/amqp_edge_cases.tnx`-Vorstufe, s. Log Phase 5.2):
+
+```tinox
+// async fn fakeBroker(...) simuliert den ueblichen Connect/Channel/
+// queue.declare-Handshake (wie amqp_connection_negotiation.tnx), dann:
+let queueName = ch.declareQueue(makeName(150), true, false, false); // OK, geht auf die Leitung
+let skipped = ch.declareQueue(makeName(300), true, false, false);   // clientseitig verworfen (>255 Byte, Bug-66-Nachbar-Fix), KEIN Byte gesendet
+let bound = ch.bindQueue(queueName, "amq.direct", queueName);       // <-- crasht hier, "array index out of bounds: 0 (length 0)"
+```
+Isoliert reproduzierbar und **deterministisch pro Namenslänge** (nicht
+zeitabhängig/racy — mehrfache Wiederholungen liefern für dieselbe Länge
+immer dasselbe Ergebnis), aber **nicht monoton** in der Länge: 50/100/230
+Zeichen laufen fehlerfrei durch, 150/200/240/250 crashen. Frame-Max spielt
+entgegen erster Vermutung KEINE Rolle (Crash reproduziert sowohl mit
+künstlich kleinem `frame-max=100` als auch mit dem Standard-`131072`).
+Ohne den `skipped`-Aufruf (nur `declareQueue` + `bindQueue`, auch mit
+150+ Byte Namen) läuft dieselbe Sequenz fehlerfrei. Isoliert AUSSERHALB
+eines `spawn`/`await`-Loopback-Kontexts (gegen einen echten laufenden
+RabbitMQ-Broker, `real_bindqueue_test.tnx`, s. Log) läuft exakt dieselbe
+Aufrufsequenz inkl. `skipped`-Aufruf und 255-Byte-Namen fehlerfrei durch —
+der Bug tritt NUR in Kombination mit der `spawn`/`await`-Kooperativ-
+Schedulung auf. Deutet auf einen Speicher-/Buffer-Bug in der Async-Runtime
+oder im Codegen der Async-Transformation hin (nicht auf einen Logikfehler
+im AMQP-Code selbst) — vermutlich verwandt mit Bug 67 (dieselbe Baustelle:
+`spawn`/`await`), aber ein anderes Symptom. **NICHT untersucht/gefixt**
+(tiefer Runtime-/Codegen-Bug, außerhalb des AMQP-Feature-Scopes; würde eine
+Untersuchung der LLVM-IR der Async-Transformation bzw. des
+`httpConnReadN`/`httpConnWriteBytes`-Laufzeitcodes erfordern). **Praktisch
+unerreichbar im v1-AMQP-Client:** v1 verwirft überlange (>255 Byte) Namen
+IMMER clientseitig ohne Netzwerkaufruf (s. `AmqpWriter091::shortstr()`-Fix
+oben), das ist also kein Aufruf-Pattern, das reale Nutzung dieses Features
+provozieren würde — dokumentiert für den Fall, dass er in einem anderen
+Feature erneut auftaucht.
+
 ## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
 
 **Status: PHASE 1 GELANDET (2026-07-22).** Angriff auf die #1-Struktur-Schwäche
@@ -2746,6 +2811,107 @@ bei einer Plaintext-Verbindung, nur über TLS transportiert. Python
 Text-Message-Roundtrip erfolgreich. Mit `TINOX_TLS=0` (kein OpenSSL gelinkt):
 `listenTls` liefert `-1` mit `"httpServerCreateTls: runtime ohne TLS gebaut"`
 auf stderr, kein Crash, kein Linkfehler. `make check` grün.
+
+---
+
+## Feature: AMQP-0-9-1-Client — `tinox.core.amqp091`
+
+**Status: IMPLEMENTIERT (2026-07-23), v1.** Roadmap/Status in `tasklist.md`.
+Reiner **Client** (kein Broker) für das von RabbitMQ dominierte AMQP-0-9-1-
+Protokoll: `AmqpConnection091::connect`/`AmqpChannel091::open` für den
+Verbindungsaufbau, `declareQueue`/`bindQueue`/`qos`/`publish`/`consume`/
+`nextMessage`/`ack` für die Publish/Consume-API. Beispiel
+`examples/amqp_publish_consume.tnx`. AMQP 1.0 ist eine eigene, spätere
+Roadmap-Phase (komplett anderes Typsystem, s. tasklist.md „Später") — geteilt
+wird nur die Transport-Schicht (TCP-Dial), nicht der Frame-Codec.
+
+```tinox
+import tinox.core.amqp091;
+
+let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+let ch = AmqpChannel091::open(conn);
+let queueName = ch.declareQueue("my-queue", true, false, false);
+
+var body: List<Int64> = [];
+for i in 0..3 { body.push("abc".charCodeAt(i)); }
+ch.publish("", queueName, body, "text/plain");
+
+ch.consume(queueName);
+let m = ch.nextMessage();       // blockierender Pull
+if m.ok { ch.ack(m.deliveryTag); }
+conn.close();
+```
+
+**Architektur.** Baut auf derselben binärsicheren Conn-Handle-Schicht wie der
+WebSocket-Server (`httpConnFromFd`/`httpConnReadN`/`httpConnWriteBytes`) —
+AMQP-Frames sind wie WS-Frames reines Längenpräfix+Bytes-Binärformat, dieselbe
+Grundlage trägt. `socket.tnx`-Funktionen (`socketCreateTcp`/`socketConnect`)
+sind Modul-lokale `extern fn`, deshalb importiert `amqp091.tnx` `tinox.core.
+socket` selbst (sonst „undefined value" bei jedem Konsumenten ohne eigenen
+Socket-Import). Eigenständiger Field-Value-Codec (`AmqpFieldValue091`-Enum,
+rekursiv über `TableVal`/`ArrayVal` — funktioniert, weil Map/List Handle-Typen
+sind) + `AmqpWriter091`/`AmqpReader091` als Byte-Builder/-Cursor, analog zum
+WS-Frame-Codec aber für das class-id/method-id/Field-Table-Format von 0-9-1.
+`publish()` splittet den Body bei `frameMax` (Overhead 7-Byte-Header + 1-Byte-
+Terminator) auf mehrere Body-Frames; `nextMessage()` liest sie wieder
+zusammen UND überspringt alle 14 `basic`-Content-Properties anhand der
+Property-Flags (sonst liefe der Cursor bei fremden Nachrichten mit z. B.
+`headers` aus der Spur).
+
+**Härte-Verhalten (Projektlinie: kein Silent-Garbage):** Protokollfehler
+(falscher Frame-Terminator, Payload > 16-MB-Cap) → `frameType -2`/-1, kein
+stiller Fortschritt; `connection.close`/`channel.close` vom Broker (SASL-
+Fehler, unbekannter vhost, `access_refused`) wird spec-konform per `close-ok`
+quittiert (`describeAndAckClose`-Helper) und als Fehlermeldung mit Reply-
+Code/-Text durchgereicht statt eines Hängers; jede öffentliche Methode liefert
+einen klaren Fehlwert (`""`/`false`/`.ok == false`) + `errorMessage` statt
+Silent-Garbage. **`shortstr`-Längengrenze (Phase-5.2-Fund):** AMQP-0-9-1s
+`shortstr`-Werte (Queue-/Exchange-/Routing-Key-Namen, Content-Type) haben ein
+1-Byte-Längenpräfix, hartes Maximum 255 Byte. `AmqpWriter091::shortstr()`
+schrieb die Länge ursprünglich unmaskiert per `octet(s.len())` — bei einem
+> 255 Byte langen String erzeugte das `& 0xFF` in `octet()` einen zu KLEINEN
+Längen-Präfix, während die vollen Rohbytes trotzdem folgten: ein korrupter
+Frame statt eines harten Fehlers. Gefixt: `shortstr()` setzt jetzt ein
+`tooLong`-Flag (`hasError()`), das `declareQueue`/`bindQueue`/`consume`/
+`publish` VOR dem Senden prüfen und stattdessen hart mit leerem Ergebnis +
+`errorMessage` abbrechen — kein Byte geht in diesem Fall auf die Leitung.
+
+**Bewusste v1-Lücken (s. tasklist.md „Später"):** kein TLS-Client (nur
+Klartext `amqp://`, Port 5672 — `amqps://` bräuchte eine neue
+`socketConnectTls`-Primitive, existiert noch nirgends im Repo), kein
+Multi-Channel (ein fester Channel pro Verbindung), kein `exchange.declare`
+(nur Default-Exchange + broker-vordefinierte Exchanges wie `amq.direct`),
+keine Publisher-Confirms/Transaktionen, keine Annotation-getriebene
+Consumer-API (explizite Poll-Schleife wie bei WS v1, gleiche Begründung:
+Lambda-als-Methodenparam ist noch nicht zuverlässig gedeckt), kein
+Heartbeat-Sender/Auto-Reconnect. AMQP 1.0 ist nicht Teil dieses Features.
+
+**Verifiziert:** Automatisierte Loopback-e2e-Tests (simulierter Broker via
+`spawn`/`await`, kein Docker in `make check` nötig): `amqp_phase1_handshake.
+tnx`, `amqp_frame_codec.tnx`, `amqp_connection_negotiation.tnx`,
+`amqp_publish_consume_loopback.tnx`, `amqp_edge_cases.tnx` (Body-Splitting
+über mehrere Frames in beide Richtungen + leere Message-Bodies),
+`amqp_shortstr_limits.tnx` (netzwerkfreier, deterministischer Test der
+255-Byte-Grenze). LIVE gegen echtes RabbitMQ (Docker, `rabbitmq:3-
+management`): voller Connect→Channel→declareQueue→bindQueue→qos→publish
+(mehrfach, verschiedene Exchanges)→consume→nextMessage→ack→close-Ablauf;
+zwei Negativpfade (falsches Passwort, unbekannter vhost); Grenzfall
+255-Byte-Queue-Name (`declareQueue`+`bindQueue`, erfolgreich); Cross-Check
+mit `pika` (unabhängiger Python-AMQP-Client) in BEIDE Richtungen (Tinox
+published → pika konsumiert, und umgekehrt) — bestätigt Wire-Kompatibilität
+mit einer Implementierung außerhalb des eigenen Codes. `make check` grün.
+
+**Bug 68 gefunden bei der Testkonstruktion (bugs.md, NICHT gefixt, anderes
+Subsystem):** eine frühere Testfassung kombinierte einen `queue.declare`-
+Aufruf mit langem (~150+ Byte) Namen MIT einem clientseitig verworfenen
+`declareQueue`-Aufruf (>255 Byte) im selben `spawn`/`await`-Loopback-Ablauf —
+legte einen nichtdeterministischen Absturz („array index out of bounds") in
+der Async-Runtime frei, reproduzierbar auch ganz ohne AMQP-Semantik. Isoliert
+außerhalb von `spawn`/`await` (gegen echtes RabbitMQ) läuft dieselbe
+Aufrufsequenz fehlerfrei. Praktisch unerreichbar im v1-Client (überlange
+Namen werden IMMER clientseitig ohne Netzwerkaufruf verworfen), deshalb kein
+Blocker — die ausgelieferten Tests vermeiden das auslösende Muster bewusst
+(s. Kommentare in `amqp_edge_cases.tnx`/`amqp_shortstr_limits.tnx`).
 
 ## Verwandte Codegen-Fixes (bereits implementiert, als Referenz)
 
