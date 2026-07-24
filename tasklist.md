@@ -270,36 +270,68 @@ genauso funktionieren):
       Fehler mit dem Code in `errorMessage`. 20× stabil wiederholt
       (Bug-68-Vorsicht, da `spawn`/`await` beteiligt ist).
 
-## Phase 5 — Connection/Session/Link-Handshake
+## Phase 5 — Connection/Session/Link-Handshake ✅
 
-- [ ] 5.1 `Amqp10Connection::connect(host, port, user, pass) ->
+- [x] 5.1 `Amqp10Connection::connect(host, port, user, pass) ->
       Amqp10Connection`: SASL-Header+Negotiation (Phase 4), dann
-      AMQP-Header (1.2) + `open` senden + `open` vom Broker empfangen
-      (Felder: `container-id`, `hostname`, `max-frame-size`,
-      `channel-max`, etc. — v1 übernimmt Server-Vorschläge wie bei 0-9-1s
-      `connection.tune`, kein eigenes Verhandeln).
-- [ ] 5.2 `Amqp10Session::begin(connection) -> Amqp10Session`: `begin`
-      senden (inkl. `next-outgoing-id`, `incoming-window`,
-      `outgoing-window`) + `begin` vom Broker empfangen (liefert die
-      `remote-channel`-Zuordnung). v1: ein fester Session pro Connection
-      (kein Pool), analog zur 0-9-1-v1-Entscheidung für einen festen
-      Channel.
-- [ ] 5.3 `Amqp10Link::attach(session, name, role, address) ->
-      Amqp10Link`: `attach` senden (Rolle Sender=false/Receiver=true per
-      Spec-Konvention, `source`/`target`-Adress-Felder je nach Rolle) +
-      `attach` vom Broker empfangen. v1: ein Link pro Zweck (ein
-      Sender-Link zum Publishen, ein separater Receiver-Link zum
-      Konsumieren — kein gemeinsamer bidirektionaler Link).
-- [ ] 5.4 Sauberes Schließen: `detach` (Link) → `end` (Session) → `close`
+      AMQP-Header (1.2) + `open` senden + `open` vom Broker empfangen.
+      Feldpositionen container-id(0)/hostname(1)/max-frame-size(2)/
+      channel-max(3) — v1 übernimmt die Server-Vorschläge (trailing
+      Felder dürfen in der Antwort fehlen, dann gilt der Default weiter),
+      kein eigenes Verhandeln, analog zu 0-9-1s `connection.tune`.
+- [x] 5.2 `Amqp10Session::begin(connection) -> Amqp10Session`: `begin`
+      senden (`remote-channel`=null, `next-outgoing-id`=0,
+      `incoming-window`/`outgoing-window` großzügig fest — Phase 6 macht
+      echtes Fenster-Tracking) + `begin` vom Broker empfangen. v1: fester
+      Kanal 1 pro Verbindung (kein Pool), analog zur 0-9-1-v1-Entscheidung.
+- [x] 5.3 `Amqp10Link::attach(session, name, role, address) ->
+      Amqp10Link`: `attach` senden (Rolle Sender=false/Receiver=true,
+      `source`/`target`-Described-Type je nach Rolle — die jeweils
+      andere Seite bekommt eine leere, adresslose Hülle statt `NullVal`)
+      + `attach` vom Broker empfangen. v1: ein Link pro Zweck, fester
+      `handle` 0 (kein Multi-Link-Pool pro Session).
+      **Echter Bug gefunden + gefixt (live gegen RabbitMQ 4.x, s. u.):**
+      `initial-delivery-count` (Performative-Feld 10) ist per Spec
+      PFLICHT, wenn `role=Sender` — ursprünglich weggelassen, RabbitMQs
+      `rabbit_amqp_session:handle_attach` pattern-matched das Feld hart
+      auf einen echten `uint`-Wert und crasht mit `function_clause`, wenn
+      es fehlt. Gefixt: `unsettled`(8, `NullVal`)/
+      `incomplete-unsettled`(9, `false`) als Platzhalter davor +
+      `initial-delivery-count`(10, `0`) — Listenfelder dürfen nur am ENDE
+      weggelassen werden, nicht in der Mitte.
+- [x] 5.4 Sauberes Schließen: `detach` (Link) → `end` (Session) → `close`
       (Connection), jeweils auf die Gegenstück-Performative vom Broker
-      warten (analog zu 0-9-1s `close`/`close-ok`-Pattern, hier aber DREI
-      Ebenen statt einer).
-- [ ] 5.5 e2e-Test (simulierter Broker, `spawn`/`await`): kompletter
-      Open→Begin→Attach→Detach→End→Close-Ablauf, inkl. der beiden
-      Header-Handshakes (SASL dann AMQP) davor.
-- [ ] 5.6 **Live gegen echten Broker mit AMQP-1.0-Support** (RabbitMQ +
-      `rabbitmq_amqp1_0`-Plugin ODER Qpid/Artemis, s. Sondierung) —
-      Connect/Session/Link-Aufbau UND sauberes Schließen.
+      warten (v1 ungeprüft, analog zu 0-9-1s `close`/`close-ok`-Pattern,
+      hier aber DREI Ebenen statt einer).
+- [x] 5.5 e2e-Test `tests/e2e/amqp10_connection_session_link.tnx`
+      (simulierter Broker, `spawn`/`await`): kompletter
+      Open→Begin→Attach→Detach→End→Close-Ablauf inkl. beider
+      Header-Handshakes (SASL dann AMQP) davor, Verifikation dass der
+      Broker `role=Sender` im `attach` sieht. 15-20× stabil wiederholt
+      (Bug-68-Vorsicht).
+- [x] 5.6 **Live gegen echten Broker verifiziert** (RabbitMQ 4.x,
+      `rabbitmq:4-management` — hat AMQP 1.0 nativ im Core-Broker, kein
+      Plugin mehr nötig ab 4.0). **RabbitMQ 3.x mit dem alten
+      `rabbitmq_amqp1_0`-Plugin bewusst NICHT als Referenz genutzt:** der
+      Broker selbst crasht dort mit `function_clause` in
+      `rabbit_amqp1_0_incoming_link:attach` bei genau demselben,
+      spec-konformen Attach-Frame, das RabbitMQ 4.x klaglos verarbeitet —
+      ein Bug/eine Einschränkung des alten Legacy-Plugins, kein
+      Client-Bug (per Log bestätigt: der Frame wurde korrekt dekodiert,
+      der Crash liegt in Brokers eigenem Pattern-Match). Verifiziert:
+      voller Connect→Begin→Attach(Sender)→Detach→End→Close-Ablauf sauber
+      (`closing AMQP connection`-Log ohne Warnung), zusätzlich
+      Attach(Receiver) gegen eine per Management-API angelegte Test-Queue.
+      **Zwei weitere Live-Erkenntnisse dokumentiert (s. bugs.md):**
+      RabbitMQ 4.x verlangt „AMQP Address v2" (`/queues/name`,
+      `/exchanges/name/routing-key` — die zuvor genutzte `/queue/name`-
+      Form ist deprecatet und wird mit `amqp_address_v1_not_permitted`
+      abgelehnt); der Broker schickt nach einem erfolgreichen
+      Sender-Attach unaufgefordert ein `flow`-Frame (Credit-Grant) —
+      relevant für Phase 6, das dort einen Frame-Dispatcher statt reinem
+      Request/Response-Lockstep braucht (v1s `close`/`end`/`detach`
+      prüfen die Antwort ohnehin nicht, deshalb hier noch kein sichtbares
+      Symptom, aber ein wichtiger Design-Hinweis für Phase 6).
 
 ## Phase 6 — Transfer/Flow/Disposition (Publish/Consume)
 

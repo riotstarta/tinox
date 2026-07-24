@@ -2509,6 +2509,71 @@ AMQP-1.0-Formatcode einzeln + verschachtelte Werte), 10× stabil
 wiederholt. Kompletter `make check`-Lauf grün (kritisch hier, weil die
 Änderung JEDES Enum im gesamten Projekt betrifft, nicht nur AMQP 1.0).
 
+**Bug 70 — AMQP-1.0 `attach` (Sender-Rolle): fehlendes
+`initial-delivery-count`-Feld ließ RabbitMQ mit `function_clause`
+abstürzen.** Entdeckt bei der Live-Verifikation von AMQP-1.0 Phase 5 (s.
+tasklist.md) gegen einen echten RabbitMQ-4.x-Broker. `Amqp10Link::attach`
+schrieb ursprünglich nur 7 der bis zu 14 `attach`-Performative-Felder
+(bis `target`) und ließ den Rest weg — laut AMQP-1.0-Listenkodierung
+grundsätzlich erlaubt (trailing Felder dürfen fehlen, Default gilt).
+`initial-delivery-count` (Feld 10) ist jedoch laut Spec-Text explizit
+PFLICHT, wenn `role=Sender` ("This field MUST be set if the role is
+sender"): RabbitMQ 4.x' `rabbit_amqp_session:handle_attach`
+pattern-matched dieses Feld hart auf einen echten `uint`-Wert
+(`?UINT(DeliveryCountInt)`) statt es als optional zu behandeln — ein
+fehlendes Feld (intern `undefined`) lässt die Funktionsklausel nicht
+matchen, die komplette Session-Erlang-Prozess stürzt mit
+`function_clause` ab und die Verbindung wird geschlossen. Kein
+Client-seitiger Absturz, aber ein harter, für den Client schwer
+diagnostizierbarer Fehlschlag (Broker schließt die Verbindung ohne
+spezifische Fehlermeldung an den Client).
+**Fix:** `unsettled`(Feld 8, `NullVal`)/`incomplete-unsettled`(Feld 9,
+`BoolVal(false)`) als explizite Platzhalter ergänzt (Listenfelder dürfen
+nur am ENDE weggelassen werden, nicht mittendrin) + `initial-delivery-count`
+(Feld 10, `UIntVal(0)`) immer gesetzt (laut Spec für `role=Receiver`
+ignoriert, schadet also nicht).
+
+**Weitere Live-Erkenntnisse (kein Bug, aber wichtig für Interop):**
+1. **RabbitMQ AMQP-0-9-1-Plugin (`rabbitmq:3-management` +
+   `rabbitmq_amqp1_0`) ist als Referenzbroker ungeeignet:** derselbe
+   spec-konforme `attach`-Frame (von RabbitMQ korrekt dekodiert, per Log
+   bestätigt) lässt den ALTEN Legacy-Plugin-Code
+   (`rabbit_amqp1_0_incoming_link:attach`) ebenfalls mit `function_clause`
+   abstürzen — ein Bug/eine Einschränkung des veralteten Plugins selbst,
+   nicht des Clients. `rabbitmq:4-management` (natives AMQP 1.0 im
+   Core-Broker seit Version 4.0, kein Plugin mehr) verarbeitet denselben
+   Frame nach dem Feld-Fix klaglos.
+2. **RabbitMQ 4.x verlangt „AMQP Address v2":** `target`/`source`-Adressen
+   im Format `/queue/name` (die zuerst probierte, naheliegende Form)
+   werden als „AMQP address version 1" erkannt und mit
+   `amqp_address_v1_not_permitted` abgelehnt (der Broker sendet dabei
+   trotzdem ein technisch gültiges `attach` zurück, BEVOR er den Link per
+   nachfolgendem `detach`+Error wieder auflöst — ein Client, der nur den
+   ersten `attach`-Response prüft, hält das fälschlich für Erfolg, s.
+   Punkt 3). Korrekt: `/queues/name` (Queue direkt) bzw.
+   `/exchanges/name/routing-key` (Exchange + Routing-Key, beide
+   Segmente RFC-3986-percent-encoded).
+3. **Broker schickt unaufgefordert Performatives:** nach einem
+   erfolgreichen Sender-`attach` sendet RabbitMQ sofort ein `flow`
+   (Credit-Grant) — ohne dass der Client danach gefragt hätte. v1s
+   `Amqp10Connection::close`/`Amqp10Session::end`/`Amqp10Link::detach`
+   prüfen ihre jeweilige Antwort ohnehin nicht (nur `readFrame` ohne
+   Descriptor-Check, analog zu 0-9-1s ungeprüftem `close()`), weshalb
+   dieses asynchrone `flow` bisher zu keinem sichtbaren Fehler führt —
+   die Frames verschieben sich nur unbemerkt um eins. Für Phase 6
+   (`flow`/`transfer`) reicht das lockstep-artige Request/Response-Muster
+   von Phase 1-5 NICHT mehr aus; es braucht einen echten
+   Frame-Dispatcher, der Performatives nach Typ statt nach
+   Ankunftsreihenfolge behandelt.
+
+**Verifiziert:** voller Connect→Begin→Attach(Sender)→Detach→End→Close-
+Ablauf gegen `rabbitmq:4-management` sauber (Broker-Log zeigt
+`closing AMQP connection` ohne Warnung, statt „client unexpectedly closed"
+oder einer Error-Meldung); zusätzlich Attach mit `role=Receiver` gegen
+eine per Management-HTTP-API angelegte Testqueue verifiziert. e2e-Test
+`tests/e2e/amqp10_connection_session_link.tnx` (simulierter Broker) 15-20×
+stabil. `make check` grün.
+
 ## Typ-System-Vereinheitlichung — Phase 1: typisierte Wertbrücke
 
 **Status: PHASE 1 GELANDET (2026-07-22).** Angriff auf die #1-Struktur-Schwäche

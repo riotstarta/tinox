@@ -860,4 +860,228 @@ namespace tinox.core.amqp10
             return Amqp10SaslResult { ok: true, errorMessage: "" };
         }
     }
+
+    /*
+     * Eine ausgehandelte AMQP-1.0-Verbindung (Phase 5, nach vollständigem
+     * SASL-Header/Negotiation + AMQP-Header/`open`/`open-ok`-Handshake).
+     * `conn` ist -1 bei jedem Fehlschlag (Aufrufer MUSS prüfen, kein
+     * Silent-Garbage) — `errorMessage` beschreibt dann die Ursache.
+     */
+    class Amqp10Connection
+    {
+        var conn: Int64;
+        var maxFrameSize: Int64;
+        var channelMax: Int64;
+        var errorMessage: String;
+
+        /*
+         * Baut eine komplette AMQP-1.0-Verbindung auf: dial + SASL-Header +
+         * SASL-Negotiation (Phase 4) + AMQP-Header + `open`/`open-ok`.
+         * v1 übernimmt die Server-Vorschläge aus `open-ok`
+         * (`max-frame-size`/`channel-max`) wie 0-9-1s `connection.tune`,
+         * kein eigenes Verhandeln.
+         */
+        fn connect(host: String, port: Int64, user: String, pass: String) -> Amqp10Connection
+        {
+            let conn = Amqp10::dial(host, port);
+            if conn <= 0 {
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial fehlgeschlagen" };
+            }
+
+            // --- SASL-Header + Negotiation ---
+            Amqp10::sendSaslProtocolHeader(conn);
+            if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0]) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL-Protokoll-Header-Handshake fehlgeschlagen" };
+            }
+            let sasl = Amqp10::negotiateSasl(conn, user, pass);
+            if !sasl.ok {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage };
+            }
+
+            // --- AMQP-Header ---
+            Amqp10::sendAmqpProtocolHeader(conn);
+            if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0]) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP-Protokoll-Header-Handshake fehlgeschlagen" };
+            }
+
+            // --- open senden (nur container-id, Rest defaultet serverseitig) ---
+            var openFields: List<Amqp10Value> = [Amqp10Value::StrVal("tinox-client")];
+            let openBody = Amqp10::encodePerformative(0x10, openFields);
+            Amqp10::writeFrame(conn, 0, 0, openBody);
+
+            // --- open empfangen ---
+            let f = Amqp10::readFrame(conn);
+            if f.frameType != 0 {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x10 {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete open (0x10), bekam descriptor=" + p.descriptor.toString() };
+            }
+            // Feldpositionen: container-id(0), hostname(1), max-frame-size(2),
+            // channel-max(3) — trailing Felder duerfen fehlen (Listen koennen
+            // kuerzer sein als das volle Schema), Default gilt dann weiter.
+            var maxFrameSize: Int64 = 4294967295;
+            var channelMax: Int64 = 65535;
+            if p.fields.len() > 2 {
+                match p.fields[2] { UIntVal(n) => { maxFrameSize = n; } _ => {} }
+            }
+            if p.fields.len() > 3 {
+                match p.fields[3] { UShortVal(n) => { channelMax = n; } _ => {} }
+            }
+            return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "" };
+        }
+
+        /*
+         * Schließt die Verbindung: `close` senden und auf `close` vom
+         * Broker warten (v1 ungeprüft, analog zu 0-9-1s
+         * `AmqpConnection091::close` — kurzes Timeout-Risiko bewusst in
+         * Kauf genommen, kein Heartbeat/Timeout-Mechanismus).
+         */
+        fn close() -> Nothing
+        {
+            let closeBody = Amqp10::encodePerformative(0x18, []);
+            Amqp10::writeFrame(this.conn, 0, 0, closeBody);
+            Amqp10::readFrame(this.conn);
+            httpConnClose(this.conn);
+        }
+    }
+
+    /*
+     * Eine Session auf einer Amqp10Connection (§2.7.3, entspricht 0-9-1s
+     * Channel, aber mit fenster-basierter Flow-Control statt reinem
+     * "offen"-Status). v1: fester Kanal 1 pro Verbindung (kein Pool,
+     * analog zur 0-9-1-v1-Entscheidung), `incoming-window`/
+     * `outgoing-window` großzügig fest (kein echtes Fenster-Tracking in
+     * v1 — Phase 6 (`flow`) fügt das für den eigentlichen
+     * Nachrichtenfluss hinzu, `begin` selbst braucht nur plausible
+     * Startwerte).
+     */
+    class Amqp10Session
+    {
+        var conn: Int64;
+        var chanId: Int64;
+        var errorMessage: String;
+
+        fn begin(connection: Amqp10Connection) -> Amqp10Session
+        {
+            var beginFields: List<Amqp10Value> = [
+                Amqp10Value::NullVal,             // remote-channel (nur in Antworten gesetzt)
+                Amqp10Value::UIntVal(0),           // next-outgoing-id
+                Amqp10Value::UIntVal(2147483647),  // incoming-window
+                Amqp10Value::UIntVal(2147483647)   // outgoing-window
+            ];
+            let beginBody = Amqp10::encodePerformative(0x11, beginFields);
+            Amqp10::writeFrame(connection.conn, 0, 1, beginBody);
+
+            let f = Amqp10::readFrame(connection.conn);
+            if f.frameType != 0 {
+                return Amqp10Session { conn: connection.conn, chanId: -1, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x11 {
+                return Amqp10Session { conn: connection.conn, chanId: -1, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString() };
+            }
+            return Amqp10Session { conn: connection.conn, chanId: 1, errorMessage: "" };
+        }
+
+        /*
+         * Beendet die Session: `end` senden und auf `end` vom Broker
+         * warten (v1 ungeprüft, analog zu Amqp10Connection::close).
+         */
+        fn end() -> Nothing
+        {
+            let endBody = Amqp10::encodePerformative(0x17, []);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, endBody);
+            Amqp10::readFrame(this.conn);
+        }
+    }
+
+    /*
+     * Ein Link auf einer Amqp10Session (§2.7.4) — explizite, gerichtete
+     * Sender- ODER Receiver-Rolle mit `source`/`target`-Adressen, kein
+     * Äquivalent in 0-9-1 (dort laufen `basic.publish`/`basic.consume`
+     * implizit auf dem Channel). v1: ein Link pro Zweck (ein Sender-Link
+     * zum Publishen, ein separater Receiver-Link zum Konsumieren), fester
+     * `handle` 0 (kein Multi-Link-Pool pro Session).
+     */
+    class Amqp10Link
+    {
+        var conn: Int64;
+        var chanId: Int64;
+        var handle: Int64;
+        var errorMessage: String;
+
+        /*
+         * role: false = Sender (target trägt die Zieladresse, z. B. eine
+         * Queue zum Publishen), true = Receiver (source trägt die
+         * Quelladresse, z. B. eine Queue zum Konsumieren) — Spec-
+         * Konvention. Die jeweils andere Seite bekommt ein leeres,
+         * adressloses Source/Target (Described Type mit leerer Feldliste,
+         * nicht `NullVal` — die meisten Broker erwarten die Hülle auch
+         * ohne Adresse).
+         */
+        fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -> Amqp10Link
+        {
+            var sourceVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
+            var targetVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([]) });
+            if role {
+                sourceVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
+            } else {
+                targetVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
+            }
+
+            // initial-delivery-count (Feld 10) ist per Spec PFLICHT, wenn
+            // role=Sender ("MUST be set if the role is sender") — RabbitMQ
+            // 4.x' rabbit_amqp_session:handle_attach pattern-matched das
+            // Feld hart auf einen echten uint-Wert und crasht mit
+            // function_clause, wenn es fehlt (live gegen echten Broker
+            // gefunden, s. bugs.md). Braucht deshalb unsettled(8)/
+            // incomplete-unsettled(9) als Platzhalter davor, weil
+            // Listenfelder nur am ENDE weggelassen werden dürfen, nicht in
+            // der Mitte.
+            var attachFields: List<Amqp10Value> = [
+                Amqp10Value::StrVal(name),
+                Amqp10Value::UIntVal(0),   // handle (v1: immer 0, ein Link pro Session)
+                Amqp10Value::BoolVal(role),
+                Amqp10Value::UByteVal(2),  // snd-settle-mode: mixed (Spec-Default, explizit gesetzt)
+                Amqp10Value::UByteVal(0),  // rcv-settle-mode: first (Spec-Default, explizit gesetzt)
+                sourceVal,
+                targetVal,
+                Amqp10Value::NullVal,      // unsettled (v1 ungenutzt)
+                Amqp10Value::BoolVal(false), // incomplete-unsettled: false (Spec-Default, explizit gesetzt)
+                Amqp10Value::UIntVal(0)    // initial-delivery-count (nur fuer role=Sender relevant, sonst ignoriert)
+            ];
+            let attachBody = Amqp10::encodePerformative(0x12, attachFields);
+            Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
+
+            let f = Amqp10::readFrame(session.conn);
+            if f.frameType != 0 {
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x12 {
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString() };
+            }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: 0, errorMessage: "" };
+        }
+
+        /*
+         * Löst den Link: `detach` senden und auf `detach` vom Broker
+         * warten (v1 ungeprüft). `closed`-Feld weggelassen (Default
+         * false — normales Detach, kein permanentes Löschen des Links).
+         */
+        fn detach() -> Nothing
+        {
+            var detachFields: List<Amqp10Value> = [Amqp10Value::UIntVal(this.handle)];
+            let detachBody = Amqp10::encodePerformative(0x16, detachFields);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, detachBody);
+            Amqp10::readFrame(this.conn);
+        }
+    }
 }
