@@ -1594,10 +1594,14 @@ beiden Emissionsstellen (nicht-generisch + generischer Pfad) angewandt.
 (nicht-generisch, generisch, obj+Param) → 42/5/8/7/99; `make check` voll grün
 (keine Stdlib-Regression trotz massiver Nutzung der expliziten-Objekt-Konvention).
 
-**Separat noch offen:** `.toString()` auf einem Wert von generischem Rückgabetyp
-`T` (`Box<T>::setAndGet(...).toString()`) emittiert ein unaufgelöstes `@toString`
-statt `@tinox_int_to_string` — vorbestehende generische Dispatch-Lücke, mit
-`git stash` gegengeprüft, unabhängig von diesem Fix.
+**Separat notiert, GEFIXT direkt im Anschluss (Bug 39, s. u.):** `.toString()` auf
+einem Wert von generischem Rückgabetyp `T` (`Box<T>::setAndGet(...).toString()`)
+emittierte ein unaufgelöstes `@toString` statt `@tinox_int_to_string` —
+vorbestehende generische Dispatch-Lücke, mit `git stash` gegengeprüft,
+unabhängig von diesem Fix. Diese Notiz stand länger als „offen" in der
+Übersicht als tatsächlich zutraf (Bug 39 behebt sie noch am selben Tag,
+2026-07-24 nachträglich per Repro bestätigt: `Box<Int64>::setAndGet(b,
+99).toString()` liefert korrekt „99", 10× stabil).
 
 ---
 
