@@ -605,7 +605,7 @@ conn.close();
 let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
 ```
 
-Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in `bugs_fixed.md` (Abschnitt „Feature: AMQP-0-9-1-Client").
+Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in den [GitHub Issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (Feature-Historie, dort als erledigt markiert).
 
 ### AMQP-1.0 Client
 
@@ -632,7 +632,7 @@ if m.ok {
 conn.close();
 ```
 
-Bewusste v1-Lücken: nur eine Session/ein Link pro Zweck (kein Pool), nur SASL PLAIN (kein SCRAM), Delivery-State nur `accepted` (kein `rejected`/`released`/`modified`), keine Transaktionen, keine Link-Recovery, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. Details und Architektur in `bugs_fixed.md` (Abschnitt „Feature: AMQP-1.0-Client").
+Bewusste v1-Lücken: nur eine Session/ein Link pro Zweck (kein Pool), nur SASL PLAIN (kein SCRAM), Delivery-State nur `accepted` (kein `rejected`/`released`/`modified`), keine Transaktionen, keine Link-Recovery, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. Details und Architektur in den [GitHub Issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (Feature-Historie, dort als erledigt markiert).
 
 ## Feature-Übersicht
 

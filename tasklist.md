@@ -7,15 +7,17 @@ von oben), nach Abschluss hier abhaken und ggf. Notizen ergänzen.**
 Status: `[ ]` offen · `[~]` in Arbeit · `[x]` fertig · `[-]` bewusst gestrichen
 
 Arbeitsregeln (Projektkonvention): nach jedem Schritt `make check` komplett
-grün; abgeschlossene Features/gefixte Bugs in `bugs_fixed.md` dokumentieren
-(Stil: Status/Ursache/Verifiziert), `bugs.md` enthält NUR noch aktuell
-offene Punkte (seit 2026-07-25 getrennt); e2e-Tests unter `tests/e2e/*.tnx`
-mit `// expect:`-Direktiven; kein Silent-Garbage — im Zweifel harter
-Fehler.
+grün; abgeschlossene Features/gefixte Bugs sowie aktuell offene Punkte
+werden seit 2026-07-25 als [GitHub Issues](https://github.com/subnix-work/tinox/issues)
+gepflegt (gefixt → geschlossen mit voller Root-Cause/Fix/Verifiziert-Doku im
+Issue-Body, offen → offenes Issue) — die früheren Dateien `bugs.md`/
+`bugs_fixed.md` sind entfallen, ihr kompletter Inhalt wurde 1:1 in Issues
+überführt. e2e-Tests unter `tests/e2e/*.tnx` mit `// expect:`-Direktiven;
+kein Silent-Garbage — im Zweifel harter Fehler.
 
 Vorheriges Feature (AMQP-0-9-1-Client inkl. `amqps://`) ist komplett fertig
-und in `bugs_fixed.md` archiviert (Suche „Feature: AMQP-0-9-1-Client").
-Diese Datei startet frisch für AMQP 1.0.
+(s. GitHub Issues, Suche „AMQP-0-9-1-Client"). Diese Datei startet frisch
+für AMQP 1.0.
 
 ---
 
