@@ -1,0 +1,102 @@
+// AMQP-1.0 Phase 1 (tasklist.md): Transport-Dial + Protokoll-Header-
+// Handshake über eine echte Loopback-Conn. Muster wie
+// amqp_phase1_handshake.tnx (0-9-1): diese Datei spielt beide Rollen —
+// Amqp10 (Client-Modul unter Test) verbindet sich, ein per Hand
+// gescripteter "Fake-Broker" (Server-Rolle über httpServerCreate/
+// httpServerAcceptConnHandle) liest den Header und antwortet gezielt.
+// Anders als bei 0-9-1: Erfolg = Broker echot EXAKT denselben 8-Byte-Header
+// zurück (§2.2), nicht ein Frame-Typ-Oktett.
+// expect: ok-dial-refused
+// expect: ok-amqp-header-bytes
+// expect: ok-handshake-success
+// expect: ok-sasl-header-bytes
+// expect: ok-handshake-mismatch
+// expect: ok-handshake-eof
+
+import tinox.core.amqp10;
+import tinox.core.socket;
+
+fn main() -> Int32 {
+    // --- dial() gegen einen Port ohne Listener: schneller, harter Fehlschlag ---
+    let refused = Amqp10::dial("127.0.0.1", 39219);
+    if refused == -1 {
+        println("ok-dial-refused");
+    }
+
+    let srv = httpServerCreate(47624);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+
+    // --- AMQP-Header-Bytes pruefen ---
+    let conn1 = Amqp10::dial("127.0.0.1", 47624);
+    Amqp10::sendAmqpProtocolHeader(conn1);
+    let sconn1 = httpServerAcceptConnHandle(srv);
+    let hdr1 = httpConnReadN(sconn1, 8);
+    if hdr1.len() == 8 {
+        if hdr1[0] == 65 {
+            if hdr1[1] == 77 {
+                if hdr1[2] == 81 {
+                    if hdr1[3] == 80 {
+                        if hdr1[4] == 0 {
+                            if hdr1[5] == 1 {
+                                if hdr1[6] == 0 {
+                                    if hdr1[7] == 0 {
+                                        println("ok-amqp-header-bytes");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Erfolgspfad: Fake-Broker echot exakt denselben Header zurueck
+    httpConnWriteBytes(sconn1, [65, 77, 81, 80, 0, 1, 0, 0]);
+    if Amqp10::checkProtocolHeaderEcho(conn1, [65, 77, 81, 80, 0, 1, 0, 0]) {
+        println("ok-handshake-success");
+    }
+    httpConnClose(conn1);
+    httpConnClose(sconn1);
+
+    // --- SASL-Header-Bytes pruefen ---
+    let conn2 = Amqp10::dial("127.0.0.1", 47624);
+    Amqp10::sendSaslProtocolHeader(conn2);
+    let sconn2 = httpServerAcceptConnHandle(srv);
+    let hdr2 = httpConnReadN(sconn2, 8);
+    if hdr2.len() == 8 {
+        if hdr2[4] == 3 {
+            if hdr2[5] == 1 {
+                if hdr2[6] == 0 {
+                    if hdr2[7] == 0 {
+                        println("ok-sasl-header-bytes");
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Mismatch-Pfad: Fake-Broker schlaegt eine andere Version vor ---
+    httpConnWriteBytes(sconn2, [65, 77, 81, 80, 3, 9, 9, 9]);
+    if !Amqp10::checkProtocolHeaderEcho(conn2, [65, 77, 81, 80, 3, 1, 0, 0]) {
+        println("ok-handshake-mismatch");
+    }
+    httpConnClose(conn2);
+    httpConnClose(sconn2);
+
+    // --- EOF-Pfad: Fake-Broker schliesst sofort ohne Antwort ---
+    let conn3 = Amqp10::dial("127.0.0.1", 47624);
+    Amqp10::sendAmqpProtocolHeader(conn3);
+    let sconn3 = httpServerAcceptConnHandle(srv);
+    httpConnReadN(sconn3, 8);
+    httpConnClose(sconn3);
+    if !Amqp10::checkProtocolHeaderEcho(conn3, [65, 77, 81, 80, 0, 1, 0, 0]) {
+        println("ok-handshake-eof");
+    }
+    httpConnClose(conn3);
+
+    httpServerClose(srv);
+    return 0;
+}

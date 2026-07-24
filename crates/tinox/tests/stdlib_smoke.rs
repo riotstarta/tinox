@@ -463,6 +463,15 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "amqp10",
+        imports: &["tinox.core.amqp10"],
+        // Analog zu amqp091 oben: kein echter Broker im Smoke-Gate, deckt
+        // aber den Codegen-Pfad des Moduls ab.
+        body: "println(Amqp10::dial(\"127.0.0.1\", 39220));",
+        expects: &["-1"],
+        contains: &[],
+    },
+    Smoke {
         key: "websocket",
         imports: &["tinox.core.websocket"],
         // Reine Codec-Logik ohne Socket (die volle Strecke inkl. Handshake

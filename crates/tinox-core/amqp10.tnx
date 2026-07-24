@@ -1,0 +1,93 @@
+module tinox.core.amqp10;
+
+/*
+ * AMQP-1.0-Client (kein Broker), Phase 1 (tasklist.md): Transport-Dial +
+ * Protokoll-Header-Handshake. Kein gemeinsamer Code mit amqp091.tnx außer
+ * demselben Grundmuster (Conn-Handle-Dial über socketCreateTcp/
+ * socketConnect/httpConnFromFd, binärsicheres Lesen/Schreiben über
+ * httpConnReadN/httpConnWriteBytes) — AMQP 1.0 ist protokoll- und
+ * datenmodell-technisch ein eigenes Tier (generisches Typsystem statt
+ * fester Feld-Tags, Connection→Session→Link statt Connection→Channel).
+ * Details s. tasklist.md Sondierung (2026-07-24, gegen die OASIS-Spec
+ * verifiziert, nicht aus Erinnerung übernommen).
+ */
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp10
+{
+    class Amqp10
+    {
+        /*
+         * Verbindet zum Broker (rohes TCP), noch OHNE Protokoll-Handshake.
+         * Rückgabe: Conn-Handle (>0) oder -1 bei Verbindungsfehler.
+         */
+        fn dial(host: String, port: Int64) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if !socketConnect(fd, host, port) {
+                return -1;
+            }
+            return httpConnFromFd(fd);
+        }
+
+        /*
+         * amqps:// — TLS-Variante von dial(). OpenSSL ist standardmäßig
+         * gelinkt (s. HttpServer::listenTls); mit TINOX_TLS=0 gebaut
+         * liefert httpConnFromFdTls -1. verify=true prüft Zertifikatskette
+         * + Hostname gegen die System-CA-Stores; verify=false ist ein
+         * bewusster Opt-out für selbstsignierte Testzertifikate.
+         */
+        fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if !socketConnect(fd, host, port) {
+                return -1;
+            }
+            return httpConnFromFdTls(fd, host, verify);
+        }
+
+        /*
+         * Sendet den 8-Byte-AMQP-Protokoll-Header (Protocol-ID 0):
+         * "AMQP" 0x00 0x01 0x00 0x00.
+         */
+        fn sendAmqpProtocolHeader(conn: Int64) -> Nothing
+        {
+            httpConnWriteBytes(conn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        }
+
+        /*
+         * Sendet den 8-Byte-SASL-Protokoll-Header (Protocol-ID 3):
+         * "AMQP" 0x03 0x01 0x00 0x00. Läuft VOR dem AMQP-Header auf
+         * derselben Verbindung, wenn SASL-Auth genutzt wird (v1 macht das
+         * immer, analog zu 0-9-1s SASL-PLAIN-Weg).
+         */
+        fn sendSaslProtocolHeader(conn: Int64) -> Nothing
+        {
+            httpConnWriteBytes(conn, [65, 77, 81, 80, 3, 1, 0, 0]);
+        }
+
+        /*
+         * Liest 8 Byte und vergleicht sie exakt mit dem zuvor gesendeten
+         * Header (§2.2: der Empfänger bestätigt eine unterstützte Version,
+         * indem er DENSELBEN Header zurücksendet — anders als 0-9-1, wo
+         * Erfolg am ersten Byte eines echten Frames statt eines Echo-Headers
+         * erkannt wird). Ungleicher Header (Broker schlägt eine andere
+         * Version vor) ODER EOF/Kurzread gelten beide als harter
+         * Fehlschlag; der Aufrufer schließt dann die Verbindung.
+         */
+        fn checkProtocolHeaderEcho(conn: Int64, sent: List<Int64>) -> Bool
+        {
+            let resp = httpConnReadN(conn, 8);
+            if resp.len() != 8 {
+                return false;
+            }
+            for i in 0..8 {
+                if resp[i] != sent[i] {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+}

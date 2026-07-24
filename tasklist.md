@@ -1,6 +1,6 @@
-# Tinox — AMQP-Client-Roadmap (tasklist.md)
+# Tinox — AMQP-1.0-Roadmap (tasklist.md)
 
-Stand: 2026-07-22. Zweck: Statusübersicht + Wiedereinstiegspunkt über Sessions
+Stand: 2026-07-24. Zweck: Statusübersicht + Wiedereinstiegspunkt über Sessions
 hinweg. **Beim Weiterarbeiten: den nächsten offenen Task nehmen (erster `[ ]`
 von oben), nach Abschluss hier abhaken und ggf. Notizen ergänzen.**
 
@@ -11,448 +11,303 @@ grün; Features/Bugs in bugs.md dokumentieren (Stil: Status/Ursache/Verifiziert)
 e2e-Tests unter `tests/e2e/*.tnx` mit `// expect:`-Direktiven; kein
 Silent-Garbage — im Zweifel harter Fehler.
 
-Vorheriges Feature (WebSocket-Server + `@WebsocketEndpoint`-Annotationen) ist
-komplett fertig und in `bugs.md` archiviert (Suche „Feature: WebSocket").
-Diese Datei startet frisch für AMQP.
+Vorheriges Feature (AMQP-0-9-1-Client inkl. `amqps://`) ist komplett fertig
+und in `bugs.md` archiviert (Suche „Feature: AMQP-0-9-1-Client"). Diese Datei
+startet frisch für AMQP 1.0.
 
 ---
 
 ## Ziel
 
-AMQP-**Client** als Sprachfeature/Stdlib-Modul — verbindet sich zu einem
-bestehenden Broker (RabbitMQ, ActiveMQ Artemis, Qpid, Azure Service Bus, …),
-sendet und empfängt Nachrichten. **Kein Broker/Server** (Entscheidung Session
-2026-07-22: Scope wäre um ein Vielfaches größer — Exchange-Routing-Engine,
-Queue-Persistenz, Consumer-Flow-Control, Clustering; ein Client, der sich zu
-existierender Infrastruktur verbindet, ist der weit tragfähigere Umfang).
+AMQP-1.0-**Client** (kein Broker), eigenes Modul `tinox.core.amqp10`
+(`crates/tinox-core/amqp10.tnx`) — **kein gemeinsamer Code mit
+`amqp091.tnx`** außer demselben Transport-Grundmuster (TCP-Dial über
+`socketCreateTcp`/`socketConnect`/`httpConnFromFd`/`httpConnFromFdTls`,
+binärsicheres Lesen/Schreiben über `httpConnReadN`/`httpConnWriteBytes`).
+AMQP 1.0 ist protokoll- und datenmodell-technisch ein komplett anderes Tier
+als 0-9-1: eigenes generisches Typsystem (statt fester Feld-Tags), eigener
+Frame-Aufbau, eigene SASL-Framing-Schicht, und eine dreistufige
+Connection→Session→Link-Hierarchie mit kreditbasierter Flow-Control statt
+0-9-1s einfachem Connection→Channel-Modell.
 
-Zwei Protokollversionen, **sequenziell, 0-9-1 zuerst**:
+## Sondierung (2026-07-24) — verifizierte Spec-Fakten
 
-- **AMQP 0-9-1** (Phasen 1–5, dieser Roadmap-Abschnitt): das von RabbitMQ
-  dominierte Protokoll — Classes/Methods, Field-Tables, einfacheres
-  Frame-Format. Leichter live gegen einen echten Broker verifizierbar, gutes
-  Fundament für die Conn-Handle-Wiederverwendung.
-- **AMQP 1.0** (eigene Roadmap-Phase, s. „Später" — wird erst grob skizziert,
-  detailliert geplant sobald 0-9-1 steht): ISO/IEC-19464-Standard,
-  komplett anderes Typsystem (Performatives statt Classes/Methods,
-  beschriebene Composite-Types), u. a. bei Qpid/Artemis/Azure Service Bus.
-  **Kein gemeinsamer Wire-Code mit 0-9-1** — beide Versionen teilen sich nur
-  die Transport-Schicht (TCP-Dial + Conn-Handle), nicht den Frame-Codec.
+Gegen die OASIS-AMQP-1.0-Spec (docs.oasis-open.org, Teile „Types" und
+„Transport") sowie den Apache-Qpid-Typ-Referenz-Index geprüft — **nicht**
+aus Erinnerung übernommen, weil falsche Descriptor-Codes stillschweigend
+inkompatibel mit echten Brokern wären (Wire-Kompatibilität ist bei 0-9-1
+der Hauptverifikationsweg gewesen, s. `pika`-Cross-Check, und muss hier
+genauso funktionieren):
 
-## Befund (Sondierung 2026-07-22, Session-Kontext)
-
-- Kein AMQP im Repo (Runtime, Stdlib, Docs, Beispiele geprüft — 0 Treffer für
-  „amqp"/„rabbitmq").
-- **Wiederverwendbar aus der WebSocket-Arbeit** (kompletter Vorteil ggü. dem
-  WS-Start): binärsichere Conn-Primitiven `httpConnReadN`/`httpConnWriteBytes`
-  existieren schon und sind bereits FÜR CLIENT-SEITIGE Verbindungen erprobt
-  (`httpConnFromFd(fd)` wickelt einen nackten Socket-fd — accept- oder
-  connect-seitig — in ein Conn-Handle; in `ws_handshake_frames.tnx` schon als
-  Client-Rolle genutzt). AMQP-Frames sind wie WS-Frames reines Binärformat
-  (Längenpräfix + beliebige Bytes) — dieselbe Grundlage trägt.
-- `socket.tnx`: `socketCreateTcp()` + `socketConnect(fd, host, port)` zum
-  Verbindungsaufbau zum Broker vorhanden.
-- **Blocker 1 — kein TLS-Client (behoben, s. Phase 6):** ursprünglich existierte
-  nur `HttpServer::listenTls` (Server-Accept), kein `connectTls`/Client-
-  Handshake — blockierte `amqps://` (Port 5671) für den produktiven Einsatz.
-  Seit Phase 6 (2026-07-24) behoben: `httpConnFromFdTls` (runtime.c) +
-  `Amqp091::dialTls`/`AmqpConnection091::connectTls` (amqp091.tnx). AMQP-1.0-
-  über-TLS profitiert automatisch mit, sobald AMQP 1.0 selbst umgesetzt ist
-  (gleiche Transport-Schicht).
-- **Blocker 2 — Field-Value-Encoder (0-9-1):** Methodenargumente sind
-  typmarkiert (bit/octet/short/long/longlong/shortstr/longstr/table/
-  timestamp/decimal/boolean …), verschachtelt in Field-Tables (z. B.
-  `client-properties` in `connection.start-ok`). Kein Präzedenzfall im Repo
-  für GENAU dieses Format, aber `hpack.tnx` zeigt, dass ein Binärcodec dieser
-  Art rein in Tinox über den Byte-Primitiven machbar ist.
-- **Blocker 3 — Kanal-Multiplexing:** eine TCP-Verbindung trägt mehrere
-  „Channels" (leichtgewichtige virtuelle Verbindungen, jede Frame trägt eine
-  Channel-ID). v1 nutzt einen einzelnen Channel synchron (kein Multiplexing
-  mehrerer gleichzeitig offener Channels) — analog zur v1-Entscheidung bei WS
-  gegen Lambda-Handler: erst das Fundament, Nebenläufigkeit später.
-- **Live-Verifikation:** kein Broker lokal aktiv, aber Docker vorhanden
-  (`docker run -d --name tinox-amqp-test -p 5672:5672 -p 15672:15672
-  rabbitmq:3-management` — hat 0-9-1 nativ; für spätere 1.0-Tests das
-  `rabbitmq_amqp1_0`-Plugin aktivieren oder auf Qpid/Artemis wechseln).
-  Kein `pika` (Python-AMQP-Client) installiert — bei Bedarf für Live-Tests
-  `pip install pika` (analog zu `python-websockets` bei WS 5.1).
-
----
-
-## Phase 1 — Transport + Protokoll-Handshake (`crates/tinox-core/amqp091.tnx`) ✅
-
-- [x] 1.1 Modul-Skelett `tinox.core.amqp091`, Namespace `tinox.core.amqp091`
-      (importiert selbst `tinox.core.socket` — `socketCreateTcp`/
-      `socketConnect` sind Modul-lokale `extern fn` in socket.tnx, keine
-      globalen Builtins wie `httpConnFromFd`; ohne eigenen Import bricht
-      jeder Konsument, der nicht zufällig auch `socket` importiert, mit
-      "undefined value" — im stdlib_smoke-Gate aufgefallen, s. Log).
-      `Amqp091::dial(host, port) -> Int64`: `socketCreateTcp` + `socketConnect`
-      + `httpConnFromFd` (Conn-Handle, binärsicher). Fehlerpfad: `connect`
-      liefert `false` → hartes `-1`, kein Silent-Garbage.
-- [x] 1.2 Protokoll-Header-Handshake (AMQP 0-9-1 §4.2.2): `sendProtocolHeader`
-      sendet die 8 Bytes `"AMQP" 0x00 0x00 0x09 0x01`; `checkHandshakeResponse`
-      liest 1 Byte und akzeptiert NUR Wert 1 (Beginn eines echten
-      METHOD-Frames = `connection.start`) — Mismatch (Broker echot seinen
-      Header zurück, erstes Byte 'A'=65) und EOF/Kurzread beide harter
-      Fehlschlag. Bewusst als ZWEI getrennte Methoden (statt eine
-      blockierende Rundtrip-Funktion), damit sich Client/Server-Schritte im
-      e2e-Test (single-threaded) verschränken lassen.
-- [x] 1.3 e2e `tests/e2e/amqp_phase1_handshake.tnx`: dial-refused (Port ohne
-      Listener), Header-Bytes-Assertion, Handshake success/mismatch/EOF —
-      alle über echte Loopback-Conn (Server-Rolle mit
-      `httpServerAcceptConnHandle` + gescriptete Antwort-Bytes, Muster wie
-      `ws_handshake_frames.tnx`). Dazu stdlib_smoke-Eintrag `amqp091`
-      (dial gegen 127.0.0.1 auf unbelegtem Port → schnelles "-1", deckt den
-      Codegen-Pfad ohne echten Broker ab).
-
-## Phase 2 — Frame-Codec + Field-Value-Encoder ✅
-
-- [x] 2.1 Generisches Frame: `octet type | short chanId | long size | payload
-      | octet 0xCE (frame-end)`. `Amqp091::readFrame(conn) -> AmqpFrame091`
-      (analog `Ws::readFrame`), `writeFrame(conn, type, chanId, payload)`.
-      Frame-Typen: 1=METHOD, 2=HEADER, 3=BODY, 4=HEARTBEAT. Fehlender
-      0xCE-Terminator ODER Payload > 16-MB-Cap → harter Protokollfehler
-      (frameType -2, kein Silent-Garbage); EOF → -1.
-      (Feld hieß ursprünglich `channel` — reserviertes Keyword für die
-      Concurrency-Feature, umbenannt zu `chanId`, s. Log.)
-- [x] 2.2 Field-Value-Codec: `AmqpFieldValue091`-Enum (rekursiv über
-      `TableVal(Map<String,AmqpFieldValue091>)`/`ArrayVal(List<...>)` —
-      funktioniert, weil Map/List Handle-Typen sind, kein Größenproblem) +
-      `AmqpWriter091`/`AmqpReader091` als Byte-Builder/-Cursor. Abgedeckt:
-      `t`(bool)/`I`(int32 signed)/`L`(int64 signed)/`S`(longstr)/
-      `T`(timestamp)/`F`(nested table)/`A`(array)/`V`(void), RabbitMQ-
-      Typmarker-Konvention. Unbekannter Typmarker → `ErrorVal(String)` statt
-      Silent-Garbage (Aufrufer MUSS prüfen, analog WsFrame -1/-2).
-      **Nicht v1:** `bit`-Packing in Methodenargumenten (gehört zu Phase 3,
-      wenn die ersten Methoden mit bit-Feldern gebaut werden), `decimal`.
-- [x] 2.3 Generische METHOD-Frame-Hülle (`AmqpMethodFrame091`: class-id +
-      method-id + Rest-Bytes) über `encodeMethodPayload`/`decodeMethodPayload`.
-      **Scope-Korrektur während der Umsetzung:** die konkrete
-      Argument-Reihenfolge pro v1-Methode (`connection.start-ok` etc.) UND
-      der Content-Header-Property-Codec (`basic`-Klasse) sind fachlich
-      Phase-3/4-Arbeit, nicht Teil des generischen Frame-Codecs — auf die
-      jeweilige Phase verschoben.
-- [x] 2.4 e2e `tests/e2e/amqp_frame_codec.tnx`: shortstr/longstr-Rundtrip,
-      Field-Table mit gemischten Typen (bool/int32 negativ/int64/str/
-      timestamp/void), verschachtelte Table, Array, unbekannter Typmarker,
-      Methoden-Envelope-Rundtrip, Frame-Rundtrip über echte Loopback-Conn,
-      Protokollfehler (falscher Terminator), Payload-Cap, EOF.
-
-**Zwei Bugs beim Aufbau gefunden und gefixt (s. Log):** ein echter
-Tinox-Compiler-Bug (Bug 66, `fromCharCode(seiteneffektbehafteter Ausdruck)`
-wertete doppelt aus — gefixt in `codegen.rs`, bugs.md-Eintrag) und ein reiner
-Logikfehler in `AmqpReader091::long()` (baute 32-Bit-Werte unsigned auf, ein
-negativer `Int32Val` wie -42 kam als 4294967254 zurück — Fix: eigene
-`longSigned()`-Methode für den Field-Value-Typ `I`, `long()` bleibt unsigned
-für Größenfelder).
-
-## Phase 3 — Connection/Channel-Handshake (Verbindungsaufbau) ✅
-
-- [x] 3.1 Negotiation-State-Machine nach Protokoll-Header: `connection.start`
-      empfangen (Mechanisms geprüft — muss `PLAIN` enthalten, sonst harter
-      Fehler statt eines Requests, den der Broker ohnehin ablehnt;
-      Server-Properties gelesen aber v1 nicht ausgewertet) →
-      `connection.start-ok` (SASL PLAIN: Response als `List<Int64>` roh
-      gebaut — NUL + User + NUL + Pass —, bewusst NICHT als Tinox-String
-      wegen des eingebetteten NUL-Bytes; Client-Properties als Field-Table)
-      → `connection.tune` empfangen → `connection.tune-ok` (Server-
-      Vorschläge übernommen, Heartbeat fest auf 0 = deaktiviert, kein
-      Heartbeat-Sender in v1) → `connection.open` (vhost) →
-      `connection.open-ok`.
-- [x] 3.2 `AmqpConnection091::connect(host, port, vhost, user, pass) ->
-      AmqpConnection091` kapselt 1.1–3.1 komplett; `.conn <= 0` +
-      `.errorMessage` bei jedem Fehlschlag. `connection.close` vom Broker
-      (SASL-Fehler, unbekannter vhost) wird spec-konform mit `close-ok`
-      quittiert (`describeAndAckClose`-Helper, geteilt mit Channel-Close)
-      und als Fehlermeldung mit Reply-Code/-Text zurückgegeben — kein
-      Hängenbleiben. `AmqpConnection091::close()` für den sauberen
-      Verbindungsabbau.
-- [x] 3.3 `AmqpChannel091::open(connection) -> AmqpChannel091`: `channel.open`
-      + `channel.open-ok` auf festem Channel 1 (v1: kein Pool, s. „Später").
-- [x] 3.4 **Live gegen echten RabbitMQ-Container verifiziert** (Docker,
-      `rabbitmq:3-management`, Host-Port 55672): Erfolgspfad (Connect +
-      Channel-Open + Close) — `frameMax=131072`, `channelMax=2047` (RabbitMQ-
-      Defaults, korrekt ausgehandelt), Broker-Log bestätigt SASL-Auth +
-      sauberen Verbindungsabbau. ZWEI Negativpfade live verifiziert: falsches
-      Passwort (Broker schließt den rohen Socket ohne Frame nach ~3 s
-      Anti-Bruteforce-Delay → sauber als EOF/-1 erkannt) und unbekannter
-      vhost (Broker schickt echtes `connection.close` mit Reply-Code 530,
-      Text wortgleich durchgereicht). Zusätzlich automatisierter
-      Loopback-e2e `tests/e2e/amqp_connection_negotiation.tnx`: ein per
-      `spawn` gestarteter simulierter Broker (`async fn`) spielt den
-      kompletten Ablauf gegen den echten Client-Code — kein Docker in
-      `make check` nötig.
-
-**Ein neuer Compiler-Bug gefunden beim Bau des Loopback-e2e (Bug 67,
-bugs.md, NICHT gefixt):** `async fn ... -> Bool` + `await` verliert den
-Rückgabetyp (Typechecker führt das Ergebnis als `Int64`). Workaround im Test:
-die simulierte Broker-Funktion gibt `Int64` (0/1) statt `Bool` zurück.
-
-## Phase 4 — Publish/Consume-API (explizite Schleifen-API, v1) ✅
-
-Bewusst wie WS v1 KEIN Lambda-Handler (dieselbe Begründung: Lambdas als Params
-von User-Methoden sind noch nicht zuverlässig gedeckt) — explizite
-Poll-Schleife für Consumer, Handler-API als Folgetask analog zu
-`@WebsocketEndpoint`/`@On*` sobald das Fundament steht.
-
-- [x] 4.1 `AmqpChannel091::declareQueue(name, durable, exclusive, autoDelete)
-      -> String` (`queue.declare` + `-ok`). "" = Fehler (echte Queue-Namen
-      sind nie leer), `this.errorMessage` beschreibt die Ursache.
-- [x] 4.2 `AmqpChannel091::bindQueue(queue, exchange, routingKey) -> Bool`
-      (`queue.bind` + `-ok`). **Wichtige Erkenntnis (live gefunden):**
-      `queue.bind` auf den Default-Exchange (`""`) ist laut AMQP-Spec
-      VERBOTEN — Queues sind dort implizit unter ihrem eigenen Namen
-      gebunden, RabbitMQ antwortet mit `access_refused` und schließt den
-      Channel. Publish direkt mit Routing-Key = Queue-Name deckt den
-      einfachsten Fall ab OHNE `bindQueue`; für benannte Exchanges (v1 ohne
-      `exchange.declare`) eignen sich broker-vordefinierte wie
-      `amq.direct` zum Testen.
-- [x] 4.3 `AmqpChannel091::publish(exchange, routingKey, body: List<Int64>,
-      contentType: String) -> Nothing` (`basic.publish` + Content-Header +
-      Body-Frame(s), Split bei `frameMax - 8` Byte Overhead-Abzug). v1:
-      genau zwei Properties (content-type optional, delivery-mode fest auf
-      2/persistent) — voller Property-Satz s. „Später".
-- [x] 4.4 `AmqpChannel091::consume(queue) -> String` (`basic.consume` +
-      `-ok`, liefert Consumer-Tag oder "" bei Fehler) und
-      `AmqpChannel091::nextMessage() -> AmqpMessage091` (blockierender Pull:
-      `basic.deliver` + Content-Header + Body-Frame(s) bis `body-size`
-      Bytes — Decoder überspringt alle 14 Basic-Properties korrekt anhand
-      der Property-Flags, sonst liefe der Byte-Cursor bei fremden
-      Nachrichten mit z. B. `headers` aus der Spur). `.ok == false` bei
-      jedem Fehler (kein Silent-Garbage). `AmqpChannel091::ack(deliveryTag)
-      -> Nothing`.
-- [x] 4.5 `AmqpChannel091::qos(prefetchCount) -> Bool` (`basic.qos` + `-ok`).
-- [x] 4.6 Beispiel `examples/amqp_publish_consume.tnx`: verbindet,
-      deklariert durable Queue, published 3 Nachrichten über den
-      Default-Exchange, konsumiert sie in FIFO-Reihenfolge zurück, printet +
-      acked jede einzeln — live gegen RabbitMQ verifiziert.
-
-**Live gegen RabbitMQ verifiziert** (voller Ablauf: Connect → Channel →
-declareQueue → bindQueue auf `amq.direct` → qos → zwei Publishes über
-verschiedene Exchanges → consume → zwei nextMessage()-Aufrufe mit korrektem
-Content-Type/Exchange/Routing-Key/Delivery-Tag → ack → close — alles beim
-ersten funktionierenden Versuch nach dem Bind-Fix durchgelaufen). Zusätzlich
-automatisierter Loopback-e2e
-`tests/e2e/amqp_publish_consume_loopback.tnx` (simulierter Broker via
-`spawn`, spiegelt den Publish-Body im simulierten `basic.deliver` zurück,
-Rundtrip-Assertion auf den Body-Inhalt).
-
-## Phase 5 — Härtung + Abschluss ✅
-
-- [x] 5.1 Live-Test gegen ECHTEN RabbitMQ-Container: Connect, Queue-Deklaration,
-      Publish/Consume-Roundtrip, Ack, sauberes `channel.close`/
-      `connection.close`. Mit `pika` (Python, in einem venv installiert) als
-      unabhängiger Cross-Check — **beide Richtungen** verifiziert: Tinox
-      publiziert → pika konsumiert (3 Nachrichten, Content-Type korrekt), UND
-      pika publiziert → Tinox konsumiert (3 Nachrichten, Content-Type
-      korrekt). Broker-Log bestätigt saubere Verbindungsschlüsse ohne
-      Fehler auf beiden Seiten.
-- [x] 5.2 Grenzfälle: leere Message-Bodies (0 Body-Frames) UND Bodies über
-      mehrere Frames (frame-max künstlich auf 100 gesetzt, 250-Byte-Body ->
-      3 Frames) in BEIDE Richtungen (`publish()` UND `nextMessage()`) —
-      `tests/e2e/amqp_edge_cases.tnx`, 25× wiederholt lauffähig (Flakiness
-      ausgeschlossen). `shortstr`-Längengrenze (255 Byte) —
-      `tests/e2e/amqp_shortstr_limits.tnx`, netzwerkfrei/deterministisch,
-      255-Byte-Grenzfall zusätzlich live gegen RabbitMQ verifiziert. SASL-
-      Fehler (falsches Passwort) bereits in Phase 3.4 live verifiziert
-      (sauberer Fehler statt Hänger) — hier nicht erneut wiederholt.
-      **Echter Bug gefunden + gefixt:** `AmqpWriter091::shortstr()` schrieb
-      die Länge unmaskiert per `octet(s.len())` — bei > 255 Byte erzeugte
-      das `& 0xFF` in `octet()` einen zu KLEINEN Längen-Präfix, während die
-      vollen Rohbytes trotzdem folgten (korrupter Frame statt hartem
-      Fehler, Verstoß gegen „kein Silent-Garbage"). Fix: `tooLong`-Flag +
-      `hasError()`, geprüft in `declareQueue`/`bindQueue`/`consume`/
-      `publish` VOR dem Senden. **Zweiter Fund (Bug 68, bugs.md, NICHT
-      gefixt):** beim Testen dieser Grenze legte eine Kombination aus
-      langem (150+ Byte) Queue-Namen + einem clientseitig verworfenen
-      Aufruf im selben `spawn`/`await`-Loopback-Test einen
-      nichtdeterministischen Absturz in der Async-Runtime frei — reproduziert
-      auch ganz ohne AMQP-Semantik, nicht reproduzierbar außerhalb von
-      `spawn`/`await` (live gegen RabbitMQ fehlerfrei). Praktisch
-      unerreichbar im v1-Client (überlange Namen werden immer clientseitig
-      ohne Netzwerkaufruf verworfen) — dokumentiert, nicht blockierend, die
-      ausgelieferten Tests vermeiden das Muster bewusst.
-      Nicht separat getestet: verschachtelte Field-Tables über 2 Ebenen
-      hinaus (2-Ebenen-Rundtrip bereits in Phase 2 `amqp_frame_codec.tnx`
-      abgedeckt, der Codec ist generisch-rekursiv, kein Grund zur Annahme
-      einer Tiefenbeschränkung).
-- [x] 5.3 bugs.md-Abschnitt „Feature: AMQP-0-9-1-Client" (Architektur +
-      bewusste Lücken, Stil wie beim WS-Feature, inkl. Bug-68-Verweis).
-      README.md: neuer Abschnitt „AMQP-0-9-1 Client" + Feature-Tabellen-
-      Zeile + Modul-Tabellen-Zeile („Messaging"-Kategorie). docs.html: neue
-      `#mod-amqp091`-Sektion (Klassen/Methoden-Tabelle + Beispiel + v1-
-      Lücken) + Sidebar-Link + Card-Grid-Eintrag in der Stdlib-Übersicht.
+- **Protokoll-Header** (8 Byte, wie 0-9-1 aber mit Protocol-ID-Byte):
+  `"AMQP" 0x00 0x01 0x00 0x00` für die AMQP-Schicht (Protocol-ID 0),
+  `"AMQP" 0x03 0x01 0x00 0x00` für die SASL-Schicht (Protocol-ID 3). Bei
+  SASL-Auth wird ERST der SASL-Header + SASL-Negotiation gefahren, DANN
+  (auf derselben TCP-Verbindung) nochmal der AMQP-Header + die eigentliche
+  `open`-Verhandlung — zwei komplette Header-Handshakes hintereinander.
+- **Frame-Layout**: `size` (4 Byte, u32 BE, Gesamtgröße inkl. Header) +
+  `doff` (1 Byte, Header-Länge in 4-Byte-Worten, Minimum 2 = nur der
+  Fixed-Header) + `type` (1 Byte: `0x00` = AMQP-Frame, `0x01` =
+  SASL-Frame) + `channel` (2 Byte, u16 BE) + optionaler Extended-Header
+  (falls `doff > 2`) + Frame-Body. Deutlich simpler als 0-9-1s
+  `octet|short|long|payload|0xCE` nur in der Grobstruktur — der Body ist
+  dafür ungleich komplexer (s. u.).
+- **Typsystem** (Kernstück, deutlich größer als 0-9-1s Feld-Value-Codec):
+  jeder Wert beginnt mit einem 1-Byte-Formatcode, der SOWOHL den Typ ALS
+  AUCH oft die Breite/Kodierungsvariante festlegt (z. B. `uint` hat DREI
+  Varianten: `0x70` volle 4-Byte-Form, `0x52` `smalluint` 1-Byte-Form für
+  0–255, `0x43` `uint0` Null-Byte-Form für den Wert 0 — dieselbe
+  Kompression gibt es bei `ulong`/`int`/`long`). Wichtige Codes:
+  `null=0x40`, `boolean=0x56`(+`true=0x41`/`false=0x42` als Nullary-Sonderformen),
+  `ubyte=0x50`, `ushort=0x60`, `uint=0x70`/`0x52`/`0x43`,
+  `ulong=0x80`/`0x53`/`0x44`, `byte=0x51`, `short=0x61`,
+  `int=0x71`/`0x54`, `long=0x81`/`0x55`, `float=0x72`, `double=0x82`,
+  `char=0x73` (UTF-32BE), `timestamp=0x83` (ms seit Epoch, i64),
+  `uuid=0x98`, `binary`: `vbin8=0xa0`(1-Byte-Länge)/`vbin32=0xb0`(4-Byte),
+  `string`: `str8-utf8=0xa1`/`str32-utf8=0xb1`, `symbol`(ASCII):
+  `sym8=0xa3`/`sym32=0xb3`, `list`: `list0=0x45`(leer)/`list8=0xc0`/`list32=0xd0`,
+  `map`: `map8=0xc1`/`map32=0xd1`, `array`: `array8=0xe0`/`array32=0xf0`.
+  **Described Types** (für Performatives UND Message-Sections): Formatcode
+  `0x00`, gefolgt vom Descriptor-Wert (meist `smallulong`, s. u.) UND
+  danach dem eigentlichen Wert (typischerweise ein `list`) — strukturell
+  wie ein getaggtes 0-9-1-Field-Table, aber generisch für JEDEN Wert
+  nutzbar, nicht nur für Methodenargumente.
+  **Falle für den Decoder:** die SASL-Descriptor-Codes (`0x40`–`0x44`)
+  überschneiden sich NUMERISCH mit den PRIMITIVEN Formatcodes
+  `null`/`boolean-true`/`boolean-false`/`uint0`/`ulong0` — kein echter
+  Konflikt im Bytestrom (Descriptor-Codes stehen immer NACH dem
+  `0x00`-Described-Type-Präfix, meist zusätzlich hinter einem
+  `0x53`-`smallulong`-Marker), aber ein Copy-Paste-Risiko beim Schreiben
+  des Decoders, wenn Formatcode- und Descriptor-Tabellen als eine einzige
+  Map verwechselt werden.
+- **Performative-Descriptor-Codes** (`amqp:<name>:list`, alle als
+  `smallulong` kodiert, d. h. `0x53 <code>` im Bytestrom):
+  `open=0x10`, `begin=0x11`, `attach=0x12`, `flow=0x13`, `transfer=0x14`,
+  `disposition=0x15`, `detach=0x16`, `end=0x17`, `close=0x18`.
+  Zusatz-Typen: `error=0x1d`, `source=0x28`, `target=0x29`.
+- **SASL-Frame-Descriptor-Codes**: `sasl-mechanisms=0x40`, `sasl-init=0x41`,
+  `sasl-challenge=0x42`, `sasl-response=0x43`, `sasl-outcome=0x44`.
+- **Message-Section-Descriptor-Codes** (der eigentliche Nachrichtenkörper
+  bei `transfer`, mehrere optionale Sections hintereinander im Frame-Body
+  nach der `transfer`-Performative): `header=0x70`,
+  `delivery-annotations=0x71`, `message-annotations=0x72`,
+  `properties=0x73`, `application-properties=0x74`, `data=0x75`
+  (Rohbytes-Body), `amqp-sequence=0x76`, `amqp-value=0x77` (ein einzelner
+  AMQP-Wert als Body), `footer=0x78`.
+- **Connection→Session→Link statt Connection→Channel**: `open`/`close`
+  auf Connection-Ebene (wie 0-9-1), aber darüber `begin`/`end` für eine
+  **Session** (fenster-basierte Flow-Control, `incoming-window`/
+  `outgoing-window`, ersetzt 0-9-1s reines "ein Channel ist offen"), und
+  darüber `attach`/`detach` für einen **Link** (explizite, langlebige
+  Sender- ODER Receiver-Rolle mit `source`/`target`-Adressen — kein
+  Äquivalent in 0-9-1, wo `basic.consume`/`basic.publish` implizit auf
+  dem Channel laufen). Nachrichtenfluss läuft NICHT wie 0-9-1 unbegrenzt,
+  sondern kreditbasiert: `flow` vergibt `link-credit`, der Sender darf nur
+  so viele `transfer`s schicken, wie Credit vorhanden ist — fehlt in
+  0-9-1 komplett (dort regelt nur `basic.qos`/`prefetchCount` grob den
+  Consumer-seitigen Puffer, kein echtes Fenster-Protokoll).
+- **Wiederverwendbar aus `amqp091.tnx` (Muster, nicht Code):** Conn-Handle-
+  Dial (`socketCreateTcp`+`socketConnect`+`httpConnFromFd`/`httpConnFromFdTls`
+  für `amqps`-Äquivalent), `httpConnReadN`/`httpConnWriteBytes` als
+  binärsichere Primitiven, der grundsätzliche "harter Fehler statt Silent-
+  Garbage"-Stil (`errorMessage`-Feld + `.ok`/leerer-Rückgabewert-Konvention).
+- **Live-Verifikation:** RabbitMQ braucht das `rabbitmq_amqp1_0`-Plugin
+  aktiviert (`rabbitmq-plugins enable rabbitmq_amqp1_0`) für 1.0-Support —
+  im v0-9-1-Docker-Container noch nicht aktiviert, muss vor Phase-5-Live-
+  Tests nachgerüstet werden. Alternative: Apache Qpid Proton/Broker-J oder
+  ActiveMQ Artemis (native AMQP-1.0-Unterstützung, kein Plugin nötig) —
+  Entscheidung bei Phase 5 treffen, je nachdem was zu diesem Zeitpunkt
+  lokal am einfachsten verfügbar ist. Kein `python-qpid-proton` (der
+  naheliegende unabhängige Cross-Check-Client analog zu `pika` bei 0-9-1)
+  installiert — bei Bedarf `pip install python-qpid-proton` in einem venv.
 
 ---
 
-## Phase 6 — `amqps://` (TLS-Client) ✅
+## Phase 1 — Transport + Protokoll-Handshake (`crates/tinox-core/amqp10.tnx`) ✅
 
-Blocker 1 aus dem Befund (s. o.) war zwischenzeitlich hinfällig geworden: TLS
-ist seit 2026-07-24 Standard-Build-Default (OpenSSL immer gelinkt, Opt-out
-per `TINOX_TLS=0`), und es fehlte nur noch eine Client-seitige
-Handshake-Primitive (bisher gab es nur `httpServerAcceptTls`, Server-seitig).
+- [x] 1.1 Modul-Skelett `tinox.core.amqp10`. `Amqp10::dial(host, port) ->
+      Int64` (Plaintext) + `dialTls(host, port, verify: Bool) -> Int64`
+      (analog zu `Amqp091::dial`/`dialTls` — eigene, unabhängige
+      Implementierung im neuen Modul, kein Cross-Import zwischen den
+      beiden AMQP-Modulen).
+- [x] 1.2 AMQP-Protokoll-Header-Handshake: `sendAmqpProtocolHeader` sendet
+      `"AMQP" 0x00 0x01 0x00 0x00`. `checkProtocolHeaderEcho(conn, sent)`
+      liest 8 Byte und vergleicht sie EXAKT mit dem gesendeten Header —
+      anders als 0-9-1 (Erfolg = erstes Byte eines echten Frames) ist bei
+      1.0 Erfolg das exakte Echo desselben Headers (§2.2). Ungleicher
+      Header (Broker schlägt andere Version vor) ODER EOF/Kurzread beide
+      harter Fehlschlag; feinere Versions-Mismatch-Behandlung (Broker-
+      Vorschlag auswerten statt nur "kein Match") ist ein Later-Punkt.
+- [x] 1.3 SASL-Protokoll-Header-Handshake: `sendSaslProtocolHeader` sendet
+      `"AMQP" 0x03 0x01 0x00 0x00`. Getrennte Methode von 1.2, da beide
+      Header nacheinander auf DERSELBEN Verbindung verschickt werden (erst
+      SASL-Header+Negotiation, danach AMQP-Header+`open`) — `checkProtocolHeaderEcho`
+      wird für beide Varianten wiederverwendet (nimmt den gesendeten Header
+      als Parameter statt ihn zu hardcoden).
+- [x] 1.4 e2e-Test `tests/e2e/amqp10_phase1_handshake.tnx`: dial-refused,
+      Header-Bytes-Assertion für AMQP- UND SASL-Header, Erfolgs-/Mismatch-/
+      EOF-Pfad für den Header-Echo-Check — Muster wie
+      `amqp_phase1_handshake.tnx` (0-9-1), 10× stabil wiederholt.
+      stdlib_smoke-Eintrag `amqp10` ergänzt (dial gegen unbelegten Port).
 
-- [x] 6.1 `httpConnFromFdTls(fd, host, verify) -> Int64` (runtime.c): neuer
-      globaler Builtin, Gegenstück zu `httpServerAcceptTls` für ausgehende
-      Verbindungen — führt den TLS-Handshake als CLIENT (`SSL_connect`,
-      eigener `g_tls_client_ctx` mit `TLS_client_method()`, getrennt vom
-      Server-`SSL_CTX`) auf einem bereits per `socketConnect` verbundenen fd
-      durch. SNI wird immer gesetzt; `verify=true` prüft Zertifikatskette +
-      Hostname gegen die System-CA-Stores (`SSL_CTX_set_default_verify_paths`
-      + `SSL_set1_host`), `verify=false` ist ein explizit benannter Opt-out
-      für selbstsignierte Testzertifikate. In typecheck (`symbols.functions`)
-      + codegen (`declare i64 @httpConnFromFdTls(i64, i8*, i1)`) registriert.
-- [x] 6.2 `Amqp091::dialTls(host, port, verify) -> Int64` +
-      `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)
-      -> AmqpConnection091` (amqp091.tnx). `connect()`/`connectTls()` wurden
-      auf einen gemeinsamen Kern `finishHandshake(conn, vhost, user, pass)`
-      refaktoriert — der komplette `connection.start/-ok/tune/-ok/open/-ok`-
-      Handshake läuft ausschließlich über `httpConn*`-Primitiven und ist
-      damit TLS-/Plaintext-transparent, ganz ohne Duplikation (analog zur
-      WS-`listenTls`-Erkenntnis: „sollte fast gratis sein" — hier ebenso
-      bestätigt, nur clientseitig).
-- [x] 6.3 Verifiziert (manueller Loopback-Test, analog zur HTTPS/WSS-Praxis
-      — nicht Teil von `make check`, s. u.): kompletter Fake-Broker-Roundtrip
-      (declare/bind/qos/publish/consume/deliver/ack, 6/6 `expect`-Zeilen)
-      über `httpServerCreateTls`+`connectTls(verify: false)` mit
-      selbstsigniertem Testzertifikat — Client UND Server-Seite sind
-      identischer Code wie die bestehenden Plaintext-Loopback-Tests, nur der
-      `dial`/`listen`-Aufruf ist ausgetauscht. Zusätzlich `verify=true` gegen
-      denselben selbstsignierten Cert getestet: Handshake schlägt korrekt mit
-      `certificate verify failed` / TLS-Alert `unknown ca` fehl — beweist,
-      dass die Verifikation echt greift und kein Blindflag ist. Beispiel
-      `examples/amqps_publish_consume.tnx` (braucht echten Broker mit
-      TLS-Listener, analog zu `amqp_publish_consume.tnx`).
-      **Nicht automatisiert:** wie HTTPS (Feature 34) und WSS bräuchte ein
-      committeter e2e-Test ein Testzertifikat als Fixture — aus Konsistenz
-      mit der bestehenden Praxis bewusst nur manuell verifiziert, kein
-      Blocker.
+## Phase 2 — Typsystem-Codec (Kernstück)
 
-**AMQP-0-9-1-Client-Feature inkl. TLS abgeschlossen.**
+- [ ] 2.1 `Amqp10Writer`: primitive Encoder-Methoden für alle Fixed-Width-
+      Typen (`null`, `boolean`, `ubyte`, `ushort`, `uint`, `ulong`, `byte`,
+      `short`, `int`, `long`, `float`, `double`, `char`, `timestamp`,
+      `uuid`) — v1 nutzt bewusst NUR die volle Breite (kein
+      `smalluint`/`smallulong`/`uint0`/etc.-Kompressions-Picking beim
+      Schreiben, das ist reine Größenoptimierung und für einen Client
+      nicht protokollrelevant; der DECODER muss trotzdem ALLE Varianten
+      lesen können, weil der Broker sie nutzt — asymmetrisch wie bei
+      0-9-1s `octet`/`short`/`long` versus dessen einheitlichem Schreiben).
+- [ ] 2.2 `Amqp10Writer`: variable-width Typen (`binary` vbin8/vbin32,
+      `string` str8/str32, `symbol` sym8/sym32) — Grenzentscheidung
+      8-Bit-vs-32-Bit-Präfix nach Länge, analog zur 0-9-1-
+      `shortstr`/`longstr`-Unterscheidung aber mit einem harten Cutover
+      statt zwei getrennter Aufrufer-Methoden.
+- [ ] 2.3 `Amqp10Writer`: compound Typen (`list8`/`list32`, `map8`/`map32`)
+      — rekursiv über ein `Amqp10Value`-Enum (analog zu 0-9-1s
+      `AmqpFieldValue091`, aber mit deutlich mehr Varianten und
+      generischerer Nutzung, da AMQP 1.0 dieses Enum für ALLES nutzt, nicht
+      nur für Feld-Tables).
+- [ ] 2.4 `Amqp10Reader`: Decoder für ALLE Formatcode-Varianten aus der
+      Sondierungs-Tabelle oben (inkl. der komprimierten Kurzformen
+      `smalluint`/`uint0`/etc., die der Broker beim Senden nutzen darf).
+      Described-Type-Decoding (`0x00` + Descriptor + Wert) als generischer
+      Baustein, den Phase 3 (Performatives) UND Phase 6 (Message-Sections)
+      beide wiederverwenden.
+- [ ] 2.5 e2e-Test: Rundtrip-Encode/Decode für jeden Formatcode einzeln +
+      verschachtelte List/Map-Kombinationen (analog `amqp_frame_codec.tnx`
+      Phase 2.4 bei 0-9-1, aber deutlich mehr Formatcode-Varianten
+      abzudecken).
+
+## Phase 3 — Frame-Codec + Performative-Hülle
+
+- [ ] 3.1 Generisches Frame lesen/schreiben: `size|doff|type|channel|
+      [extended-header]|body`. v1: `doff` immer `2` beim Schreiben (kein
+      Extended-Header), aber `doff > 2` beim Lesen korrekt überspringen
+      (Broker darf ihn nutzen).
+- [ ] 3.2 Performative-Hülle: jede der 9 Performatives ist ein Described
+      List — generischer `encodePerformative(descriptorCode, fields:
+      List<Amqp10Value>)`/`decodePerformative(payload) -> (Int64,
+      List<Amqp10Value>)`-Baustein (analog zu 0-9-1s
+      `encodeMethodPayload`/`decodeMethodPayload`, aber EIN Descriptor-Code
+      statt ZWEI IDs (`classId`+`methodId`), und Felder sind positionell in
+      einer Liste statt eines eigenen Feld-Table-Schemas pro Methode —
+      AMQP 1.0 nutzt für alle 9 Performatives dasselbe generische
+      List-Encoding, die Feldbedeutung ergibt sich rein aus der Position).
+- [ ] 3.3 e2e-Test: Frame-Rundtrip mit synthetischen Performative-Payloads,
+      Protokollfehler-Fälle (fehlerhafte Frame-Size, kaputter Described-
+      Type-Header) → harter Fehler statt Silent-Garbage.
+
+## Phase 4 — SASL-Negotiation
+
+- [ ] 4.1 `sasl-mechanisms` empfangen (Broker bietet Mechanismen an, Liste
+      von `symbol`-Werten) — v1 sucht `PLAIN` in der Liste, sonst harter
+      Fehler (analog zu 0-9-1s `mechanisms.contains("PLAIN")`-Check).
+- [ ] 4.2 `sasl-init` senden: Mechanism-Name (`symbol`) + `initial-response`
+      (`binary`, dieselbe SASL-PLAIN-Byte-Struktur `\0user\0pass` wie bei
+      0-9-1 — `Amqp091::saslPlainResponse` als Vorlage, aber neu
+      implementiert im neuen Modul) + optionales `hostname`.
+- [ ] 4.3 `sasl-outcome` empfangen und `code`-Feld prüfen (0 = ok, alles
+      andere = harter Auth-Fehler mit `errorMessage`). NICHT unterstützt:
+      `sasl-challenge`/`sasl-response`-Runden (nur für Mechanismen wie
+      SCRAM nötig, v1 bleibt bei PLAIN, das braucht keine Challenge-Runde).
+- [ ] 4.4 e2e-Test: erfolgreiche Negotiation (simulierter Broker via
+      `spawn`/`await`, Muster wie `amqp_connection_negotiation.tnx`),
+      abgelehnte Auth (`sasl-outcome` code != 0) → sauberer Fehler.
+
+## Phase 5 — Connection/Session/Link-Handshake
+
+- [ ] 5.1 `Amqp10Connection::connect(host, port, user, pass) ->
+      Amqp10Connection`: SASL-Header+Negotiation (Phase 4), dann
+      AMQP-Header (1.2) + `open` senden + `open` vom Broker empfangen
+      (Felder: `container-id`, `hostname`, `max-frame-size`,
+      `channel-max`, etc. — v1 übernimmt Server-Vorschläge wie bei 0-9-1s
+      `connection.tune`, kein eigenes Verhandeln).
+- [ ] 5.2 `Amqp10Session::begin(connection) -> Amqp10Session`: `begin`
+      senden (inkl. `next-outgoing-id`, `incoming-window`,
+      `outgoing-window`) + `begin` vom Broker empfangen (liefert die
+      `remote-channel`-Zuordnung). v1: ein fester Session pro Connection
+      (kein Pool), analog zur 0-9-1-v1-Entscheidung für einen festen
+      Channel.
+- [ ] 5.3 `Amqp10Link::attach(session, name, role, address) ->
+      Amqp10Link`: `attach` senden (Rolle Sender=false/Receiver=true per
+      Spec-Konvention, `source`/`target`-Adress-Felder je nach Rolle) +
+      `attach` vom Broker empfangen. v1: ein Link pro Zweck (ein
+      Sender-Link zum Publishen, ein separater Receiver-Link zum
+      Konsumieren — kein gemeinsamer bidirektionaler Link).
+- [ ] 5.4 Sauberes Schließen: `detach` (Link) → `end` (Session) → `close`
+      (Connection), jeweils auf die Gegenstück-Performative vom Broker
+      warten (analog zu 0-9-1s `close`/`close-ok`-Pattern, hier aber DREI
+      Ebenen statt einer).
+- [ ] 5.5 e2e-Test (simulierter Broker, `spawn`/`await`): kompletter
+      Open→Begin→Attach→Detach→End→Close-Ablauf, inkl. der beiden
+      Header-Handshakes (SASL dann AMQP) davor.
+- [ ] 5.6 **Live gegen echten Broker mit AMQP-1.0-Support** (RabbitMQ +
+      `rabbitmq_amqp1_0`-Plugin ODER Qpid/Artemis, s. Sondierung) —
+      Connect/Session/Link-Aufbau UND sauberes Schließen.
+
+## Phase 6 — Transfer/Flow/Disposition (Publish/Consume)
+
+- [ ] 6.1 `flow` senden (Sender-seitig: Credit anfordern/Fenster
+      aktualisieren) und empfangen (Receiver-seitig: verfügbares
+      `link-credit` tracken) — das kreditbasierte Gegenstück zu 0-9-1s
+      `basic.qos`, aber hier zwingend für JEDEN Transfer nötig (kein
+      Transfer ohne Credit erlaubt, im Gegensatz zu 0-9-1, wo Publish
+      immer sofort geht).
+- [ ] 6.2 Message-Encoding: `header`/`properties`/`application-properties`/
+      Body-Section (`data` für Rohbytes, analog zum 0-9-1-Content-Type/
+      Body-Konzept, aber als eigene Described-Type-Sections statt eines
+      Content-Header-Frames + separater Body-Frames).
+- [ ] 6.3 `transfer` senden (Publish): Performative + Message-Sections im
+      selben Frame-Body (kein separates Content-Header-Frame wie bei
+      0-9-1) — bei Überschreiten von `max-frame-size` auf mehrere
+      `transfer`-Frames mit `more=true`-Flag aufteilen (funktionales
+      Äquivalent zu 0-9-1s Multi-Frame-Body-Splitting aus
+      `amqp_edge_cases.tnx`, aber anderer Mechanismus: `more`-Flag statt
+      impliziter Fortsetzung durch Frame-Grenzen).
+- [ ] 6.4 `transfer` empfangen (Consume) + `disposition` senden (Ack/Settle
+      — das AMQP-1.0-Äquivalent zu 0-9-1s `basic.ack`, aber mit
+      granularerem Delivery-State-Modell: `accepted`/`rejected`/
+      `released`/`modified`, v1 nutzt nur `accepted`).
+- [ ] 6.5 e2e-Tests: Publish/Consume-Roundtrip inkl. Multi-Frame-Transfer
+      (analog `amqp_edge_cases.tnx`), Credit-Erschöpfung (Sender wartet
+      korrekt auf `flow` bevor er weiter sendet).
+- [ ] 6.6 **Live-Cross-Check** analog zu 0-9-1s `pika`-Verifikation — hier
+      `python-qpid-proton` als unabhängiger Client, BEIDE Richtungen
+      (Tinox publiziert → Proton konsumiert, und umgekehrt).
+
+## Phase 7 — Härtung + Abschluss
+
+- [ ] 7.1 Grenzfälle analog zu 0-9-1 Phase 5.2: leere Message-Bodies,
+      Multi-Frame-Transfer-Grenzen, `str8`/`sym8`-255-Byte-Grenze
+      (Pendant zu 0-9-1s `shortstr`-Limit — hier aber mit `str32`/`sym32`
+      als eingebautem Fallback statt hartem Fehler, da AMQP 1.0 selbst
+      schon zwei Größenklassen kennt; prüfen ob v1 dennoch nur `str8`/
+      `sym8` schreibt und > 255 Byte hart ablehnt, um den Encoder simpel
+      zu halten, oder ob automatisches Umschalten auf die 32-Bit-Form
+      sinnvoller ist — Design-Entscheidung bei Phase 7, nicht vorab
+      festgelegt).
+- [ ] 7.2 bugs.md-Abschnitt „Feature: AMQP-1.0-Client" (Architektur +
+      Vergleich zu 0-9-1 + bewusste Lücken, Stil wie bei den vorherigen
+      Features). README.md + docs.html analog zu 0-9-1 ergänzen
+      (`amqp10` in der Messaging-Kategorie neben `amqp091`).
 
 ---
 
 ## Später (bewusst außerhalb v1)
 
-- [ ] **AMQP 1.0** — eigene Roadmap-Phase (Grobskizze, wird erst detailliert
-      geplant sobald 0-9-1 steht):
-  - Typsystem-Codec (Primitives mit variabler Breite, described types,
-    composite types via Descriptor + List-Encoding) — deutlich größer als
-    der 0-9-1-Field-Value-Codec, eigene Phase wert.
-  - Frame/Performative-Codec (`open`, `begin`, `attach`, `transfer`, `flow`,
-    `disposition`, `detach`, `end`, `close` statt Classes/Methods).
-  - SASL-Negotiation (eigenes Framing, `SASL-init`/`outcome` vor dem
-    eigentlichen AMQP-Handshake — anders als der 0-9-1-Weg über
-    `connection.start-ok`).
-  - Connection/Session/Link-State-Machine (Sessions und Links sind in 1.0
-    explizite, langlebige Objekte — kein Äquivalent in 0-9-1).
-  - Transfer/Flow/Disposition-Nachrichtenfluss für Publish/Consume.
-  - **Kein gemeinsamer Code mit `amqp091.tnx`** außer der Transport-Schicht
-    (Conn-Handle-Dial) — eigenes Modul `amqp10.tnx`.
-- [ ] Publisher-Confirms (`confirm.select` + `basic.ack`/`basic.nack` vom
-      Broker), Transaktionen (`tx.select`/`tx.commit`/`tx.rollback`).
-- [ ] Mehrere Channels gleichzeitig (Multiplexing, Nebenläufigkeit) statt des
-      v1-Einzel-Channels.
-- [ ] `exchange.declare` (benannte/typisierte Exchanges: direct/fanout/
-      topic/headers) — v1 nutzt nur den Default-Exchange.
-- [ ] Annotation-getriebene Consumer-API (`@Consumer`/`@OnMessage`-Äquivalent,
-      analog zu `@WebsocketEndpoint`) — Folgetask sobald die
-      Lambda-als-Methodenparam-Lücke geschlossen ist (s. Bugs.md).
-- [ ] Heartbeat-getriebene Connection-Recovery (Auto-Reconnect bei
-      Verbindungsabbruch).
-- [ ] Consumer-Flow-Control jenseits von `basic.qos` (z. B. `basic.cancel`,
-      dynamisches Prefetch-Tuning).
-
----
-
-## Log
-
-- 2026-07-22: Roadmap angelegt (Sondierungsbefund aus Session; noch kein
-  Code). Scope-Entscheidungen: Client (kein Broker), 0-9-1 vor 1.0,
-  sequenziell statt parallel.
-- 2026-07-22: Phase 1 komplett (amqp091.tnx: dial/sendProtocolHeader/
-  checkHandshakeResponse; e2e amqp_phase1_handshake.tnx + stdlib_smoke-
-  Eintrag). Stolperstein: `socketCreateTcp`/`socketConnect` sind
-  Modul-lokale `extern fn` in socket.tnx (anders als die globalen
-  httpConn*-Builtins) — amqp091.tnx muss `tinox.core.socket` selbst
-  importieren, sonst bricht jeder Konsument ohne eigenen Socket-Import mit
-  "undefined value" (im stdlib_smoke-Gate aufgefallen, dort nur amqp091
-  importiert — der e2e-Test hatte es durch einen redundanten eigenen
-  Socket-Import verdeckt). make check grün. Nächster Schritt: Phase 2
-  (Frame-Codec + Field-Value-Encoder).
-- 2026-07-22: Phase 2 komplett (Frame-Codec, AmqpFieldValue091-Enum,
-  AmqpWriter091/AmqpReader091, METHOD-Frame-Hülle; e2e amqp_frame_codec.tnx).
-  Zwei Bugs gefunden+gefixt: (1) `channel` als Feldname kollidiert mit dem
-  Concurrency-Keyword — umbenannt zu `chanId`. (2) ECHTER Compiler-Bug
-  (Bug 66, bugs.md): `fromCharCode(this.octet())` wertete das
-  seiteneffektbehaftete Argument doppelt aus, weil der `"fromCharCode"`-Arm
-  in `codegen.rs` `gen_expr` erneut auf `args[0]` aufrief statt die im
-  generischen Call-Vorlauf bereits berechneten `arg_vals`/`arg_types`
-  wiederzuverwenden — gefixt, Regression-e2e
-  `fromcharcode_side_effect.tnx`; mutmaßlich analoge Bugs in anderen
-  Builtin-Armen (deleteFile/processExit/dirList/regexFindAll/regexSplit)
-  bewusst NICHT mitgefixt (kein Reproduktionsfall, kein riskanter
-  Pauschal-Refactor). (3) Eigener Logikfehler (kein Compiler-Bug):
-  `AmqpReader091::long()` baute 32-Bit-Werte unsigned auf, negative
-  `Int32Val` kamen falsch zurück — `longSigned()` ergänzt. make check grün.
-  Nächster Schritt: Phase 3 (Connection/Channel-Handshake).
-- 2026-07-22: Phase 3 komplett (AmqpConnection091::connect, AmqpChannel091::
-  open, SASL PLAIN, describeAndAckClose-Helper). LIVE gegen RabbitMQ
-  3-management (Docker) verifiziert: Erfolgspfad + zwei Negativpfade
-  (Auth-Fehler, unbekannter vhost) — beide exakt wie erwartet, Broker-Log
-  bestätigt sauberen Verbindungsauf-/-abbau. Automatisierter Loopback-e2e
-  `amqp_connection_negotiation.tnx` über `spawn`/`await` (simulierter
-  Broker läuft parallel zum blockierenden Client-Code). Neuer Bug gefunden
-  (Bug 67, bugs.md, NICHT gefixt): `async fn -> Bool` + `await` verliert
-  den Rückgabetyp (immer Int64) — Workaround im Test (Int64 0/1 statt
-  Bool). make check grün. Docker-Container `tinox-amqp-test` bleibt für
-  Phase 4 (Publish/Consume) laufen. Nächster Schritt: Phase 4.
-- 2026-07-23: Phase 4 komplett (declareQueue, bindQueue, publish, consume,
-  nextMessage, ack, qos; Beispiel amqp_publish_consume.tnx). Live-Fund:
-  `queue.bind` auf den Default-Exchange (`""`) ist laut Spec verboten —
-  RabbitMQ schließt den Channel (access_refused) statt eines Silent-Fails,
-  danach eskalierte ein weiterer Methodenaufruf auf dem toten Channel
-  server-seitig zum Connection-Fehler (die eigentliche Ursache für einen
-  Hänger im ersten Testlauf — lag am Testcode, nicht an amqp091.tnx: der
-  Rückgabewert von bindQueue wurde ignoriert). Live-Vollablauf (Connect →
-  Channel → declareQueue → bindQueue auf `amq.direct` → qos → 2× publish
-  über verschiedene Exchanges → consume → 2× nextMessage → ack → close)
-  danach fehlerfrei durchgelaufen, Beispiel mit 3-Nachrichten-FIFO-Loop
-  ebenfalls live verifiziert. Automatisierter Loopback-e2e
-  `amqp_publish_consume_loopback.tnx` (simulierter Broker via spawn,
-  spiegelt den Body im simulierten basic.deliver zurück). make check grün.
-  Docker-Container `tinox-amqp-test` weiter aktiv. Nächster Schritt: Phase 5
-  (Härtung + Abschluss).
-- 2026-07-23: Phase 5 komplett — AMQP-0-9-1-Client v1 fertig. 5.1: pika
-  (Python) in einem venv installiert, Cross-Check in BEIDE Richtungen live
-  gegen RabbitMQ (Tinox->pika und pika->Tinox, je 3 Nachrichten,
-  Content-Type korrekt) — bestätigt Wire-Kompatibilität mit einer
-  unabhängigen Implementierung. 5.2: leere Bodies + Multi-Frame-Bodies
-  (frame-max künstlich auf 100, 250-Byte-Body -> 3 Frames) in beide
-  Richtungen getestet (`amqp_edge_cases.tnx`); dabei echten Bug gefunden
-  und gefixt — `AmqpWriter091::shortstr()` schrieb die Länge unmaskiert,
-  bei > 255 Byte erzeugte `octet()`s `& 0xFF`-Maskierung einen zu kleinen
-  Längen-Präfix statt eines harten Fehlers (Silent-Garbage-Verstoß); Fix
-  über ein `tooLong`/`hasError()`-Flag, geprüft in
-  declareQueue/bindQueue/consume/publish vor dem Senden
-  (`amqp_shortstr_limits.tnx`, netzwerkfrei, 255-Byte-Grenzfall zusätzlich
-  live verifiziert). Beim Testen einen ZWEITEN, unabhängigen Bug gefunden
-  (Bug 68, bugs.md, NICHT gefixt): lange shortstr-Werte + ein
-  clientseitig verworfener Aufruf im selben spawn/await-Loopback-Test
-  lösten einen nichtdeterministischen Absturz in der Async-Runtime aus —
-  nach Bisektion (Docker-Live-Test, isolierte Writer/writeFrame-Tests,
-  20+ Wiederholungsläufe pro Variante) als reines Async-Runtime-Problem
-  identifiziert, NICHT im AMQP-Code, praktisch unerreichbar im v1-Client.
-  Beide neuen e2e-Tests je 20-25× wiederholt lauffähig verifiziert
-  (Flakiness ausgeschlossen), bevor sie in den Baum aufgenommen wurden.
-  5.3: bugs.md-Abschnitt „Feature: AMQP-0-9-1-Client" (Architektur,
-  Härte-Verhalten, bewusste v1-Lücken, Bug-68-Verweis); README.md-
-  Abschnitt „AMQP-0-9-1 Client" + Feature-/Modul-Tabellen; docs.html
-  `#mod-amqp091`-Sektion (Klassen/Methoden, Beispiel, v1-Lücken) +
-  Sidebar + Card-Grid. `make check` grün. Docker-Container
-  `tinox-amqp-test` kann jetzt gestoppt werden (nicht mehr für laufende
-  Arbeit benötigt). **AMQP-0-9-1-Client-Feature v1 abgeschlossen.**
-  Nächster Schritt (falls gewünscht): AMQP 1.0 (eigene Roadmap-Phase, s.
-  „Später") oder eines der anderen „Später"-Items (TLS-Client,
-  Publisher-Confirms, Multi-Channel, exchange.declare, Annotation-API).
+- [ ] Mehrere Sessions/Links pro Connection (v1: je genau einer).
+- [ ] `sasl-challenge`/`sasl-response`-Mehrrunden-Mechanismen (z. B.
+      SCRAM) — v1 nur PLAIN.
+- [ ] Delivery-State jenseits von `accepted` (`rejected`/`released`/
+      `modified`) auf Sender-seitiger Auswertung.
+- [ ] Transaktionen (`txn-id`, `declare`/`discharge`).
+- [ ] Link-Recovery/Resumption (`unsettled`-Map beim `attach`, für
+      Exactly-Once-Semantik über Reconnects hinweg).
+- [ ] Annotation-getriebene Consumer-API (analog zur WS-`@OnMessage`-
+      Idee) — erst wenn Lambda-als-Methodenparam zuverlässig gedeckt ist
+      (dieselbe Baustelle wie bei 0-9-1 und WS v1 vermerkt).
+- [ ] Heartbeat (`empty` AMQP-Frame als Keepalive) / Auto-Reconnect.
