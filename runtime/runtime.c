@@ -1825,6 +1825,14 @@ static char* tinox_bytes_to_hex(const unsigned char* bytes, size_t n) {
     return hex;
 }
 
+// -1 = ungueltiges Hex-Zeichen (Aufrufer MUSS das pruefen statt still 0 zu lesen).
+static int tinox_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 char* md5Hash(const char* data) {
     unsigned char out[16];
     md5_raw((const unsigned char*)data, strlen(data), out);
@@ -2532,6 +2540,148 @@ void httpConnClose(int64_t conn) {
 
 void httpServerClose(int64_t server_fd) {
     close((int)server_fd);
+}
+
+// ---- AES-256-GCM (Issue 74) ----
+//
+// Hinter demselben TINOX_TLS-Schalter wie der Rest von OpenSSL (kein neuer
+// Build-Dependency) -- ohne das Flag liefern aesEncryptRaw/aesDecryptRaw ""
+// statt eines Linkfehlers, analog zu httpConnFromFdTls & Co.
+//
+// AES-GCM statt CBC: authentifizierte Verschluesselung (Integritaet +
+// Vertraulichkeit in einem), kein Padding-Oracle-Risiko. Schluessel wird
+// per SHA-256 aus dem beliebig langen `key`-String abgeleitet (derselbe
+// Kniff wie in hmacSha256Hash fuer > 64 Byte Keys) -- IMMER ein gueltiger
+// 256-Bit-Schluessel, kein stilles Abschneiden/Auffuellen. Nonce ist 12
+// zufaellige Bytes PRO Aufruf via RAND_bytes (kryptografisch sicher, nicht
+// der einfache PRNG hinter randomInt) -- Nonce-Wiederverwendung unter
+// demselben Schluessel ist bei GCM katastrophal (bricht die Authentizitaet).
+// Rueckgabeformat: hex(nonce[12] || ciphertext[N] || tag[16]) -- Hex, weil
+// Tinox-Strings intern C-Strings sind (strlen-basiert) und rohe
+// Binaerbytes (inkl. moeglicher 0-Bytes) stillschweigend abgeschnitten
+// wuerden; ""-Rueckgabe ist der Fehler-Sentinel (ein echter Erfolg ist bei
+// leerem Klartext bereits 56 Hexzeichen lang, nie leer).
+#ifdef TINOX_TLS
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#endif
+
+char* aesEncryptRaw(const char* data, const char* key) {
+#ifdef TINOX_TLS
+    unsigned char aes_key[32];
+    sha256_raw((const unsigned char*)key, strlen(key), aes_key);
+
+    unsigned char nonce[12];
+    if (RAND_bytes(nonce, sizeof(nonce)) != 1) {
+        fprintf(stderr, "aesEncryptRaw: RAND_bytes fehlgeschlagen\n");
+        return GC_strdup("");
+    }
+
+    size_t data_len = strlen(data);
+    unsigned char* ciphertext = (unsigned char*)GC_malloc(data_len > 0 ? data_len : 1);
+    unsigned char tag[16];
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    int out_len = 0, total_len = 0;
+    int ok = ctx != NULL
+        && EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) == 1
+        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(nonce), NULL) == 1
+        && EVP_EncryptInit_ex(ctx, NULL, NULL, aes_key, nonce) == 1
+        && EVP_EncryptUpdate(ctx, ciphertext, &out_len, (const unsigned char*)data, (int)data_len) == 1;
+    if (ok) {
+        total_len = out_len;
+        ok = EVP_EncryptFinal_ex(ctx, ciphertext + total_len, &out_len) == 1;
+        total_len += out_len;
+    }
+    if (ok) {
+        ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, sizeof(tag), tag) == 1;
+    }
+    if (ctx) EVP_CIPHER_CTX_free(ctx);
+    if (!ok) {
+        ERR_print_errors_fp(stderr);
+        return GC_strdup("");
+    }
+
+    size_t out_bytes_len = sizeof(nonce) + (size_t)total_len + sizeof(tag);
+    unsigned char* out_bytes = (unsigned char*)GC_malloc(out_bytes_len);
+    memcpy(out_bytes, nonce, sizeof(nonce));
+    memcpy(out_bytes + sizeof(nonce), ciphertext, (size_t)total_len);
+    memcpy(out_bytes + sizeof(nonce) + (size_t)total_len, tag, sizeof(tag));
+    return tinox_bytes_to_hex(out_bytes, out_bytes_len);
+#else
+    (void)data; (void)key;
+    fprintf(stderr, "aesEncryptRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    return GC_strdup("");
+#endif
+}
+
+char* aesDecryptRaw(const char* hexInput, const char* key) {
+#ifdef TINOX_TLS
+    size_t hex_len = strlen(hexInput);
+    // Minimum: 12 Byte Nonce + 16 Byte Tag, 0 Byte Ciphertext erlaubt (leerer
+    // Klartext) -- als Hex also mindestens (12+16)*2 = 56 Zeichen.
+    if (hex_len < 56 || (hex_len % 2) != 0) {
+        fprintf(stderr, "aesDecryptRaw: Eingabe zu kurz oder ungueltige Hex-Laenge\n");
+        return GC_strdup("");
+    }
+    size_t raw_len = hex_len / 2;
+    unsigned char* raw = (unsigned char*)GC_malloc(raw_len);
+    for (size_t i = 0; i < raw_len; i++) {
+        int hi = tinox_hex_nibble(hexInput[i*2]);
+        int lo = tinox_hex_nibble(hexInput[i*2 + 1]);
+        if (hi < 0 || lo < 0) {
+            fprintf(stderr, "aesDecryptRaw: ungueltiges Hex-Zeichen\n");
+            return GC_strdup("");
+        }
+        raw[i] = (unsigned char)((hi << 4) | lo);
+    }
+
+    const unsigned char* nonce = raw;
+    size_t ct_len = raw_len - 12 - 16;
+    const unsigned char* ciphertext = raw + 12;
+    unsigned char* tag = raw + 12 + ct_len;
+
+    unsigned char aes_key[32];
+    sha256_raw((const unsigned char*)key, strlen(key), aes_key);
+
+    // +2 statt +1: Platz fuer den Erfolgs-Marker (s. u.) VOR dem Klartext.
+    unsigned char* plaintext = (unsigned char*)GC_malloc(ct_len + 2);
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    int out_len = 0, total_len = 0;
+    int ok = ctx != NULL
+        && EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) == 1
+        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL) == 1
+        && EVP_DecryptInit_ex(ctx, NULL, NULL, aes_key, nonce) == 1
+        && EVP_DecryptUpdate(ctx, plaintext + 1, &out_len, ciphertext, (int)ct_len) == 1;
+    if (ok) {
+        total_len = out_len;
+        ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, tag) == 1;
+    }
+    if (ok) {
+        // Rueckgabe <= 0 heisst: Authentifizierung fehlgeschlagen (falscher
+        // Schluessel ODER manipulierter/beschaedigter Ciphertext) -- harter
+        // Fehler statt stillschweigend falscher Klartext (kein Silent-Garbage).
+        ok = EVP_DecryptFinal_ex(ctx, plaintext + 1 + total_len, &out_len) == 1;
+        total_len += out_len;
+    }
+    if (ctx) EVP_CIPHER_CTX_free(ctx);
+    if (!ok) {
+        fprintf(stderr, "aesDecryptRaw: Authentifizierung fehlgeschlagen (falscher Schluessel oder manipulierte Daten)\n");
+        return GC_strdup("");
+    }
+    // Erfolgs-Marker "1" vorangestellt: ein leerer Klartext (total_len==0,
+    // z.B. Entschluesselung von Crypto::aesEncrypt("", key)) waere sonst als
+    // Rueckgabe "" nicht vom Fehler-Sentinel unterscheidbar -- der Aufrufer
+    // (Crypto::aesDecrypt) prueft result.len()==0 auf Fehler, muesste also
+    // sonst einen gueltigen leeren Klartext faelschlich als Fehler werten.
+    plaintext[0] = '1';
+    plaintext[1 + total_len] = '\0';
+    return (char*)plaintext;
+#else
+    (void)hexInput; (void)key;
+    fprintf(stderr, "aesDecryptRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    return GC_strdup("");
+#endif
 }
 
 // ---- HttpServer route-based API ----

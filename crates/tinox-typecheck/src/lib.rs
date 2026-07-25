@@ -948,9 +948,25 @@ impl TypeChecker {
         });
         // Crypto / hashing
         // wsAcceptKey: Sec-WebSocket-Accept aus dem Client-Key (sha1+base64 in C)
-        for name in &["sha256Hash", "md5Hash", "sha1Hash", "wsAcceptKey", "hmacSha256Hash", "aesEncrypt", "aesDecrypt", "base64Encode", "base64Decode", "base64EncodeChar"] {
+        for name in &["sha256Hash", "md5Hash", "sha1Hash", "wsAcceptKey", "hmacSha256Hash", "base64Encode", "base64Decode", "base64EncodeChar"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("data".to_string(), ValueType::String)],
+                return_type: ValueType::String,
+            });
+        }
+        // AES-256-GCM (Issue 74). Zwei Argumente (Daten + Schlüssel), deshalb
+        // eigene Registrierung statt der Einzel-Param-Sammelschleife oben.
+        // "Raw"-Suffix, weil Crypto::aesEncrypt/aesDecrypt (.tnx) die
+        // eigentliche öffentliche API sind und diese bloßen Extern-Funktionen
+        // aufrufen — analog zu Crypto::md5 -> md5Hash, aber mit anderem Namen
+        // als die Klassenmethode, um eine rekursive Namenskollision zu
+        // vermeiden.
+        for name in &["aesEncryptRaw", "aesDecryptRaw"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![
+                    ("data".to_string(), ValueType::String),
+                    ("key".to_string(), ValueType::String),
+                ],
                 return_type: ValueType::String,
             });
         }
@@ -3015,7 +3031,7 @@ impl TypeChecker {
                     || matches!(name.as_str(),
                         "now" | "sleep" | "fromCharCode" | "charCodeAt"
                         | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
-                        | "aesEncrypt" | "aesDecrypt"
+                        | "aesEncryptRaw" | "aesDecryptRaw"
                         | "base64Encode" | "base64Decode" | "base64EncodeChar"
                         | "gcCollect" | "memoryUsage" | "printStackTrace" | "processExit"
                         | "sinf" | "cosf" | "tanf" | "logf" | "log10f" | "sqrtf" | "expf" | "powf"

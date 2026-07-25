@@ -28,18 +28,38 @@ namespace tinox.core.crypto
             return hmacSha256Hash(data, key);
         }
 
-        // AES ist nicht implementiert. Ein Platzhalter (z. B. XOR-Stream)
-        // waere hier gefaehrlich: der Methodenname verspricht echte
-        // Verschluesselung, ein schwacher Ersatz wuerde das stillschweigend
-        // untergraben. Lieber laut scheitern als falsche Sicherheit bieten.
+        // AES-256-GCM (authentifizierte Verschluesselung). key ist ein
+        // beliebig langer String, wird intern per SHA-256 zu einem echten
+        // 256-Bit-Schluessel abgeleitet. Rueckgabe ist Hex-kodiert (Nonce +
+        // Ciphertext + Auth-Tag) — direkt an aesDecrypt uebergebbar.
+        // Wirft bei jedem Fehler (Runtime ohne OpenSSL gebaut) statt eines
+        // stillen leeren/falschen Ergebnisses.
         fn aesEncrypt(data: String, key: String) -> String
         {
-            throw "Crypto::aesEncrypt ist nicht implementiert";
+            let result: String = aesEncryptRaw(data, key);
+            if result.len() == 0
+            {
+                throw "Crypto::aesEncrypt fehlgeschlagen (Runtime ohne TLS/OpenSSL gebaut?)";
+            }
+            return result;
         }
 
+        // Wirft bei falschem Schluessel oder manipulierten/beschaedigten
+        // Daten (GCM-Authentifizierung schlaegt fehl) statt stillschweigend
+        // falschen Klartext zurueckzugeben.
+        //
+        // aesDecryptRaw stellt einem echten Ergebnis ein "1" voran (auch bei
+        // leerem Klartext, z. B. aesDecrypt(aesEncrypt("", key), key)) —
+        // sonst waere ein legitim LEERER Klartext von "" als Fehler-Sentinel
+        // nicht unterscheidbar.
         fn aesDecrypt(data: String, key: String) -> String
         {
-            throw "Crypto::aesDecrypt ist nicht implementiert";
+            let result: String = aesDecryptRaw(data, key);
+            if result.len() == 0
+            {
+                throw "Crypto::aesDecrypt fehlgeschlagen (falscher Schluessel, manipulierte Daten, oder Runtime ohne TLS/OpenSSL gebaut)";
+            }
+            return result.substring(1, result.len());
         }
 
         fn generateKey(length: Int64) -> String
