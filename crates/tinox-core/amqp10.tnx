@@ -1529,24 +1529,89 @@ namespace tinox.core.amqp10
         }
 
         /*
+         * Gemeinsamer Kern für ack()/reject()/release()/modify() (Issue
+         * 78): sendet `disposition` (0x15) für GENAU eine Delivery mit dem
+         * gegebenen State. role/first/last/settled sind für alle vier
+         * Outcomes identisch, nur das `state`-Feld selbst unterscheidet
+         * sich (accepted/rejected/released/modified, §3.4).
+         */
+        fn sendDisposition(deliveryId: Int64, state: Amqp10Value) -> Nothing
+        {
+            var dispFields: List<Amqp10Value> = [
+                Amqp10Value::BoolVal(true),   // role: true=receiver
+                Amqp10Value::UIntVal(deliveryId), // first
+                Amqp10Value::NullVal,         // last (nur diese eine Delivery)
+                Amqp10Value::BoolVal(true),   // settled
+                state
+            ];
+            let dispBody = Amqp10::encodePerformative(0x15, dispFields);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, dispBody);
+        }
+
+        /*
          * Bestätigt eine per nextMessage() erhaltene Nachricht (Receiver-
-         * Rolle) — sendet `disposition` mit `state=accepted`, `settled=
-         * true`. AMQP-1.0-Äquivalent zu 0-9-1s `basic.ack`, hier mit
-         * granularerem Delivery-State-Modell (v1 nutzt nur `accepted`,
-         * s. tasklist.md „Später" für rejected/released/modified).
+         * Rolle) — sendet `disposition` mit `state=accepted`. AMQP-1.0-
+         * Äquivalent zu 0-9-1s `basic.ack`.
          */
         fn ack(deliveryId: Int64) -> Nothing
         {
             let acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
-            var dispFields: List<Amqp10Value> = [
-                Amqp10Value::BoolVal(true),                    // role: true=receiver
-                Amqp10Value::UIntVal(deliveryId),              // first
-                Amqp10Value::NullVal,                          // last (nur diese eine Delivery)
-                Amqp10Value::BoolVal(true),                    // settled
-                Amqp10Value::DescribedVal(acceptedDesc)        // state: accepted
-            ];
-            let dispBody = Amqp10::encodePerformative(0x15, dispFields);
-            Amqp10::writeFrame(this.conn, 0, this.chanId, dispBody);
+            this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(acceptedDesc));
+        }
+
+        /*
+         * Lehnt eine Nachricht endgültig ab (§3.4.3 `rejected`, Issue 78)
+         * — der Sender darf sie NICHT erneut zustellen (anders als
+         * release()). `condition`/`description` sind optional (leerer
+         * String = kein error-Feld, Listenfeld darf am Ende weggelassen
+         * werden); condition ist ein AMQP-Error-Condition-Symbol, z. B.
+         * "amqp:decode-error" — v1 validiert den String nicht gegen die
+         * Spec-Tabelle, reicht ihn nur durch (analog zu 0-9-1s
+         * unvalidierten Reply-Text-Feldern).
+         */
+        fn reject(deliveryId: Int64, condition: String, description: String) -> Nothing
+        {
+            var rejectedFields: List<Amqp10Value> = [];
+            if condition.len() > 0 {
+                let errorDesc = Amqp10Described { descriptor: 0x1d, value: Amqp10Value::ListVal([
+                    Amqp10Value::SymbolVal(condition),
+                    Amqp10Value::StrVal(description)
+                ]) };
+                rejectedFields = [Amqp10Value::DescribedVal(errorDesc)];
+            }
+            let rejectedDesc = Amqp10Described { descriptor: 0x25, value: Amqp10Value::ListVal(rejectedFields) };
+            this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(rejectedDesc));
+        }
+
+        /*
+         * Gibt eine Nachricht unbearbeitet zurück (§3.4.4 `released`,
+         * Issue 78) — im Gegensatz zu reject() KEINE endgültige Ablehnung,
+         * der Broker darf/soll sie erneut zustellen (z. B. an einen
+         * anderen Consumer). Keine Felder (leere Liste, spec-konform).
+         */
+        fn release(deliveryId: Int64) -> Nothing
+        {
+            let releasedDesc = Amqp10Described { descriptor: 0x26, value: Amqp10Value::ListVal([]) };
+            this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(releasedDesc));
+        }
+
+        /*
+         * Signalisiert, dass die Zustellung fehlgeschlagen ist UND/ODER an
+         * dieser Stelle nicht zustellbar war (§3.4.5 `modified`, Issue 78)
+         * — feingranularer als release(): deliveryFailed erhöht (falls vom
+         * Sender getrackt) den delivery-count, undeliverableHere weist den
+         * Sender an, es diesem Receiver/Link nicht nochmal anzubieten.
+         * message-annotations (drittes, optionales Listenfeld) ist v1
+         * bewusst nicht unterstützt (analog zu anderen v1-Auslassungen in
+         * diesem Modul, z. B. amqp-value/data-only Body-Sections).
+         */
+        fn modify(deliveryId: Int64, deliveryFailed: Bool, undeliverableHere: Bool) -> Nothing
+        {
+            let modifiedDesc = Amqp10Described { descriptor: 0x27, value: Amqp10Value::ListVal([
+                Amqp10Value::BoolVal(deliveryFailed),
+                Amqp10Value::BoolVal(undeliverableHere)
+            ]) };
+            this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(modifiedDesc));
         }
     }
 }
