@@ -1364,9 +1364,9 @@ namespace tinox.core.amqp10
          * Link-Objekte (die halten eigene conn/chanId-Werte, die nach
          * einem Reconnect veraltet sind) — der Aufrufer MUSS Session/Link
          * nach einem reconnect() explizit neu aufbauen (Amqp10Session::
-         * begin(neueConn), Amqp10Link::attach(...)). Fuer echtes
-         * Link-Recovery ueber Reconnects hinweg (unsettled-Map beim
-         * attach) s. das separate, ebenfalls offene "Später"-Issue.
+         * begin(neueConn), Amqp10Link::attachWithRecovery(...) statt
+         * attach(), um die vor dem Abbruch offenen delivery-tags zu
+         * melden — s. Issue 80, Amqp10Link.recoveredUnsettledTags).
          */
         fn reconnect() -> Amqp10Connection
         {
@@ -1507,6 +1507,11 @@ namespace tinox.core.amqp10
         var linkCredit: Int64;
         var deliveryCount: Int64;
         var errorMessage: String;
+        // Issue 80: delivery-tags, die der BROKER in attach-oks eigenem
+        // unsettled-Feld als (aus SEINER Sicht) noch unsettled zurueck-
+        // meldet — nur bei attachWithRecovery() befuellt (s. dort),
+        // sonst immer leer.
+        var recoveredUnsettledTags: List<List<Int64>>;
 
         /*
          * role: false = Sender (target trägt die Zieladresse, z. B. eine
@@ -1519,6 +1524,39 @@ namespace tinox.core.amqp10
          */
         fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -> Amqp10Link
         {
+            return Amqp10Link::attachCore(session, name, role, address, []);
+        }
+
+        /*
+         * Link-Recovery/Resumption (Issue 80, §2.6.12/3.5.x der Spec):
+         * wie attach(), aber meldet dem Broker im `unsettled`-Feld eine
+         * Liste von delivery-tags, die DIESER Client aus einer fruehe-
+         * ren Session (vor einem Detach/Reconnect) noch als unsettled
+         * in Erinnerung hat — der Broker vergleicht das mit seiner
+         * eigenen Sicht und liefert in DER attach-ANTWORT sein eigenes
+         * unsettled-Feld zurueck (in this.recoveredUnsettledTags), damit
+         * der Aufrufer erkennen kann, welche Deliveries tatsaechlich
+         * noch offen sind.
+         *
+         * v1-Grenze (bewusst, analog zu Amqp10Connection::reconnect()s
+         * Grenze — Baustein statt automatischer Magie): dieser Client
+         * trackt SELBST noch keine unsettled Deliveries (publish() sendet
+         * immer settled=true, ack()/reject()/... settlen sofort) — WELCHE
+         * Tags als "prior unsettled" gemeldet werden, ist Sache des
+         * Aufrufers (z. B. eigene Buchfuehrung ueber zuletzt gesendete/
+         * empfangene, noch nicht bestaetigte delivery-tags). Der
+         * gemeldete State pro Tag ist immer NullVal ("unbekannt, bitte
+         * Broker-Sicht liefern") statt eines konkreten Delivery-State —
+         * volle Exactly-Once-Reue mit Redelivery-Entscheidung pro Tag
+         * ist ein separates, groesseres Feature.
+         */
+        fn attachWithRecovery(session: Amqp10Session, name: String, role: Bool, address: String, priorUnsettledTags: List<List<Int64>>) -> Amqp10Link
+        {
+            return Amqp10Link::attachCore(session, name, role, address, priorUnsettledTags);
+        }
+
+        fn attachCore(session: Amqp10Session, name: String, role: Bool, address: String, priorUnsettledTags: List<List<Int64>>) -> Amqp10Link
+        {
             let handle = session.nextLinkHandle;
             session.nextLinkHandle = session.nextLinkHandle + 1;
 
@@ -1530,15 +1568,27 @@ namespace tinox.core.amqp10
                 targetVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
             }
 
+            // unsettled (Feld 7): flache Map delivery-tag(binary) -> state.
+            // v1 meldet den State jedes Tags immer als NullVal (s.
+            // attachWithRecovery()-Kommentar) — leere priorUnsettledTags
+            // ergibt weiterhin NullVal statt einer leeren Map (identisch
+            // zum bisherigen attach()-Verhalten, kein Verhaltensbruch).
+            var unsettledVal: Amqp10Value = Amqp10Value::NullVal;
+            if priorUnsettledTags.len() > 0 {
+                var pairs: List<Amqp10Value> = [];
+                for i in 0..priorUnsettledTags.len() {
+                    pairs.push(Amqp10Value::BinaryVal(priorUnsettledTags[i]));
+                    pairs.push(Amqp10Value::NullVal);
+                }
+                unsettledVal = Amqp10Value::MapVal(pairs);
+            }
+
             // initial-delivery-count (Feld 10) ist per Spec PFLICHT, wenn
             // role=Sender ("MUST be set if the role is sender") — RabbitMQ
             // 4.x' rabbit_amqp_session:handle_attach pattern-matched das
             // Feld hart auf einen echten uint-Wert und crasht mit
             // function_clause, wenn es fehlt (live gegen echten Broker
-            // gefunden, s. bugs.md). Braucht deshalb unsettled(8)/
-            // incomplete-unsettled(9) als Platzhalter davor, weil
-            // Listenfelder nur am ENDE weggelassen werden dürfen, nicht in
-            // der Mitte.
+            // gefunden, s. bugs.md).
             var attachFields: List<Amqp10Value> = [
                 Amqp10Value::StrVal(name),
                 Amqp10Value::UIntVal(handle),
@@ -1547,7 +1597,7 @@ namespace tinox.core.amqp10
                 Amqp10Value::UByteVal(0),  // rcv-settle-mode: first (Spec-Default, explizit gesetzt)
                 sourceVal,
                 targetVal,
-                Amqp10Value::NullVal,      // unsettled (v1 ungenutzt)
+                unsettledVal,
                 Amqp10Value::BoolVal(false), // incomplete-unsettled: false (Spec-Default, explizit gesetzt)
                 Amqp10Value::UIntVal(0)    // initial-delivery-count (nur fuer role=Sender relevant, sonst ignoriert)
             ];
@@ -1556,13 +1606,33 @@ namespace tinox.core.amqp10
 
             let f = Amqp10::readFrame(session.conn);
             if f.frameType != 0 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x12 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString() };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "" };
+            // Broker-eigenes unsettled-Feld (Position 7) auswerten — nur
+            // die Tags selbst (nicht deren State-Details, s. Klassen-
+            // kommentar), fuer die Praxis reicht das, um zu wissen WELCHE
+            // Deliveries der Broker noch als offen sieht.
+            var recoveredTags: List<List<Int64>> = [];
+            if p.fields.len() > 7 {
+                match p.fields[7] {
+                    MapVal(pairs) => {
+                        var i: Int64 = 0;
+                        while i + 1 < pairs.len() {
+                            match pairs[i] {
+                                BinaryVal(tag) => { recoveredTags.push(tag); }
+                                _ => {}
+                            }
+                            i = i + 2;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: recoveredTags };
         }
 
         /*
