@@ -17,6 +17,11 @@ pub struct Case {
     pub args: Vec<String>,
     pub db_sql: Vec<String>,
     pub test_mode: bool,
+    /// `// tls-fixture` — copies tests/fixtures/tls/selfsigned_{cert,key}.pem
+    /// into the isolated workdir as tls_cert.pem/tls_key.pem before running,
+    /// so TLS e2e tests (HTTPS/WSS/AMQPS) can reference them by a fixed
+    /// relative path instead of a workdir-relative-unresolvable repo path.
+    pub tls_fixture: bool,
 }
 
 #[allow(dead_code)] // nur von e2e.rs genutzt — andere Test-Binaries teilen sich dieses Modul
@@ -36,6 +41,7 @@ pub fn parse_case(path: &Path) -> Case {
     let mut args = Vec::new();
     let mut db_sql = Vec::new();
     let mut test_mode = false;
+    let mut tls_fixture = false;
     for line in src.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("// expect-exit:") {
@@ -50,9 +56,11 @@ pub fn parse_case(path: &Path) -> Case {
             db_sql.push(rest.trim().to_string());
         } else if t == "// mode: test" {
             test_mode = true;
+        } else if t == "// tls-fixture" {
+            tls_fixture = true;
         }
     }
-    Case { path: path.to_path_buf(), name, expect_lines, expect_contains, expect_exit, args, db_sql, test_mode }
+    Case { path: path.to_path_buf(), name, expect_lines, expect_contains, expect_exit, args, db_sql, test_mode, tls_fixture }
 }
 
 /// Wait with timeout; kill on expiry. Returns None on timeout.
@@ -109,6 +117,16 @@ pub fn run_case(case: &Case) -> Result<(), String> {
     ));
     let _ = fs::remove_dir_all(&workdir);
     fs::create_dir_all(&workdir).map_err(|e| format!("mkdir workdir: {e}"))?;
+
+    // Optional TLS fixture: a fixed self-signed cert/key so HTTPS/WSS/AMQPS
+    // e2e tests don't need to generate one at test time.
+    if case.tls_fixture {
+        let fixtures = repo_root().join("tests/fixtures/tls");
+        fs::copy(fixtures.join("selfsigned_cert.pem"), workdir.join("tls_cert.pem"))
+            .map_err(|e| format!("copy tls cert fixture: {e}"))?;
+        fs::copy(fixtures.join("selfsigned_key.pem"), workdir.join("tls_key.pem"))
+            .map_err(|e| format!("copy tls key fixture: {e}"))?;
+    }
 
     // Optional sqlite fixture
     if !case.db_sql.is_empty() {
