@@ -214,6 +214,14 @@ pub struct CodeGen {
     enum_variant_payloads: HashMap<String, Vec<String>>,
     /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
     known_enum_types: HashSet<String>,
+    /// variant name → owning enum name, but only while the name is UNIQUE across
+    /// all enums seen so far; a second differently-owned sighting flips the entry
+    /// to `None` (ambiguous). Lets `variant_discriminator_key` scope the
+    /// discriminator hash to `Enum::Variant` for the common case (distinct variant
+    /// names) even from unqualified match patterns, without needing scrutinee type
+    /// resolution — only genuinely ambiguous names (same variant name declared by
+    /// two+ enums) fall back to scrutinee-type resolution / the old global scheme.
+    variant_owner: HashMap<String, Option<String>>,
     /// Annotation processing: functions annotated @inline
     inline_functions: HashSet<String>,
     /// Annotation processing: (class_name, method_name) pairs for methods annotated @inline
@@ -311,6 +319,7 @@ impl CodeGen {
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
+            variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
             route_entries: Vec::new(),
@@ -668,6 +677,38 @@ impl CodeGen {
             _ => {
                 self.enum_variant_payloads.insert(name.to_string(), kinds);
             }
+        }
+    }
+
+    /// Track which enum owns a variant name, flipping to `None` (ambiguous) the
+    /// moment a second, differently-named enum declares the same variant name.
+    fn register_variant_owner(&mut self, enum_name: &str, variant_name: &str) {
+        match self.variant_owner.get(variant_name) {
+            None => {
+                self.variant_owner
+                    .insert(variant_name.to_string(), Some(enum_name.to_string()));
+            }
+            Some(Some(existing)) if existing != enum_name => {
+                self.variant_owner.insert(variant_name.to_string(), None);
+            }
+            _ => {}
+        }
+    }
+
+    /// Discriminator hash-input for a variant: `Enum::Variant` whenever the owning
+    /// enum can be determined (qualified pattern/construction site, or an
+    /// unqualified reference to a variant name that's unique across the whole
+    /// program), otherwise falls back to the bare variant name — the pre-#72
+    /// global scheme — for the rare case of a genuinely ambiguous unqualified
+    /// name (same variant name declared by 2+ enums) with no resolvable scrutinee
+    /// type (e.g. matched through an `Any`-typed value). See `variant_owner`.
+    fn variant_discriminator_key(&self, enum_name_hint: Option<&str>, variant: &str) -> String {
+        if let Some(en) = enum_name_hint {
+            return format!("{}::{}", en, variant);
+        }
+        match self.variant_owner.get(variant) {
+            Some(Some(owner)) => format!("{}::{}", owner, variant),
+            _ => variant.to_string(),
         }
     }
 
@@ -1141,6 +1182,7 @@ impl CodeGen {
                     self.known_enum_types.insert(e.name.clone());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
+                        self.register_variant_owner(&e.name, &variant.name);
                         self.register_variant_payloads(
                             &variant.name,
                             variant.args.iter().map(Self::payload_kind).collect(),
@@ -1153,6 +1195,7 @@ impl CodeGen {
                             self.known_enum_types.insert(e.name.clone());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
+                                self.register_variant_owner(&e.name, &variant.name);
                                 self.register_variant_payloads(
                             &variant.name,
                             variant.args.iter().map(Self::payload_kind).collect(),
@@ -1389,6 +1432,7 @@ impl CodeGen {
                     self.known_enum_types.insert(e.name.clone());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
+                        self.register_variant_owner(&e.name, &variant.name);
                         self.register_variant_payloads(
                             &variant.name,
                             variant.args.iter().map(Self::payload_kind).collect(),
@@ -1405,6 +1449,7 @@ impl CodeGen {
                             self.known_enum_types.insert(e.name.clone());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
+                                self.register_variant_owner(&e.name, &variant.name);
                                 self.register_variant_payloads(
                             &variant.name,
                             variant.args.iter().map(Self::payload_kind).collect(),
@@ -7370,7 +7415,8 @@ impl CodeGen {
 
                 if args.is_empty() {
                     // Simple enum variant without arguments
-                    let discriminator = Self::enum_discriminator_noarg(variant);
+                    let disc_key = self.variant_discriminator_key(Some(enum_name.as_str()), variant);
+                    let discriminator = Self::enum_discriminator_noarg(&disc_key);
                     Ok((format!("{}", discriminator), "i64".to_string()))
                 } else {
                     // Enum variant with arguments
@@ -7387,7 +7433,8 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
 
                     // Store discriminator at index 0
-                    let discriminator = Self::enum_discriminator(variant);
+                    let disc_key = self.variant_discriminator_key(Some(enum_name.as_str()), variant);
+                    let discriminator = Self::enum_discriminator(&disc_key);
                     let disc_ptr = self.temp();
                     writeln!(
                         &mut self.ir,
@@ -7703,6 +7750,17 @@ impl CodeGen {
             }
             ExprKind::Match { expr, cases } => {
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
+                // Statically known enum type of the scrutinee, if the checker could
+                // resolve it (see `variant_discriminator_key`) — lets unqualified
+                // variant patterns (`Variant(x)`, bare `North`) scope their
+                // discriminator to the right enum even for an ambiguous variant name.
+                let scrutinee_enum: Option<String> = self.expr_value_types.get(&expr.id).and_then(|vt| {
+                    if let tinox_typecheck::ValueType::Named(n, _) = vt {
+                        Some(n.clone())
+                    } else {
+                        None
+                    }
+                });
                 let merge_bb = self.new_bb("match_end");
                 // Pre-allocate a result slot so each arm can store its value into it.
                 // This ensures the result dominates the merge block regardless of which arm ran.
@@ -7757,7 +7815,8 @@ impl CodeGen {
                             // Bare enum variant name (e.g. `North` instead of `Dir::North`) —
                             // always a no-arg variant (has-arg variants require `Variant(x)`
                             // syntax and hit Pattern::EnumVariant below instead).
-                            let discriminator = Self::enum_discriminator_noarg(name);
+                            let disc_key = self.variant_discriminator_key(scrutinee_enum.as_deref(), name);
+                            let discriminator = Self::enum_discriminator_noarg(&disc_key);
                             let val_i64 = if val_ty.ends_with('*') || val_ty == "ptr" {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
@@ -7827,13 +7886,22 @@ impl CodeGen {
                             // puts the name in `enum_name` and leaves `variant` empty.
                             // When written as `Enum::Variant(args)`, the name is in `variant`.
                             let disc_name = if variant.is_empty() { enum_name } else { variant };
+                            // Qualified (`Enum::Variant`) always carries the real enum name in
+                            // `enum_name`; unqualified (`Variant(x)`) needs the scrutinee's
+                            // statically resolved type instead (see `variant_discriminator_key`).
+                            let enum_name_hint: Option<&str> = if variant.is_empty() {
+                                scrutinee_enum.as_deref()
+                            } else {
+                                Some(enum_name.as_str())
+                            };
+                            let disc_key = self.variant_discriminator_key(enum_name_hint, disc_name);
                             // args here are the PATTERN's own bindings (`Variant(x, y)`), which
                             // mirror the variant's declared arity — has-args vs. no-args must use
                             // the matching discriminator scheme (s. enum_discriminator_noarg).
                             let discriminator = if args.is_empty() {
-                                Self::enum_discriminator_noarg(disc_name)
+                                Self::enum_discriminator_noarg(&disc_key)
                             } else {
-                                Self::enum_discriminator(disc_name)
+                                Self::enum_discriminator(&disc_key)
                             };
 
                             // Normalize the match subject to i64 so all arms use the same
