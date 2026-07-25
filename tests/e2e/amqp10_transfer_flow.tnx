@@ -142,6 +142,15 @@ async fn fakeBroker(srv: Int64) -> Int64 {
     let fAttach2 = Amqp10::readFrame(sconn);
     let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
     var okAttach2: Bool = pAttach2.descriptor == 0x12;
+    // Issue 76: der Client vergibt Link-Handles jetzt fortlaufend statt
+    // immer 0 (pub-link=0, sub-link=1 hier) — das im Reply-Transfer
+    // hartkodierte handle=0 waere jetzt ein echter Mismatch gegen
+    // Amqp10Link::nextMessage()s neue Handle-Pruefung. Echtes Handle aus
+    // dem Attach uebernehmen statt es zu erraten.
+    var subLinkHandle: Int64 = 0;
+    if pAttach2.fields.len() > 1 {
+        match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
+    }
     Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
 
     // --- flow vom Client (Credit-Vergabe) lesen ---
@@ -150,7 +159,7 @@ async fn fakeBroker(srv: Int64) -> Int64 {
     // --- Broker "published" eine kleine Antwort-Nachricht an den Client ---
     let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain"); // "ABC"
     var replyTransferFields: List<Amqp10Value> = [
-        Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(0),
+        Amqp10Value::UIntVal(subLinkHandle), Amqp10Value::UIntVal(0),
         Amqp10Value::BinaryVal([1]), Amqp10Value::UIntVal(0),
         Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
     ];

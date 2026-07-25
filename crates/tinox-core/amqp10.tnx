@@ -952,6 +952,15 @@ namespace tinox.core.amqp10
         var idleTimeoutMs: Int64;
         var heartbeatRunning: Bool;
         var heartbeatHandle: Int64;
+        // Issue 76: naechste zu vergebende Session-Kanalnummer. Start bei 1
+        // (Kanal 0 ist fuer die Connection selbst reserviert, open/close
+        // laufen dort — s. writeFrame(conn, 0, 0, ...) ueberall in dieser
+        // Klasse). Jeder Amqp10Session::begin(connection)-Aufruf liest UND
+        // erhoeht das hier (Connection-Instanzen sind Heap-Objekte, die
+        // Mutation ist fuer den Aufrufer sichtbar) — mehrere Sessions auf
+        // derselben Connection bekommen dadurch garantiert unterschiedliche
+        // Kanaele statt alle denselben festen Kanal 1 zu teilen (v1 vorher).
+        var nextChannelId: Int64;
 
         /*
          * Baut eine komplette AMQP-1.0-Verbindung auf: dial + SASL-Header +
@@ -970,26 +979,26 @@ namespace tinox.core.amqp10
         {
             let conn = Amqp10::dial(host, port);
             if conn <= 0 {
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
 
             // --- SASL-Header + Negotiation ---
             Amqp10::sendSaslProtocolHeader(conn);
             if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0]) {
                 httpConnClose(conn);
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL-Protokoll-Header-Handshake fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL-Protokoll-Header-Handshake fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             let sasl = Amqp10::negotiateSasl(conn, user, pass);
             if !sasl.ok {
                 httpConnClose(conn);
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
 
             // --- AMQP-Header ---
             Amqp10::sendAmqpProtocolHeader(conn);
             if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0]) {
                 httpConnClose(conn);
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP-Protokoll-Header-Handshake fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP-Protokoll-Header-Handshake fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
 
             // --- open senden: container-id, hostname(null), max-frame-size/
@@ -1008,12 +1017,12 @@ namespace tinox.core.amqp10
             let f = Amqp10::readFrame(conn);
             if f.frameType != 0 {
                 httpConnClose(conn);
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x10 {
                 httpConnClose(conn);
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete open (0x10), bekam descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1 };
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "erwartete open (0x10), bekam descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             // Feldpositionen: container-id(0), hostname(1), max-frame-size(2),
             // channel-max(3), idle-time-out(4) — trailing Felder duerfen
@@ -1031,7 +1040,7 @@ namespace tinox.core.amqp10
             if p.fields.len() > 4 {
                 match p.fields[4] { UIntVal(n) => { idleTimeoutMs = n; } _ => {} }
             }
-            return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1 };
+            return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
         }
 
         /*
@@ -1138,12 +1147,28 @@ namespace tinox.core.amqp10
     /*
      * Eine Session auf einer Amqp10Connection (§2.7.3, entspricht 0-9-1s
      * Channel, aber mit fenster-basierter Flow-Control statt reinem
-     * "offen"-Status). v1: fester Kanal 1 pro Verbindung (kein Pool,
-     * analog zur 0-9-1-v1-Entscheidung), `incoming-window`/
-     * `outgoing-window` großzügig fest (kein echtes Fenster-Tracking in
-     * v1 — Phase 6 (`flow`) fügt das für den eigentlichen
-     * Nachrichtenfluss hinzu, `begin` selbst braucht nur plausible
-     * Startwerte).
+     * "offen"-Status). `incoming-window`/`outgoing-window` großzügig fest
+     * (kein echtes Fenster-Tracking in v1 — Phase 6 (`flow`) fügt das für
+     * den eigentlichen Nachrichtenfluss hinzu, `begin` selbst braucht nur
+     * plausible Startwerte).
+     *
+     * Issue 76: mehrere Sessions pro Connection sind jetzt strukturell
+     * moeglich (jede begin() bekommt einen eigenen, garantiert
+     * eindeutigen Kanal aus Amqp10Connection.nextChannelId statt des
+     * frueher fest verdrahteten Kanals 1) — v1-Grenze bleibt aber
+     * bestehen: es gibt KEINEN echten Frame-Dispatcher auf Connection-
+     * Ebene (s. Amqp10Link::awaitFlow()s Kommentar zur selben Lücke beim
+     * Single-Link-Fall). readFrame()/readFrameSkipHeartbeats() lesen
+     * IMMER das naechste Frame auf der Verbindung, unabhaengig davon,
+     * welcher Kanal es traegt — mehrere Sessions funktionieren deshalb
+     * korrekt, SOLANGE die Anwendung ihre blockierenden Operationen
+     * (begin/attach/nextMessage/...) über alle Sessions/Links hinweg
+     * SEQUENZIELL aufruft (kein zeitgleiches Warten auf zwei Sessions aus
+     * zwei Anwendungs-Threads). nextMessage() prueft zumindest das
+     * empfangene `handle`-Feld gegen this.handle (s. dort) — ein
+     * fälschlich fuer einen anderen Link gelesenes Transfer wird dadurch
+     * als harter Fehler statt als Silent-Garbage (falsch zugeordneter
+     * Nachrichteninhalt) sichtbar.
      */
     class Amqp10Session
     {
@@ -1151,9 +1176,15 @@ namespace tinox.core.amqp10
         var chanId: Int64;
         var maxFrameSize: Int64;
         var errorMessage: String;
+        // Issue 76: naechste zu vergebende Link-Handle-Nummer innerhalb
+        // dieser Session (analog zu Amqp10Connection.nextChannelId).
+        var nextLinkHandle: Int64;
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
         {
+            let chanId = connection.nextChannelId;
+            connection.nextChannelId = connection.nextChannelId + 1;
+
             var beginFields: List<Amqp10Value> = [
                 Amqp10Value::NullVal,             // remote-channel (nur in Antworten gesetzt)
                 Amqp10Value::UIntVal(0),           // next-outgoing-id
@@ -1161,17 +1192,17 @@ namespace tinox.core.amqp10
                 Amqp10Value::UIntVal(2147483647)   // outgoing-window
             ];
             let beginBody = Amqp10::encodePerformative(0x11, beginFields);
-            Amqp10::writeFrame(connection.conn, 0, 1, beginBody);
+            Amqp10::writeFrame(connection.conn, 0, chanId, beginBody);
 
             let f = Amqp10::readFrame(connection.conn);
             if f.frameType != 0 {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), nextLinkHandle: 0 };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x11 {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString() };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 };
             }
-            return Amqp10Session { conn: connection.conn, chanId: 1, maxFrameSize: connection.maxFrameSize, errorMessage: "" };
+            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 };
         }
 
         /*
@@ -1205,9 +1236,18 @@ namespace tinox.core.amqp10
      * Ein Link auf einer Amqp10Session (§2.7.4) — explizite, gerichtete
      * Sender- ODER Receiver-Rolle mit `source`/`target`-Adressen, kein
      * Äquivalent in 0-9-1 (dort laufen `basic.publish`/`basic.consume`
-     * implizit auf dem Channel). v1: ein Link pro Zweck (ein Sender-Link
-     * zum Publishen, ein separater Receiver-Link zum Konsumieren), fester
-     * `handle` 0 (kein Multi-Link-Pool pro Session).
+     * implizit auf dem Channel).
+     *
+     * Issue 76: mehrere Links pro Session sind jetzt strukturell möglich
+     * (jeder attach() bekommt ein eigenes, garantiert eindeutiges Handle
+     * aus Amqp10Session.nextLinkHandle statt des früher fest verdrahteten
+     * Handles 0) — dieselbe v1-Grenze wie bei Amqp10Session gilt auch
+     * hier: kein echter Frame-Dispatcher, mehrere Links funktionieren
+     * korrekt bei sequenzieller Nutzung, nicht bei echt gleichzeitigen
+     * blockierenden Wartezeiten auf zwei Links. nextMessage() prüft das
+     * empfangene `handle`-Feld gegen this.handle, damit ein falsch
+     * zugeordnetes Transfer als harter Fehler auffällt statt als
+     * fälschlich zugestelltes Message-Body-Silent-Garbage.
      */
     class Amqp10Link
     {
@@ -1230,6 +1270,9 @@ namespace tinox.core.amqp10
          */
         fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -> Amqp10Link
         {
+            let handle = session.nextLinkHandle;
+            session.nextLinkHandle = session.nextLinkHandle + 1;
+
             var sourceVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
             var targetVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([]) });
             if role {
@@ -1249,7 +1292,7 @@ namespace tinox.core.amqp10
             // der Mitte.
             var attachFields: List<Amqp10Value> = [
                 Amqp10Value::StrVal(name),
-                Amqp10Value::UIntVal(0),   // handle (v1: immer 0, ein Link pro Session)
+                Amqp10Value::UIntVal(handle),
                 Amqp10Value::BoolVal(role),
                 Amqp10Value::UByteVal(2),  // snd-settle-mode: mixed (Spec-Default, explizit gesetzt)
                 Amqp10Value::UByteVal(0),  // rcv-settle-mode: first (Spec-Default, explizit gesetzt)
@@ -1270,7 +1313,7 @@ namespace tinox.core.amqp10
             if p.descriptor != 0x12 {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString() };
             }
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: 0, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "" };
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "" };
         }
 
         /*
@@ -1302,6 +1345,13 @@ namespace tinox.core.amqp10
             let f = Amqp10::readFrame(this.conn);
             if f.frameType != 0 {
                 this.errorMessage = "erwartete AMQP-Frame (type=0) beim Warten auf flow, bekam frameType=" + f.frameType.toString();
+                return;
+            }
+            // Issue 76: Kanal-Check wie in nextMessage() — verhindert, dass
+            // ein flow einer ANDEREN Session dieses Links Credit faelschlich
+            // uebernimmt (kein echter Frame-Dispatcher in v1, s. Klassenkommentar).
+            if f.chanId != this.chanId {
+                this.errorMessage = "flow auf falschem Kanal " + f.chanId.toString() + " empfangen (erwartet: " + this.chanId.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76";
                 return;
             }
             let p = Amqp10::decodePerformative(f.body);
@@ -1436,6 +1486,16 @@ namespace tinox.core.amqp10
             if f.frameType != 0 {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
             }
+            // Issue 76: es gibt keinen echten Frame-Dispatcher — bei
+            // mehreren Sessions/Links auf derselben Connection MUSS hier
+            // geprueft werden, dass das gelesene Frame wirklich zu DIESEM
+            // Link gehoert, statt ein fremdes Transfer stillschweigend als
+            // eigene Nachricht auszuliefern (falscher Message-Body waere
+            // klassisches Silent-Garbage). Kanal zuerst (billig, aus dem
+            // Frame-Header, keine Performative-Dekodierung noetig).
+            if f.chanId != this.chanId {
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "Frame auf falschem Kanal " + f.chanId.toString() + " empfangen (erwartet: " + this.chanId.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76" };
+            }
             let r = Amqp10Reader::new(f.body);
             let v = r.readValue();
             var descriptor: Int64 = -1;
@@ -1449,6 +1509,16 @@ namespace tinox.core.amqp10
             }
             if descriptor != 0x14 {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete transfer (0x14), bekam descriptor=" + descriptor.toString() };
+            }
+            if fields.len() > 0 {
+                match fields[0] {
+                    UIntVal(fh) => {
+                        if fh != this.handle {
+                            return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "transfer fuer falsches Link-Handle " + fh.toString() + " empfangen (erwartet: " + this.handle.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76" };
+                        }
+                    }
+                    _ => {}
+                }
             }
             var deliveryId: Int64 = -1;
             if fields.len() > 1 {

@@ -80,9 +80,9 @@ fn reassembleTransfer(sconn: Int64) -> Reassembly {
     return Reassembly { frameCount: count, bytes: bytes };
 }
 
-fn relayMessage(sconn: Int64, chanId: Int64, tag: Int64, msgBytes: List<Int64>) -> Nothing {
+fn relayMessage(sconn: Int64, chanId: Int64, handle: Int64, tag: Int64, msgBytes: List<Int64>) -> Nothing {
     var transferFields: List<Amqp10Value> = [
-        Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(tag),
+        Amqp10Value::UIntVal(handle), Amqp10Value::UIntVal(tag),
         Amqp10Value::BinaryVal([tag]), Amqp10Value::UIntVal(0),
         Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
     ];
@@ -152,23 +152,31 @@ async fn fakeBroker(srv: Int64) -> Int64 {
     // --- attach (Receiver) / attach-ok ---
     let fAttach2 = Amqp10::readFrame(sconn);
     let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
+    // Issue 76: Link-Handles sind jetzt fortlaufend (Sender-Link=0,
+    // dieser Receiver-Link=1) statt immer 0 — relayMessage() muss das
+    // echte Handle aus dem Attach uebernehmen, sonst schlaegt
+    // Amqp10Link::nextMessage()s neue Handle-Pruefung fehl.
+    var subLinkHandle: Int64 = 0;
+    if pAttach2.fields.len() > 1 {
+        match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
+    }
     Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
 
     // --- flow vom Client (Credit-Vergabe fuer den Receiver-Link) lesen ---
     Amqp10::readFrame(sconn);
 
     // --- alle drei Nachrichten byte-identisch zurueckspiegeln + je auf disposition warten ---
-    relayMessage(sconn, fBegin.chanId, 11, rEmpty.bytes);
+    relayMessage(sconn, fBegin.chanId, subLinkHandle, 11, rEmpty.bytes);
     let fDisp1 = Amqp10::readFrame(sconn);
     let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
     var okAck1: Bool = pDisp1.descriptor == 0x15;
 
-    relayMessage(sconn, fBegin.chanId, 12, rExact.bytes);
+    relayMessage(sconn, fBegin.chanId, subLinkHandle, 12, rExact.bytes);
     let fDisp2 = Amqp10::readFrame(sconn);
     let pDisp2 = Amqp10::decodePerformative(fDisp2.body);
     var okAck2: Bool = pDisp2.descriptor == 0x15;
 
-    relayMessage(sconn, fBegin.chanId, 13, rPlus1.bytes);
+    relayMessage(sconn, fBegin.chanId, subLinkHandle, 13, rPlus1.bytes);
     let fDisp3 = Amqp10::readFrame(sconn);
     let pDisp3 = Amqp10::decodePerformative(fDisp3.body);
     var okAck3: Bool = pDisp3.descriptor == 0x15;
