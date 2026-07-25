@@ -4867,7 +4867,48 @@ impl CodeGen {
         Ok(())
     }
 
+    /// Could evaluating THIS expression node itself (not its sub-expressions —
+    /// each of those gets its own check via its own `gen_expr` recursion, see
+    /// below) invoke a throwing call? Mirrors the direct-call arms of
+    /// `expr_may_throw` without the recursive `|| args.iter().any(...)` part.
+    fn expr_directly_may_throw(node: &ExprKind, tf: &HashSet<String>, tm: &HashSet<String>) -> bool {
+        match node {
+            ExprKind::Call { func, .. } => match &func.node {
+                ExprKind::Ident(name) => tf.contains(name.as_str()),
+                _ => true, // dynamic/lambda call — cannot prove non-throwing
+            },
+            ExprKind::MethodCall { method, .. } => tm.contains(method.as_str()),
+            ExprKind::SuperCall { method, .. } => tm.contains(method.as_str()),
+            ExprKind::EnumValue { variant, .. } => tm.contains(variant.as_str()),
+            ExprKind::New { .. } | ExprKind::Await(_) | ExprKind::Recv(_) | ExprKind::Spawn(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Issue 71 — sub-statement throw granularity: a compound expression like
+    /// `a() + b()` used to run `b()` even after `a()` already threw, because the
+    /// only unwind check ran at the NEXT STATEMENT boundary (`emit_post_stmt_
+    /// throw_check`, Bug 40). `gen_expr` is the single recursive entry point
+    /// every sub-expression goes through (binary operands, call args, receiver,
+    /// array/map literal elements, …), so inserting the same check here — right
+    /// after a node that itself may have just thrown, before control returns to
+    /// whatever expression is composing it — closes that gap for free at every
+    /// nesting depth without touching each of the many call-emission sites
+    /// individually. The renamed `gen_expr_inner` below still recurses via
+    /// `self.gen_expr(...)`, so nested calls get checked too.
     fn gen_expr(
+        &mut self,
+        expr: &tinox_parser::Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let result = self.gen_expr_inner(expr, ctx)?;
+        if Self::expr_directly_may_throw(&expr.node, &self.throwing_free_fns, &self.throwing_method_basenames) {
+            self.emit_post_stmt_throw_check(ctx)?;
+        }
+        Ok(result)
+    }
+
+    fn gen_expr_inner(
         &mut self,
         expr: &tinox_parser::Expr,
         ctx: &mut GenCtx,
