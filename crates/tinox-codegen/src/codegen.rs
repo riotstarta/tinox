@@ -1152,6 +1152,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @hmacSha256Hash(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @aesEncryptRaw(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @aesDecryptRaw(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @hmacSha256Bytes(i64*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @sha256Bytes(i64*)").unwrap();
         writeln!(&mut self.ir).unwrap();
 
         // Build class AST map for inheritance helpers.

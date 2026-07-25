@@ -1845,14 +1845,18 @@ char* sha256Hash(const char* data) {
     return tinox_bytes_to_hex(out, 32);
 }
 
-// RFC 2104
-char* hmacSha256Hash(const char* data, const char* key) {
+// RFC 2104. Geteilter Kern fuer die String- (NUL-terminiert, hex-kodierte
+// Rueckgabe) UND die Bytes-Variante (Issue 77, SCRAM braucht HMAC ueber
+// echte Binaerdaten — Salt/Nonce/Digests koennen Null-Bytes enthalten,
+// die eine C-String-basierte Variante stillschweigend abschneiden wuerde).
+static void hmac_sha256_raw(const unsigned char* data, size_t data_len,
+                             const unsigned char* key, size_t key_len,
+                             unsigned char out[32]) {
     unsigned char key_block[64];
-    size_t key_len = strlen(key);
     memset(key_block, 0, 64);
     if (key_len > 64) {
         unsigned char key_hash[32];
-        sha256_raw((const unsigned char*)key, key_len, key_hash);
+        sha256_raw(key, key_len, key_hash);
         memcpy(key_block, key_hash, 32);
     } else {
         memcpy(key_block, key, key_len);
@@ -1864,7 +1868,6 @@ char* hmacSha256Hash(const char* data, const char* key) {
         i_pad[i] = (unsigned char)(key_block[i] ^ 0x36);
     }
 
-    size_t data_len = strlen(data);
     unsigned char* inner_msg = (unsigned char*)malloc(64 + data_len);
     memcpy(inner_msg, i_pad, 64);
     memcpy(inner_msg + 64, data, data_len);
@@ -1875,10 +1878,50 @@ char* hmacSha256Hash(const char* data, const char* key) {
     unsigned char outer_msg[96];
     memcpy(outer_msg, o_pad, 64);
     memcpy(outer_msg + 64, inner_hash, 32);
-    unsigned char final_hash[32];
-    sha256_raw(outer_msg, 96, final_hash);
+    sha256_raw(outer_msg, 96, out);
+}
 
+char* hmacSha256Hash(const char* data, const char* key) {
+    unsigned char final_hash[32];
+    hmac_sha256_raw((const unsigned char*)data, strlen(data),
+                     (const unsigned char*)key, strlen(key), final_hash);
     return tinox_bytes_to_hex(final_hash, 32);
+}
+
+// Bytes-Varianten (Issue 77 / SCRAM-SHA-256): Tinox-Arrays rein, Tinox-
+// Arrays raus, keine C-String-Konvertierung an irgendeiner Stelle.
+int64_t* hmacSha256Bytes(int64_t* dataArr, int64_t* keyArr) {
+    TinoxArray* da = (TinoxArray*)dataArr;
+    TinoxArray* ka = (TinoxArray*)keyArr;
+    unsigned char* data = (unsigned char*)malloc(da->len > 0 ? (size_t)da->len : 1);
+    for (int64_t i = 0; i < da->len; i++) data[i] = (unsigned char)(da->data[i] & 0xff);
+    unsigned char* key = (unsigned char*)malloc(ka->len > 0 ? (size_t)ka->len : 1);
+    for (int64_t i = 0; i < ka->len; i++) key[i] = (unsigned char)(ka->data[i] & 0xff);
+
+    unsigned char out[32];
+    hmac_sha256_raw(data, (size_t)da->len, key, (size_t)ka->len, out);
+    free(data);
+    free(key);
+
+    int64_t* result = tinox_array_new(32, 32);
+    TinoxArray* ra = (TinoxArray*)result;
+    for (int i = 0; i < 32; i++) ra->data[i] = out[i];
+    return result;
+}
+
+int64_t* sha256Bytes(int64_t* dataArr) {
+    TinoxArray* da = (TinoxArray*)dataArr;
+    unsigned char* data = (unsigned char*)malloc(da->len > 0 ? (size_t)da->len : 1);
+    for (int64_t i = 0; i < da->len; i++) data[i] = (unsigned char)(da->data[i] & 0xff);
+
+    unsigned char out[32];
+    sha256_raw(data, (size_t)da->len, out);
+    free(data);
+
+    int64_t* result = tinox_array_new(32, 32);
+    TinoxArray* ra = (TinoxArray*)result;
+    for (int i = 0; i < 32; i++) ra->data[i] = out[i];
+    return result;
 }
 
 // ---- SHA-1 (RFC 3174) — gebraucht für den WebSocket-Handshake ----

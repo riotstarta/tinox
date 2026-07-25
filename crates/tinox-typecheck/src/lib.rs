@@ -970,6 +970,21 @@ impl TypeChecker {
                 return_type: ValueType::String,
             });
         }
+        // Bytes-sichere HMAC-SHA256/SHA256 (Issue 77, SCRAM-SHA-256 fuer
+        // AMQP-1.0-SASL) — im Gegensatz zu hmacSha256Hash/sha256Hash
+        // (String, C-String-basiert) NUL-sicher, weil SCRAM Salts/Nonces/
+        // Digests als echte Binaerdaten durch HMAC/SHA256-Ketten jagt.
+        symbols.functions.insert("hmacSha256Bytes".to_string(), FunctionSignature {
+            params: vec![
+                ("data".to_string(), ValueType::Array(Box::new(ValueType::Int))),
+                ("key".to_string(), ValueType::Array(Box::new(ValueType::Int))),
+            ],
+            return_type: ValueType::Array(Box::new(ValueType::Int)),
+        });
+        symbols.functions.insert("sha256Bytes".to_string(), FunctionSignature {
+            params: vec![("data".to_string(), ValueType::Array(Box::new(ValueType::Int)))],
+            return_type: ValueType::Array(Box::new(ValueType::Int)),
+        });
         // UUID
         symbols.functions.insert("uuidGenerate".to_string(), FunctionSignature { params: vec![], return_type: ValueType::String });
         // URI
