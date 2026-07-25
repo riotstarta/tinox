@@ -1,4 +1,4 @@
-//! Phase 6 (tasklist.md): @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose.
+//! @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose annotations.
 //!
 //! Compiles examples/ws_echo_annotated.tnx (a generated auto-main accept/
 //! message loop — never returns), runs it as a background process, drives
