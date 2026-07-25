@@ -611,7 +611,15 @@ impl Parser {
             } else if self.check_keyword(Keyword::Extern) {
                 self.parse_extern_fn()?
             } else if self.check_keyword(Keyword::Fn) || self.check_keyword(Keyword::Async) {
+                // `async fn` inside a namespace: parse_fn() itself always
+                // expects to see `fn` first (mirrors the top-level parse_decl
+                // logic, which also consumes `async` before delegating to
+                // parse_fn() rather than parse_fn() handling it internally) —
+                // consume `async` here first, or parse_fn() would fail with
+                // "expected Fn, found Async".
+                let is_async = self.consume_keyword(Keyword::Async);
                 let mut f = self.parse_fn()?;
+                f.is_async = is_async;
                 f.annotations = annotations;
                 DeclKind::Function(f)
             } else {

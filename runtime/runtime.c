@@ -2160,7 +2160,16 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // bleibt bewusst OpenSSL-frei. Ohne das Flag liefern die *Tls-Funktionen -1,
 // sodass es einen sauberen Laufzeitfehler statt eines Linkfehlers gibt.
 
-typedef struct { int fd; void* ssl; } TinoxConn;   // ssl==NULL => Plaintext
+// writeLock (Issue 82): AMQP-1.0-Heartbeats laufen in einem eigenen
+// gespawnten Hintergrund-Thread parallel zu den App-seitigen Frame-Writes
+// auf DERSELBEN Connection (nötig, weil das App-Thread lange blockierend in
+// nextMessage() hängen kann). conn_send_all schleift bei kurzen Writes
+// (Bug-68-ähnlich, aber hier Nebenläufigkeit statt EINTR): ohne Lock könnten
+// zwei Threads ihre Bytes mitten in einem Frame verschränkt aufs Wire
+// schreiben. Betrifft nur MEHRFACH schreibende Verbindungen (AMQP 1.0
+// Heartbeat-Feature); alle anderen Nutzer zahlen nur den Lock/Unlock-Preis
+// eines unkontendierten Mutex.
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; } TinoxConn;   // ssl==NULL => Plaintext
 
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
@@ -2208,6 +2217,7 @@ static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
 static void conn_close(TinoxConn* c) {
     if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+    pthread_mutex_destroy(&c->writeLock);
 }
 #else
 // Plaintext-only Fallback — identische Semantik ohne OpenSSL. Zum
@@ -2224,6 +2234,7 @@ static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
 }
 static void conn_close(TinoxConn* c) {
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+    pthread_mutex_destroy(&c->writeLock);
 }
 #endif
 
@@ -2315,23 +2326,25 @@ static char* conn_read_request(TinoxConn* c) {
 // Reads a full HTTP/1.1 request from a raw fd (plaintext). Wraps the fd in a
 // stack TinoxConn with ssl==NULL and delegates to the shared core.
 char* httpServerReadRequest(int64_t client_fd) {
-    TinoxConn c = { (int)client_fd, NULL };
+    TinoxConn c = { (int)client_fd, NULL, PTHREAD_MUTEX_INITIALIZER };
     return conn_read_request(&c);
 }
 
 static void conn_send_all(TinoxConn* c, const char* data, size_t len) {
+    pthread_mutex_lock(&c->writeLock);
     size_t sent = 0;
     while (sent < len) {
         ssize_t n = conn_send(c, data + sent, len - sent);
         if (n <= 0) break;
         sent += (size_t)n;
     }
+    pthread_mutex_unlock(&c->writeLock);
 }
 
 // Sends a raw HTTP response string and returns.
 void httpServerSendRaw(int64_t client_fd, const char* data) {
     if (!data) return;
-    TinoxConn c = { (int)client_fd, NULL };
+    TinoxConn c = { (int)client_fd, NULL, PTHREAD_MUTEX_INITIALIZER };
     conn_send_all(&c, data, strlen(data));
 }
 
@@ -2398,6 +2411,7 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
         return -1;
     }
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    pthread_mutex_init(&c->writeLock, NULL);
     c->fd = fd;
     c->ssl = ssl;
     return (int64_t)(intptr_t)c;
@@ -2413,6 +2427,7 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     int64_t fd = httpServerAcceptConn(server_fd);
     if (fd < 0) return -1;
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = NULL;
     return (int64_t)(intptr_t)c;
@@ -2436,6 +2451,7 @@ void httpConnSendRaw(int64_t conn, const char* data) {
 int64_t httpConnFromFd(int64_t fd) {
     if (fd < 0) return -1;
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = NULL;
     return (int64_t)(intptr_t)c;
@@ -2478,6 +2494,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
         return -1;
     }
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
+    pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = ssl;
     return (int64_t)(intptr_t)c;
