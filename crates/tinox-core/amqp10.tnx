@@ -1723,6 +1723,32 @@ namespace tinox.core.amqp10
          */
         fn publish(body: List<Int64>, contentType: String) -> Nothing
         {
+            this.publishCore(body, contentType, Amqp10Value::NullVal);
+        }
+
+        /*
+         * Wie publish(), aber markiert JEDES Transfer-Frame als Teil der
+         * Transaktion `txnId` (Issue 79) — `state` (Transfer-Feld 7) traegt
+         * einen TransactionalState (Descriptor 0x34: txn-id + optionaler
+         * Outcome, v1 immer NullVal — der Sender legt den Outcome nicht
+         * fest, das macht der Discharge). Der Broker liefert die Nachricht
+         * erst nach einem committenden discharge() tatsaechlich aus (bzw.
+         * verwirft sie bei fail=true) — settled bleibt wie bei publish()
+         * true (v1-Stil, fire-and-forget bzgl. der einzelnen Delivery;
+         * die eigentliche Zusicherung kommt von der Transaktion selbst,
+         * nicht vom Transfer-settled-Flag).
+         */
+        fn publishTransactional(body: List<Int64>, contentType: String, txnId: List<Int64>) -> Nothing
+        {
+            let txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
+                Amqp10Value::BinaryVal(txnId),
+                Amqp10Value::NullVal
+            ]) };
+            this.publishCore(body, contentType, Amqp10Value::DescribedVal(txnState));
+        }
+
+        fn publishCore(body: List<Int64>, contentType: String, txnState: Amqp10Value) -> Nothing
+        {
             if this.linkCredit <= 0 {
                 this.awaitFlow();
                 if this.errorMessage.len() > 0 {
@@ -1762,13 +1788,19 @@ namespace tinox.core.amqp10
                     chunk.push(msgBytes[offset + i]);
                 }
 
+                // rcv-settle-mode (6) ist Platzhalter (Spec-Default 0=first)
+                // — noetig, um state (7) zu erreichen, weil Listenfelder
+                // nur am ENDE weggelassen werden duerfen (s. attach()s
+                // initial-delivery-count-Kommentar fuer dasselbe Muster).
                 var transferFields: List<Amqp10Value> = [
                     Amqp10Value::UIntVal(this.handle),
                     Amqp10Value::UIntVal(this.deliveryCount),
                     Amqp10Value::BinaryVal(deliveryTag),
                     Amqp10Value::UIntVal(0),      // message-format
                     Amqp10Value::BoolVal(true),   // settled
-                    Amqp10Value::BoolVal(more)
+                    Amqp10Value::BoolVal(more),
+                    Amqp10Value::UByteVal(0),     // rcv-settle-mode: first
+                    txnState                      // state (Issue 79: TransactionalState oder NullVal)
                 ];
                 let transferBody = Amqp10::encodePerformative(0x14, transferFields);
                 var fullFrame: List<Int64> = [];
@@ -2002,5 +2034,193 @@ namespace tinox.core.amqp10
             ]) };
             this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(modifiedDesc));
         }
+
+        /*
+         * Wie ack(), aber quittiert die Delivery ALS TEIL der Transaktion
+         * `txnId` (Issue 79) — der Broker wendet den `accepted`-Outcome
+         * erst bei einem committenden discharge() tatsaechlich an (bei
+         * fail=true/Rollback bleibt die Delivery unsettled/verwerfbar).
+         * `state` (disposition-Feld 4) ist ein TransactionalState
+         * (Descriptor 0x34: txn-id + der EIGENTLICHE Outcome `accepted`
+         * als inneres DescribedVal — anders als bei publishTransactional(),
+         * wo der Sender keinen Outcome festlegt).
+         */
+        fn ackTransactional(deliveryId: Int64, txnId: List<Int64>) -> Nothing
+        {
+            let acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+            let txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
+                Amqp10Value::BinaryVal(txnId),
+                Amqp10Value::DescribedVal(acceptedDesc)
+            ]) };
+            this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(txnState));
+        }
+
+        /*
+         * Haengt einen TRANSAKTIONS-KONTROLL-Link an (Issue 79, §4.2/4.3
+         * der Transaktions-Erweiterung) — strukturell ein normaler
+         * Sender-Link (role=false), aber mit `target` = `Coordinator`
+         * (Descriptor 0x30, ein Feld: txn-capabilities als Symbol-Array —
+         * v1 schreibt es wie alle Listen/Arrays dieses Moduls immer als
+         * `list` statt der spec-vorgesehenen `array`-Kurzform, s. Phase-
+         * 2.2-Kommentar zu Amqp10Writer; kein Korrektheitsproblem, nur
+         * keine Groessenoptimierung) statt einer normalen Adresse. `source`
+         * bleibt die leere, adresslose Huelle wie bei jedem Sender-Link.
+         * Ueber DIESEN Link laufen ausschliesslich declare()/discharge()
+         * — kein publish()/nextMessage() auf einem Coordinator-Link.
+         */
+        fn attachCoordinator(session: Amqp10Session, name: String) -> Amqp10Link
+        {
+            let coordinatorDesc = Amqp10Described { descriptor: 0x30, value: Amqp10Value::ListVal([
+                Amqp10Value::ListVal([Amqp10Value::SymbolVal("amqp:local-transactions")])
+            ]) };
+            let handle = session.nextLinkHandle;
+            session.nextLinkHandle = session.nextLinkHandle + 1;
+
+            let sourceVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
+            var attachFields: List<Amqp10Value> = [
+                Amqp10Value::StrVal(name),
+                Amqp10Value::UIntVal(handle),
+                Amqp10Value::BoolVal(false), // role: Sender (Client sendet declare/discharge an den Coordinator)
+                Amqp10Value::UByteVal(2),    // snd-settle-mode: mixed
+                Amqp10Value::UByteVal(0),    // rcv-settle-mode: first
+                sourceVal,
+                Amqp10Value::DescribedVal(coordinatorDesc), // target: Coordinator statt normaler Adresse
+                Amqp10Value::NullVal,        // unsettled
+                Amqp10Value::BoolVal(false), // incomplete-unsettled
+                Amqp10Value::UIntVal(0)      // initial-delivery-count (role=Sender)
+            ];
+            let attachBody = Amqp10::encodePerformative(0x12, attachFields);
+            Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
+
+            let f = Amqp10::readFrame(session.conn);
+            if f.frameType != 0 {
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x12 {
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
+            }
+            // Coordinator-Links bekommen kein flow -- der Broker akzeptiert
+            // declare/discharge-Transfers verbindlich unabhaengig von
+            // Link-Credit (Kontrollkanal, kein Nachrichtenfluss). v1
+            // vergibt sich deshalb selbst grosszuegig Credit statt auf ein
+            // flow zu warten, das nie kommt.
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [] };
+        }
+
+        /*
+         * Sendet den Kontroll-Transfer eines Coordinator-Links (declare
+         * ODER discharge, je nach `controlValue`) und liest die zugehoerige
+         * `disposition` (settled=false, Broker MUSS antworten) — gemeinsamer
+         * Kern fuer declare()/discharge(), analog zu publishCore().
+         */
+        fn sendCoordinatorControl(controlValue: Amqp10Value) -> Amqp10Value
+        {
+            let w = Amqp10Writer::new();
+            let sectionDesc = Amqp10Described { descriptor: 0x77, value: controlValue }; // amqp-value-Section
+            w.writeDescribed(sectionDesc);
+
+            let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
+            var transferFields: List<Amqp10Value> = [
+                Amqp10Value::UIntVal(this.handle),
+                Amqp10Value::UIntVal(this.deliveryCount),
+                Amqp10Value::BinaryVal(deliveryTag),
+                Amqp10Value::UIntVal(0),       // message-format
+                Amqp10Value::BoolVal(false)    // settled: false -- Broker MUSS mit disposition antworten
+            ];
+            let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+            var fullFrame: List<Int64> = [];
+            for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
+            for i in 0..w.bytes.len() { fullFrame.push(w.bytes[i]); }
+            Amqp10::writeFrame(this.conn, 0, this.chanId, fullFrame);
+            this.deliveryCount = this.deliveryCount + 1;
+
+            let f = Amqp10::readFrame(this.conn);
+            if f.frameType != 0 {
+                return Amqp10Value::ErrorVal("erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString());
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x15 {
+                return Amqp10Value::ErrorVal("erwartete disposition (0x15), bekam descriptor=" + p.descriptor.toString());
+            }
+            if p.fields.len() < 5 {
+                return Amqp10Value::ErrorVal("disposition ohne state-Feld");
+            }
+            return p.fields[4];
+        }
+
+        /*
+         * Startet eine neue Transaktion (Issue 79, §4.4): sendet `declare`
+         * (Descriptor 0x31, einziges Feld global-id = NullVal — v1 nur
+         * lokale Transaktionen, kein verteiltes global-id) ueber DIESEN
+         * (per attachCoordinator() angehaengten) Link, erwartet als
+         * disposition-state ein `declared` (Descriptor 0x33, Feld: txn-id
+         * als binary). `Amqp10Transaction.txnId` wird an publishTransactional()/
+         * ackTransactional()/discharge() weitergereicht.
+         */
+        fn declare() -> Amqp10Transaction
+        {
+            let declareDesc = Amqp10Described { descriptor: 0x31, value: Amqp10Value::ListVal([Amqp10Value::NullVal]) };
+            let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(declareDesc));
+            match state {
+                DescribedVal(d) => {
+                    if d.descriptor == 0x33 {
+                        match d.value {
+                            ListVal(fields) => {
+                                if fields.len() > 0 {
+                                    match fields[0] {
+                                        BinaryVal(txnId) => { return Amqp10Transaction { txnId: txnId, ok: true, errorMessage: "" }; }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ErrorVal(msg) => { return Amqp10Transaction { txnId: [], ok: false, errorMessage: msg }; }
+                _ => {}
+            }
+            return Amqp10Transaction { txnId: [], ok: false, errorMessage: "declare: unerwarteter disposition-state (kein declared/0x33)" };
+        }
+
+        /*
+         * Beendet eine Transaktion (Issue 79, §4.5): sendet `discharge`
+         * (Descriptor 0x32, Felder txn-id + fail) ueber DIESEN Coordinator-
+         * Link. fail=false committet (alle ueber publishTransactional()/
+         * ackTransactional() markierten Deliveries werden fuer den Broker
+         * verbindlich), fail=true verwirft (Rollback). Erwartet als
+         * disposition-state ein `accepted` — jeder andere State (bzw. ein
+         * `rejected` mit txn-error) ist ein harter Fehler statt eines
+         * stillschweigend als "erfolgreich" gewerteten Discharge.
+         */
+        fn discharge(txnId: List<Int64>, fail: Bool) -> Bool
+        {
+            let dischargeDesc = Amqp10Described { descriptor: 0x32, value: Amqp10Value::ListVal([
+                Amqp10Value::BinaryVal(txnId),
+                Amqp10Value::BoolVal(fail)
+            ]) };
+            let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(dischargeDesc));
+            match state {
+                DescribedVal(d) => { if d.descriptor == 0x24 { return true; } } // accepted
+                _ => {}
+            }
+            this.errorMessage = "discharge: kein accepted-disposition-state erhalten";
+            return false;
+        }
+    }
+
+    /*
+     * Ergebnis von Amqp10Link::declare() (Issue 79). ok == false bei
+     * jedem Fehlschlag (Broker antwortet nicht mit `declared`, o. ae.) —
+     * txnId ist dann leer. Bei Erfolg wird txnId an publishTransactional()/
+     * ackTransactional()/discharge() weitergereicht, analog zu 0-9-1/1.0s
+     * sonstigem errorMessage-Konventionen in diesem Modul.
+     */
+    class Amqp10Transaction
+    {
+        var txnId: List<Int64>;
+        var ok: Bool;
+        var errorMessage: String;
     }
 }
