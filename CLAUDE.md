@@ -20,9 +20,9 @@ auf `subnix-work/tinox` erfasst — nicht mehr in lokalen Markdown-Dateien
   schließen (`gh issue close <NR> --reason completed`).
 - **Bug ist noch offen** (bewusst zurückgestellt oder ungelöst): Issue
   bleibt offen, Body beschreibt den Stand + warum er offen ist.
-- **Sprache: Englisch** (Titel + Body) — auch wenn Commit-Messages und
-  sonstige Doku im Projekt auf Deutsch bleiben, die Issues wurden bewusst
-  ins Englische übersetzt und sollen es bleiben.
+- **Sprache: Englisch** (Titel + Body) — die Issues wurden bewusst ins
+  Englische übersetzt und sollen es bleiben (seit 2026-07-26 gilt das
+  ohnehin projektweit auch für Commit-Messages und Code, s. u.).
 - Cross-Referenzen zwischen verwandten Issues wie bisher zwischen
   Bug-Einträgen üblich (z. B. „closes what Bug 40 left open" mit Link
   auf die Issue-Nummer).
@@ -91,9 +91,13 @@ nicht per angenommener Nummer.
   Loopback), 15–40× stabil wiederholen, bevor sie als grün gelten — die
   Async-Runtime hatte mehrere zeitabhängige Bugs (Bug 68 u. a.), die nur
   bei wiederholten Läufen auffielen.
-- Commit-Messages in diesem Projekt sind auf Deutsch (technische Prosa
-  im Stil der alten bugs.md-Einträge: Root Cause, Fix, Verifiziert),
-  auch wenn Issues auf Englisch sind — beides bewusst so.
+- **Seit 2026-07-26: Commit-Messages UND Code (inkl. Kommentare, Bezeichner,
+  Doc-Strings) sind auf Englisch** — sowohl in diesem Repo als auch in
+  Downstream-Projekten wie jgrep-tinox. Ältere Commits/Kommentare bleiben
+  auf Deutsch (nicht rückwirkend ändern, nur neue Arbeit betrifft das).
+  Vorherige Konvention (Commit-Messages auf Deutsch im Stil der alten
+  bugs.md-Einträge: Root Cause, Fix, Verifiziert) ist damit abgelöst —
+  Struktur/Inhalt der Commit-Message bleibt gleich, nur die Sprache wechselt.
 - **`docs.html` (Deutsch) und `docs_en.html` (Englisch) sind bewusst
   parallel gepflegte Dubletten** — bei jeder neuen `<div class="mod-
   section">` in `docs.html` (neues Stdlib-Modul) IMMER auch
