@@ -1121,8 +1121,9 @@
         <tr><td><code>@annotation</code></td><td>Klasse</td><td>Eigene Annotation definieren</td></tr>
         <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Klasse</td><td>WebSocket: generiert einen Accept/Message-Loop als <code>main</code> (nur bei genau einer Endpoint-Klasse und ohne eigenes <code>main</code>)</td></tr>
         <tr><td><code>@OnOpen</code></td><td>Methode</td><td>WebSocket: Aufruf bei neuer Verbindung, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
-        <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: Amqp10Message) -&gt; Nothing</code></td></tr>
         <tr><td><code>@OnClose</code></td><td>Methode</td><td>WebSocket: Aufruf beim Verbindungsende, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Klasse</td><td>AMQP-1.0: generiert einen Connect/Attach/Receive-Loop als <code>main</code> (nur bei genau einer Consumer-Klasse und ohne eigenes <code>main</code>)</td></tr>
       </tbody>
     </table>
   </section>
@@ -2126,14 +2127,35 @@ if m.ok {
 }
 conn.close();
 </code></pre>
+  <h3>Annotation-getriebene Variante</h3>
   <p>
-    <strong>Bewusste v1-Lücken:</strong> mehrere Sessions/Links pro
-    Verbindung (v1: je genau einer), <code>sasl-challenge</code>/
-    <code>-response</code>-Mehrrunden-Mechanismen wie SCRAM (nur PLAIN),
-    Delivery-State jenseits von <code>accepted</code> (kein
-    <code>rejected</code>/<code>released</code>/<code>modified</code>),
-    Transaktionen, Link-Recovery/Resumption, Multi-Frame-Reassembly beim
-    Empfang, Annotation-getriebene Consumer-API, Heartbeat/Auto-Reconnect.
+    Wie bei WebSocket generiert der Compiler alternativ den kompletten
+    Connect/Attach/Receive-Loop selbst — siehe
+    <a href="#annotationen">Annotationen</a> (<code>@Amqp10Consumer</code>/
+    <code>@OnMessage</code>). Gilt nur, wenn die Datei kein eigenes
+    <code>main</code> definiert und genau eine <code>@Amqp10Consumer</code>-
+    Klasse enthält (mehrere sind ein Compile-Fehler, kein stilles
+    Ignorieren). Der Handler bekommt die komplette <code>Amqp10Message</code>
+    übergeben (nicht einen bereits dekodierten String) — Body-Dekodierung
+    bleibt beim Aufrufer, genau wie im manuellen Beispiel oben:
+  </p>
+  <pre><code>import tinox.core.amqp10;
+
+<span class="ann">@Amqp10Consumer</span>(<span class="str">"localhost"</span>, <span class="num">5672</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>, <span class="str">"/queues/tinox-demo-queue"</span>)
+<span class="kw">class</span> <span class="type">DemoConsumer</span>
+{
+    <span class="ann">@OnMessage</span>
+    <span class="kw">fn</span> <span class="fn">onMessage</span>(msg: Amqp10Message) -> Nothing
+    {
+        <span class="cmt">// msg.body (List&lt;Int64&gt;) selbst dekodieren, dann z. B. loggen
+    </span>}
+}
+</code></pre>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> Multi-Frame-Reassembly beim Empfang
+    (Senden splittet bereits korrekt bei Überschreiten von
+    <code>max-frame-size</code>, Empfangen erkennt <code>more=true</code> nur
+    und meldet einen Fehler statt zusammenzusetzen).
   </p>
   </div>
 

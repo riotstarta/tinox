@@ -16,3 +16,4 @@ pub use codegen::MetricKind;
 pub use codegen::EntityEntry;
 pub use codegen::EntityFieldEntry;
 pub use codegen::WsEndpointEntry;
+pub use codegen::Amqp10ConsumerEntry;

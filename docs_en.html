@@ -1117,6 +1117,11 @@
         <tr><td><code>@deprecated("msg")</code></td><td>All</td><td>Deprecation warning</td></tr>
         <tr><td><code>@Command("name")</code></td><td>Class</td><td>CLI command</td></tr>
         <tr><td><code>@annotation</code></td><td>Class</td><td>Define custom annotation</td></tr>
+        <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Class</td><td>WebSocket: generates an accept/message loop as <code>main</code> (only with exactly one endpoint class and no own <code>main</code>)</td></tr>
+        <tr><td><code>@OnOpen</code></td><td>Method</td><td>WebSocket: called on new connection, signature <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnMessage</code></td><td>Method</td><td>WebSocket: called per text message, signature <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: called per received message, signature <code>fn(msg: Amqp10Message) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnClose</code></td><td>Method</td><td>WebSocket: called when the connection ends, signature <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Class</td><td>AMQP-1.0: generates a connect/attach/receive loop as <code>main</code> (only with exactly one consumer class and no own <code>main</code>)</td></tr>
       </tbody>
     </table>
   </section>
@@ -2118,14 +2123,35 @@ if m.ok {
 }
 conn.close();
 </code></pre>
+  <h3>Annotation-driven variant</h3>
   <p>
-    <strong>Deliberate v1 gaps:</strong> multiple sessions/links per
-    connection (v1: exactly one each), <code>sasl-challenge</code>/
-    <code>-response</code> multi-round mechanisms like SCRAM (PLAIN only),
-    delivery state beyond <code>accepted</code> (no
-    <code>rejected</code>/<code>released</code>/<code>modified</code>),
-    transactions, link recovery/resumption, multi-frame reassembly on
-    receive, annotation-driven consumer API, heartbeat/auto-reconnect.
+    Like WebSocket, the compiler can alternatively generate the whole
+    connect/attach/receive loop itself — see
+    <a href="#annotationen">Annotations</a> (<code>@Amqp10Consumer</code>/
+    <code>@OnMessage</code>). Only applies if the file defines no own
+    <code>main</code> and contains exactly one <code>@Amqp10Consumer</code>
+    class (more than one is a compile error, not silently ignored). The
+    handler receives the whole <code>Amqp10Message</code> (not an already
+    decoded String) — body decoding stays with the caller, exactly like the
+    manual example above:
+  </p>
+  <pre><code>import tinox.core.amqp10;
+
+<span class="ann">@Amqp10Consumer</span>(<span class="str">"localhost"</span>, <span class="num">5672</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>, <span class="str">"/queues/tinox-demo-queue"</span>)
+<span class="kw">class</span> <span class="type">DemoConsumer</span>
+{
+    <span class="ann">@OnMessage</span>
+    <span class="kw">fn</span> <span class="fn">onMessage</span>(msg: Amqp10Message) -> Nothing
+    {
+        <span class="cmt">// decode msg.body (List&lt;Int64&gt;) yourself, then e.g. log it
+    </span>}
+}
+</code></pre>
+  <p>
+    <strong>Deliberate v1 gaps:</strong> multi-frame reassembly on receive
+    (sending already splits correctly once <code>max-frame-size</code> is
+    exceeded; receiving only detects <code>more=true</code> and reports an
+    error instead of reassembling).
   </p>
   </div>
 
