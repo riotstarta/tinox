@@ -1,0 +1,17 @@
+module tinox.core.yaml;
+
+namespace tinox.core.yaml
+{
+    class Yaml
+    {
+        fn parse(content: String) -> YamlValue
+        {
+            return YamlParser::parse(content);
+        }
+
+        fn stringify(value: YamlValue) -> String
+        {
+            return YamlRenderer::render(value, 0);
+        }
+    }
+}

@@ -1,0 +1,12 @@
+module tinox.core.toml;
+
+namespace tinox.core.toml
+{
+    class TomlRenderer
+    {
+        fn render(value: TomlValue) -> String
+        {
+            return "";
+        }
+    }
+}

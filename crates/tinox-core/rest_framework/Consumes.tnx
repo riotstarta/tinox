@@ -1,0 +1,19 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Specifies the accepted request content type.
+     * @Consumes(MediaType::Json)
+     */
+    @annotation
+    class Consumes
+    {
+        var value: MediaType;
+
+        fn new(value: MediaType) -> Consumes
+        {
+            return Consumes { value: value };
+        }
+    }
+}

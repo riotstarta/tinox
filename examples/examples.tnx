@@ -1,6 +1,12 @@
 // Tinox Programming Language
 // Example Programs
 
+import examples.Point;
+import examples.Direction;
+import examples.Drawable;
+import examples.Circle;
+import examples.Rectangle;
+
 // ============================================================
 // Example 1: Hello World
 // ============================================================
@@ -112,33 +118,6 @@ fn example_control_flow(x: Int32) -> Int32
 // ============================================================
 // Example 4: Classes and Objects
 // ============================================================
-class Point
-{
-    var x: Float64;
-    var y: Float64;
-
-    fn new(x: Float64, y: Float64) -> Point
-    {
-        return Point { x: x, y: y };
-    }
-
-    fn distanceTo(other: Point) -> Float64
-    {
-        let dx: Float64 = this.x - other.x;
-        let dy: Float64 = this.y - other.y;
-        return ((dx * dx) + (dy * dy)).sqrt();
-    }
-
-    fn describe() -> Nothing
-    {
-        print("Point(");
-        print(this.x);
-        print(", ");
-        print(this.y);
-        print(")\n");
-    }
-}
-
 fn example_classes() -> Int32
 {
     let p1: Point = Point.new(0.0, 0.0);
@@ -158,15 +137,6 @@ fn example_classes() -> Int32
 // ============================================================
 // Example 5: Enums and Pattern Matching
 // ============================================================
-enum Direction
-{
-    North;
-    South;
-    East;
-    West;
-    Diagonal(dx: Int32, dy: Int32);
-}
-
 fn move(d: Direction, steps: Int32) -> Point
 {
     match d
@@ -214,59 +184,6 @@ fn example_enums() -> Int32
 // ============================================================
 // Example 6: Interfaces
 // ============================================================
-interface Drawable
-{
-    fn draw() -> Nothing;
-    fn getArea() -> Float64;
-}
-
-class Circle implements Drawable
-{
-    radius: Float64;
-
-    fn new(radius: Float64) -> Circle
-    {
-        return Circle { radius: radius };
-    }
-
-    fn draw() -> Nothing
-    {
-        print("Drawing circle with radius ");
-        print(this.radius);
-        print("\n");
-    }
-
-    fn getArea() -> Float64
-    {
-        return 3.14159 * this.radius * this.radius;
-    }
-}
-
-class Rectangle implements Drawable
-{
-    width: Float64;
-    height: Float64;
-
-    fn new(w: Float64, h: Float64) -> Rectangle
-    {
-        return Rectangle { width: w, height: h };
-    }
-
-    fn draw() -> Nothing
-    {
-        print("Drawing rectangle ");
-        print(this.width);
-        print(" x ");
-        print(this.height);
-        print("\n");
-    }
-
-    fn getArea() -> Float64
-    {
-        return this.width * this.height;
-    }
-}
-
 fn example_interfaces() -> Int32
 {
     let shapes: List<Drawable> = [

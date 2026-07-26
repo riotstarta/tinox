@@ -1,0 +1,25 @@
+module tinox.core.metrics;
+
+namespace tinox.core.metrics
+{
+    class Stopwatch
+    {
+        var startNs: Int64;
+
+        fn start() -> Stopwatch
+        {
+            return Stopwatch { startNs: tinox_clock_nanos() };
+        }
+
+        fn elapsedNs(sw: Stopwatch) -> Int64
+        {
+            return tinox_clock_nanos() - sw.startNs;
+        }
+
+        fn recordTo(sw: Stopwatch, metricName: String) -> Nothing
+        {
+            let elapsed: Int64 = tinox_clock_nanos() - sw.startNs;
+            tinox_histogram_record(metricName, elapsed);
+        }
+    }
+}

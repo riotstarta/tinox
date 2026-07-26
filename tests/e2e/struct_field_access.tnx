@@ -1,17 +1,17 @@
 // expect: 25
 
-class Point
+class struct_field_access
 {
     x: Int64;
     y: Int64;
 }
-fn distance(p: Point) -> Int64
+fn distance(p: struct_field_access) -> Int64
 {
     return p.x * p.x + p.y * p.y;
 }
 fn main() -> Int32
 {
-    let p: Point = Point { x: 3, y: 4 };
+    let p: struct_field_access = struct_field_access { x: 3, y: 4 };
     println(distance(p));
     return 0;
 }

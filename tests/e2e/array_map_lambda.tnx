@@ -17,7 +17,7 @@
 // expect: 7
 // expect: 8
 // expect: 0
-class Point {
+class array_map_lambda {
     var x: Int64;
     var y: Int64;
     fn sum() -> Int64 { return this.x + this.y; }
@@ -55,7 +55,7 @@ fn main() -> Int32 {
     println(lens[2].toString());
 
     // Objekt-Array: Methoden-Dispatch im Lambda-Body
-    let ps = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let ps = [array_map_lambda { x: 1, y: 2 }, array_map_lambda { x: 3, y: 4 }];
     let sums = ps.map(p => p.sum());
     println(sums[0].toString());
     println(sums[1].toString());

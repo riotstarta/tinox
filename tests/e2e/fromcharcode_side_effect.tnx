@@ -9,14 +9,14 @@
 // expect: AB
 // expect: 2
 
-class ByteCursor
+class fromcharcode_side_effect
 {
     var bytes: List<Int64>;
     var pos: Int64;
 
-    fn new(bytes: List<Int64>) -> ByteCursor
+    fn new(bytes: List<Int64>) -> fromcharcode_side_effect
     {
-        return ByteCursor { bytes: bytes, pos: 0 };
+        return fromcharcode_side_effect { bytes: bytes, pos: 0 };
     }
 
     fn next() -> Int64
@@ -28,14 +28,14 @@ class ByteCursor
 }
 
 fn main() -> Int32 {
-    let c1 = ByteCursor::new([65, 66]);
+    let c1 = fromcharcode_side_effect::new([65, 66]);
     let ch = fromCharCode(c1.next());
     println(ch);
     println(c1.pos.toString());
 
     // Schleife: zwei Zeichen lesen und zusammensetzen — deckt den
     // urspruenglichen Fundort (String-Konkatenation in einer Schleife) ab.
-    let c2 = ByteCursor::new([65, 66]);
+    let c2 = fromcharcode_side_effect::new([65, 66]);
     var s: String = "";
     for i in 0..2 {
         s = s + fromCharCode(c2.next());

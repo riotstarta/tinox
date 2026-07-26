@@ -1,0 +1,21 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Ein gelesenes AMQP-1.0-Frame (§2.3.1 der Sondierung in tasklist.md).
+     * frameType: 0 = AMQP-Frame, 1 = SASL-Frame (Broker darf beide auf
+     * derselben Verbindung schicken, je nach Negotiation-Phase);
+     * zusätzlich als Lese-Ergebnis: -1 = Verbindung zu/EOF, -2 =
+     * Protokollfehler (unplausible size/doff, s. Amqp10::readFrame).
+     */
+    class Amqp10Frame
+    {
+        var frameType: Int64;
+        var chanId: Int64;
+        var body: List<Int64>;
+    }
+}

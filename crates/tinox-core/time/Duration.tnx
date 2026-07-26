@@ -1,0 +1,101 @@
+module tinox.core.time;
+
+namespace tinox.core.time
+{
+    /**
+     * Represents a duration of time in seconds
+     *
+     * Provides factory methods for creating durations from
+     * different time units and arithmetic operations.
+     */
+    class Duration
+    {
+        /** The duration in seconds */
+        seconds: Int64;
+
+        /**
+         * Creates a Duration from seconds
+         *
+         * @param seconds the number of seconds
+         * @return a new Duration instance
+         */
+        fn new(seconds: Int64) -> Duration
+        {
+            return Duration { seconds: seconds };
+        }
+
+        /**
+         * Creates a Duration from minutes
+         *
+         * @param minutes the number of minutes
+         * @return a new Duration instance
+         */
+        fn fromMinutes(minutes: Int64) -> Duration
+        {
+            return Duration { seconds: minutes * 60 };
+        }
+
+        /**
+         * Creates a Duration from hours
+         *
+         * @param hours the number of hours
+         * @return a new Duration instance
+         */
+        fn fromHours(hours: Int64) -> Duration
+        {
+            return Duration { seconds: hours * 3600 };
+        }
+
+        /**
+         * Returns the duration in seconds
+         *
+         * @return the number of seconds
+         */
+        fn getSeconds() -> Int64
+        {
+            return this.seconds;
+        }
+
+        /**
+         * Returns the duration in whole minutes
+         *
+         * @return the number of minutes (truncated)
+         */
+        fn getMinutes() -> Int64
+        {
+            return this.seconds / 60;
+        }
+
+        /**
+         * Returns the duration in whole hours
+         *
+         * @return the number of hours (truncated)
+         */
+        fn getHours() -> Int64
+        {
+            return this.seconds / 3600;
+        }
+
+        /**
+         * Adds another duration to this one
+         *
+         * @param other the duration to add
+         * @return a new Duration with the combined time
+         */
+        fn add(other: Duration) -> Duration
+        {
+            return Duration { seconds: this.seconds + other.seconds };
+        }
+
+        /**
+         * Subtracts another duration from this one
+         *
+         * @param other the duration to subtract
+         * @return a new Duration with the difference
+         */
+        fn sub(other: Duration) -> Duration
+        {
+            return Duration { seconds: this.seconds - other.seconds };
+        }
+    }
+}

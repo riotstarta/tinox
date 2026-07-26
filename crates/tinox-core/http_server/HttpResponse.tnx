@@ -1,0 +1,224 @@
+module tinox.core.http_server;
+
+import tinox.core.json;
+
+namespace tinox.core.http_server
+{
+    /**
+     * Represents an outgoing HTTP response
+     *
+     * Provides a fluent API for building responses with
+     * status codes, headers, and body content.
+     */
+    class HttpResponse
+    {
+        /** The HTTP status code */
+        var statusCode: Int64;
+
+        /** Response headers */
+        var headers: Map<String, String>;
+
+        /** The response body */
+        var body: String;
+
+        /**
+         * Creates a new HttpResponse with default status 200
+         *
+         * @return a new HttpResponse instance
+         */
+        fn new() -> HttpResponse
+        {
+            return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
+        }
+
+        /**
+         * Sets the HTTP status code
+         *
+         * @param code the status code (e.g., 200, 404)
+         * @return this response for chaining
+         */
+        fn status(code: Int64) -> HttpResponse
+        {
+            this.statusCode = code;
+            return this;
+        }
+
+        /**
+         * Sets a response header
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this response for chaining
+         */
+        fn header(name: String, value: String) -> HttpResponse
+        {
+            this.headers[name] = value;
+            return this;
+        }
+
+        /**
+         * Sets the response body as plain text with Content-Type: text/plain
+         *
+         * @param text the response text
+         * @return this response for chaining
+         */
+        fn text(text: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = text;
+            return this;
+        }
+
+        /**
+         * Sets the response body as JSON with Content-Type: application/json
+         *
+         * @param json the JSON string
+         * @return this response for chaining
+         */
+        fn json(json: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = json;
+            return this;
+        }
+
+        /**
+         * Serializes a @JsonSerializable object and sets it as the JSON response body.
+         *
+         * Usage:
+         *   ctx.response.json(user);
+         *   ctx.response.json(userList);
+         *
+         * @param obj any object annotated with @JsonSerializable
+         * @return this response for chaining
+         */
+        fn jsonObject<T>(obj: T) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = Json::serialize(obj);
+            return this;
+        }
+
+        /**
+         * Sets the response body as HTML with Content-Type: text/html
+         *
+         * @param html the HTML string
+         * @return this response for chaining
+         */
+        fn html(html: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = "text/html; charset=utf-8";
+            this.body = html;
+            return this;
+        }
+
+        /**
+         * Sets the response body with a custom Content-Type
+         *
+         * @param content the response body
+         * @param contentType the MIME type
+         * @return this response for chaining
+         */
+        fn content(content: String, contentType: String) -> HttpResponse
+        {
+            this.headers["Content-Type"] = contentType;
+            this.body = content;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 404 Not Found with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn notFound(message: String) -> HttpResponse
+        {
+            this.statusCode = 404;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 400 Bad Request with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn badRequest(message: String) -> HttpResponse
+        {
+            this.statusCode = 400;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 500 Internal Server Error with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         */
+        fn internalError(message: String) -> HttpResponse
+        {
+            this.statusCode = 500;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8";
+            this.body = message;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 201 Created with a JSON body
+         *
+         * @param json the JSON response body
+         * @return this response for chaining
+         */
+        fn created(json: String) -> HttpResponse
+        {
+            this.statusCode = 201;
+            this.headers["Content-Type"] = "application/json; charset=utf-8";
+            this.body = json;
+            return this;
+        }
+
+        /**
+         * Sets the response to a 204 No Content (empty body)
+         *
+         * @return this response for chaining
+         */
+        fn noContent() -> HttpResponse
+        {
+            this.statusCode = 204;
+            this.body = "";
+            return this;
+        }
+
+        /**
+         * Sets the response to a redirect (302 Found)
+         *
+         * @param url the URL to redirect to
+         * @return this response for chaining
+         */
+        fn redirect(url: String) -> HttpResponse
+        {
+            this.statusCode = 302;
+            this.headers["Location"] = url;
+            return this;
+        }
+
+        /**
+         * Sets CORS headers to allow cross-origin requests
+         *
+         * @param origin the allowed origin (defaults to "*")
+         * @return this response for chaining
+         */
+        fn cors(origin: String) -> HttpResponse
+        {
+            this.headers["Access-Control-Allow-Origin"] = origin;
+            this.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
+            this.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+            return this;
+        }
+    }
+}

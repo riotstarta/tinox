@@ -1,0 +1,33 @@
+module tinox.core.http2_server;
+
+namespace tinox.core.http2_server
+{
+    /**
+     * Per-stream state for an HTTP/2 connection.
+     *
+     * Accumulates the HPACK-encoded header block across one or more
+     * HEADERS/CONTINUATION frames, and body bytes from DATA frames.
+     */
+    class Http2Stream
+    {
+        var id: Int64;
+        /** "open" | "half_closed_remote" | "closed" */
+        var state: String;
+        var headerBlock: List<Int64>;
+        var body: List<Int64>;
+        var endStream: Bool;
+        var expectingContinuation: Bool;
+
+        fn new(id: Int64) -> Http2Stream
+        {
+            return Http2Stream {
+                id: id,
+                state: "open",
+                headerBlock: [],
+                body: [],
+                endStream: false,
+                expectingContinuation: false
+            };
+        }
+    }
+}

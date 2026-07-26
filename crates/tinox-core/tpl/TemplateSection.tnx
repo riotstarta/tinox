@@ -1,0 +1,10 @@
+module tinox.core.tpl;
+
+namespace tinox.core.tpl
+{
+    class TemplateSection
+    {
+        kind: String;
+        content: String;
+    }
+}

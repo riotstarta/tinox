@@ -1,0 +1,88 @@
+/**
+ * Tinox Standard Library - Time Module
+ * Time and date utilities including Duration, Timer, and Stopwatch
+ */
+module tinox.core.time;
+
+namespace tinox.core.time
+{
+    /**
+     * Time utility class providing factory methods for time-related objects
+     * and access to system time functions
+     */
+    class Time
+    {
+        /**
+         * Returns the current system time in milliseconds
+         *
+         * @return current time in milliseconds since epoch
+         */
+        fn now() -> Int64
+        {
+            return now();
+        }
+
+        /**
+         * Pauses execution for the specified duration
+         *
+         * @param ms the number of milliseconds to sleep
+         */
+        fn sleep(ms: Int64) -> Nothing
+        {
+            sleep_ms(ms);
+        }
+
+        /**
+         * Creates a new Timer instance
+         *
+         * @return a new Timer ready to measure elapsed time
+         */
+        fn newTimer() -> Timer
+        {
+            return Timer::new();
+        }
+
+        /**
+         * Creates a new Stopwatch instance
+         *
+         * @return a new Stopwatch ready to measure elapsed time
+         */
+        fn newStopwatch() -> Stopwatch
+        {
+            return Stopwatch::new();
+        }
+
+        /**
+         * Creates a Duration from seconds
+         *
+         * @param seconds the number of seconds
+         * @return a new Duration instance
+         */
+        fn newDuration(seconds: Int64) -> Duration
+        {
+            return Duration::new(seconds);
+        }
+
+        /**
+         * Creates a Duration from minutes
+         *
+         * @param minutes the number of minutes
+         * @return a new Duration instance
+         */
+        fn durationFromMinutes(minutes: Int64) -> Duration
+        {
+            return Duration::fromMinutes(minutes);
+        }
+
+        /**
+         * Creates a Duration from hours
+         *
+         * @param hours the number of hours
+         * @return a new Duration instance
+         */
+        fn durationFromHours(hours: Int64) -> Duration
+        {
+            return Duration::fromHours(hours);
+        }
+    }
+}

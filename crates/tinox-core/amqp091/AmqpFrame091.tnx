@@ -1,0 +1,37 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+/*
+ * AMQP-0-9-1-Client über der Conn-Handle-Architektur des HTTP-Servers
+ * (dieselbe Grundlage wie WebSocket, s. tasklist.md). Kein Broker/Server —
+ * nur der Client-seitige Verbindungsaufbau zu einem bestehenden Broker
+ * (RabbitMQ etc.).
+ *
+ * Aufbau siehe tasklist.md (Phasen 1-5). Bytes laufen als List<Int64> (ein
+ * Byte 0..255 pro Slot) über die binärsicheren Primitiven
+ * httpConnReadN/httpConnWriteBytes — dieselben, die schon für WebSocket
+ * genutzt werden. Verbindungsaufbau über socketCreateTcp/socketConnect,
+ * dann httpConnFromFd, um den nackten fd binärsicher zu wickeln.
+ *
+ * Bewusste v1-Lücken (tasklist.md "Später"): kein TLS-Client (nur amqp://,
+ * kein amqps://), keine Negotiation (Phase 3), kein Content-Header-
+ * Property-Codec (gehört fachlich zu Phase 4 basic.publish, nicht zum
+ * generischen Frame-Codec hier).
+ */
+
+namespace tinox.core.amqp091
+{
+    /*
+     * Ein gelesener Frame (AMQP 0-9-1 §4.2.3). frameType: 1=METHOD,
+     * 2=HEADER, 3=BODY, 4=HEARTBEAT; zusätzlich als Lese-Ergebnis: -1 =
+     * Verbindung zu/EOF, -2 = Protokollfehler (fehlender 0xCE-Terminator
+     * oder Payload-Cap überschritten).
+     */
+    class AmqpFrame091
+    {
+        var frameType: Int64;
+        var chanId: Int64;
+        var payload: List<Int64>;
+    }
+}

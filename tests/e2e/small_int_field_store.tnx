@@ -7,14 +7,14 @@
 // expect: 42
 // expect: 1001
 
-class C {
+class small_int_field_store {
     var n: Int32;
     var m: Int16;
-    fn make(a: Int32, b: Int16) -> C { return C { n: a, m: b }; }
+    fn make(a: Int32, b: Int16) -> small_int_field_store { return small_int_field_store { n: a, m: b }; }
 }
 
 fn main() -> Int32 {
-    let c: C = C::make(1000, 42);   // i32/i16-Parameter im Feld-Store
+    let c: small_int_field_store = small_int_field_store::make(1000, 42);   // i32/i16-Parameter im Feld-Store
     println(c.n.toString());         // 1000
     println(c.m.toString());         // 42
     println((c.n + 1).toString());   // 1001

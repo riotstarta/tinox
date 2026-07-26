@@ -7,7 +7,7 @@ import tinox.core.db;
 
 @Entity
 @Table("products")
-class Product
+class orm_sqlite_count
 {
     @Id @GeneratedValue
     var id: Int64;
@@ -19,9 +19,9 @@ class Product
 
 fn main() -> Int32
 {
-    let total: Int64 = DB.of(Product).count();
+    let total: Int64 = DB.of(orm_sqlite_count).count();
     println(total);
-    let cheap: Int64 = DB.of(Product)
+    let cheap: Int64 = DB.of(orm_sqlite_count)
         .filter(p => p.price < 100)
         .count();
     println(cheap);

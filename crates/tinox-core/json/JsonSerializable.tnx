@@ -1,0 +1,26 @@
+module tinox.core.json;
+
+namespace tinox.core.json
+{
+    // ========================================================================
+    // Serialization Annotations
+    // ========================================================================
+
+    /**
+     * Marks a class for automatic JSON serialization and deserialization.
+     * The compiler generates toJson() and fromJson(JsonValue) methods.
+     *
+     * Usage:
+     *   @JsonSerializable
+     *   class User
+     *   {
+     *       var id: Int64;
+     *       var name: String;
+     *   }
+     *
+     *   let json: String = Json::serialize(user);
+     *   let user: User = Json::deserialize<User>(json);
+     */
+    @annotation
+    class JsonSerializable {}
+}

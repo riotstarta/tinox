@@ -1,0 +1,19 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    /*
+     * Generische Hülle eines METHOD-Frame-Payloads (§4.2.4): class-id +
+     * method-id + Argument-Bytes. Die konkrete Argument-Reihenfolge pro
+     * Methode (z. B. connection.start-ok) baut/liest Phase 3 über einen
+     * frischen AmqpWriter091/AmqpReader091 auf `args`.
+     */
+    class AmqpMethodFrame091
+    {
+        var classId: Int64;
+        var methodId: Int64;
+        var args: List<Int64>;
+    }
+}

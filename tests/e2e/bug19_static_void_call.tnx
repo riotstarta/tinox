@@ -4,18 +4,18 @@
 // expect: 5
 // expect: ok
 
-class C {
-    fn mk() -> C {
-        return C {};
+class bug19_static_void_call {
+    fn mk() -> bug19_static_void_call {
+        return bug19_static_void_call {};
     }
-    fn voidy(c: C, x: Int64) -> Nothing {
+    fn voidy(c: bug19_static_void_call, x: Int64) -> Nothing {
         println(x);
     }
 }
 
 fn main() -> Int32 {
-    let c: C = C::mk();
-    C::voidy(c, 5);
+    let c: bug19_static_void_call = bug19_static_void_call::mk();
+    bug19_static_void_call::voidy(c, 5);
     println("ok");
     return 0;
 }

@@ -830,6 +830,10 @@ fn check(args: &[String]) {
             std::process::exit(1);
         }
     };
+    if let Err(e) = check_one_type_per_file(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
 
     // Resolve imports
     let base_dir = Path::new(&input_file)
@@ -1416,6 +1420,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let tokens = lexer.tokenize().map_err(|e| format!("lex error: {e:?}"))?;
     let mut parser = tinox_parser::Parser::new(tokens);
     let mut ast = parser.parse().map_err(|e| format!("parse error: {e:?}"))?;
+    check_one_type_per_file(&ast.decls, Path::new(path))?;
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
@@ -1436,6 +1441,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let tokens = lexer.tokenize().map_err(|e| format!("lex: {e:?}"))?;
     let mut parser = tinox_parser::Parser::new(tokens);
     let mut ast = parser.parse().map_err(|e| format!("parse: {e:?}"))?;
+    check_one_type_per_file(&ast.decls, Path::new(source))?;
 
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
@@ -1569,6 +1575,92 @@ fn load_dep_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Collects the names of every top-level `class`/`interface`/`enum` in a
+/// single file's own decls, descending into `namespace { ... }` wrappers
+/// (the stdlib's `namespace tinox.core.X { class Y { ... } }` shape) since
+/// those are organizational, not a second nesting level from the user's
+/// perspective. Order matches declaration order.
+fn collect_type_decl_names(decls: &[tinox_parser::Decl]) -> Vec<&str> {
+    let mut names = Vec::new();
+    for d in decls {
+        match &d.node {
+            DeclKind::Class(c) => names.push(c.name.as_str()),
+            DeclKind::Interface(i) => names.push(i.name.as_str()),
+            DeclKind::Enum(e) => names.push(e.name.as_str()),
+            DeclKind::Namespace(ns) => names.extend(collect_type_decl_names(&ns.decls)),
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Enforces "at most one top-level class/interface/enum per file, and if
+/// there is one, the file must be named exactly after it" (case-sensitive).
+/// Must run on a SINGLE file's own (pre-merge) decls, before those decls are
+/// merged into the importer — once merged, a decl's originating file can no
+/// longer be determined (`Spanned<T>` carries no filename). Wired into
+/// `resolve_imports` (for every imported file) and `check`/`compile_file`
+/// (for the entry file).
+fn check_one_type_per_file(decls: &[tinox_parser::Decl], path: &Path) -> Result<(), String> {
+    let names = collect_type_decl_names(decls);
+    match names.as_slice() {
+        [] => Ok(()),
+        [only] => {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if *only == stem {
+                Ok(())
+            } else {
+                Err(format!(
+                    "'{}' declares '{}', but the file must be named '{}.tnx' (one type per file, filename must match exactly)",
+                    path.display(),
+                    only,
+                    only
+                ))
+            }
+        }
+        many => Err(format!(
+            "'{}' declares {} types ({}), but only one class/interface/enum is allowed per file — split it into separate files",
+            path.display(),
+            many.len(),
+            many.join(", ")
+        )),
+    }
+}
+
+/// Resolves a module reference to a list of source files: prefers a single
+/// `<name>.tnx` file (legacy / not-yet-migrated modules); if that doesn't
+/// exist, falls back to a `<name>/` directory containing one `.tnx` file per
+/// top-level type (one-type-per-file convention, Issue: filename must match
+/// its type). Returns `Ok(None)` if neither a matching file nor directory
+/// exists under `base`; `Err` if the directory exists but is empty/unreadable.
+fn resolve_module_paths(
+    base: &Path,
+    rel_file: &Path,
+    rel_dir: &Path,
+) -> Result<Option<Vec<PathBuf>>, String> {
+    if let Ok(p) = base.join(rel_file).canonicalize() {
+        return Ok(Some(vec![p]));
+    }
+    let dir = base.join(rel_dir);
+    if dir.is_dir() {
+        let mut files: Vec<PathBuf> = fs::read_dir(&dir)
+            .map_err(|e| format!("Cannot read module directory '{}': {}", dir.display(), e))?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map(|e| e == "tnx").unwrap_or(false))
+            .collect();
+        if files.is_empty() {
+            return Err(format!("Module directory '{}' contains no .tnx files", dir.display()));
+        }
+        files.sort();
+        let canon: Result<Vec<PathBuf>, String> = files
+            .iter()
+            .map(|p| p.canonicalize().map_err(|e| format!("Cannot resolve '{}': {}", p.display(), e)))
+            .collect();
+        return canon.map(Some);
+    }
+    Ok(None)
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
@@ -1587,71 +1679,99 @@ fn resolve_imports(
         })
         .collect();
 
+    // Collected separately and prepended (not appended) below: the
+    // typechecker does a single linear pass over decls with no forward-
+    // declaration/hoisting pass for interface-implementation records
+    // (`interface_implementations` is populated lazily inside `check_class`
+    // as each class is visited, see tinox-typecheck/src/lib.rs) — a `main()`
+    // that upcasts an imported class to an imported interface it implements
+    // must see both of those decls EARLIER in the list than `main` itself,
+    // otherwise `types_compatible` sees an empty implements-record and
+    // rejects the assignment. Single-file programs always satisfied this by
+    // convention (types declared above `main`); merging via simple `extend`
+    // put every import AFTER the importing file's own decls instead, which
+    // broke exactly this pattern once one-type-per-file split types and
+    // their `main()` driver across separate files.
+    let mut imported_decls: Vec<tinox_parser::Decl> = Vec::new();
+
     for import in imports {
-        // ["foo", "bar"] → "foo/bar.tnx" relative to base_dir
-        let mut rel = PathBuf::new();
+        // ["foo", "bar"] → "foo/bar.tnx" (single-file module) or "foo/bar/"
+        // (directory module, one .tnx per top-level type) relative to base_dir.
+        let mut rel_file = PathBuf::new();
+        let mut rel_dir = PathBuf::new();
         for (i, seg) in import.path.iter().enumerate() {
             if i == import.path.len() - 1 {
-                rel.push(format!("{}.tnx", seg));
+                rel_file.push(format!("{}.tnx", seg));
+                rel_dir.push(seg);
             } else {
-                rel.push(seg);
+                rel_file.push(seg);
+                rel_dir.push(seg);
             }
         }
 
         // Resolution order:
         // 1. Relative to source file directory
         // 2. Installed package dependencies (.tinox/deps/...)
-        // 3. tinox.core.X  →  <stdlib_dir>/X.tnx
-        let full_path = if let Ok(p) = base_dir.join(&rel).canonicalize() {
+        // 3. tinox.core.X  →  <stdlib_dir>/X.tnx or <stdlib_dir>/X/*.tnx
+        let full_paths: Vec<PathBuf> = if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
             p
-        } else if let Some(p) = dep_dirs.iter().find_map(|d| d.join(&rel).canonicalize().ok()) {
+        } else if let Some(p) = dep_dirs
+            .iter()
+            .find_map(|d| resolve_module_paths(d, &rel_file, &rel_dir).ok().flatten())
+        {
             p
         } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
-            // stdlib import: take the last segment as filename
+            // stdlib import: take the last segment as filename/directory name
             let last = import.path.last().unwrap();
-            let stdlib_file = format!("{}.tnx", last);
-            stdlib_dir()
-                .ok_or_else(|| {
-                    format!(
-                        "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",
-                        rel.display()
-                    )
-                })?
-                .join(&stdlib_file)
-                .canonicalize()
-                .map_err(|e| format!("Cannot resolve stdlib import '{}': {}", stdlib_file, e))?
+            let stdlib_rel_file = PathBuf::from(format!("{}.tnx", last));
+            let stdlib_rel_dir = PathBuf::from(last);
+            let dir = stdlib_dir().ok_or_else(|| {
+                format!(
+                    "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",
+                    rel_file.display()
+                )
+            })?;
+            resolve_module_paths(&dir, &stdlib_rel_file, &stdlib_rel_dir)?.ok_or_else(|| {
+                format!("Cannot resolve stdlib import '{}': no such file or directory", stdlib_rel_file.display())
+            })?
         } else {
-            return Err(format!("Cannot resolve import '{}': file not found", rel.display()));
+            return Err(format!("Cannot resolve import '{}': file not found", rel_file.display()));
         };
 
-        if visited.contains(&full_path) {
-            continue;
+        for full_path in full_paths {
+            if visited.contains(&full_path) {
+                continue;
+            }
+            visited.insert(full_path.clone());
+
+            let source = fs::read_to_string(&full_path)
+                .map_err(|e| format!("Failed to read import '{}': {}", full_path.display(), e))?;
+
+            let mut lexer = Lexer::new(&source);
+            // Keep source alive for the lexer lifetime
+            let tokens = lexer
+                .tokenize()
+                .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
+
+            let mut parser = Parser::new(tokens);
+            let mut imported = parser
+                .parse()
+                .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
+            check_one_type_per_file(&imported.decls, &full_path)?;
+
+            let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            resolve_imports(&mut imported, &imported_dir, visited, dep_dirs)?;
+
+            imported_decls.extend(imported.decls);
         }
-        visited.insert(full_path.clone());
-
-        let source = fs::read_to_string(&full_path)
-            .map_err(|e| format!("Failed to read import '{}': {}", full_path.display(), e))?;
-
-        let mut lexer = Lexer::new(&source);
-        // Keep source alive for the lexer lifetime
-        let tokens = lexer
-            .tokenize()
-            .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
-
-        let mut parser = Parser::new(tokens);
-        let mut imported = parser
-            .parse()
-            .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
-
-        let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        resolve_imports(&mut imported, &imported_dir, visited, dep_dirs)?;
-
-        ast.decls.extend(imported.decls);
     }
 
     // Drop Import and Module decls — they are resolved or informational only
     ast.decls
         .retain(|d| !matches!(&d.node, DeclKind::Import(_) | DeclKind::Module(_)));
+
+    imported_decls.append(&mut ast.decls);
+    ast.decls = imported_decls;
 
     Ok(())
 }
@@ -1669,6 +1789,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     let mut ast = parser
         .parse()
         .map_err(|e| format!("Parse error: {:?}", e))?;
+    check_one_type_per_file(&ast.decls, Path::new(input_path))?;
 
     let base_dir = Path::new(input_path)
         .parent()
@@ -2036,4 +2157,62 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let _ = fs::remove_file(&runtime_obj);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod one_type_per_file_tests {
+    use super::*;
+
+    fn parse_decls(src: &str) -> Vec<tinox_parser::Decl> {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("tokenize");
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("parse").decls
+    }
+
+    #[test]
+    fn zero_types_ok() {
+        let decls = parse_decls("fn main() -> Int32 { return 0; }");
+        assert!(check_one_type_per_file(&decls, Path::new("script.tnx")).is_ok());
+    }
+
+    #[test]
+    fn one_type_matching_name_ok() {
+        let decls = parse_decls("class Player { var hp: Int64; }");
+        assert!(check_one_type_per_file(&decls, Path::new("Player.tnx")).is_ok());
+    }
+
+    #[test]
+    fn one_type_mismatched_name_err() {
+        let decls = parse_decls("class Player { var hp: Int64; }");
+        let err = check_one_type_per_file(&decls, Path::new("player.tnx")).unwrap_err();
+        assert!(err.contains("Player"), "error should name the type: {err}");
+        assert!(err.contains("Player.tnx"), "error should name the required filename: {err}");
+    }
+
+    #[test]
+    fn two_types_err() {
+        let decls = parse_decls("class A { var x: Int64; } class B { var y: Int64; }");
+        let err = check_one_type_per_file(&decls, Path::new("AB.tnx")).unwrap_err();
+        assert!(err.contains('A') && err.contains('B'), "error should list both types: {err}");
+    }
+
+    #[test]
+    fn namespace_wrapped_type_matching_name_ok() {
+        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64; } }");
+        assert!(check_one_type_per_file(&decls, Path::new("Base64.tnx")).is_ok());
+    }
+
+    #[test]
+    fn namespace_wrapped_type_mismatched_name_err() {
+        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64; } }");
+        assert!(check_one_type_per_file(&decls, Path::new("base64.tnx")).is_err());
+    }
+
+    #[test]
+    fn interface_and_enum_count_too() {
+        let decls = parse_decls("interface Shape { fn area() -> Int64; } enum Color { Red, Blue }");
+        let err = check_one_type_per_file(&decls, Path::new("x.tnx")).unwrap_err();
+        assert!(err.contains("Shape") && err.contains("Color"), "error should list both: {err}");
+    }
 }

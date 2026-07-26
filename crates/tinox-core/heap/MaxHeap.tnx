@@ -1,0 +1,28 @@
+module tinox.core.heap;
+
+namespace tinox.core.heap
+{
+    class MaxHeap<T>
+    {
+        fn new() -> MaxHeap<T>
+        {
+            let comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };
+            return MaxHeap<T> { heap: Heap::newWithCompare(comp) };
+        }
+
+        fn push(h: MaxHeap<T>, item: T) -> Nothing
+        {
+            Heap::push(h.heap, item);
+        }
+
+        fn pop(h: MaxHeap<T>) -> T
+        {
+            return Heap::pop(h.heap);
+        }
+
+        fn peek(h: MaxHeap<T>) -> T
+        {
+            return Heap::peek(h.heap);
+        }
+    }
+}

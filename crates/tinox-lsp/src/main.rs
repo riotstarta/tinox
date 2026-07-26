@@ -16,34 +16,86 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-// Embed all stdlib .tnx files at compile time so the binary works without any install path.
+// Embed all stdlib .tnx files at compile time so the binary works without any
+// install path. One-type-per-file (2026-07-26): most modules are now a
+// directory of several `<TypeName>.tnx` files instead of one `<name>.tnx` —
+// concatenated per module (still valid Tinox syntax: multiple adjacent
+// `module`/`namespace` blocks, same shape the original unsplit file had with
+// multiple classes in one `namespace` block).
 const EMBEDDED_STDLIB: &[(&str, &str)] = &[
-    ("array",         include_str!("../../tinox-core/array.tnx")),
-    ("collections",   include_str!("../../tinox-core/collections.tnx")),
-    ("env",           include_str!("../../tinox-core/env.tnx")),
-    ("fmt",           include_str!("../../tinox-core/fmt.tnx")),
-    ("fs",            include_str!("../../tinox-core/fs.tnx")),
-    ("hash",          include_str!("../../tinox-core/hash.tnx")),
-    ("http",          include_str!("../../tinox-core/http.tnx")),
-    ("http_server",   include_str!("../../tinox-core/http_server.tnx")),
-    ("io",            include_str!("../../tinox-core/io.tnx")),
-    ("iter",          include_str!("../../tinox-core/iter.tnx")),
-    ("json",          include_str!("../../tinox-core/json.tnx")),
-    ("logger",        include_str!("../../tinox-core/logger.tnx")),
-    ("math",          include_str!("../../tinox-core/math.tnx")),
-    ("mathf",         include_str!("../../tinox-core/mathf.tnx")),
-    ("option",        include_str!("../../tinox-core/option.tnx")),
-    ("process",       include_str!("../../tinox-core/process.tnx")),
-    ("random",        include_str!("../../tinox-core/random.tnx")),
-    ("regex",         include_str!("../../tinox-core/regex.tnx")),
-    ("rest",          include_str!("../../tinox-core/rest.tnx")),
-    ("result",        include_str!("../../tinox-core/result.tnx")),
-    ("set",           include_str!("../../tinox-core/set.tnx")),
-    ("socket",        include_str!("../../tinox-core/socket.tnx")),
-    ("sort",          include_str!("../../tinox-core/sort.tnx")),
-    ("string",        include_str!("../../tinox-core/string.tnx")),
-    ("time",          include_str!("../../tinox-core/time.tnx")),
-    ("uuid",          include_str!("../../tinox-core/uuid.tnx")),
+    ("array",         include_str!("../../tinox-core/array/Arrays.tnx")),
+    ("collections",   concat!(
+        include_str!("../../tinox-core/collections/Collections.tnx"),
+        include_str!("../../tinox-core/collections/Pair.tnx"),
+        include_str!("../../tinox-core/collections/Queue.tnx"),
+        include_str!("../../tinox-core/collections/Stack.tnx"),
+    )),
+    ("env",           include_str!("../../tinox-core/env/Env.tnx")),
+    ("fmt",           include_str!("../../tinox-core/fmt/Fmt.tnx")),
+    ("fs",            include_str!("../../tinox-core/fs/Fs.tnx")),
+    ("hash",          include_str!("../../tinox-core/hash/Hash.tnx")),
+    ("http",          concat!(
+        include_str!("../../tinox-core/http/Http.tnx"),
+        include_str!("../../tinox-core/http/HttpResponse.tnx"),
+    )),
+    ("http_server",   concat!(
+        include_str!("../../tinox-core/http_server/HttpContext.tnx"),
+        include_str!("../../tinox-core/http_server/HttpRequest.tnx"),
+        include_str!("../../tinox-core/http_server/HttpResponse.tnx"),
+        include_str!("../../tinox-core/http_server/HttpServer.tnx"),
+        include_str!("../../tinox-core/http_server/MediaType.tnx"),
+        include_str!("../../tinox-core/http_server/QueryString.tnx"),
+        include_str!("../../tinox-core/http_server/Route.tnx"),
+        include_str!("../../tinox-core/http_server/RouteMatcher.tnx"),
+    )),
+    ("io",            concat!(
+        include_str!("../../tinox-core/io/Buffer.tnx"),
+        include_str!("../../tinox-core/io/File.tnx"),
+        include_str!("../../tinox-core/io/Io.tnx"),
+        include_str!("../../tinox-core/io/Paths.tnx"),
+    )),
+    ("iter",          concat!(
+        include_str!("../../tinox-core/iter/Iter.tnx"),
+        include_str!("../../tinox-core/iter/Iterator.tnx"),
+    )),
+    ("json",          concat!(
+        include_str!("../../tinox-core/json/Json.tnx"),
+        include_str!("../../tinox-core/json/JsonField.tnx"),
+        include_str!("../../tinox-core/json/JsonSerializable.tnx"),
+        include_str!("../../tinox-core/json/JsonValue.tnx"),
+    )),
+    ("logger",        concat!(
+        include_str!("../../tinox-core/logger/LogLevel.tnx"),
+        include_str!("../../tinox-core/logger/Logger.tnx"),
+    )),
+    ("math",          include_str!("../../tinox-core/math/Math.tnx")),
+    ("mathf",         include_str!("../../tinox-core/mathf/Mathf.tnx")),
+    ("option",        include_str!("../../tinox-core/option/Option.tnx")),
+    ("process",       include_str!("../../tinox-core/process/Process.tnx")),
+    ("random",        include_str!("../../tinox-core/random/Random.tnx")),
+    ("regex",         include_str!("../../tinox-core/regex/Regex.tnx")),
+    ("rest",          concat!(
+        include_str!("../../tinox-core/rest/HttpStatus.tnx"),
+        include_str!("../../tinox-core/rest/HttpStatusHelper.tnx"),
+        include_str!("../../tinox-core/rest/MediaType.tnx"),
+        include_str!("../../tinox-core/rest/MediaTypeHelper.tnx"),
+        include_str!("../../tinox-core/rest/RequestBuilder.tnx"),
+        include_str!("../../tinox-core/rest/RestClient.tnx"),
+        include_str!("../../tinox-core/rest/RestResponse.tnx"),
+        include_str!("../../tinox-core/rest/Url.tnx"),
+    )),
+    ("result",        include_str!("../../tinox-core/result/Result.tnx")),
+    ("set",           include_str!("../../tinox-core/set/Set.tnx")),
+    ("socket",        include_str!("../../tinox-core/socket/Socket.tnx")),
+    ("sort",          include_str!("../../tinox-core/sort/Sort.tnx")),
+    ("string",        include_str!("../../tinox-core/string/Strings.tnx")),
+    ("time",          concat!(
+        include_str!("../../tinox-core/time/Duration.tnx"),
+        include_str!("../../tinox-core/time/Stopwatch.tnx"),
+        include_str!("../../tinox-core/time/Time.tnx"),
+        include_str!("../../tinox-core/time/Timer.tnx"),
+    )),
+    ("uuid",          include_str!("../../tinox-core/uuid/Uuid.tnx")),
 ];
 
 fn build_embedded_stdlib() -> TypeRegistry {

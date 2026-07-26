@@ -32,7 +32,6 @@ const KNOWN_BROKEN: &[&str] = &[];
 
 /// Module ohne Smoke-Fall, mit Begründung.
 const EXCLUDED: &[(&str, &str)] = &[
-    ("main", "Demo-Datei ohne module-Header, kein importierbares Modul"),
     ("db", "braucht [database]-Config; von den orm_sqlite_* E2E-Fällen abgedeckt"),
 ];
 
@@ -537,12 +536,23 @@ fn emit_case(s: &Smoke) -> (String, String) {
 /// Jedes Stdlib-Modul hat einen Smoke-Fall oder steht begründet in EXCLUDED.
 #[test]
 fn stdlib_smoke_completeness() {
+    // A module is either a legacy single `<name>.tnx` file (not yet migrated)
+    // or a `<name>/` directory of one-type-per-file `.tnx` files (migrated,
+    // one-type-per-file convention) — either way the module key is the
+    // top-level entry's name minus any `.tnx` extension.
     let modules: BTreeSet<String> = fs::read_dir(stdlib_dir())
         .expect("crates/tinox-core lesbar")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
-        .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        .filter_map(|p| {
+            if p.is_dir() {
+                p.file_name().map(|n| n.to_string_lossy().to_string())
+            } else if p.extension().map(|x| x == "tnx").unwrap_or(false) {
+                p.file_stem().map(|s| s.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
         .collect();
     let covered: BTreeSet<String> = SMOKES.iter().map(|s| s.key.to_string()).collect();
     let excluded: BTreeSet<String> = EXCLUDED.iter().map(|(k, _)| k.to_string()).collect();

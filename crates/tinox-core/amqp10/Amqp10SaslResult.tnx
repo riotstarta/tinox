@@ -1,0 +1,19 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Ergebnis von Amqp10::negotiateSasl (Phase 4). ok == false bei jedem
+     * Fehlschlag (falscher Frame-Typ, unerwartete Performative, PLAIN nicht
+     * angeboten, sasl-outcome-code != 0) — errorMessage beschreibt dann die
+     * Ursache, analog zu 0-9-1s errorMessage-Feld-Konvention.
+     */
+    class Amqp10SaslResult
+    {
+        var ok: Bool;
+        var errorMessage: String;
+    }
+}

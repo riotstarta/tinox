@@ -1,0 +1,54 @@
+module tinox.core.rest_framework;
+
+import tinox.core.http_server;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Abstract base class for REST controllers.
+     *
+     * Extend this class and use annotations on your methods.
+     * Register the controller with RestApi.register().
+     *
+     * Example:
+     *   @Path("/api/users")
+     *   class UserController : RestController
+     *   {
+     *       @GET("/")
+     *       @Produces("application/json")
+     *       fn list(ctx: HttpContext) -> Nothing
+     *       {
+     *           ctx.response.json("[]");
+     *       }
+     *   }
+     */
+    class RestController
+    {
+        /** Route entries registered for this controller */
+        var routes: List<RouteEntry>;
+
+        /** Base path for all routes in this controller */
+        var basePath: String;
+
+        fn new() -> RestController
+        {
+            return RestController { routes: [], basePath: "" };
+        }
+
+        /**
+         * Manually registers a route on this controller.
+         * Called by the framework during register() to wire up annotated methods.
+         *
+         * @param method the HTTP method
+         * @param path the route path (appended to basePath)
+         * @param handler the handler function
+         * @return the RouteEntry for further configuration
+         */
+        fn route(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
+        {
+            let routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
+            this.routes.push(routeEntry);
+            return routeEntry;
+        }
+    }
+}

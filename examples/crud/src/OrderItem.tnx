@@ -1,0 +1,25 @@
+@Entity
+@Table("order_items")
+@JsonSerializable
+class OrderItem
+{
+    @Id
+    @GeneratedValue
+    var id: Int64;
+
+    @Column("order_id")
+    @NotNull
+    var orderId: Int64;
+
+    @Column("product_id")
+    @NotNull
+    var productId: Int64;
+
+    @Column("quantity")
+    @NotNull
+    var quantity: Int64;
+
+    @Column("unit_price_cents")
+    @NotNull
+    var unitPriceCents: Int64;
+}

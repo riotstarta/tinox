@@ -1,0 +1,20 @@
+@Entity
+@Table("customers")
+@JsonSerializable
+class Customer
+{
+    @Id
+    @GeneratedValue
+    var id: Int64;
+
+    @Column("name")
+    @NotNull
+    var name: String;
+
+    @Column("email")
+    @NotNull
+    var email: String;
+
+    @Column("phone")
+    var phone: String;
+}

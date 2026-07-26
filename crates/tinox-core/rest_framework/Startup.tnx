@@ -1,0 +1,12 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Eager singleton — created immediately at application startup, before any
+     * request is handled. Useful for services that need initialization work
+     * (e.g. DB connection pools, background workers).
+     */
+    @annotation
+    class Startup {}
+}

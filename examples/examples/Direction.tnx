@@ -1,0 +1,8 @@
+enum Direction
+{
+    North;
+    South;
+    East;
+    West;
+    Diagonal(dx: Int32, dy: Int32);
+}

@@ -1,0 +1,23 @@
+module tinox.core.rest;
+
+namespace tinox.core.rest
+{
+    /**
+     * Common MIME type enum for Content-Type headers
+     *
+     * Usage:
+     *   RestClient::new("https://api.example.com")
+     *       .header("Content-Type", MediaType::ApplicationJson)
+     *       .post("/users")
+     */
+    enum MediaType
+    {
+        ApplicationJson;
+        ApplicationXml;
+        ApplicationFormUrlencoded;
+        TextPlain;
+        TextHtml;
+        TextCsv;
+        MultipartFormData;
+    }
+}

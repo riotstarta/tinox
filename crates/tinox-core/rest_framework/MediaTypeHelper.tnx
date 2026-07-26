@@ -1,0 +1,25 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Converts MediaType enum values to their MIME type strings.
+     */
+    class MediaTypeHelper
+    {
+        fn toString(mediaType: MediaType) -> String
+        {
+            match mediaType
+            {
+                None => return "";
+                Json => return "application/json";
+                Xml => return "application/xml";
+                FormUrlencoded => return "application/x-www-form-urlencoded";
+                TextPlain => return "text/plain";
+                TextHtml => return "text/html";
+                TextCsv => return "text/csv";
+                MultipartFormData => return "multipart/form-data";
+            }
+        }
+    }
+}

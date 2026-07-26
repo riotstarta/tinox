@@ -1,0 +1,65 @@
+/**
+ * Tinox Standard Library - REST Framework Module
+ * Annotation-driven REST framework for building APIs with declarative routing.
+ *
+ * Annotations are parsed by the Tinox compiler but not yet processed at runtime.
+ * Use RestApi to explicitly register controllers and their annotated routes
+ * until native annotation processing is available.
+ *
+ * Example usage:
+ *   @Path("/api")
+ *   class UserController
+ *   {
+ *       @GET("/users")
+ *       @Produces(MediaType::Json)
+ *       fn listUsers(ctx: HttpContext) -> Nothing
+ *       {
+ *           ctx.response.json("[{\"id\": 1, \"name\": \"Alice\"}]");
+ *       }
+ *
+ *       @GET("/users/:id")
+ *       @Produces(MediaType::Json)
+ *       fn getUser(ctx: HttpContext) -> Nothing
+ *       {
+ *           let id: String = ctx.request.getParam("id");
+ *           ctx.response.json("{\"id\": " + id + "}");
+ *       }
+ *
+ *       @POST("/users")
+ *       @Consumes(MediaType::Json)
+ *       @StatusCode(201)
+ *       @Produces(MediaType::Json)
+ *       fn createUser(ctx: HttpContext) -> Nothing
+ *       {
+ *           let req: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
+ *           ctx.response.status(201).json(req);
+ *       }
+ *   }
+ *
+ *   let app: RestApi = RestApi::new(8080);
+ *   app.register(new UserController());
+ *   app.start();
+ */
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Common MIME types for use with @Produces and @Consumes annotations.
+     *
+     * Usage:
+     *   @Produces(MediaType::Json)
+     *   @Consumes(MediaType::Json)
+     */
+    enum MediaType
+    {
+        None;
+        Json;
+        Xml;
+        FormUrlencoded;
+        TextPlain;
+        TextHtml;
+        TextCsv;
+        MultipartFormData;
+    }
+}

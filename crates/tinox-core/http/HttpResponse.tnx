@@ -1,0 +1,22 @@
+module tinox.core.http;
+
+namespace tinox.core.http
+{
+    class HttpResponse
+    {
+        fn statusCode() -> Int64
+        {
+            return httpStatusCode(this);
+        }
+
+        fn body() -> String
+        {
+            return httpBody(this);
+        }
+
+        fn header(name: String) -> String
+        {
+            return httpHeader(this, name);
+        }
+    }
+}

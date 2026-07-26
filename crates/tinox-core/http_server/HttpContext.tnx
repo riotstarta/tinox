@@ -1,0 +1,42 @@
+module tinox.core.http_server;
+
+namespace tinox.core.http_server
+{
+    /**
+     * Request context passed to route handlers and middleware
+     *
+     * Contains both the incoming request and the outgoing response,
+     * enabling handlers to read request data and modify the response.
+     */
+    class HttpContext
+    {
+        /** The incoming HTTP request */
+        var request: HttpRequest;
+
+        /** The outgoing HTTP response */
+        var response: HttpResponse;
+
+        /**
+         * Creates a new HttpContext
+         *
+         * @param request the incoming request
+         * @param response the outgoing response (defaults to new 200 response)
+         * @return a new HttpContext instance
+         */
+        fn new(request: HttpRequest, response: HttpResponse) -> HttpContext
+        {
+            return HttpContext { request: request, response: response };
+        }
+
+        /**
+         * Creates a context with a new default response
+         *
+         * @param request the incoming request
+         * @return a new HttpContext with a fresh 200 response
+         */
+        fn fromRequest(request: HttpRequest) -> HttpContext
+        {
+            return HttpContext { request: request, response: HttpResponse::new() };
+        }
+    }
+}

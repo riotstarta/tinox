@@ -1,0 +1,17 @@
+module tinox.core.http2_server;
+
+namespace tinox.core.http2_server
+{
+    // =========================================================================
+    // Frame flag bitmasks (RFC 7540 §6)
+    // =========================================================================
+
+    class Http2Flags
+    {
+        fn END_STREAM()  -> Int64 { return 0x01; }
+        fn END_HEADERS() -> Int64 { return 0x04; }
+        fn PADDED()      -> Int64 { return 0x08; }
+        fn PRIORITY()    -> Int64 { return 0x20; }
+        fn ACK()         -> Int64 { return 0x01; }
+    }
+}

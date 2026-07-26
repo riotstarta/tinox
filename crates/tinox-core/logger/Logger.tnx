@@ -1,0 +1,67 @@
+module tinox.core.logger;
+
+import tinox.core.time;
+
+namespace tinox.core.logger
+{
+    class Logger
+    {
+        var name: String;
+        var level: Int64;
+
+        fn new(name: String) -> Logger
+        {
+            return Logger { name: name, level: LogLevel::Info };
+        }
+
+        fn debug(logger: Logger, message: String) -> Nothing
+        {
+            if logger.level <= LogLevel::Debug
+            {
+                Logger::log(logger, "DEBUG", message);
+            }
+        }
+
+        fn info(logger: Logger, message: String) -> Nothing
+        {
+            if logger.level <= LogLevel::Info
+            {
+                Logger::log(logger, "INFO", message);
+            }
+        }
+
+        fn warn(logger: Logger, message: String) -> Nothing
+        {
+            if logger.level <= LogLevel::Warn
+            {
+                Logger::log(logger, "WARN", message);
+            }
+        }
+
+        fn error(logger: Logger, message: String) -> Nothing
+        {
+            if logger.level <= LogLevel::Error
+            {
+                Logger::log(logger, "ERROR", message);
+            }
+        }
+
+        fn setLevel(logger: Logger, level: Int64) -> Nothing
+        {
+            logger.level = level;
+        }
+
+        fn log(logger: Logger, level: String, message: String) -> Nothing
+        {
+            let timestamp: String = Time::now().toString();
+            print("[");
+            print(timestamp);
+            print("] [");
+            print(level);
+            print("] [");
+            print(logger.name);
+            print("] ");
+            println(message);
+        }
+    }
+}

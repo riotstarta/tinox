@@ -1,0 +1,17 @@
+module tinox.core.http_server;
+
+namespace tinox.core.http_server
+{
+    /**
+     * MIME type constants for use with @Produces and @Consumes annotations.
+     *
+     * Usage:
+     *   @Produces(MediaType.APPLICATION_JSON)
+     *   @Consumes(MediaType.PLAIN_TEXT)
+     */
+    enum MediaType
+    {
+        APPLICATION_JSON;
+        PLAIN_TEXT;
+    }
+}

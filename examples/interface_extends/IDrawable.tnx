@@ -1,0 +1,6 @@
+import IShape;
+
+interface IDrawable extends IShape
+{
+    fn draw() -> Nothing;
+}

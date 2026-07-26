@@ -1,0 +1,12 @@
+module tinox.core.xml;
+
+namespace tinox.core.xml
+{
+    class XmlQuery
+    {
+        fn query(node: XmlNode, xpath: String) -> List<XmlNode>
+        {
+            return [node];
+        }
+    }
+}

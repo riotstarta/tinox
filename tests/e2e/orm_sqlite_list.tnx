@@ -7,7 +7,7 @@ import tinox.core.db;
 
 @Entity
 @Table("users")
-class User
+class orm_sqlite_list
 {
     @Id @GeneratedValue
     var id: Int64;
@@ -19,7 +19,7 @@ class User
 
 fn main() -> Int32
 {
-    let users: List<User> = DB.of(User).list();
+    let users: List<orm_sqlite_list> = DB.of(orm_sqlite_list).list();
     println(users.len());
     println(users[0].name);
     return 0;

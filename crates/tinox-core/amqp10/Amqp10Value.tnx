@@ -1,0 +1,65 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+/*
+ * AMQP-1.0-Client (kein Broker), Phase 1 (tasklist.md): Transport-Dial +
+ * Protokoll-Header-Handshake. Kein gemeinsamer Code mit amqp091.tnx außer
+ * demselben Grundmuster (Conn-Handle-Dial über socketCreateTcp/
+ * socketConnect/httpConnFromFd, binärsicheres Lesen/Schreiben über
+ * httpConnReadN/httpConnWriteBytes) — AMQP 1.0 ist protokoll- und
+ * datenmodell-technisch ein eigenes Tier (generisches Typsystem statt
+ * fester Feld-Tags, Connection→Session→Link statt Connection→Channel).
+ * Details s. tasklist.md Sondierung (2026-07-24, gegen die OASIS-Spec
+ * verifiziert, nicht aus Erinnerung übernommen).
+ */
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Ein generischer AMQP-1.0-Wert (Phase 2, tasklist.md). Anders als
+     * 0-9-1s AmqpFieldValue091 (nur für Field-Table-Einträge) wird dieser
+     * Typ für ALLES genutzt: Performative-Felder, Message-Sections, sogar
+     * die Performative-Hülle selbst (Phase 3) — AMQP 1.0 hat EIN Typsystem
+     * für den gesamten Frame-Body statt getrennter Method-Argument- und
+     * Field-Table-Kodierungen.
+     *
+     * Bewusste v1-Lücken (Formatcodes werden vom Reader erkannt und mit
+     * korrektem Byte-Skip verarbeitet, aber der Wert selbst kommt als
+     * ErrorVal zurück statt echt dekodiert zu werden — kein Silent-Garbage,
+     * der Cursor bleibt trotzdem synchron für nachfolgende Felder):
+     * `float`/`double` (IEEE-754-Bit-Konvertierung bräuchte einen
+     * Bitcast-Primitive, den es in der Runtime nicht gibt, und die
+     * Kern-Performatives nutzen laut Spec nirgends float/double — nur
+     * Message-Bodies könnten das theoretisch tun), `decimal32/64/128`
+     * (praktisch nie genutzt, noch exotischer als float/double).
+     *
+     * MapVal ist eine FLACHE Liste (key0, val0, key1, val1, ...) statt
+     * eines Tinox-Map<K,V> — AMQP-1.0-Map-Keys sind beliebige Werte, kein
+     * einheitlicher K-Typ wie bei 0-9-1s immer-String-Keys.
+     */
+    enum Amqp10Value
+    {
+        NullVal;
+        BoolVal(Bool);
+        UByteVal(Int64);
+        UShortVal(Int64);
+        UIntVal(Int64);
+        ULongVal(Int64);
+        ByteVal(Int64);
+        ShortVal(Int64);
+        IntVal(Int64);
+        LongVal(Int64);
+        CharVal(Int64);       // UTF-32-Codepoint, roh (kein Tinox-String)
+        TimestampVal(Int64);  // ms seit Unix-Epoch
+        UuidVal(List<Int64>); // exakt 16 rohe Bytes
+        BinaryVal(List<Int64>);
+        StrVal(String);
+        SymbolVal(String);
+        ListVal(List<Amqp10Value>);
+        MapVal(List<Amqp10Value>);      // flach: key,val,key,val,...
+        DescribedVal(Amqp10Described);  // Performatives/SASL-Frames/Sections
+        ErrorVal(String);
+    }
+}

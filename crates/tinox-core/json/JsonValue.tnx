@@ -1,0 +1,79 @@
+module tinox.core.json;
+
+namespace tinox.core.json
+{
+    class JsonValue
+    {
+        fn getString() -> String
+        {
+            return jsonGetString(this);
+        }
+
+        fn getInt() -> Int64
+        {
+            return jsonGetInt(this);
+        }
+
+        // Alias used by modules (e.g. jwt.tnx) that read a JsonValue field
+        // and expect an Int-flavored accessor named like the others below.
+        fn asInt() -> Int64
+        {
+            return jsonGetInt(this);
+        }
+
+        fn asTable() -> Map<String, JsonValue>
+        {
+            return jsonGetObject(this);
+        }
+
+        fn getFloat() -> Float64
+        {
+            return jsonGetFloat(this);
+        }
+
+        fn getBool() -> Bool
+        {
+            return jsonGetBool(this);
+        }
+
+        fn isNull() -> Bool
+        {
+            return jsonIsNull(this);
+        }
+
+        fn isString() -> Bool
+        {
+            return jsonIsString(this);
+        }
+
+        fn isInt() -> Bool
+        {
+            return jsonIsInt(this);
+        }
+
+        fn isFloat() -> Bool
+        {
+            return jsonIsFloat(this);
+        }
+
+        fn isBool() -> Bool
+        {
+            return jsonIsBool(this);
+        }
+
+        fn isObject() -> Bool
+        {
+            return jsonIsObject(this);
+        }
+
+        fn isArray() -> Bool
+        {
+            return jsonIsArray(this);
+        }
+
+        fn getField(key: String) -> JsonValue
+        {
+            return jsonGetField(this, key);
+        }
+    }
+}

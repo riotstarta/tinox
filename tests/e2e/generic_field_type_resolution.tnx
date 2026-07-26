@@ -1,5 +1,5 @@
 // B2 Schritt 1: ValueType trägt jetzt generische Typargumente
-// (Box<Int64> -> Named("Box", [Int])), sodass ein T-typisiertes Feld einer
+// (generic_field_type_resolution<Int64> -> Named("generic_field_type_resolution", [Int])), sodass ein T-typisiertes Feld einer
 // Instanz zur konkreten Typ aufgelöst wird. Behebt drei vorbestehende Bugs (in
 // B1-Phase 4 gefunden): T-Feld-.toString(), T-Feld-Assignment, und direkten
 // T-Feld-Read. Deckt Int64-, String- und Float64-Instanziierungen ab.
@@ -9,23 +9,23 @@
 // expect: welt
 // expect: 1
 
-class Box<T> {
+class generic_field_type_resolution<T> {
     var value: T;
     var tag: Int64;
-    fn make(v: T, tag: Int64) -> Box<T> { return Box { value: v, tag: tag }; }
+    fn make(v: T, tag: Int64) -> generic_field_type_resolution<T> { return generic_field_type_resolution { value: v, tag: tag }; }
 }
 
 fn main() -> Int32 {
     // T=Int64: .toString() auf T-Feld muss aufgelöst werden
-    let bi: Box<Int64> = Box::make(42, 1);
+    let bi: generic_field_type_resolution<Int64> = generic_field_type_resolution::make(42, 1);
     println(bi.value.toString());        // 42
 
     // T=String: direkter T-Feld-Read (println(String))
-    let bs: Box<String> = Box::make("hi", 2);
+    let bs: generic_field_type_resolution<String> = generic_field_type_resolution::make("hi", 2);
     println(bs.value);                    // hi
 
     // T=Float64
-    let bf: Box<Float64> = Box::make(3.5, 3);
+    let bf: generic_field_type_resolution<Float64> = generic_field_type_resolution::make(3.5, 3);
     println(bf.value.toString());        // 3.5
 
     // T-Feld-Assignment: Literal muss zum aufgelösten T (String) passen

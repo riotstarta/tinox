@@ -1,0 +1,4 @@
+interface IDrawable
+{
+    fn draw() -> Int64;
+}

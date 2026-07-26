@@ -63,15 +63,15 @@ run_smoke_job() { # id file expected
 
 GOOD_EXAMPLES=(
     examples/examples.tnx
-    examples/cli_test.tnx
+    examples/GreetCommand.tnx
     examples/simple_test.tnx
     examples/vtable_dispatch.tnx
-    examples/rest_minimal.tnx
-    examples/rest_test.tnx
+    examples/rest_minimal/UserController.tnx
+    examples/UserController.tnx
     examples/modules/main.tnx
     examples/modules/multi_import.tnx
     examples/interface_extends.tnx
-    examples/rest_with_mini.tnx
+    examples/rest_with_mini/UserController.tnx
 )
 for f in "${GOOD_EXAMPLES[@]}"; do
     run_job "$(job_id "build_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "build_$f")"
@@ -83,7 +83,7 @@ run_smoke_job "$(job_id smoke_modules)" examples/modules/main.tnx "$(printf '7\n
 run_smoke_job "$(job_id smoke_multiimport)" examples/modules/multi_import.tnx "$(printf '25\n30')"
 run_smoke_job "$(job_id smoke_ifaceext)" examples/interface_extends.tnx "42"
 
-run_job "$(job_id mini_http_check)" "$TINOX" check examples/mini_http.tnx
+run_job "$(job_id mini_http_check)" "$TINOX" check examples/mini_http/HttpServer.tnx
 
 for f in benchmarks/*.tnx; do
     run_job "$(job_id "bench_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "bench_$f")"
@@ -91,7 +91,15 @@ done
 
 if [ -d "$DOGFOOD_DIR" ]; then
     run_job "$(job_id jgrep_build)" bash -c "cd '$DOGFOOD_DIR' && PATH='$(dirname "$TINOX")':\"\$PATH\" bash build.sh"
-    for t in "$DOGFOOD_DIR"/tests/*_test.tnx; do
+    # Discover test-entry files by content (`@Test` annotation), not a filename
+    # pattern: one-type-per-file split jgrep-tinox's *_test.tnx files into
+    # PascalCase `<Name>Test.tnx` + `<Name>Helper.tnx` pairs, and a stale
+    # filename glob here would silently match zero files — `tinox test` on a
+    # nonexistent path prints an error but still exits 0 (0 tests, 0 failed),
+    # so a wrong glob here would report this whole step "OK" while testing
+    # nothing (found the hard way once already).
+    jgrep_test_files=$(grep -l "@Test" "$DOGFOOD_DIR"/tests/*.tnx 2>/dev/null)
+    for t in $jgrep_test_files; do
         run_job "$(job_id "jgrep_test_$t")" bash -c "cd '$DOGFOOD_DIR' && PATH='$(dirname "$TINOX")':\"\$PATH\" timeout 180 tinox test '$t'"
     done
 fi
@@ -111,7 +119,7 @@ report examples/modules/multi_import.tnx "$(job_id smoke_multiimport)"
 report examples/interface_extends.tnx "$(job_id smoke_ifaceext)"
 
 echo "== Dogfood: Library-Beispiele typechecken =="
-report "examples/mini_http.tnx (check)" "$(job_id mini_http_check)"
+report "examples/mini_http/HttpServer.tnx (check)" "$(job_id mini_http_check)"
 
 echo "== Dogfood: benchmarks kompilieren =="
 for f in benchmarks/*.tnx; do
@@ -121,7 +129,7 @@ done
 echo "== Dogfood: jgrep-tinox (${DOGFOOD_DIR}) =="
 if [ -d "$DOGFOOD_DIR" ]; then
     report "build.sh" "$(job_id jgrep_build)"
-    for t in "$DOGFOOD_DIR"/tests/*_test.tnx; do
+    for t in $jgrep_test_files; do
         report "$(basename "$t")" "$(job_id "jgrep_test_$t")"
     done
 else

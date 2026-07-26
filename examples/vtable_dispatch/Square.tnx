@@ -1,0 +1,11 @@
+import IDrawable;
+
+class Square implements IDrawable
+{
+    side: Int64;
+
+    fn draw() -> Int64
+    {
+        return this.side;
+    }
+}

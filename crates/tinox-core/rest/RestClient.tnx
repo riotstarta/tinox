@@ -1,0 +1,255 @@
+/**
+ * Tinox Standard Library - REST Module
+ * RESTful client implementation for building and executing
+ * HTTP requests with JSON support, headers, and error handling
+ */
+module tinox.core.rest;
+
+import tinox.core.http;
+import tinox.core.base64;
+
+namespace tinox.core.rest
+{
+    /**
+     * REST client for making HTTP requests to RESTful APIs
+     *
+     * Supports building requests with custom headers,
+     * query parameters, and JSON request/response bodies.
+     */
+    class RestClient
+    {
+        /** The base URL for all requests */
+        var baseUrl: String;
+
+        /** Default headers applied to every request */
+        var headers: List<String>;
+
+        /** Request timeout in milliseconds */
+        var timeout: Int64;
+
+        /**
+         * Creates a new RestClient with the given base URL
+         *
+         * @param baseUrl the base URL for all requests (e.g., "https://api.example.com")
+         * @return a new RestClient instance
+         */
+        fn new(baseUrl: String) -> RestClient
+        {
+            return RestClient { baseUrl: baseUrl, headers: [], timeout: 30000 };
+        }
+
+        /**
+         * Creates a new RestClient with base URL and default headers
+         *
+         * @param baseUrl the base URL for all requests
+         * @param defaultHeaders list of "Key: Value" header strings
+         * @return a new RestClient instance
+         */
+        fn newWithHeaders(baseUrl: String, defaultHeaders: List<String>) -> RestClient
+        {
+            return RestClient { baseUrl: baseUrl, headers: defaultHeaders, timeout: 30000 };
+        }
+
+        /**
+         * Sets the request timeout
+         *
+         * @param timeoutMs timeout in milliseconds
+         */
+        fn setTimeout(timeoutMs: Int64) -> Nothing
+        {
+            this.timeout = timeoutMs;
+        }
+
+        /**
+         * Adds a default header to all requests
+         *
+         * @param name the header name
+         * @param value the header value
+         */
+        fn addHeader(name: String, value: String) -> Nothing
+        {
+            this.headers.push(name + ": " + value);
+        }
+
+        /**
+         * Clears all default headers
+         */
+        fn clearHeaders() -> Nothing
+        {
+            this.headers = [];
+        }
+
+        /**
+         * Performs a GET request
+         *
+         * @param path the endpoint path (appended to baseUrl)
+         * @return the server response
+         */
+        fn get(path: String) -> RestResponse
+        {
+            let url: String = Url::build(this.baseUrl, path);
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::get(url);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Performs a GET request with query parameters
+         *
+         * @param path the endpoint path
+         * @param params map of query parameter key-value pairs
+         * @return the server response
+         */
+        fn getWithParams(path: String, params: Map<String, String>) -> RestResponse
+        {
+            let url: String = Url::buildWithParams(this.baseUrl, path, params);
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::get(url);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Performs a POST request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         */
+        fn post(path: String, body: String) -> RestResponse
+        {
+            let url: String = Url::build(this.baseUrl, path);
+            Http::setHeader("Content-Type", "application/json");
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::post(url, body);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Performs a PUT request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         */
+        fn put(path: String, body: String) -> RestResponse
+        {
+            let url: String = Url::build(this.baseUrl, path);
+            Http::setHeader("Content-Type", "application/json");
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::put(url, body);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Performs a PATCH request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         */
+        fn patch(path: String, body: String) -> RestResponse
+        {
+            let url: String = Url::build(this.baseUrl, path);
+            Http::setHeader("Content-Type", "application/json");
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::patch(url, body);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Performs a DELETE request
+         *
+         * @param path the endpoint path
+         * @return the server response
+         */
+        fn delete(path: String) -> RestResponse
+        {
+            let url: String = Url::build(this.baseUrl, path);
+            var i: Int64 = 0;
+            while i < this.headers.len()
+            {
+                let header: String = this.headers[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+            let response: HttpResponse = Http::delete(url);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Adds Bearer token authentication header
+         *
+         * @param token the bearer token
+         */
+        fn bearerAuth(token: String) -> Nothing
+        {
+            this.addHeader("Authorization", "Bearer " + token);
+        }
+
+        /**
+         * Adds Basic authentication header
+         *
+         * @param username the username
+         * @param password the password
+         */
+        fn basicAuth(username: String, password: String) -> Nothing
+        {
+            let credentials: String = Base64::encode(username + ":" + password);
+            this.addHeader("Authorization", "Basic " + credentials);
+        }
+    }
+}

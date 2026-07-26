@@ -2,7 +2,7 @@
 // mode: test
 // expect-exit: 1
 // expect-contains: 1 failed
-class T {
+class bug17_test_harness_bool {
     @Test("must fail")
     fn t() -> Bool {
         var xs: List<Int64> = [];

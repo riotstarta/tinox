@@ -3,7 +3,7 @@
 // expect: 3.75
 // expect: 1.5
 // expect: 2.5
-enum JV {
+enum bug04_float64 {
     F(Float64),
     Num(Int64),
 }
@@ -16,7 +16,7 @@ fn main() -> Int32 {
     var xs: List<Float64> = [];
     xs.push(1.5);
     println(xs[0].toString());
-    let v = JV::F(2.5);
+    let v = bug04_float64::F(2.5);
     match v {
         F(f) => println(f.toString());
         _ => println("-");

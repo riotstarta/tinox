@@ -1,0 +1,11 @@
+module tinox.core.cron;
+
+namespace tinox.core.cron
+{
+    class CronJob
+    {
+        expr: CronExpr;
+        callback: fnc() -> Nothing;
+        lastRun: Int64;
+    }
+}

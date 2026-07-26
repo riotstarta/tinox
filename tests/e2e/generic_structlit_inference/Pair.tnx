@@ -1,0 +1,6 @@
+import Box;
+
+class Pair<A, B> {
+    var a: A;
+    var b: B;
+}

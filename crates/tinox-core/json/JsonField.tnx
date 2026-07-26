@@ -1,0 +1,23 @@
+module tinox.core.json;
+
+namespace tinox.core.json
+{
+    /**
+     * Overrides the JSON field name for a class field.
+     * Without this annotation, the field's Tinox name is used as-is.
+     *
+     * Usage:
+     *   @JsonField("first_name")
+     *   var firstName: String;
+     */
+    @annotation
+    class JsonField
+    {
+        var name: String;
+
+        fn new(name: String) -> JsonField
+        {
+            return JsonField { name: name };
+        }
+    }
+}

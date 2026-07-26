@@ -1,0 +1,12 @@
+module tinox.core.db;
+
+namespace tinox.core.db
+{
+    class DB
+    {
+        fnc of(cls: Any) -> Any
+        {
+            return EntityQuery {};
+        }
+    }
+}

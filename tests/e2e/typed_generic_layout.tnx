@@ -9,24 +9,24 @@
 // expect: 7
 // expect: 100
 
-class Box<T> {
+class typed_generic_layout<T> {
     var value: T;
     var count: Int64;
-    fn make(v: T) -> Box<T> { return Box { value: v, count: 1 }; }
+    fn make(v: T) -> typed_generic_layout<T> { return typed_generic_layout { value: v, count: 1 }; }
     fn get() -> T { return this.value; }        // T-Feld read (Int64-Spezialisierung)
     fn setCount(c: Int64) -> Nothing { this.count = c; }  // Int64-Feld getyptes Assignment
     fn getCount() -> Int64 { return this.count; }
 }
 
 fn main() -> Int32 {
-    let a: Box<Int64> = Box::make(42);
-    println(Box::get(a).toString());        // 42 — T-Feld (i64-Slot) via getyptem Read
-    Box::setCount(a, 5);                      // getyptes Assignment auf Box__i64.count
-    println(Box::getCount(a).toString());    // 5
+    let a: typed_generic_layout<Int64> = typed_generic_layout::make(42);
+    println(typed_generic_layout::get(a).toString());        // 42 — T-Feld (i64-Slot) via getyptem Read
+    typed_generic_layout::setCount(a, 5);                      // getyptes Assignment auf Box__i64.count
+    println(typed_generic_layout::getCount(a).toString());    // 5
 
     // zweite Spezialisierung — eigener named type Box__i64 wird wiederverwendet
-    let b: Box<Int64> = Box::make(7);
-    println(Box::get(b).toString());        // 7
+    let b: typed_generic_layout<Int64> = typed_generic_layout::make(7);
+    println(typed_generic_layout::get(b).toString());        // 7
     b.count = 100;                            // direktes getyptes Assignment
     println(b.count.toString());             // 100
     return 0;

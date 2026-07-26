@@ -1,0 +1,15 @@
+module tinox.core.trie;
+
+namespace tinox.core.trie
+{
+    class TrieNode
+    {
+        fn new() -> TrieNode
+        {
+            return TrieNode { children: Map::new(), isEnd: false };
+        }
+
+        children: Map<String, TrieNode>;
+        isEnd: Bool;
+    }
+}

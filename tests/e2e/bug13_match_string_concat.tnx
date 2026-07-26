@@ -1,11 +1,11 @@
 // Bug 13: sv + bs auf match-gebundenen Strings machte Integer-Addition
 // expect: hello world
-enum JV {
+enum bug13_match_string_concat {
     Str(String),
     Num(Int64),
 }
 
-fn cat(a: JV, b: JV) -> String {
+fn cat(a: bug13_match_string_concat, b: bug13_match_string_concat) -> String {
     match a {
         Str(sv) => {
             match b {
@@ -18,6 +18,6 @@ fn cat(a: JV, b: JV) -> String {
 }
 
 fn main() -> Int32 {
-    println(cat(JV::Str("hello "), JV::Str("world")));
+    println(cat(bug13_match_string_concat::Str("hello "), bug13_match_string_concat::Str("world")));
     return 0;
 }

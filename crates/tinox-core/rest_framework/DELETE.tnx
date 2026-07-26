@@ -1,0 +1,24 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Marks a method as a DELETE endpoint.
+     * @DELETE("/path") or @DELETE for the class base path
+     */
+    @annotation
+    class DELETE
+    {
+        var path: String;
+
+        fn new(path: String) -> DELETE
+        {
+            return DELETE { path: path };
+        }
+
+        fn default() -> DELETE
+        {
+            return DELETE { path: "" };
+        }
+    }
+}

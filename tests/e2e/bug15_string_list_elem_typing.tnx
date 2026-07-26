@@ -2,7 +2,7 @@
 // expect: 3
 // expect: 5
 // expect: 5
-class Holder {
+class bug15_string_list_elem_typing {
     var rawLines: List<String>;
 
     fn firstLen() -> Int64 {
@@ -19,7 +19,7 @@ fn main() -> Int32 {
     let lines = splitLines("one|two|three");
     println(lines.len());
     println(lines[2].len());
-    let h = Holder { rawLines: splitLines("abcde|x") };
+    let h = bug15_string_list_elem_typing { rawLines: splitLines("abcde|x") };
     println(h.firstLen());
     return 0;
 }

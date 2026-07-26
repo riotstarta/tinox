@@ -1,0 +1,5 @@
+import Pair;
+
+class Box<T> {
+    var value: T;
+}

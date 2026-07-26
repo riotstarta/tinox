@@ -1,0 +1,53 @@
+import AlphaKind;
+import BetaKind;
+
+// Bug 72: enum discriminators were keyed globally by variant name only, so two
+// DIFFERENT enums declaring an identically-named variant got IDENTICAL raw
+// discriminator values (AlphaKind::Foo and BetaKind::Foo both hashed plain
+// "Foo"). Fixed by scoping the discriminator hash to "Enum::Variant". A no-arg
+// variant's runtime representation IS the raw discriminator i64, so casting to
+// Int64 exposes it directly for a before/after comparison.
+// expect: distinct:true
+// expect: alpha:foo
+// expect: alpha:bar:7
+// expect: beta:foo
+// expect: beta:bar:hi
+// expect: qualified:alpha:bar:9
+// expect: qualified:beta:bar:zz
+
+fn showAlpha(a: AlphaKind) -> Nothing {
+    match a {
+        Foo => println("alpha:foo");
+        Bar(n) => println("alpha:bar:" + n.toString());
+    }
+}
+
+fn showBeta(b: BetaKind) -> Nothing {
+    match b {
+        Foo => println("beta:foo");
+        Bar(s) => println("beta:bar:" + s);
+    }
+}
+
+fn main() -> Int32 {
+    let alphaFoo: Int64 = AlphaKind::Foo as Int64;
+    let betaFoo: Int64 = BetaKind::Foo as Int64;
+    println("distinct:" + (alphaFoo != betaFoo).toString());
+
+    showAlpha(AlphaKind::Foo);
+    showAlpha(AlphaKind::Bar(7));
+    showBeta(BetaKind::Foo);
+    showBeta(BetaKind::Bar("hi"));
+
+    // Qualified match patterns (Enum::Variant) exercise the other discriminator
+    // resolution path (enum_name always known from the AST, no scrutinee lookup).
+    match AlphaKind::Bar(9) {
+        AlphaKind::Foo => println("qualified:alpha:foo");
+        AlphaKind::Bar(n) => println("qualified:alpha:bar:" + n.toString());
+    }
+    match BetaKind::Bar("zz") {
+        BetaKind::Foo => println("qualified:beta:foo");
+        BetaKind::Bar(s) => println("qualified:beta:bar:" + s);
+    }
+    return 0;
+}

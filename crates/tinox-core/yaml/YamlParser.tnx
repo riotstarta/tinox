@@ -1,0 +1,12 @@
+module tinox.core.yaml;
+
+namespace tinox.core.yaml
+{
+    class YamlParser
+    {
+        fn parse(content: String) -> YamlValue
+        {
+            return YamlValue { kind: "map", mapValue: Map::new() };
+        }
+    }
+}

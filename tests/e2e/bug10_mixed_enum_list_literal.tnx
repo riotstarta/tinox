@@ -3,13 +3,13 @@
 // expect: lit:x
 // expect: fld:foo
 // expect: id
-enum Filter {
+enum bug10_mixed_enum_list_literal {
     Identity,
     LiteralStr(String),
     FieldAccess(String),
 }
 
-fn show(f: Filter) -> Nothing {
+fn show(f: bug10_mixed_enum_list_literal) -> Nothing {
     match f {
         Identity => println("id");
         LiteralStr(s) => println("lit:" + s);
@@ -18,11 +18,11 @@ fn show(f: Filter) -> Nothing {
 }
 
 fn main() -> Int32 {
-    let args: List<Filter> = [
-        Filter::Identity,
-        Filter::LiteralStr("x"),
-        Filter::FieldAccess("foo"),
-        Filter::Identity,
+    let args: List<bug10_mixed_enum_list_literal> = [
+        bug10_mixed_enum_list_literal::Identity,
+        bug10_mixed_enum_list_literal::LiteralStr("x"),
+        bug10_mixed_enum_list_literal::FieldAccess("foo"),
+        bug10_mixed_enum_list_literal::Identity,
     ];
     var i = 0;
     while i < args.len() {

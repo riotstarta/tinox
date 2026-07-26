@@ -1,0 +1,65 @@
+module tinox.core.websocket;
+
+namespace tinox.core.websocket
+{
+    /*
+     * Minimaler Server-Einstieg: listen + accept-mit-Handshake. Bewusst als
+     * explizite Schleifen-API (kein Lambda-Handler in v1, s. tasklist.md 4.1).
+     */
+    class WsServer
+    {
+        fn listen(port: Int64) -> Int64
+        {
+            return httpServerCreate(port);
+        }
+
+        /*
+         * Akzeptiert die nächste Verbindung und führt den Handshake durch.
+         * Rückgabe: Conn-Handle (>0) oder -1 (Handshake fehlgeschlagen,
+         * Verbindung ist dann bereits geschlossen).
+         */
+        fn accept(srv: Int64) -> Int64
+        {
+            let conn = httpServerAcceptConnHandle(srv);
+            if conn <= 0 {
+                return -1;
+            }
+            if !Ws::handshake(conn) {
+                httpConnClose(conn);
+                return -1;
+            }
+            return conn;
+        }
+
+        /*
+         * wss:// — TLS-Variante von listen(). OpenSSL ist standardmäßig
+         * gelinkt (s. HttpServer::listenTls); mit TINOX_TLS=0 gebaut liefert
+         * httpServerCreateTls -1. Cert/Key sind PEM-Dateien, certPath darf
+         * die volle Chain enthalten (Leaf zuerst).
+         */
+        fn listenTls(port: Int64, certPath: String, keyPath: String) -> Int64
+        {
+            return httpServerCreateTls(port, certPath, keyPath);
+        }
+
+        /*
+         * TLS-Variante von accept(): akzeptiert, macht den TLS-Handshake
+         * (httpServerAcceptTls) und danach den normalen WS-Handshake über
+         * dasselbe Conn-Handle — httpConnReadRequest/SendRaw und die
+         * binärsicheren Frame-Primitiven sind transparent für TLS- wie
+         * Plaintext-Handles (Runtime routet über conn_recv/conn_send).
+         */
+        fn acceptTls(srv: Int64) -> Int64
+        {
+            let conn = httpServerAcceptTls(srv);
+            if conn <= 0 {
+                return -1;
+            }
+            if !Ws::handshake(conn) {
+                httpConnClose(conn);
+                return -1;
+            }
+            return conn;
+        }
+    }
+}

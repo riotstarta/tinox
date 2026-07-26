@@ -1,0 +1,49 @@
+/**
+ * Tinox Standard Library - IO Module
+ * Input/Output utilities including file operations,
+ * path manipulation, console output, and string buffering
+ */
+module tinox.core.io;
+
+namespace tinox.core.io
+{
+    /**
+     * IO utility class providing console output helpers
+     * and factory methods for creating IO objects
+     */
+    class Io
+    {
+        /**
+         * Creates a new empty Buffer
+         *
+         * @return a new Buffer instance
+         */
+        fn newBuffer() -> Buffer
+        {
+            return Buffer::new();
+        }
+
+        /**
+         * Prints a string followed by a newline
+         *
+         * @param value the string to print
+         */
+        fn printLine(value: String) -> Nothing
+        {
+            print(value);
+            print("\n");
+        }
+
+        /**
+         * Prints a formatted header with separator lines
+         *
+         * @param title the header text to display
+         */
+        fn printHeader(title: String) -> Nothing
+        {
+            print("=== ");
+            print(title);
+            print(" ===\n");
+        }
+    }
+}

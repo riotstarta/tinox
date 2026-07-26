@@ -1,0 +1,19 @@
+import Base;
+import Derived;
+
+// Geerbte Methode via `Class::method(obj)` (Bug 44): Derived::getN(d) rief zuvor
+// ein nicht emittiertes @Derived_getN auf (nur @Base_getN existiert) -> ungültiges
+// IR. Fix: der Static-Dispatch löst den Schlüssel über method_impl zum
+// definierenden Vorfahren auf (wie die Dot-Syntax längst). Deckt ab: geerbte
+// Methode ohne/mit Param und überschriebene Methode (Kind-Version).
+// expect: 7
+// expect: 15
+// expect: derived
+
+fn main() -> Int32 {
+    let d: Derived = Derived::makeD();
+    println(Derived::getN(d).toString());      // geerbt -> 7
+    println(Derived::add(d, 8).toString());    // geerbt mit Param -> 7+8=15
+    println(Derived::label(d));                // override -> derived
+    return 0;
+}

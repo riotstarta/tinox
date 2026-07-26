@@ -3,13 +3,13 @@
 // expect: 60
 // expect: 1
 // expect: 7
-enum JV {
+enum bug05_match_list_map {
     Arr(List<Int64>),
     Obj(Map<String, Int64>),
 }
 
 fn main() -> Int32 {
-    let a = JV::Arr([10, 20, 30]);
+    let a = bug05_match_list_map::Arr([10, 20, 30]);
     match a {
         Arr(xs) => {
             println(xs.len());
@@ -21,7 +21,7 @@ fn main() -> Int32 {
     }
     var m: Map<String, Int64> = Map::new();
     m.insert("k", 7);
-    let o = JV::Obj(m);
+    let o = bug05_match_list_map::Obj(m);
     match o {
         Obj(mm) => {
             println(mm.len());

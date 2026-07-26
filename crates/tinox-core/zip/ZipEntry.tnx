@@ -1,0 +1,10 @@
+module tinox.core.zip;
+
+namespace tinox.core.zip
+{
+    class ZipEntry
+    {
+        name: String;
+        size: Int64;
+    }
+}

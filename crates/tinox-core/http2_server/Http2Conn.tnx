@@ -1,0 +1,34 @@
+module tinox.core.http2_server;
+
+import tinox.core.hpack;
+
+namespace tinox.core.http2_server
+{
+    /**
+     * State for one HTTP/2 client connection.
+     * Holds all active streams and both encoder/decoder HPACK tables.
+     */
+    class Http2Conn
+    {
+        var handle: Int64;
+        var streams: Map<String, Http2Stream>;
+        var recvDynTable: HpackDynTable;
+        var sendDynTable: HpackDynTable;
+        var peerMaxFrameSize: Int64;
+        var peerInitWindowSize: Int64;
+        var lastStreamId: Int64;
+
+        fn new(handle: Int64) -> Http2Conn
+        {
+            return Http2Conn {
+                handle: handle,
+                streams: Map::new(),
+                recvDynTable: HpackDynTable::new(4096),
+                sendDynTable: HpackDynTable::new(4096),
+                peerMaxFrameSize: 16384,
+                peerInitWindowSize: 65535,
+                lastStreamId: 0
+            };
+        }
+    }
+}

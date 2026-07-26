@@ -14,6 +14,11 @@
 //! ```
 //!
 //! Files starting with `_` are helper modules and are not run directly.
+//! A case can also be a directory (one-type-per-file convention: a
+//! multi-class case that can't live in a single `.tnx` file) containing a
+//! `main.tnx` entry point — the directory name becomes the case name
+//! (instead of `main`), everything else is unchanged; sibling files in the
+//! directory are pulled in via `import` inside `main.tnx`.
 //! Each case compiles with the freshly built `tinox` binary in an isolated
 //! working directory, runs with a timeout, and compares stdout+stderr.
 
@@ -28,13 +33,26 @@ fn collect_cases() -> Vec<Case> {
         .unwrap_or_else(|e| panic!("tests/e2e missing at {}: {e}", dir.display()))
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
         .filter(|p| {
             !p.file_name()
                 .map(|n| n.to_string_lossy().starts_with('_'))
                 .unwrap_or(false)
         })
-        .map(|p| parse_case(&p))
+        .filter_map(|p| {
+            if p.is_dir() {
+                let entry = p.join("main.tnx");
+                if !entry.is_file() {
+                    return None;
+                }
+                let mut case = parse_case(&entry);
+                case.name = p.file_name().unwrap().to_string_lossy().to_string();
+                Some(case)
+            } else if p.extension().map(|x| x == "tnx").unwrap_or(false) {
+                Some(parse_case(&p))
+            } else {
+                None
+            }
+        })
         .collect();
     cases.sort_by(|a, b| a.name.cmp(&b.name));
     assert!(!cases.is_empty(), "no e2e cases found in {}", dir.display());

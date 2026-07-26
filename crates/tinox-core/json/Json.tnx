@@ -1,0 +1,80 @@
+module tinox.core.json;
+
+namespace tinox.core.json
+{
+    // ========================================================================
+    // JSON Runtime
+    // ========================================================================
+
+    extern fn jsonParse(text: String) -> JsonValue;
+    extern fn jsonStringify(value: JsonValue) -> String;
+    extern fn jsonGetString(value: JsonValue) -> String;
+    extern fn jsonGetInt(value: JsonValue) -> Int64;
+    extern fn jsonGetFloat(value: JsonValue) -> Float64;
+    extern fn jsonGetBool(value: JsonValue) -> Bool;
+    extern fn jsonIsNull(value: JsonValue) -> Bool;
+    extern fn jsonIsString(value: JsonValue) -> Bool;
+    extern fn jsonIsInt(value: JsonValue) -> Bool;
+    extern fn jsonIsFloat(value: JsonValue) -> Bool;
+    extern fn jsonIsBool(value: JsonValue) -> Bool;
+    extern fn jsonIsObject(value: JsonValue) -> Bool;
+    extern fn jsonIsArray(value: JsonValue) -> Bool;
+    extern fn jsonGetField(obj: JsonValue, key: String) -> JsonValue;
+    extern fn jsonGetObject(value: JsonValue) -> Map<String, JsonValue>;
+    extern fn jsonFromMap(map: Map<String, JsonValue>) -> JsonValue;
+    extern fn jsonIntArrayFromJson(arr: JsonValue) -> List<Int64>;
+    extern fn jsonIntArrayToString(arr: List<Int64>) -> String;
+    extern fn jsonIntArrayWrap(key: String, arr: List<Int64>) -> String;
+
+    class Json
+    {
+        fnc parse(text: String) -> JsonValue
+        {
+            return jsonParse(text);
+        }
+
+        fnc stringify(value: JsonValue) -> String
+        {
+            return jsonStringify(value);
+        }
+
+        fnc getField(obj: JsonValue, key: String) -> JsonValue
+        {
+            return jsonGetField(obj, key);
+        }
+
+        // Wraps an existing Map<String, JsonValue> (e.g. built by hand with
+        // Map::new()/insert) as a JsonValue object — the counterpart to
+        // JsonValue::asTable().
+        fnc fromMap(map: Map<String, JsonValue>) -> JsonValue
+        {
+            return jsonFromMap(map);
+        }
+
+        fnc intArrayFromJson(arr: JsonValue) -> List<Int64>
+        {
+            return jsonIntArrayFromJson(arr);
+        }
+
+        fnc intArrayToString(arr: List<Int64>) -> String
+        {
+            return jsonIntArrayToString(arr);
+        }
+
+        fnc intArrayWrap(key: String, arr: List<Int64>) -> String
+        {
+            return jsonIntArrayWrap(key, arr);
+        }
+
+        fnc serialize<T>(obj: T) -> String
+        {
+            return obj.toJson();
+        }
+
+        fnc deserialize<T>(text: String) -> T
+        {
+            let value: JsonValue = jsonParse(text);
+            return T::fromJson(value);
+        }
+    }
+}

@@ -1,0 +1,22 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Eine dekodierte Performative-Hülle (§2.3.1: jede der 9 Performatives
+     * ist ein Described List — EIN generisches Encoding für alle, anders
+     * als 0-9-1s classId+methodId+methodenspezifisches Feld-Schema).
+     * descriptor: -1 = Decode-Fehler (unerwartete Struktur — s.
+     * Amqp10::decodePerformative). fields sind POSITIONELL, die
+     * Feldbedeutung ergibt sich aus der jeweiligen Performative-Spec
+     * (Phase 5/6), nicht aus diesem generischen Baustein.
+     */
+    class Amqp10Performative
+    {
+        var descriptor: Int64;
+        var fields: List<Amqp10Value>;
+    }
+}

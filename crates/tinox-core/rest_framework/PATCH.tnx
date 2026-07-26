@@ -1,0 +1,24 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Marks a method as a PATCH endpoint.
+     * @PATCH("/path") or @PATCH for the class base path
+     */
+    @annotation
+    class PATCH
+    {
+        var path: String;
+
+        fn new(path: String) -> PATCH
+        {
+            return PATCH { path: path };
+        }
+
+        fn default() -> PATCH
+        {
+            return PATCH { path: "" };
+        }
+    }
+}

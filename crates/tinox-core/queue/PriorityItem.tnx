@@ -1,0 +1,10 @@
+module tinox.core.queue;
+
+namespace tinox.core.queue
+{
+    class PriorityItem<T>
+    {
+        item: T;
+        priority: Int64;
+    }
+}

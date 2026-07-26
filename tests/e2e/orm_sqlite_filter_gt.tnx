@@ -7,7 +7,7 @@ import tinox.core.db;
 
 @Entity
 @Table("users")
-class User
+class orm_sqlite_filter_gt
 {
     @Id @GeneratedValue
     var id: Int64;
@@ -19,7 +19,7 @@ class User
 
 fn main() -> Int32
 {
-    let adults: List<User> = DB.of(User)
+    let adults: List<orm_sqlite_filter_gt> = DB.of(orm_sqlite_filter_gt)
         .filter(u => u.age > 25)
         .list();
     println(adults.len());

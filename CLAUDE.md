@@ -104,6 +104,62 @@ nicht per angenommener Nummer.
   `grep -oE 'id="mod-[a-z0-9_]+"' docs.html | sort -u` gegen dieselbe
   Zeile für `docs_en.html` diffen, muss leer sein.
 
+## Dateistruktur: eine Klasse/Interface/Enum pro Datei
+
+Seit 2026-07-26 gilt hart compilerseitig erzwungen (harter Compile-Fehler,
+kein Lint/Warning): **jede `.tnx`-Datei enthält höchstens EINE
+Top-Level-`class`/`interface`/`enum`-Deklaration**, und falls sie eine
+enthält, MUSS der Dateiname exakt (case-sensitive) dem Typnamen entsprechen
+(`class Player` → zwingend `Player.tnx`). Dateien ganz ohne Typ (reine
+`fn`/`main`-Skripte, z. B. die meisten `tests/e2e/*.tnx`) sind davon
+unberührt — die Regel ist „höchstens eine", nicht „genau eine".
+
+- **Module mit mehreren Typen werden zu Verzeichnissen.** `import
+  tinox.core.amqp10;` (Namespace-Segment bleibt unverändert, z. B.
+  weiterhin klein geschrieben) löst jetzt auf ein Verzeichnis
+  `crates/tinox-core/amqp10/` auf, das pro Typ genau eine
+  `<TypeName>.tnx`-Datei enthält (`Amqp10Connection.tnx`,
+  `Amqp10Session.tnx`, …) — EIN `import`-Statement zieht weiterhin alle
+  Dateien im Verzeichnis rein, für Aufrufer ändert sich nichts. Das gilt
+  einheitlich für Stdlib- UND projektlokale Imports (`import
+  mymodule.foo;` funktioniert identisch mit einem `foo/`-Verzeichnis statt
+  einer `foo.tnx`-Datei) — resolution in `resolve_imports()`
+  (`crates/tinox/src/main.rs`): erst `<name>.tnx` (Legacy-Einzeldatei-Fall),
+  sonst `<name>/*.tnx` (alle Dateien im Verzeichnis gemergt).
+- **Treiber-/Entry-Point-Dateien (mit `main()` oder `// expect:`-
+  Direktiven) behalten ihren Namen.** Ihre eingebetteten Typen wandern in
+  Geschwister-Dateien (flach im selben Verzeichnis oder in einem
+  Unterverzeichnis `<original-name>/`, falls Typnamen mit einer anderen
+  Datei kollidieren würden), der Treiber bekommt stattdessen
+  `import <TypeName>;`-Zeilen. So bleiben `scripts/dogfood.sh`- und
+  e2e-Harness-Pfade stabil (siehe Migration examples 2026-07-26:
+  `examples/vtable_dispatch.tnx` blieb Entry-Point, seine drei Typen
+  wanderten nach `examples/vtable_dispatch/*.tnx`).
+- **Achtung Geschwister-Imports innerhalb desselben (Unter-)Verzeichnisses:
+  IMMER der kurze, unqualifizierte Name** (`import IDrawable;`), NIEMALS
+  der volle gepunktete Pfad wie ihn der AUSSENSTEHENDE Treiber benutzt
+  (`import vtable_dispatch.IDrawable;`) — der volle Pfad ist relativ zum
+  Verzeichnis der IMPORTIERENDEN Datei, würde also aus dem Verzeichnis
+  selbst heraus eine nicht existierende doppelt verschachtelte
+  Unterordnerebene suchen (`vtable_dispatch/vtable_dispatch/IDrawable.tnx`)
+  und mit „file not found" fehlschlagen.
+- **Fund bei der Migration (2026-07-26, betraf faktisch jedes Programm mit
+  `main()`, das eine importierte Klasse gegen ein ebenfalls importiertes
+  Interface hochcastet):** `resolve_imports()` hängte importierte
+  Deklarationen ans ENDE der Decl-Liste an, aber der Typechecker füllt
+  `interface_implementations` erst lazy beim sequenziellen Durchlauf
+  (`check_class` in `tinox-typecheck/src/lib.rs`) — stand `main()` (aus der
+  Treiber-Datei) vor den importierten Interface-/Klassen-Deklarationen,
+  war die Implements-Tabelle beim Prüfen von `main()`s Body noch leer
+  („expected IDrawable, found Circle"). Fix: importierte Deklarationen
+  werden jetzt VOR die eigenen Top-Level-Deklarationen der importierenden
+  Datei gestellt (`resolve_imports` sammelt sie separat und prependt statt
+  zu appenden). Bei jedem künftigen Umbau der Import-Merge-Logik: dieses
+  Ordering-Invariant nicht brechen, sonst bricht genau dieses Muster
+  wieder lautlos (Silent-Garbage-Falle: kompiliert bei Single-File-
+  Programmen unverändert weiter, nur Mehrdatei-Programme mit
+  Interface-Upcast sind betroffen).
+
 ## Runtime-Eigenheiten (nicht offensichtlich aus dem Code)
 
 - **`spawn` startet einen echten POSIX-Thread** (`pthread_create` in

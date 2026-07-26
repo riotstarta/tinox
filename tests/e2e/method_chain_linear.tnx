@@ -6,15 +6,15 @@
 // Ergebnisses — die Kette liefert unverändert den erwarteten Wert.
 // expect: 42
 
-class C {
+class method_chain_linear {
     var v: Int64;
-    fn make(v: Int64) -> C { return C { v: v }; }
-    fn self_() -> C { return this; }
+    fn make(v: Int64) -> method_chain_linear { return method_chain_linear { v: v }; }
+    fn self_() -> method_chain_linear { return this; }
     fn get() -> Int64 { return this.v; }
 }
 
 fn main() -> Int32 {
-    let c: C = C::make(42);
+    let c: method_chain_linear = method_chain_linear::make(42);
     // 60-fache Method-Kette — früher exponentiell im Typecheck
     let r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
                     .self_().self_().self_().self_().self_().self_().self_().self_()

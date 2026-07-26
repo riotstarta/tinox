@@ -1,0 +1,11 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Lazy singleton — one instance for the entire lifetime of the application.
+     * Created on first access.
+     */
+    @annotation
+    class ApplicationComponent {}
+}

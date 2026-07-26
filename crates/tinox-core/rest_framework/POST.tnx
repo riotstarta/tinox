@@ -1,0 +1,24 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Marks a method as a POST endpoint.
+     * @POST("/path") or @POST for the class base path
+     */
+    @annotation
+    class POST
+    {
+        var path: String;
+
+        fn new(path: String) -> POST
+        {
+            return POST { path: path };
+        }
+
+        fn default() -> POST
+        {
+            return POST { path: "" };
+        }
+    }
+}

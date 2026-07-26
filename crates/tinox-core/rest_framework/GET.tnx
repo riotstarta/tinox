@@ -1,0 +1,24 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Marks a method as a GET endpoint.
+     * @GET("/path") or @GET for the class base path
+     */
+    @annotation
+    class GET
+    {
+        var path: String;
+
+        fn new(path: String) -> GET
+        {
+            return GET { path: path };
+        }
+
+        fn default() -> GET
+        {
+            return GET { path: "" };
+        }
+    }
+}

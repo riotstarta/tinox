@@ -1,27 +1,6 @@
-interface IDrawable
-{
-    fn draw() -> Int64;
-}
-
-class Circle implements IDrawable
-{
-    radius: Int64;
-
-    fn draw() -> Int64
-    {
-        return this.radius;
-    }
-}
-
-class Square implements IDrawable
-{
-    side: Int64;
-
-    fn draw() -> Int64
-    {
-        return this.side;
-    }
-}
+import vtable_dispatch.IDrawable;
+import vtable_dispatch.Circle;
+import vtable_dispatch.Square;
 
 fn main() -> Int64
 {

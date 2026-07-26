@@ -1,0 +1,40 @@
+module tinox.core.websocket;
+
+/*
+ * WebSocket-Server (RFC 6455) über der Conn-Handle-Architektur des
+ * HTTP-Servers. Aufbau siehe tasklist.md (Phasen 2-4).
+ *
+ * Bytes laufen als List<Int64> (ein Byte 0..255 pro Slot) über die
+ * binärsicheren Primitiven httpConnReadN/httpConnWriteBytes — die
+ * C-String-basierten Pfade (httpConnReadRequest/SendRaw) werden NUR für den
+ * textuellen Handshake benutzt.
+ *
+ * Bewusste v1-Lücken (tasklist.md "Später"): keine Fragmentierung
+ * (Continuation-Frames -> Close 1003), kein Client, kein permessage-deflate.
+ *
+ * Verwendung (Echo-Server):
+ *   let srv = WsServer::listen(8080);
+ *   let conn = WsServer::accept(srv);        // inkl. Handshake, -1 bei Fehler
+ *   while true {
+ *       let f = Ws::readMessage(conn);        // Ping/Pong+Close automatisch
+ *       if f.opcode != 1 { break; }           // 1 = Text
+ *       Ws::sendText(conn, Ws::text(f));
+ *   }
+ *   Ws::close(conn);
+ */
+
+namespace tinox.core.websocket
+{
+    /*
+     * Ein gelesener Frame. opcode wie RFC 6455 (1 Text, 2 Binary, 8 Close,
+     * 9 Ping, 10 Pong); zusätzlich als Lese-Ergebnis:
+     *   -1 = Verbindung zu/EOF, -2 = Protokollfehler (Verbindung wurde
+     *   von readMessage bereits mit Close beantwortet).
+     */
+    class WsFrame
+    {
+        var fin: Bool;
+        var opcode: Int64;
+        var payload: List<Int64>;
+    }
+}

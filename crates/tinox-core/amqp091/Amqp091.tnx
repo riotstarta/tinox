@@ -1,0 +1,187 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    class Amqp091
+    {
+        /*
+         * Verbindet zum Broker (rohes TCP), noch OHNE Protokoll-Handshake.
+         * Rückgabe: Conn-Handle (>0) oder -1 bei Verbindungsfehler.
+         */
+        fn dial(host: String, port: Int64) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if !socketConnect(fd, host, port) {
+                return -1;
+            }
+            return httpConnFromFd(fd);
+        }
+
+        /*
+         * amqps:// — TLS-Variante von dial() (Broker-Standardport 5671).
+         * OpenSSL ist standardmäßig gelinkt (s. HttpServer::listenTls); mit
+         * TINOX_TLS=0 gebaut liefert httpConnFromFdTls -1. verify=true prüft
+         * die Zertifikatskette + den Hostnamen gegen die System-CA-Stores
+         * (Standardfall für echte Broker-Zertifikate); verify=false ist ein
+         * bewusster Opt-out für selbstsignierte Testzertifikate.
+         */
+        fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if !socketConnect(fd, host, port) {
+                return -1;
+            }
+            return httpConnFromFdTls(fd, host, verify);
+        }
+
+        /*
+         * Sendet den 8-Byte-Protokoll-Header (AMQP 0-9-1 §4.2.2):
+         * "AMQP" 0x00 0x00 0x09 0x01.
+         */
+        fn sendProtocolHeader(conn: Int64) -> Nothing
+        {
+            let header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1];
+            httpConnWriteBytes(conn, header);
+        }
+
+        /*
+         * Prüft die Antwort auf den Protokoll-Header: liest das erste Byte
+         * der Antwort. Unterstützt der Broker 0-9-1, ist das der Beginn
+         * eines echten METHOD-Frames (Typ-Oktett 1, das Frame ist
+         * `connection.start` — Parsing folgt in Phase 2). Bei
+         * Versions-Mismatch echot der Broker denselben 8-Byte-Header-Aufbau
+         * zurück und schließt (erstes Byte 'A' = 65) — das UND jeder
+         * andere Wert ≠ 1 sowie EOF/Kurzread gelten als harter Fehlschlag.
+         */
+        fn checkHandshakeResponse(conn: Int64) -> Bool
+        {
+            let resp = httpConnReadN(conn, 1);
+            if resp.len() < 1 {
+                return false;
+            }
+            return resp[0] == 1;
+        }
+
+        /*
+         * Liest genau EINEN Frame (blockierend): Typ-Oktett + Channel
+         * (short) + Größe (long) + Payload + 0xCE-Terminator (§4.2.3).
+         * EOF/Kurzread -> frameType -1; fehlender 0xCE ODER Payload > Cap
+         * -> frameType -2 (Protokollfehler, Aufrufer schließt).
+         */
+        fn readFrame(conn: Int64) -> AmqpFrame091
+        {
+            let bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
+            let hdr = httpConnReadN(conn, 7);
+            if hdr.len() < 7 {
+                return bad;
+            }
+            let frameType = hdr[0];
+            let chanId = (hdr[1] << 8) | hdr[2];
+            let size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6];
+            if size < 0 || size > 16777216 {
+                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
+            }
+            var payload: List<Int64> = [];
+            if size > 0 {
+                let raw = httpConnReadN(conn, size);
+                if raw.len() < size {
+                    return bad;
+                }
+                payload = raw;
+            }
+            let end = httpConnReadN(conn, 1);
+            if end.len() < 1 {
+                return bad;
+            }
+            if end[0] != 0xCE {
+                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
+            }
+            return AmqpFrame091 { frameType: frameType, chanId: chanId, payload: payload };
+        }
+
+        /*
+         * Schreibt einen Frame Client->Broker (§4.2.3).
+         */
+        fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, payload: List<Int64>) -> Nothing
+        {
+            let w = AmqpWriter091::new();
+            w.octet(frameType);
+            w.short(chanId);
+            w.long(payload.len());
+            w.rawBytes(payload);
+            w.octet(0xCE);
+            httpConnWriteBytes(conn, w.bytes);
+        }
+
+        /*
+         * Baut den Payload eines METHOD-Frames (§4.2.4): class-id +
+         * method-id + bereits kodierte Argument-Bytes (Aufrufer nutzt
+         * einen eigenen AmqpWriter091 für die methodenspezifische
+         * Argument-Reihenfolge, s. Phase 3).
+         */
+        fn encodeMethodPayload(classId: Int64, methodId: Int64, args: List<Int64>) -> List<Int64>
+        {
+            let w = AmqpWriter091::new();
+            w.short(classId);
+            w.short(methodId);
+            w.rawBytes(args);
+            return w.bytes;
+        }
+
+        /*
+         * Zerlegt einen METHOD-Frame-Payload in class-id/method-id +
+         * restliche Argument-Bytes (zum Weiterverarbeiten mit einem
+         * frischen AmqpReader091).
+         */
+        fn decodeMethodPayload(payload: List<Int64>) -> AmqpMethodFrame091
+        {
+            let r = AmqpReader091::new(payload);
+            let classId = r.short();
+            let methodId = r.short();
+            var args: List<Int64> = [];
+            while r.remaining() > 0 {
+                args.push(r.octet());
+            }
+            return AmqpMethodFrame091 { classId: classId, methodId: methodId, args: args };
+        }
+
+        /*
+         * Baut den SASL-PLAIN-Response-Byte-String: NUL + Username + NUL +
+         * Passwort (RFC 4616). Als List<Int64> statt String, weil das
+         * eingebettete NUL-Byte eine Tinox-String-Concatenation riskant
+         * machen würde (s. longstrBytes).
+         */
+        fn saslPlainResponse(user: String, pass: String) -> List<Int64>
+        {
+            var bytes: List<Int64> = [];
+            bytes.push(0);
+            for i in 0..user.len() {
+                bytes.push(user.charCodeAt(i) & 0xFF);
+            }
+            bytes.push(0);
+            for i in 0..pass.len() {
+                bytes.push(pass.charCodeAt(i) & 0xFF);
+            }
+            return bytes;
+        }
+
+        /*
+         * Behandelt eine unerwartete `connection.close`/`channel.close`
+         * (z. B. SASL-Fehler, unbekannter vhost): quittiert spec-konform
+         * mit close-ok (reply-code/reply-text-Felder haben in beiden
+         * Klassen dieselbe Position: short + shortstr zuerst) und liefert
+         * eine Fehlermeldung zum Weiterreichen.
+         */
+        fn describeAndAckClose(conn: Int64, chanId: Int64, mf: AmqpMethodFrame091, closeOkMethodId: Int64) -> String
+        {
+            let r = AmqpReader091::new(mf.args);
+            let replyCode = r.short();
+            let replyText = r.shortstr();
+            let closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, []);
+            Amqp091::writeFrame(conn, 1, chanId, closeOkPayload);
+            return "Broker schloss mit Code " + replyCode.toString() + ": " + replyText;
+        }
+    }
+}

@@ -15,7 +15,7 @@ fn b() -> Int64 { println("b ran (should NOT happen)"); return 1; }
 
 fn sum(x: Int64, y: Int64) -> Int64 { return x + y; }
 
-class Acc {
+class throw_substatement_unwinding {
     var total: Int64;
     fn add(x: Int64, y: Int64) -> Int64 { return x + y; }
 }
@@ -48,7 +48,7 @@ fn main() -> Int32 {
 
     // Methodenaufruf-Argumente.
     try {
-        let acc: Acc = Acc { total: 0 };
+        let acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 };
         let r: Int64 = acc.add(a(), b());
         println("unreached:" + r.toString());
     } catch e: String {

@@ -1,7 +1,7 @@
 // expect: 25
 // expect: 27
 
-class MathUtil
+class static_methods
 {
     fnc square(n: Int64) -> Int64
     {
@@ -14,7 +14,7 @@ class MathUtil
 }
 fn main() -> Int32
 {
-    println(MathUtil::square(5));
-    println(MathUtil::cube(3));
+    println(static_methods::square(5));
+    println(static_methods::cube(3));
     return 0;
 }

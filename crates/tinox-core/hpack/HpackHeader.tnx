@@ -1,0 +1,26 @@
+/**
+ * Tinox Standard Library - HPACK Module
+ * Header compression for HTTP/2 (RFC 7541)
+ *
+ * Implements HPACK integer/string encoding and decoding,
+ * the static header table (61 entries), and a dynamic table
+ * with configurable max size for full encoder/decoder support.
+ */
+module tinox.core.hpack;
+
+namespace tinox.core.hpack
+{
+    /**
+     * A single decoded or to-be-encoded HTTP header name/value pair
+     */
+    class HpackHeader
+    {
+        var name: String;
+        var value: String;
+
+        fn new(name: String, value: String) -> HpackHeader
+        {
+            return HpackHeader { name: name, value: value };
+        }
+    }
+}

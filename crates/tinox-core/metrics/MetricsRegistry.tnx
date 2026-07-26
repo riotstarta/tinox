@@ -1,0 +1,30 @@
+module tinox.core.metrics;
+
+namespace tinox.core.metrics
+{
+    // Manual metrics API — wraps the built-in C runtime metrics registry.
+    // Annotations @Timed and @Counted instrument functions automatically.
+    // Use this class to record metrics from application logic directly.
+    class MetricsRegistry
+    {
+        fn incCounter(name: String) -> Nothing
+        {
+            tinox_counter_inc(name);
+        }
+
+        fn recordDuration(name: String, durationNs: Int64) -> Nothing
+        {
+            tinox_histogram_record(name, durationNs);
+        }
+
+        fn setGauge(name: String, value: Int64) -> Nothing
+        {
+            tinox_gauge_set(name, value);
+        }
+
+        fn prometheusFormat() -> String
+        {
+            return tinox_metrics_prometheus();
+        }
+    }
+}

@@ -1,6 +1,6 @@
 //! @Amqp10Consumer/@OnMessage annotation (Issue #81).
 //!
-//! Compiles examples/amqp10_consumer_annotated.tnx (a generated auto-main
+//! Compiles examples/DemoConsumer.tnx (a generated auto-main
 //! connect/begin/attach/grantCredit/nextMessage/ack loop — never returns)
 //! and a small standalone fake-broker helper program (a normal `main`, not
 //! annotation-driven — a separate process, so the "exactly one main-owning
@@ -33,7 +33,7 @@ impl Drop for KillOnDrop {
 }
 
 // Port must match the literal baked into @Amqp10Consumer(...) in
-// examples/amqp10_consumer_annotated.tnx.
+// examples/DemoConsumer.tnx.
 const FAKE_BROKER_SRC: &str = r#"
 import tinox.core.amqp10;
 import tinox.core.socket;
@@ -196,7 +196,7 @@ fn wait_for_line(rx: &mpsc::Receiver<String>, needle: &str, timeout: Duration, l
 fn amqp10_consumer_annotation_receives_and_acks() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let consumer_src = root.join("examples/amqp10_consumer_annotated.tnx");
+    let consumer_src = root.join("examples/DemoConsumer.tnx");
 
     let workdir = std::env::temp_dir().join(format!(
         "tinox-amqp10-consumer-annotation-{}",
@@ -209,7 +209,7 @@ fn amqp10_consumer_annotation_receives_and_acks() {
     std::fs::write(&broker_src_path, FAKE_BROKER_SRC).expect("write fake broker source");
 
     let broker_exe = build(tinox, &broker_src_path, &workdir, "fake_broker");
-    let consumer_exe = build(tinox, &consumer_src, &workdir, "amqp10_consumer_annotated");
+    let consumer_exe = build(tinox, &consumer_src, &workdir, "DemoConsumer");
 
     let (broker_child, broker_out, broker_err) = spawn_line_buffered(&broker_exe, &workdir);
     let _broker_guard = KillOnDrop(broker_child);

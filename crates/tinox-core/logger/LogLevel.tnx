@@ -1,0 +1,14 @@
+module tinox.core.logger;
+
+namespace tinox.core.logger
+{
+    // Log-Level als Int64-Konstanten (numerisch vergleichbar). Kein Wrapper-
+    // Objekt: `logger.level <= LogLevel::Debug` ist ein Int-Vergleich.
+    class LogLevel
+    {
+        fn Debug() -> Int64 { return 0; }
+        fn Info() -> Int64 { return 1; }
+        fn Warn() -> Int64 { return 2; }
+        fn Error() -> Int64 { return 3; }
+    }
+}

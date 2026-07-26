@@ -1,0 +1,48 @@
+/**
+ * Tinox Standard Library - HTTP/2 Server Module
+ * Full HTTP/2 server implementation (RFC 7540) with binary framing,
+ * HPACK header compression, stream multiplexing, and flow control.
+ *
+ * The API mirrors HttpServer so existing route handlers work unchanged:
+ *
+ *   let server: Http2Server = Http2Server::new(8080);
+ *   server.get("/hello", ctx => {
+ *       ctx.response.text("Hello HTTP/2!");
+ *   });
+ *   server.post("/api/data", ctx => {
+ *       let body: JsonValue = ctx.request.json();
+ *       ctx.response.status(201).json("{\"ok\": true}");
+ *   });
+ *   server.listen();
+ *
+ * Runtime requirements:
+ *   httpServerCreate(port)           — existing native, creates TCP listener
+ *   httpServerAcceptConn(fd)         — existing native, returns client fd
+ *   httpServerReadRawBytes(fd, n)    — new native: reads exactly n bytes, returns String
+ *   httpServerSendRaw(fd, data)      — existing native, sends raw string bytes
+ *   httpServerCloseConn(fd)          — existing native, closes client fd
+ *   httpServerClose(fd)              — existing native, closes listener
+ *   fromCharCode(code)               — existing native, Int64 → single-char String
+ */
+module tinox.core.http2_server;
+
+namespace tinox.core.http2_server
+{
+    // =========================================================================
+    // Frame type identifiers (RFC 7540 §11.2)
+    // =========================================================================
+
+    class Http2FrameType
+    {
+        fn DATA()          -> Int64 { return 0x0; }
+        fn HEADERS()       -> Int64 { return 0x1; }
+        fn PRIORITY()      -> Int64 { return 0x2; }
+        fn RST_STREAM()    -> Int64 { return 0x3; }
+        fn SETTINGS()      -> Int64 { return 0x4; }
+        fn PUSH_PROMISE()  -> Int64 { return 0x5; }
+        fn PING()          -> Int64 { return 0x6; }
+        fn GOAWAY()        -> Int64 { return 0x7; }
+        fn WINDOW_UPDATE() -> Int64 { return 0x8; }
+        fn CONTINUATION()  -> Int64 { return 0x9; }
+    }
+}

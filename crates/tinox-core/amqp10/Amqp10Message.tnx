@@ -1,0 +1,22 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Eine per Amqp10Link::nextMessage() empfangene Nachricht (Phase 6).
+     * ok == false bei jedem Fehler (falscher Frame-/Performative-Typ) —
+     * errorMessage beschreibt dann die Ursache, analog zu 0-9-1s
+     * AmqpMessage091. `deliveryId` wird für Amqp10Link::ack() gebraucht.
+     */
+    class Amqp10Message
+    {
+        var body: List<Int64>;
+        var contentType: String;
+        var deliveryId: Int64;
+        var ok: Bool;
+        var errorMessage: String;
+    }
+}

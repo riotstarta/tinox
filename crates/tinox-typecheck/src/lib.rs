@@ -1327,6 +1327,17 @@ impl TypeChecker {
                     if let Some(parent) = &c.extends {
                         self.class_parents.insert(c.name.clone(), parent.clone());
                     }
+                    // Register class->interface(s) up front, not lazily at the
+                    // end of check_class(): a class-to-interface assignment
+                    // (`let x: IDrawable = Circle{...}`) in a FUNCTION that
+                    // appears earlier in decl order than the class itself
+                    // (increasingly common with one-type-per-file: the entry
+                    // file's own `fn main` is merged before its imported
+                    // classes) would otherwise be checked before
+                    // interface_implementations["Circle"] existed, and fail
+                    // with a spurious "expected IDrawable, found Circle".
+                    self.interface_implementations
+                        .insert(c.name.clone(), c.implements.clone());
                     for field in &c.fields {
                         let ty = Self::type_to_value(&field.field_type);
                         let key = format!("{}.{}", c.name, field.name);

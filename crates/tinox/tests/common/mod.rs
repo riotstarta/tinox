@@ -156,9 +156,13 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             Some(st) => (st, output),
         }
     } else {
-        // Compile
+        // Compile — explicit -o: for directory-based cases (one-type-per-file
+        // convention, entry point is always `<dir>/main.tnx`) the default
+        // output name would be "main", not `case.name`, so the run step below
+        // (which looks for `workdir/<case.name>`) would find nothing.
+        let exe = workdir.join(&case.name);
         let mut build = Command::new(tinox);
-        build.arg("build").arg(&case.path).current_dir(&workdir);
+        build.arg("build").arg(&case.path).arg("-o").arg(&exe).current_dir(&workdir);
         let (status, out) = run_captured(build, COMPILE_TIMEOUT)?;
         match status {
             None => return Err("compile TIMEOUT".to_string()),
@@ -169,7 +173,6 @@ pub fn run_case(case: &Case) -> Result<(), String> {
         }
 
         // Run
-        let exe = workdir.join(&case.name);
         let mut run = Command::new(&exe);
         run.args(&case.args).current_dir(&workdir);
         let (status, output) = run_captured(run, RUN_TIMEOUT)?;

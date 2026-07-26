@@ -1,0 +1,90 @@
+module tinox.core.crypto;
+
+import tinox.core.random;
+
+namespace tinox.core.crypto
+{
+    class Crypto
+    {
+        fn md5(data: String) -> String
+        {
+            return md5Hash(data);
+        }
+
+        fn sha256(data: String) -> String
+        {
+            return sha256Hash(data);
+        }
+
+        // Nur fuer Protokoll-Kompatibilitaet (z. B. WebSocket-Handshake),
+        // nicht fuer neue kryptografische Zwecke — SHA-1 gilt als gebrochen.
+        fn sha1(data: String) -> String
+        {
+            return sha1Hash(data);
+        }
+
+        fn hmacSha256(data: String, key: String) -> String
+        {
+            return hmacSha256Hash(data, key);
+        }
+
+        // AES-256-GCM (authentifizierte Verschluesselung). key ist ein
+        // beliebig langer String, wird intern per SHA-256 zu einem echten
+        // 256-Bit-Schluessel abgeleitet. Rueckgabe ist Hex-kodiert (Nonce +
+        // Ciphertext + Auth-Tag) — direkt an aesDecrypt uebergebbar.
+        // Wirft bei jedem Fehler (Runtime ohne OpenSSL gebaut) statt eines
+        // stillen leeren/falschen Ergebnisses.
+        fn aesEncrypt(data: String, key: String) -> String
+        {
+            let result: String = aesEncryptRaw(data, key);
+            if result.len() == 0
+            {
+                throw "Crypto::aesEncrypt fehlgeschlagen (Runtime ohne TLS/OpenSSL gebaut?)";
+            }
+            return result;
+        }
+
+        // Wirft bei falschem Schluessel oder manipulierten/beschaedigten
+        // Daten (GCM-Authentifizierung schlaegt fehl) statt stillschweigend
+        // falschen Klartext zurueckzugeben.
+        //
+        // aesDecryptRaw stellt einem echten Ergebnis ein "1" voran (auch bei
+        // leerem Klartext, z. B. aesDecrypt(aesEncrypt("", key), key)) —
+        // sonst waere ein legitim LEERER Klartext von "" als Fehler-Sentinel
+        // nicht unterscheidbar.
+        fn aesDecrypt(data: String, key: String) -> String
+        {
+            let result: String = aesDecryptRaw(data, key);
+            if result.len() == 0
+            {
+                throw "Crypto::aesDecrypt fehlgeschlagen (falscher Schluessel, manipulierte Daten, oder Runtime ohne TLS/OpenSSL gebaut)";
+            }
+            return result.substring(1, result.len());
+        }
+
+        fn generateKey(length: Int64) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < length
+            {
+                let byte: Int64 = Random::nextInt(256);
+                result = result + fromCharCode(byte);
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fn pbkdf2(password: String, salt: String, iterations: Int64, keyLength: Int64) -> String
+        {
+            var result: String = password + salt;
+            var i: Int64 = 0;
+            while i < iterations
+            {
+                result = Crypto::sha256(result);
+                i = i + 1;
+            }
+            return result.substring(0, keyLength);
+        }
+    }
+}

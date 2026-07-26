@@ -1,0 +1,12 @@
+import HttpContext;
+
+class UserController
+{
+    @GET
+    @Path("/users")
+    @StatusCode(200)
+    fn listUsers(ctx: HttpContext) -> Nothing
+    {
+        ctx.x = 42;
+    }
+}

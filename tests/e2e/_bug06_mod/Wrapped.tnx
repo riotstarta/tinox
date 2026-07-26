@@ -1,0 +1,10 @@
+import JVal;
+
+class Wrapped {
+    var value: JVal;
+    var tag: Int64;
+}
+
+fn makeWrapped() -> Wrapped {
+    return Wrapped { value: JVal::SVal("hi"), tag: 42 };
+}

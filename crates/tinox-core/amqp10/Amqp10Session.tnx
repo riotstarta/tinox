@@ -1,0 +1,80 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Eine Session auf einer Amqp10Connection (§2.7.3, entspricht 0-9-1s
+     * Channel, aber mit fenster-basierter Flow-Control statt reinem
+     * "offen"-Status). `incoming-window`/`outgoing-window` großzügig fest
+     * (kein echtes Fenster-Tracking in v1 — Phase 6 (`flow`) fügt das für
+     * den eigentlichen Nachrichtenfluss hinzu, `begin` selbst braucht nur
+     * plausible Startwerte).
+     *
+     * Issue 76: mehrere Sessions pro Connection sind jetzt strukturell
+     * moeglich (jede begin() bekommt einen eigenen, garantiert
+     * eindeutigen Kanal aus Amqp10Connection.nextChannelId statt des
+     * frueher fest verdrahteten Kanals 1) — v1-Grenze bleibt aber
+     * bestehen: es gibt KEINEN echten Frame-Dispatcher auf Connection-
+     * Ebene (s. Amqp10Link::awaitFlow()s Kommentar zur selben Lücke beim
+     * Single-Link-Fall). readFrame()/readFrameSkipHeartbeats() lesen
+     * IMMER das naechste Frame auf der Verbindung, unabhaengig davon,
+     * welcher Kanal es traegt — mehrere Sessions funktionieren deshalb
+     * korrekt, SOLANGE die Anwendung ihre blockierenden Operationen
+     * (begin/attach/nextMessage/...) über alle Sessions/Links hinweg
+     * SEQUENZIELL aufruft (kein zeitgleiches Warten auf zwei Sessions aus
+     * zwei Anwendungs-Threads). nextMessage() prueft zumindest das
+     * empfangene `handle`-Feld gegen this.handle (s. dort) — ein
+     * fälschlich fuer einen anderen Link gelesenes Transfer wird dadurch
+     * als harter Fehler statt als Silent-Garbage (falsch zugeordneter
+     * Nachrichteninhalt) sichtbar.
+     */
+    class Amqp10Session
+    {
+        var conn: Int64;
+        var chanId: Int64;
+        var maxFrameSize: Int64;
+        var errorMessage: String;
+        // Issue 76: naechste zu vergebende Link-Handle-Nummer innerhalb
+        // dieser Session (analog zu Amqp10Connection.nextChannelId).
+        var nextLinkHandle: Int64;
+
+        fn begin(connection: Amqp10Connection) -> Amqp10Session
+        {
+            let chanId = connection.nextChannelId;
+            connection.nextChannelId = connection.nextChannelId + 1;
+
+            var beginFields: List<Amqp10Value> = [
+                Amqp10Value::NullVal,             // remote-channel (nur in Antworten gesetzt)
+                Amqp10Value::UIntVal(0),           // next-outgoing-id
+                Amqp10Value::UIntVal(2147483647),  // incoming-window
+                Amqp10Value::UIntVal(2147483647)   // outgoing-window
+            ];
+            let beginBody = Amqp10::encodePerformative(0x11, beginFields);
+            Amqp10::writeFrame(connection.conn, 0, chanId, beginBody);
+
+            let f = Amqp10::readFrame(connection.conn);
+            if f.frameType != 0 {
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), nextLinkHandle: 0 };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if p.descriptor != 0x11 {
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "erwartete begin (0x11), bekam descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 };
+            }
+            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 };
+        }
+
+        /*
+         * Beendet die Session: `end` senden und auf `end` vom Broker
+         * warten (v1 ungeprüft, analog zu Amqp10Connection::close).
+         */
+        fn end() -> Nothing
+        {
+            let endBody = Amqp10::encodePerformative(0x17, []);
+            Amqp10::writeFrame(this.conn, 0, this.chanId, endBody);
+            Amqp10::readFrame(this.conn);
+        }
+    }
+}

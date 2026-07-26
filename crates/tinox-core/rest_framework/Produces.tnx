@@ -1,0 +1,19 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Specifies the response content type (Content-Type header).
+     * @Produces(MediaType::Json)
+     */
+    @annotation
+    class Produces
+    {
+        var value: MediaType;
+
+        fn new(value: MediaType) -> Produces
+        {
+            return Produces { value: value };
+        }
+    }
+}

@@ -1,0 +1,6 @@
+import User;
+
+enum Res {
+    Ok(User),
+    Err(String),
+}

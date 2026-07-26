@@ -1,0 +1,28 @@
+module tinox.core.http2_server;
+
+namespace tinox.core.http2_server
+{
+    /**
+     * An HTTP/2 frame with its 9-byte fixed header fields and payload.
+     * The payload is a list of raw byte values (Int64, each 0–255).
+     */
+    class Http2Frame
+    {
+        var length: Int64;
+        var type: Int64;
+        var flags: Int64;
+        var streamId: Int64;
+        var payload: List<Int64>;
+
+        fn new(type: Int64, flags: Int64, streamId: Int64, payload: List<Int64>) -> Http2Frame
+        {
+            return Http2Frame {
+                length: payload.len(),
+                type: type,
+                flags: flags,
+                streamId: streamId,
+                payload: payload
+            };
+        }
+    }
+}

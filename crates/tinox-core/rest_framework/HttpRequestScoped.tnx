@@ -1,0 +1,11 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * One instance per HTTP request. Created fresh for each incoming request
+     * and lives exactly as long as that request.
+     */
+    @annotation
+    class HttpRequestScoped {}
+}

@@ -1,0 +1,10 @@
+module tinox.core.hpack;
+
+namespace tinox.core.hpack
+{
+    class HpackIntResult
+    {
+        var value: Int64;
+        var nextOffset: Int64;
+    }
+}

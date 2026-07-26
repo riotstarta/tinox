@@ -1,0 +1,19 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Sets the base path for a controller class or a path prefix for a method.
+     * @Path("/api/v1")
+     */
+    @annotation
+    class Path
+    {
+        var value: String;
+
+        fn new(value: String) -> Path
+        {
+            return Path { value: value };
+        }
+    }
+}

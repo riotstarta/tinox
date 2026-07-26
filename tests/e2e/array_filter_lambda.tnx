@@ -17,7 +17,7 @@
 // expect: 1
 // expect: 6
 // expect: 0
-class Point {
+class array_filter_lambda {
     var x: Int64;
     var y: Int64;
     fn sum() -> Int64 { return this.x + this.y; }
@@ -44,7 +44,7 @@ fn main() -> Int32 {
     println(ws[1]);
 
     // Objekte: Feldzugriff im Prädikat, Methodenaufruf danach
-    let ps = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let ps = [array_filter_lambda { x: 1, y: 2 }, array_filter_lambda { x: 3, y: 4 }];
     let bigp = ps.filter(p => p.x > 2);
     println(bigp.len().toString());
     println(bigp[0].sum().toString());

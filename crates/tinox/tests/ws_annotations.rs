@@ -1,6 +1,6 @@
 //! @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose annotations.
 //!
-//! Compiles examples/ws_echo_annotated.tnx (a generated auto-main accept/
+//! Compiles examples/EchoEndpoint.tnx (a generated auto-main accept/
 //! message loop — never returns), runs it as a background process, drives
 //! a real handshake + text-frame roundtrip over a raw TCP socket, then kills
 //! it. Not part of the golden-test harness (e2e.rs): those cases must exit
@@ -39,14 +39,14 @@ fn read_n(stream: &mut TcpStream, n: usize) -> Vec<u8> {
 fn ws_annotated_endpoint_handshake_and_echo() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let src = root.join("examples/ws_echo_annotated.tnx");
+    let src = root.join("examples/EchoEndpoint.tnx");
     let workdir = std::env::temp_dir().join(format!(
         "tinox-ws-annotations-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&workdir);
     std::fs::create_dir_all(&workdir).expect("mkdir workdir");
-    let exe = workdir.join("ws_echo_annotated");
+    let exe = workdir.join("EchoEndpoint");
 
     let build = Command::new(tinox)
         .arg("build")

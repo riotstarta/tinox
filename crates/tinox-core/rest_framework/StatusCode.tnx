@@ -1,0 +1,19 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Sets the default HTTP status code for the response.
+     * @StatusCode(201)
+     */
+    @annotation
+    class StatusCode
+    {
+        var value: Int64;
+
+        fn new(value: Int64) -> StatusCode
+        {
+            return StatusCode { value: value };
+        }
+    }
+}

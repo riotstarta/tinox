@@ -1,4 +1,4 @@
-// Generische statische Methoden: explizite Typargumente (deserialize<User>,
+// Generische statische Methoden: explizite Typargumente (deserialize<generic_static_methods>,
 // T::fromJson-Substitution) und Inferenz aus Argumenten (serialize, auch List<T>)
 // expect: {"id":7,"name":"Alice"}
 // expect: 7
@@ -7,19 +7,19 @@
 import tinox.core.json;
 
 @JsonSerializable
-class User {
+class generic_static_methods {
     var id: Int64;
     var name: String;
 }
 
 fn main() -> Int32 {
-    let u = User { id: 7, name: "Alice" };
+    let u = generic_static_methods { id: 7, name: "Alice" };
     let j: String = Json::serialize(u);
     println(j);
-    let back: User = Json::deserialize<User>(j);
+    let back: generic_static_methods = Json::deserialize<generic_static_methods>(j);
     println(back.id);
     println(back.name);
-    let users: List<User> = [User { id: 1, name: "A" }, User { id: 2, name: "B" }];
+    let users: List<generic_static_methods> = [generic_static_methods { id: 1, name: "A" }, generic_static_methods { id: 2, name: "B" }];
     println(Json::serialize(users));
     return 0;
 }

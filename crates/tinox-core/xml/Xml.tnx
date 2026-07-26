@@ -1,0 +1,22 @@
+module tinox.core.xml;
+
+namespace tinox.core.xml
+{
+    class Xml
+    {
+        fn parse(text: String) -> XmlNode
+        {
+            return XmlParser::parse(text);
+        }
+
+        fn stringify(node: XmlNode) -> String
+        {
+            return XmlRenderer::render(node);
+        }
+
+        fn query(node: XmlNode, xpath: String) -> List<XmlNode>
+        {
+            return XmlQuery::query(node, xpath);
+        }
+    }
+}

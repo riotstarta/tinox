@@ -1,0 +1,24 @@
+module tinox.core.rest_framework;
+
+namespace tinox.core.rest_framework
+{
+    /**
+     * Marks a method as a PUT endpoint.
+     * @PUT("/path") or @PUT for the class base path
+     */
+    @annotation
+    class PUT
+    {
+        var path: String;
+
+        fn new(path: String) -> PUT
+        {
+            return PUT { path: path };
+        }
+
+        fn default() -> PUT
+        {
+            return PUT { path: "" };
+        }
+    }
+}

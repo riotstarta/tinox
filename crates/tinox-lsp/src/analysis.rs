@@ -1218,18 +1218,24 @@ mod tests {
 
     fn make_stdlib() -> TypeRegistry {
         // CARGO_MANIFEST_DIR = .../crates/tinox-lsp
+        // One-type-per-file (2026-07-26): http_server is now a directory of
+        // several `<TypeName>.tnx` files instead of one `http_server.tnx` —
+        // parse and merge all of them, same as build_embedded_stdlib() does.
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let path = format!("{}/../../crates/tinox-core/http_server.tnx", manifest);
-        let src = std::fs::read_to_string(&path).unwrap_or_default();
-        if src.is_empty() { return HashMap::new(); }
-        let tokens = match Lexer::new(&src).tokenize() {
-            Ok(t) => t,
-            Err(_) => return HashMap::new(),
-        };
-        match Parser::new(tokens).parse() {
-            Ok(ast) => build_registry_from_source(&ast),
-            Err(_) => HashMap::new(),
+        let dir = format!("{}/../../crates/tinox-core/http_server", manifest);
+        let mut registry = HashMap::new();
+        let Ok(entries) = std::fs::read_dir(&dir) else { return registry };
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        paths.sort();
+        for path in paths {
+            let Ok(src) = std::fs::read_to_string(&path) else { continue };
+            let Ok(tokens) = Lexer::new(&src).tokenize() else { continue };
+            let Ok(ast) = Parser::new(tokens).parse() else { continue };
+            for (name, info) in build_registry_from_source(&ast) {
+                registry.entry(name).or_insert(info);
+            }
         }
+        registry
     }
 
     #[test]

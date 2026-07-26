@@ -1,0 +1,181 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    /*
+     * Eine ausgehandelte AMQP-0-9-1-Verbindung (nach vollständigem
+     * connection.start/-ok/tune/-ok/open/-ok-Handshake, §1.4.2.1). `conn`
+     * ist -1 bei jedem Fehlschlag (Aufrufer MUSS prüfen, kein
+     * Silent-Garbage) — `errorMessage` beschreibt dann die Ursache.
+     */
+    class AmqpConnection091
+    {
+        var conn: Int64;
+        var frameMax: Int64;
+        var channelMax: Int64;
+        var heartbeat: Int64;
+        var errorMessage: String;
+
+        /*
+         * Baut eine komplette AMQP-0-9-1-Verbindung auf: dial + Protokoll-
+         * Header + connection.start empfangen + start-ok (SASL PLAIN)
+         * senden + tune empfangen + tune-ok senden + open + open-ok.
+         * v1: übernimmt die Server-Vorschläge aus tune (channel-max,
+         * frame-max), Heartbeat wird auf 0 (deaktiviert) geklemmt — es gibt
+         * noch keinen Heartbeat-Sender (s. tasklist.md "Später").
+         */
+        fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+        {
+            let conn = Amqp091::dial(host, port);
+            if conn <= 0 {
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen" };
+            }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * amqps:// — TLS-Variante von connect() (Broker-Standardport 5671).
+         * Sonst identisch zu connect(): teilt sich den gesamten Handshake
+         * (finishHandshake), weil dieser ausschließlich über httpConn*
+         * läuft — TLS- und Plaintext-transparent (s. dial/dialTls).
+         * verify=true (empfohlen für echte Broker-Zertifikate) prüft die
+         * Zertifikatskette + den Hostnamen gegen die System-CA-Stores;
+         * verify=false ist ein bewusster Opt-out für selbstsignierte
+         * Testzertifikate.
+         */
+        fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -> AmqpConnection091
+        {
+            let conn = Amqp091::dialTls(host, port, verify);
+            if conn <= 0 {
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen (TLS)" };
+            }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * Gemeinsamer Handshake-Kern von connect()/connectTls() nach dem
+         * dial: Protokoll-Header + connection.start/-ok/tune/-ok/open/-ok
+         * (§1.4.2.1). `conn` ist ein bereits verbundenes Handle (Plaintext
+         * ODER TLS — beide sind über httpConn* transparent).
+         */
+        fn finishHandshake(conn: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+        {
+            Amqp091::sendProtocolHeader(conn);
+
+            // --- connection.start ---
+            let f1 = Amqp091::readFrame(conn);
+            if f1.frameType != 1 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Protokoll-Header abgelehnt oder Handshake fehlgeschlagen (frameType=" + f1.frameType.toString() + ")" };
+            }
+            let startMethod = Amqp091::decodeMethodPayload(f1.payload);
+            if startMethod.classId != 10 || startMethod.methodId != 10 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.start, bekam class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString() };
+            }
+            let startArgs = AmqpReader091::new(startMethod.args);
+            startArgs.octet(); // version-major (ungeprüft — schon via Protokoll-Header validiert)
+            startArgs.octet(); // version-minor
+            startArgs.fieldTable(); // server-properties (v1: nicht ausgewertet)
+            let mechanisms = startArgs.longstr();
+            startArgs.longstr(); // locales (v1: immer en_US angeboten)
+
+            if !mechanisms.contains("PLAIN") {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Broker bietet SASL-Mechanismus PLAIN nicht an (angeboten: " + mechanisms + ")" };
+            }
+
+            // --- connection.start-ok ---
+            let w1 = AmqpWriter091::new();
+            var clientProps: Map<String, AmqpFieldValue091> = Map::new();
+            clientProps.insert("product", AmqpFieldValue091::StrVal("tinox"));
+            clientProps.insert("platform", AmqpFieldValue091::StrVal("tinox-amqp091"));
+            clientProps.insert("version", AmqpFieldValue091::StrVal("0.1"));
+            w1.fieldTable(clientProps);
+            w1.shortstr("PLAIN");
+            w1.longstrBytes(Amqp091::saslPlainResponse(user, pass));
+            w1.shortstr("en_US");
+            let startOkPayload = Amqp091::encodeMethodPayload(10, 11, w1.bytes);
+            Amqp091::writeFrame(conn, 1, 0, startOkPayload);
+
+            // --- connection.tune ---
+            let f2 = Amqp091::readFrame(conn);
+            if f2.frameType != 1 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune (frameType=" + f2.frameType.toString() + ")" };
+            }
+            let tuneMethod = Amqp091::decodeMethodPayload(f2.payload);
+            if tuneMethod.classId == 10 && tuneMethod.methodId == 50 {
+                let msg = Amqp091::describeAndAckClose(conn, 0, tuneMethod, 51);
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/Handshake fehlgeschlagen: " + msg };
+            }
+            if tuneMethod.classId != 10 || tuneMethod.methodId != 30 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune, bekam class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString() };
+            }
+            let tuneArgs = AmqpReader091::new(tuneMethod.args);
+            let serverChannelMax = tuneArgs.short();
+            let serverFrameMax = tuneArgs.long();
+
+            // --- connection.tune-ok ---
+            var negotiatedFrameMax: Int64 = 131072;
+            if serverFrameMax > 0 {
+                negotiatedFrameMax = serverFrameMax;
+            }
+            let w2 = AmqpWriter091::new();
+            w2.short(serverChannelMax);
+            w2.long(negotiatedFrameMax);
+            w2.short(0); // Heartbeat deaktiviert (v1: kein Heartbeat-Sender)
+            let tuneOkPayload = Amqp091::encodeMethodPayload(10, 31, w2.bytes);
+            Amqp091::writeFrame(conn, 1, 0, tuneOkPayload);
+
+            // --- connection.open ---
+            let w3 = AmqpWriter091::new();
+            w3.shortstr(vhost);
+            w3.shortstr(""); // reserved-1 (capabilities, deprecated)
+            w3.octet(0);     // reserved-2 (insist, deprecated bit)
+            let openPayload = Amqp091::encodeMethodPayload(10, 40, w3.bytes);
+            Amqp091::writeFrame(conn, 1, 0, openPayload);
+
+            let f3 = Amqp091::readFrame(conn);
+            if f3.frameType != 1 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok (frameType=" + f3.frameType.toString() + ")" };
+            }
+            let openMethod = Amqp091::decodeMethodPayload(f3.payload);
+            if openMethod.classId == 10 && openMethod.methodId == 50 {
+                let msg = Amqp091::describeAndAckClose(conn, 0, openMethod, 51);
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open fehlgeschlagen: " + msg };
+            }
+            if openMethod.classId != 10 || openMethod.methodId != 41 {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok, bekam class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString() };
+            }
+
+            return AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: 0, errorMessage: "" };
+        }
+
+        /*
+         * Schließt die Verbindung spec-konform: connection.close senden
+         * und auf close-ok warten (kurzes Timeout-Risiko wird v1 bewusst
+         * in Kauf genommen — kein Heartbeat/Timeout-Mechanismus), dann den
+         * Socket schließen.
+         */
+        fn close() -> Nothing
+        {
+            let w = AmqpWriter091::new();
+            w.short(200); // reply-code: normal shutdown (RabbitMQ-Konvention)
+            w.shortstr("OK");
+            w.short(0); // class-id (kein Bezug)
+            w.short(0); // method-id (kein Bezug)
+            let closePayload = Amqp091::encodeMethodPayload(10, 50, w.bytes);
+            Amqp091::writeFrame(this.conn, 1, 0, closePayload);
+            Amqp091::readFrame(this.conn); // erwartet close-ok, v1 ungeprüft
+            httpConnClose(this.conn);
+        }
+    }
+}

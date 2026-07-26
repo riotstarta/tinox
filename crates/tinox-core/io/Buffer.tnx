@@ -1,0 +1,84 @@
+module tinox.core.io;
+
+namespace tinox.core.io
+{
+    /**
+     * A mutable string buffer for efficient string concatenation
+     *
+     * Useful for building up strings incrementally without
+     * creating intermediate string objects.
+     */
+    class Buffer
+    {
+        /** The accumulated string data */
+        var data: String;
+
+        /**
+         * Creates a new empty Buffer
+         *
+         * @return a new Buffer instance
+         */
+        fn new() -> Buffer
+        {
+            return Buffer { data: "" };
+        }
+
+        /**
+         * Appends a string to the buffer
+         *
+         * @param s the string to append
+         */
+        fn append(s: String) -> Nothing
+        {
+            this.data = this.data + s;
+        }
+
+        /**
+         * Appends the string representation of an integer
+         *
+         * @param n the integer to append
+         */
+        fn appendInt(n: Int64) -> Nothing
+        {
+            this.data = this.data + n.toString();
+        }
+
+        /**
+         * Appends a string followed by a newline
+         *
+         * @param s the string to append
+         */
+        fn appendLine(s: String) -> Nothing
+        {
+            this.data = this.data + s + "\n";
+        }
+
+        /**
+         * Clears all content from the buffer
+         */
+        fn clear() -> Nothing
+        {
+            this.data = "";
+        }
+
+        /**
+         * Returns the accumulated string
+         *
+         * @return the buffer contents as a string
+         */
+        fn toString() -> String
+        {
+            return this.data;
+        }
+
+        /**
+         * Checks if the buffer is empty
+         *
+         * @return true if no content has been appended
+         */
+        fn isEmpty() -> Bool
+        {
+            return this.data.len() == 0;
+        }
+    }
+}

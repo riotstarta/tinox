@@ -1,0 +1,17 @@
+module tinox.core.toml;
+
+namespace tinox.core.toml
+{
+    class Toml
+    {
+        fn parse(content: String) -> TomlValue
+        {
+            return TomlParser::parse(content);
+        }
+
+        fn stringify(value: TomlValue) -> String
+        {
+            return TomlRenderer::render(value);
+        }
+    }
+}

@@ -263,7 +263,9 @@ const CONTEXTS: &[&str] = &[
     "cross_module",
 ];
 
-fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String)> {
+/// Returns (case name, type prelude class/enum or "", context prelude
+/// class/enum or "", driver script with expects + body).
+fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String)> {
     let (prelude, setup, vexpr) = apply_context(ctx, ty)?;
     let name = format!("matrix_{}_{}", ty.key, ctx);
 
@@ -313,22 +315,34 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String)> {
         }
     };
 
-    let mut src = String::new();
+    let mut driver = String::new();
     for e in &expects {
-        src.push_str(&format!("// expect: {e}\n"));
+        driver.push_str(&format!("// expect: {e}\n"));
     }
-    src.push('\n');
-    if !ty.prelude.is_empty() {
-        src.push_str(ty.prelude);
-        src.push('\n');
-    }
-    src.push_str(&prelude);
-    if !prelude.is_empty() {
-        src.push('\n');
-    }
-    src.push_str(&body);
-    src.push('\n');
-    Some((name, src))
+    driver.push('\n');
+    driver.push_str(&body);
+    driver.push('\n');
+
+    // ty.prelude / prelude are always exactly one `class`/`enum Name { ... }`
+    // declaration (see TYPES/apply_context above) — one-type-per-file means
+    // each needs its own `<Name>.tnx` instead of being pasted into the
+    // driver script alongside `fn main`.
+    Some((name, ty.prelude.to_string(), prelude, driver))
+}
+
+/// Extracts the declared type name from a generated `class Name { ... }` /
+/// `enum Name { ... }` prelude, or `None` if this prelude is something else
+/// entirely (a free `fn make() -> T {...}`, an `import _matrix_mod;` line —
+/// `ty.prelude`/context prelude aren't always a type, only "field",
+/// "field_list_elem", "match_payload" and the `user` TypeSpec are). Only an
+/// actual type needs its own `<Name>.tnx` file; a function/import prelude
+/// stays inline in the driver script exactly as before.
+fn prelude_type_name(prelude: &str) -> Option<&str> {
+    prelude
+        .strip_prefix("class ")
+        .or_else(|| prelude.strip_prefix("enum "))
+        .or_else(|| prelude.strip_prefix("interface "))
+        .and_then(|rest| rest.split_whitespace().next())
 }
 
 fn helper_module() -> String {
@@ -353,8 +367,62 @@ fn generate_all(shard: usize) -> PathBuf {
     fs::write(dir.join("_matrix_mod.tnx"), helper_module()).expect("write helper");
     for ty in TYPES {
         for ctx in CONTEXTS {
-            if let Some((name, src)) = emit_case(ctx, ty) {
-                fs::write(dir.join(format!("{name}.tnx")), src).expect("write case");
+            if let Some((name, ty_prelude, ctx_prelude, driver)) = emit_case(ctx, ty) {
+                // Split preludes into actual types (need their own file) vs.
+                // anything else (a free `fn make()`, `import _matrix_mod;` —
+                // no type-per-file constraint, stays inline in the driver).
+                let mut type_preludes: Vec<(&str, &str)> = Vec::new();
+                let mut inline_prelude = String::new();
+                for p in [&ty_prelude, &ctx_prelude] {
+                    if p.is_empty() {
+                        continue;
+                    }
+                    match prelude_type_name(p) {
+                        Some(type_name) => type_preludes.push((type_name, p)),
+                        None => {
+                            inline_prelude.push_str(p);
+                            inline_prelude.push('\n');
+                        }
+                    }
+                }
+
+                if type_preludes.is_empty() {
+                    // No class/enum needed — a plain 0-type script, stays a
+                    // flat file exactly as before.
+                    fs::write(dir.join(format!("{name}.tnx")), inline_prelude + &driver)
+                        .expect("write case");
+                } else {
+                    // One-type-per-file: each needed class/enum gets its own
+                    // `<Name>.tnx` in a case-scoped subdirectory (avoids name
+                    // collisions between e.g. every "field" case's `Holder`),
+                    // the driver becomes that subdirectory's `main.tnx` and
+                    // imports whichever type(s) it needs — same convention
+                    // `crates/tinox/tests/e2e.rs` uses for split e2e cases.
+                    let case_dir = dir.join(&name);
+                    fs::create_dir_all(&case_dir).expect("mkdir case dir");
+                    let imports: String =
+                        type_preludes.iter().map(|(t, _)| format!("import {t};\n")).collect();
+                    for (type_name, p) in &type_preludes {
+                        // Every sibling prelude type is imported into every
+                        // other one too (harmless if unused — e.g. `Holder`
+                        // referencing `User`'s field type needs it, `User`
+                        // itself doesn't need `Holder` back).
+                        let others: String = type_preludes
+                            .iter()
+                            .filter(|(t, _)| t != type_name)
+                            .map(|(t, _)| format!("import {t};\n"))
+                            .collect();
+                        let content = if others.is_empty() {
+                            (*p).to_string()
+                        } else {
+                            format!("{others}\n{p}")
+                        };
+                        fs::write(case_dir.join(format!("{type_name}.tnx")), content)
+                            .expect("write case prelude type");
+                    }
+                    fs::write(case_dir.join("main.tnx"), imports + "\n" + &inline_prelude + &driver)
+                        .expect("write case driver");
+                }
             }
         }
     }
@@ -363,23 +431,38 @@ fn generate_all(shard: usize) -> PathBuf {
 
 fn run_shard(shard: usize, num_shards: usize) {
     let dir = generate_all(shard);
-    let mut names: Vec<String> = fs::read_dir(&dir)
+    let mut cases: Vec<(String, PathBuf)> = fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
-        .filter(|p| !p.file_name().unwrap().to_string_lossy().starts_with('_'))
-        .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        .filter(|p| {
+            !p.file_name()
+                .map(|n| n.to_string_lossy().starts_with('_'))
+                .unwrap_or(false)
+        })
+        .filter_map(|p| {
+            if p.is_dir() {
+                let entry = p.join("main.tnx");
+                entry.is_file().then(|| {
+                    (p.file_name().unwrap().to_string_lossy().to_string(), entry)
+                })
+            } else if p.extension().map(|x| x == "tnx").unwrap_or(false) {
+                Some((p.file_stem().unwrap().to_string_lossy().to_string(), p))
+            } else {
+                None
+            }
+        })
         .collect();
-    names.sort();
+    cases.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut unexpected_failures = Vec::new();
     let mut stale_entries = Vec::new();
-    for (i, name) in names.iter().enumerate() {
+    for (i, (name, path)) in cases.iter().enumerate() {
         if i % num_shards != shard {
             continue;
         }
-        let case = parse_case(&dir.join(format!("{name}.tnx")));
+        let mut case = parse_case(path);
+        case.name = name.clone();
         let known_bad = KNOWN_FAILURES.contains(&name.as_str());
         match run_case(&case) {
             Ok(()) if known_bad => stale_entries.push(name.clone()),

@@ -1,0 +1,27 @@
+module tinox.core.collections;
+
+/**
+ * Tinox Standard Library - Collections Module
+ * Generic data structure implementations: Stack<T>, Queue<T>, Pair<T, U>
+ */
+
+namespace tinox.core.collections
+{
+    class Collections
+    {
+        fn newStack<T>() -> Stack<T>
+        {
+            return Stack<T>::new();
+        }
+
+        fn newQueue<T>() -> Queue<T>
+        {
+            return Queue<T>::new();
+        }
+
+        fn newPair<T, U>(first: T, second: U) -> Pair<T, U>
+        {
+            return Pair<T, U>::new(first, second);
+        }
+    }
+}

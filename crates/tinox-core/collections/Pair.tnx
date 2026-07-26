@@ -1,0 +1,28 @@
+module tinox.core.collections;
+
+namespace tinox.core.collections
+{
+    /**
+     * A pair of two values of potentially different types.
+     */
+    class Pair<T, U>
+    {
+        first: T;
+        second: U;
+
+        fn new(first: T, second: U) -> Pair<T, U>
+        {
+            return Pair<T, U> { first: first, second: second };
+        }
+
+        fn getFirst() -> T
+        {
+            return this.first;
+        }
+
+        fn getSecond() -> U
+        {
+            return this.second;
+        }
+    }
+}

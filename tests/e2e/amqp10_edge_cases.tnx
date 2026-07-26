@@ -42,7 +42,7 @@
 import tinox.core.amqp10;
 import tinox.core.socket;
 
-class Reassembly {
+class amqp10_edge_cases {
     var frameCount: Int64;
     var bytes: List<Int64>;
 }
@@ -51,7 +51,7 @@ class Reassembly {
 // Rohbytes aneinander. Gemeinsamer Baustein fuer alle drei
 // Broker-seitigen Empfangspfade unten (statt dreifacher Kopie wie in
 // amqp10_transfer_flow.tnx, wo es nur zwei waren).
-fn reassembleTransfer(sconn: Int64) -> Reassembly {
+fn reassembleTransfer(sconn: Int64) -> amqp10_edge_cases {
     var bytes: List<Int64> = [];
     var more: Bool = true;
     var count: Int64 = 0;
@@ -77,7 +77,7 @@ fn reassembleTransfer(sconn: Int64) -> Reassembly {
         let rest = r.readRawBytes(r.remaining());
         for i in 0..rest.len() { bytes.push(rest[i]); }
     }
-    return Reassembly { frameCount: count, bytes: bytes };
+    return amqp10_edge_cases { frameCount: count, bytes: bytes };
 }
 
 fn relayMessage(sconn: Int64, chanId: Int64, handle: Int64, tag: Int64, msgBytes: List<Int64>) -> Nothing {
