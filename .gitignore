@@ -21,6 +21,9 @@ Thumbs.db
 
 # Claude Code
 claude
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Temporary
 *.tmp

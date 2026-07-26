@@ -98,9 +98,15 @@ if [ -d "$DOGFOOD_DIR" ]; then
     # nonexistent path prints an error but still exits 0 (0 tests, 0 failed),
     # so a wrong glob here would report this whole step "OK" while testing
     # nothing (found the hard way once already).
+    # 600s per file, not 180s: `tinox test` compiles+links+runs a fresh
+    # binary PER @Test method (no shared binary), and the largest jgrep-tinox
+    # test files have 40-60 tests each (~78s/~44s locally on a fast 32-core
+    # box). 180s was tight enough to time out on GitHub Actions' much slower
+    # shared runners (observed CI failure 2026-07-26 on an unrelated commit,
+    # reproduced as a timing issue, not a real test regression).
     jgrep_test_files=$(grep -l "@Test" "$DOGFOOD_DIR"/tests/*.tnx 2>/dev/null)
     for t in $jgrep_test_files; do
-        run_job "$(job_id "jgrep_test_$t")" bash -c "cd '$DOGFOOD_DIR' && PATH='$(dirname "$TINOX")':\"\$PATH\" timeout 180 tinox test '$t'"
+        run_job "$(job_id "jgrep_test_$t")" bash -c "cd '$DOGFOOD_DIR' && PATH='$(dirname "$TINOX")':\"\$PATH\" timeout 600 tinox test '$t'"
     done
 fi
 
