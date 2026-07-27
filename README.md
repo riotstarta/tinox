@@ -632,7 +632,23 @@ if m.ok {
 conn.close();
 ```
 
-Known v1 gaps: only one session/link per purpose (no pooling), SASL PLAIN only (no SCRAM), delivery state limited to `accepted` (no `rejected`/`released`/`modified`), no transactions, no link recovery, no annotation-driven consumer API, no heartbeat/auto-reconnect. Details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (feature history, marked done there).
+Beyond the base client, `amqp10` also supports multiple sessions/links per connection, SASL SCRAM-SHA-256 (in addition to PLAIN), delivery states beyond `accepted` (`rejected`/`released`/`modified`), transactions (`txn-id` declare/discharge), link recovery/resumption, and heartbeat/auto-reconnect. Details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (feature history, marked done there).
+
+An annotation-driven consumer API is also available, analogous to the WebSocket module's `@OnMessage`: the compiler generates the connect/begin/attach/grantCredit/nextMessage/ack loop as `main`. Only valid when the file defines no `main` and has exactly one `@Amqp10Consumer` class:
+
+```tinox
+import tinox.core.amqp10;
+
+@Amqp10Consumer("127.0.0.1", 5672, "guest", "guest", "/queues/my-queue")
+class MyConsumer
+{
+    @OnMessage
+    fn onMessage(msg: Amqp10Message) -> Nothing
+    {
+        println(msg.body);
+    }
+}
+```
 
 ## Feature Overview
 
@@ -704,6 +720,10 @@ tinox/
 | System       | `fs`, `io`, `env`, `process`, `os`                   |
 | Utilities    | `math`, `mathf`, `string_utils`, `date`, `uuid`      |
 | Async        | `cron`, `events`, `pool`, `cache`, `pubsub`          |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Contributing
 

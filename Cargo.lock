@@ -1249,7 +1249,7 @@ checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "tinox"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "flate2",
  "notify",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "tinox-codegen"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "tinox-common",
  "tinox-lexer",
@@ -1277,18 +1277,18 @@ dependencies = [
 
 [[package]]
 name = "tinox-common"
-version = "0.1.0-dev"
+version = "1.0.0"
 
 [[package]]
 name = "tinox-lexer"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "tinox-common",
 ]
 
 [[package]]
 name = "tinox-lsp"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "dashmap 6.1.0",
  "serde_json",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "tinox-parser"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "tinox-common",
  "tinox-lexer",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "tinox-typecheck"
-version = "0.1.0-dev"
+version = "1.0.0"
 dependencies = [
  "tinox-common",
  "tinox-lexer",
