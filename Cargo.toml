@@ -15,7 +15,7 @@ version = "0.1.0-dev"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Tino"]
-repository = ""
+repository = "https://github.com/subnix-work/tinox"
 
 [workspace.dependencies]
 parking_lot = "0.12"

@@ -1,21 +1,21 @@
 # Tinox Programming Language
 
-**Tinox** ist eine native, statisch typisierte Programmiersprache mit LLVM-Backend, Garbage Collection und Concurrency-Support.
+**Tinox** is a native, statically typed programming language with an LLVM backend, garbage collection, and concurrency support.
 
-> Benannt nach **Tino** + **Linux**/Unix – eine Sprache für moderne, lesbare Software.
+> Named after **Tino** + **Linux**/Unix – a language for modern, readable software.
 
 ## Status
 
 **Phase:** V2 – Feature-Complete Core (In Development)
 
-| Komponente   | Status      | Notizen                              |
-|--------------|-------------|--------------------------------------|
-| Lexer        | ✅ Fertig   | Unicode, String-Interpolation, Ranges |
-| Parser       | ✅ Fertig   | Vollständiger AST                    |
-| Type Checker | ✅ Fertig   | Basistypen, Klassen, Enums, Generics, Annotationen |
-| Code Gen     | ✅ Fertig   | LLVM IR Backend, @inline-Unterstützung           |
-| Runtime      | ✅ Fertig   | C Runtime (pthread-basiert)          |
-| CLI          | ✅ Fertig   | build, run, check, fmt               |
+| Component    | Status      | Notes                                 |
+|--------------|-------------|----------------------------------------|
+| Lexer        | ✅ Done     | Unicode, string interpolation, ranges  |
+| Parser       | ✅ Done     | Full AST                               |
+| Type Checker | ✅ Done     | Base types, classes, enums, generics, annotations |
+| Code Gen     | ✅ Done     | LLVM IR backend, `@inline` support     |
+| Runtime      | ✅ Done     | C runtime (pthread-based)              |
+| CLI          | ✅ Done     | build, run, check, fmt                 |
 
 ## Installation
 
@@ -26,16 +26,16 @@ cargo build --release
 # Binary: target/release/tinox
 ```
 
-Voraussetzungen: `clang`, `llc` (LLVM-Tools)
+Requirements: `clang`, `llc` (LLVM tools)
 
 ## Usage
 
 ```bash
-tinox run program.tnx           # Kompilieren und ausführen
-tinox build program.tnx         # Kompilieren (erzeugt ./a.out)
-tinox check program.tnx         # Nur Type-Check
-tinox fmt program.tnx           # Formatieren (Ausgabe auf stdout)
-tinox fmt --write program.tnx   # Formatieren und Datei überschreiben
+tinox run program.tnx           # Compile and run
+tinox build program.tnx         # Compile (produces ./a.out)
+tinox check program.tnx         # Type-check only
+tinox fmt program.tnx           # Format (writes to stdout)
+tinox fmt --write program.tnx   # Format and overwrite the file
 ```
 
 ## Hello World
@@ -48,20 +48,20 @@ fn main() -> Int64
 }
 ```
 
-## Syntax-Überblick
+## Syntax Overview
 
-### Variablen
+### Variables
 
 ```tinox
 let x: Int64 = 42;          // immutable
 var y: Float64 = 3.14;      // mutable
-let name = "Tino";          // Typ-Inferenz
-let msg = "Hi ${name}!";    // String-Interpolation
+let name = "Tino";          // type inference
+let msg = "Hi ${name}!";    // string interpolation
 ```
 
-### Namespaces & statische Methoden
+### Namespaces & Static Methods
 
-Alle Funktionen leben in Klassen. Statische Methoden (kein Objekt nötig) verwenden `fnc`:
+All functions live inside classes. Static methods (no object needed) use `fnc`:
 
 ```tinox
 namespace math {
@@ -86,16 +86,16 @@ fn main() -> Int64
 }
 ```
 
-Import des ganzen Namespaces oder einer einzelnen Klasse:
+Importing the whole namespace or a single class:
 
 ```tinox
-import math;          // alle Klassen aus math
-import math.Utils;    // nur Utils
+import math;          // all classes from math
+import math.Utils;    // only Utils
 ```
 
-### Klassen & Vererbung
+### Classes & Inheritance
 
-Instanzmethoden verwenden `fn` und haben Zugriff auf `this`. Konstruktoren werden mit `fnc new()` definiert:
+Instance methods use `fn` and have access to `this`. Constructors are defined with `fnc new()`:
 
 ```tinox
 class Animal
@@ -117,7 +117,7 @@ class Dog extends Animal
 }
 ```
 
-Klassen mit Konstruktor:
+Classes with a constructor:
 
 ```tinox
 class Point
@@ -210,9 +210,9 @@ let b = new Box<Int64>(42);
 println(b.get());
 ```
 
-### Funktion-Typen
+### Function Types
 
-Funktionen als Werte und Parameter verwenden `fnc(T1, T2) -> R` als Typ:
+Functions as values and parameters use `fnc(T1, T2) -> R` as their type:
 
 ```tinox
 fn apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
@@ -266,25 +266,25 @@ println(m.contains("two")); // true
 println(m.len());           // 3
 m.remove("one");
 
-// Typ-annotierte Map
+// Type-annotated map
 let headers: Map<String, String> = Map::new();
 headers["Content-Type"] = "application/json";
 ```
 
-### Ranges & Schleifen
+### Ranges & Loops
 
 ```tinox
-for i in 0..5               // 0, 1, 2, 3, 4 (exklusiv)
+for i in 0..5               // 0, 1, 2, 3, 4 (exclusive)
 {
     println(i);
 }
 
-for i in 0...5              // 0, 1, 2, 3, 4, 5 (inklusiv)
+for i in 0...5              // 0, 1, 2, 3, 4, 5 (inclusive)
 {
     println(i);
 }
 
-for ch in "hello"           // Zeichen-Iteration
+for ch in "hello"           // character iteration
 {
     print(ch);
 }
@@ -315,18 +315,18 @@ fn main() -> Int64
 ### File I/O
 
 ```tinox
-// Schreiben
+// Writing
 let f = open("output.txt", "w");
-f.write("Hallo Tinox!\n");
+f.write("Hello Tinox!\n");
 f.close();
 
-// Lesen (ganzer Inhalt)
+// Reading (entire contents)
 let f = open("output.txt");
 let content = f.read();
 f.close();
 println(content);
 
-// Zeilenweise lesen
+// Reading line by line
 let f = open("log.txt");
 while !f.eof()
 {
@@ -335,12 +335,12 @@ while !f.eof()
 }
 f.close();
 
-// Hilfsfunktionen
+// Helper functions
 println(fileExists("output.txt")); // true
 deleteFile("output.txt");
 ```
 
-Modi: `"r"` (lesen, default), `"w"` (schreiben), `"a"` (anhängen), `"rb"` / `"wb"` (binär)
+Modes: `"r"` (read, default), `"w"` (write), `"a"` (append), `"rb"` / `"wb"` (binary)
 
 ### Defer
 
@@ -348,19 +348,19 @@ Modi: `"r"` (lesen, default), `"w"` (schreiben), `"a"` (anhängen), `"rb"` / `"w
 fn readFile(path: String) -> String
 {
     let f = open(path);
-    defer { f.close(); }   // wird automatisch am Funktionsende ausgeführt
+    defer { f.close(); }   // runs automatically at the end of the function
 
     return f.read();
 }
 ```
 
-Mehrere `defer`s werden in umgekehrter Reihenfolge ausgeführt (LIFO):
+Multiple `defer`s run in reverse order (LIFO):
 
 ```tinox
 defer { println("3"); }
 defer { println("2"); }
 defer { println("1"); }
-// Ausgabe beim Return: 1, 2, 3
+// Output on return: 1, 2, 3
 ```
 
 ### Try / Catch
@@ -372,7 +372,7 @@ try
 }
 catch e: RuntimeError
 {
-    println("Fehler aufgetreten");
+    println("An error occurred");
 }
 finally
 {
@@ -380,7 +380,7 @@ finally
 }
 ```
 
-`throw` wirft eine Exception:
+`throw` raises an exception:
 
 ```tinox
 fn divide(a: Int64, b: Int64) -> Int64
@@ -395,7 +395,7 @@ fn divide(a: Int64, b: Int64) -> Int64
 
 ### Annotations
 
-Tinox unterstützt Annotations mit `@Name` oder `@Name(args)` Syntax auf Klassen, Methoden, Funktionen und Fields:
+Tinox supports annotations with `@Name` or `@Name(args)` syntax on classes, methods, functions, and fields:
 
 ```tinox
 @inline
@@ -404,48 +404,48 @@ fnc fastCalc(x: Int64) -> Int64
     return x * x + 1;
 }
 
-@deprecated("Bitte newApi verwenden")
+@deprecated("Use newApi instead")
 fnc oldApi() -> Unit
 {
     println("legacy");
 }
 ```
 
-Der Compiler validiert Annotations (unbekannte Annotations oder falsche Platzierung sind Fehler). Folgende Annotations werden erkannt:
+The compiler validates annotations (unknown annotations or invalid placement are errors). The following annotations are recognized:
 
-| Annotation     | Targets              | Beschreibung                          |
-|----------------|-----------------------|---------------------------------------|
-| `@inline`      | Function, Method     | Erzeugt LLVM `alwaysinline`           |
-| `@deprecated`  | Function, Method, Class | Warnung bei Nutzung                |
-| `@GET`          | Method               | REST: GET-Endpunkt                    |
-| `@POST`         | Method               | REST: POST-Endpunkt                   |
-| `@PUT`          | Method               | REST: PUT-Endpunkt                    |
-| `@PATCH`        | Method               | REST: PATCH-Endpunkt                  |
-| `@DELETE`       | Method               | REST: DELETE-Endpunkt                 |
-| `@Path`         | Class, Method        | URL-Pfad                              |
-| `@Produces`    | Method               | Response Content-Type                 |
-| `@Consumes`    | Method               | Erwarteter Request Content-Type        |
-| `@StatusCode`  | Method               | Default HTTP-Statuscode               |
-| `@Auth`         | Method, Class        | Authentifizierung ("bearer"/"basic")   |
-| `@WebsocketEndpoint("/path"[, port])` | Class    | WebSocket: generiert einen Accept/Message-Loop als `main` |
-| `@OnOpen`       | Method               | WebSocket: Aufruf bei neuer Verbindung |
-| `@OnMessage`    | Method               | WebSocket: Aufruf pro Text-Nachricht   |
-| `@OnClose`      | Method               | WebSocket: Aufruf beim Verbindungsende |
+| Annotation     | Targets              | Description                            |
+|----------------|-----------------------|-----------------------------------------|
+| `@inline`      | Function, Method     | Emits LLVM `alwaysinline`               |
+| `@deprecated`  | Function, Method, Class | Warns on use                          |
+| `@GET`          | Method               | REST: GET endpoint                      |
+| `@POST`         | Method               | REST: POST endpoint                     |
+| `@PUT`          | Method               | REST: PUT endpoint                      |
+| `@PATCH`        | Method               | REST: PATCH endpoint                    |
+| `@DELETE`       | Method               | REST: DELETE endpoint                   |
+| `@Path`         | Class, Method        | URL path                                |
+| `@Produces`    | Method               | Response content type                   |
+| `@Consumes`    | Method               | Expected request content type           |
+| `@StatusCode`  | Method               | Default HTTP status code                |
+| `@Auth`         | Method, Class        | Authentication ("bearer"/"basic")       |
+| `@WebsocketEndpoint("/path"[, port])` | Class    | WebSocket: generates an accept/message loop as `main` |
+| `@OnOpen`       | Method               | WebSocket: called on new connection     |
+| `@OnMessage`    | Method               | WebSocket: called per text message      |
+| `@OnClose`      | Method               | WebSocket: called on connection close   |
 
-Beide Schreibweisen sind gleichwertig:
+Both styles are equivalent:
 
 ```tinox
-@GET("/users")              // Pfad direkt in der Annotation
+@GET("/users")              // path directly in the annotation
 fnc listUsers(...) -> Unit { ... }
 
-@GET                        // oder getrennt mit @Path
+@GET                        // or separated with @Path
 @Path("/users")
 fnc listUsers(...) -> Unit { ... }
 ```
 
 ### HTTP Server & REST Framework
 
-Die Standardbibliothek enthält einen HTTP-Server (`http_server`) und ein annotation-driven REST Framework. Das `mini_http`-Modul ist ein schlankes In-Process-Pendant:
+The standard library includes an HTTP server (`http_server`) and an annotation-driven REST framework. The `mini_http` module is a lightweight in-process counterpart:
 
 ```tinox
 module mini_http;
@@ -482,7 +482,7 @@ class HttpServer
 }
 ```
 
-REST-Controller mit Annotationen:
+REST controller with annotations:
 
 ```tinox
 import mini_http;
@@ -528,7 +528,7 @@ class UserController
 
 ### WebSocket Server
 
-Die Standardbibliothek enthält einen WebSocket-Server nach RFC 6455 (`websocket`), aufgebaut auf der Conn-Handle-Schicht des HTTP-Servers. v1 ist eine explizite Schleifen-API (kein Lambda-Handler), bedient eine Verbindung nach der anderen:
+The standard library includes an RFC 6455 WebSocket server (`websocket`), built on top of the HTTP server's connection-handle layer. v1 is an explicit loop-based API (no lambda handler), serving one connection at a time:
 
 ```tinox
 import tinox.core.websocket;
@@ -536,31 +536,31 @@ import tinox.core.websocket;
 let srv: Int64 = WsServer::listen(8790);
 
 while true {
-    let conn: Int64 = WsServer::accept(srv);   // inkl. Handshake
+    let conn: Int64 = WsServer::accept(srv);   // includes handshake
     if conn <= 0 { continue; }
 
     while true {
-        let f: WsFrame = Ws::readMessage(conn); // Ping/Pong + Close automatisch
+        let f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
         if f.opcode == 1 {
             Ws::sendText(conn, "echo: " + Ws::text(f));
             continue;
         }
-        break; // Close (8), EOF (-1) oder Protokollfehler (-2)
+        break; // close (8), EOF (-1), or protocol error (-2)
     }
     Ws::close(conn);
 }
 ```
 
-Bewusste v1-Lücken: keine Fragmentierung, kein Client, kein permessage-deflate.
+Known v1 gaps: no fragmentation, no client, no permessage-deflate.
 
-`wss://` (TLS) wird ebenfalls unterstützt, per `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (sonst identische API). OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig (Opt-out per `TINOX_TLS=0`, falls kein OpenSSL verfügbar ist):
+`wss://` (TLS) is also supported via `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (otherwise identical API). OpenSSL is linked by default, no extra flag required (opt out with `TINOX_TLS=0` if OpenSSL isn't available):
 
 ```tinox
 let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
-let conn = WsServer::acceptTls(srv);   // inkl. TLS- + WS-Handshake
+let conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
 ```
 
-Alternativ annotation-getrieben (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): der Compiler generiert den kompletten Loop als `main` — kein Handshake/readMessage-Code nötig. Gilt nur, wenn die Datei kein eigenes `main` definiert und genau eine `@WebsocketEndpoint`-Klasse enthält (mehrere sind ein Compile-Fehler):
+Alternatively, annotation-driven (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): the compiler generates the entire loop as `main` — no handshake/readMessage code needed. Only applies when the file has no `main` of its own and contains exactly one `@WebsocketEndpoint` class (more than one is a compile error):
 
 ```tinox
 import tinox.core.websocket;
@@ -578,7 +578,7 @@ class EchoEndpoint
 
 ### AMQP-0-9-1 Client
 
-Die Standardbibliothek enthält einen AMQP-0-9-1-**Client** (`amqp091`, kein Broker) für Message-Queue-Broker wie RabbitMQ. v1 ist eine explizite Publish/Consume-API (kein Lambda-Handler), ein fester Channel pro Verbindung. `amqps://` (TLS) wird unterstützt:
+The standard library includes an AMQP-0-9-1 **client** (`amqp091`, no broker) for message queue brokers such as RabbitMQ. v1 is an explicit publish/consume API (no lambda handler), with a fixed channel per connection. `amqps://` (TLS) is supported:
 
 ```tinox
 import tinox.core.amqp091;
@@ -592,24 +592,24 @@ for i in 0..3 { body.push("abc".charCodeAt(i)); }
 ch.publish("", queueName, body, "text/plain");
 
 ch.consume(queueName);
-let m = ch.nextMessage();       // blockierender Pull
+let m = ch.nextMessage();       // blocking pull
 if m.ok {
     ch.ack(m.deliveryTag);
 }
 conn.close();
 ```
 
-`amqps://` (TLS) läuft über `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` statt `connect` (sonst identische API). OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig; `verify=true` prüft die Broker-Zertifikatskette + den Hostnamen gegen die System-CA-Stores, `verify=false` ist ein bewusster Opt-out für selbstsignierte Testzertifikate:
+`amqps://` (TLS) uses `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` instead of `connect` (otherwise identical API). OpenSSL is linked by default, no extra flag required; `verify=true` checks the broker's certificate chain and hostname against the system CA stores, `verify=false` is a deliberate opt-out for self-signed test certificates:
 
 ```tinox
 let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
 ```
 
-Bewusste v1-Lücken: kein Multi-Channel, kein `exchange.declare` (nur Default-Exchange + broker-vordefinierte Exchanges), keine Publisher-Confirms, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. AMQP 1.0 ist eine eigene, spätere Roadmap-Phase (anderes Typsystem) — Details und Architektur in den [GitHub Issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (Feature-Historie, dort als erledigt markiert).
+Known v1 gaps: no multi-channel, no `exchange.declare` (only the default exchange plus broker-predefined exchanges), no publisher confirms, no annotation-driven consumer API, no heartbeat/auto-reconnect. AMQP 1.0 is a separate, later roadmap phase (different type system) — details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (feature history, marked done there).
 
 ### AMQP-1.0 Client
 
-Die Standardbibliothek enthält zusätzlich einen eigenständigen AMQP-1.0-**Client** (`amqp10`, kein gemeinsamer Code mit `amqp091` — komplett anderes Typsystem und eine dreistufige Connection→Session→Link-Hierarchie mit kreditbasierter Flow-Control statt 0-9-1s Connection→Channel-Modell):
+The standard library additionally includes a standalone AMQP-1.0 **client** (`amqp10`, no shared code with `amqp091` — a completely different type system and a three-tier Connection→Session→Link hierarchy with credit-based flow control instead of 0-9-1's Connection→Channel model):
 
 ```tinox
 import tinox.core.amqp10;
@@ -625,86 +625,94 @@ sender.detach();
 
 var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
 receiver.grantCredit(10);
-let m = receiver.nextMessage();       // blockierender Pull, wartet auf transfer
+let m = receiver.nextMessage();       // blocking pull, waits for a transfer
 if m.ok {
     receiver.ack(m.deliveryId);
 }
 conn.close();
 ```
 
-Bewusste v1-Lücken: nur eine Session/ein Link pro Zweck (kein Pool), nur SASL PLAIN (kein SCRAM), Delivery-State nur `accepted` (kein `rejected`/`released`/`modified`), keine Transaktionen, keine Link-Recovery, keine Annotation-getriebene Consumer-API, kein Heartbeat/Auto-Reconnect. Details und Architektur in den [GitHub Issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (Feature-Historie, dort als erledigt markiert).
+Known v1 gaps: only one session/link per purpose (no pooling), SASL PLAIN only (no SCRAM), delivery state limited to `accepted` (no `rejected`/`released`/`modified`), no transactions, no link recovery, no annotation-driven consumer API, no heartbeat/auto-reconnect. Details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (feature history, marked done there).
 
-## Feature-Übersicht
+## Feature Overview
 
-| Feature                      | Status     |
-|------------------------------|------------|
-| Variablen (let/var)          | ✅ Fertig  |
-| Namespaces                   | ✅ Fertig  |
-| Klassen + Vererbung          | ✅ Fertig  |
-| Konstruktoren (`fnc new()`)  | ✅ Fertig  |
-| Statische Methoden (`fnc`)   | ✅ Fertig  |
-| Interfaces + vtable          | ✅ Fertig  |
-| Enums + Pattern Matching     | ✅ Fertig  |
-| Generics (Monomorphisierung) | ✅ Fertig  |
-| Tuples                       | ✅ Fertig  |
-| Arrays + Builtins            | ✅ Fertig  |
-| String-Interpolation         | ✅ Fertig  |
-| Ranges (.. / ...)            | ✅ Fertig  |
-| Lambdas / Closures           | ✅ Fertig  |
-| Funktion-Typen (`fnc(T)->R`) | ✅ Fertig  |
-| Async / Spawn / Await        | ✅ Fertig  |
-| Channels + Select            | ✅ Fertig  |
-| Try / Catch / Finally        | ✅ Fertig  |
-| `throw`-Statement            | ✅ Fertig  |
-| Import-System                | ✅ Fertig  |
-| Float32 / Float64            | ✅ Fertig  |
-| Map / Dict-Typ               | ✅ Fertig  |
-| `defer`-Statement            | ✅ Fertig  |
-| Annotations                 | ✅ Fertig  |
-| HTTP Server (stdlib)        | ✅ Fertig  |
-| REST Framework (stdlib)     | ✅ Fertig  |
-| WebSocket Server (stdlib)   | ✅ Fertig (v1) |
-| AMQP-0-9-1 Client (stdlib)  | ✅ Fertig (v1) |
-| AMQP-1.0 Client (stdlib)    | ✅ Fertig (v1) |
-| LSP (tinox-lsp)              | ✅ Fertig  |
-| Eclipse Plugin               | ✅ Fertig  |
-| File I/O                     | ✅ Fertig  |
-| Formatter (`tinox fmt`)      | ✅ Fertig  |
-| REPL                         | ⏳ Geplant |
+| Feature                       | Status         |
+|--------------------------------|----------------|
+| Variables (let/var)            | ✅ Done        |
+| Namespaces                     | ✅ Done        |
+| Classes + inheritance          | ✅ Done        |
+| Constructors (`fnc new()`)     | ✅ Done        |
+| Static methods (`fnc`)         | ✅ Done        |
+| Interfaces + vtable            | ✅ Done        |
+| Enums + pattern matching       | ✅ Done        |
+| Generics (monomorphization)    | ✅ Done        |
+| Tuples                         | ✅ Done        |
+| Arrays + builtins              | ✅ Done        |
+| String interpolation           | ✅ Done        |
+| Ranges (.. / ...)              | ✅ Done        |
+| Lambdas / closures             | ✅ Done        |
+| Function types (`fnc(T)->R`)   | ✅ Done        |
+| Async / spawn / await          | ✅ Done        |
+| Channels + select              | ✅ Done        |
+| Try / catch / finally          | ✅ Done        |
+| `throw` statement              | ✅ Done        |
+| Import system                  | ✅ Done        |
+| Float32 / Float64               | ✅ Done        |
+| Map / dict type                | ✅ Done        |
+| `defer` statement              | ✅ Done        |
+| Annotations                    | ✅ Done        |
+| HTTP server (stdlib)           | ✅ Done        |
+| REST framework (stdlib)        | ✅ Done        |
+| WebSocket server (stdlib)      | ✅ Done (v1)   |
+| AMQP-0-9-1 client (stdlib)     | ✅ Done (v1)   |
+| AMQP-1.0 client (stdlib)       | ✅ Done (v1)   |
+| LSP (tinox-lsp)                | ✅ Done        |
+| Eclipse plugin                 | ✅ Done        |
+| File I/O                       | ✅ Done        |
+| Formatter (`tinox fmt`)        | ✅ Done        |
+| REPL                            | ⏳ Planned     |
 
-## Projekt-Struktur
+## Project Structure
 
 ```
 tinox/
 ├── Cargo.toml
 ├── crates/
 │   ├── tinox-common/       # Shared types (Span, Error)
-│   ├── tinox-lexer/        # Lexer / Tokenizer
+│   ├── tinox-lexer/        # Lexer / tokenizer
 │   ├── tinox-parser/       # Parser + AST
-│   ├── tinox-typecheck/    # Type Checker + Annotation Processing
-│   ├── tinox-codegen/      # LLVM IR Code Generation
+│   ├── tinox-typecheck/    # Type checker + annotation processing
+│   ├── tinox-codegen/      # LLVM IR code generation
 │   ├── tinox-lsp/          # Language Server Protocol
-│   ├── tinox/              # CLI Binary
-│   └── tinox-core/         # Standardbibliothek (.tnx Module)
-├── examples/               # Beispiel-Programme (.tnx)
-└── runtime/                # C Runtime (tinox_alloc, threading, channels)
+│   ├── tinox/              # CLI binary
+│   └── tinox-core/         # Standard library (.tnx modules)
+├── examples/               # Example programs (.tnx)
+└── runtime/                # C runtime (tinox_alloc, threading, channels)
 ```
 
-## Standardbibliothek (tinox-core)
+## Standard Library (tinox-core)
 
-50+ Module als `.tnx`-Dateien:
+50+ modules as `.tnx` files:
 
-| Kategorie    | Module                                              |
+| Category     | Modules                                              |
 |--------------|-----------------------------------------------------|
 | HTTP         | `http_server`, `rest_framework`, `mini_http`, `websocket` |
 | Messaging    | `amqp091`, `amqp10`                                  |
-| Daten        | `json`, `csv`, `xml`, `regex`                       |
-| Sicherheit   | `crypto`, `jwt`, `bcrypt`                           |
-| Collections  | `collections`, `queue`, `stack`, `linkedlist`       |
-| System       | `fs`, `io`, `env`, `process`, `os`                  |
-| Utilities    | `math`, `mathf`, `string_utils`, `date`, `uuid`     |
-| Async        | `cron`, `events`, `pool`, `cache`, `pubsub`         |
+| Data         | `json`, `csv`, `xml`, `regex`                        |
+| Security     | `crypto`, `jwt`, `bcrypt`                            |
+| Collections  | `collections`, `queue`, `stack`, `linkedlist`        |
+| System       | `fs`, `io`, `env`, `process`, `os`                   |
+| Utilities    | `math`, `mathf`, `string_utils`, `date`, `uuid`      |
+| Async        | `cron`, `events`, `pool`, `cache`, `pubsub`          |
 
-## Lizenz
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding conventions, and how to submit changes.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
+## License
 
 MIT OR Apache-2.0
