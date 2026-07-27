@@ -666,6 +666,14 @@ fn find_runtime_object() -> Option<String> {
             if status.success() { return Some(obj.to_string()); }
         }
     }
+    // Same dev/system resolution used by the main build path (compile_ll_to_exe).
+    if let Some(c) = runtime_c_path() {
+        let obj = "/tmp/.tinox_runtime.o";
+        let status = Command::new("clang")
+            .args(["-c", &c.to_string_lossy(), "-o", obj, "-O3"])
+            .status().ok()?;
+        if status.success() { return Some(obj.to_string()); }
+    }
     None
 }
 
@@ -1550,8 +1558,10 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
 }
 
 /// Returns the Tinox standard library directory.
-/// Checks TINOX_PATH env var first, then falls back to the path relative to this binary's
-/// source location (works for `cargo run` during development).
+/// Checks TINOX_PATH env var first, then the path relative to this binary's
+/// source location (works for `cargo run` during development), then the
+/// fixed system install path used by distro packages (e.g. the AUR
+/// `tinox-bin` package installs tinox-core to /usr/share/tinox/core).
 fn stdlib_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("TINOX_PATH") {
         let pb = PathBuf::from(p);
@@ -1564,6 +1574,28 @@ fn stdlib_dir() -> Option<PathBuf> {
         .join("../../crates/tinox-core");
     if dev.is_dir() {
         return dev.canonicalize().ok();
+    }
+    let system = PathBuf::from("/usr/share/tinox/core");
+    if system.is_dir() {
+        return Some(system);
+    }
+    None
+}
+
+/// Returns the path to runtime.c: the dev-checkout path relative to this
+/// binary's compiled-in source location (works for `cargo run` during
+/// development), then the fixed system install path used by distro
+/// packages. Unlike `stdlib_dir`, there is no env var override — runtime.c
+/// is an implementation detail, not something a user is expected to point
+/// at directly.
+fn runtime_c_path() -> Option<PathBuf> {
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.c");
+    if dev.is_file() {
+        return Some(dev);
+    }
+    let system = PathBuf::from("/usr/share/tinox/runtime.c");
+    if system.is_file() {
+        return Some(system);
     }
     None
 }
@@ -2092,8 +2124,10 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         let _ = fs::remove_file(&bc_path);
     }
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let runtime_src = format!("{}/../../runtime/runtime.c", manifest_dir);
+    let runtime_src = runtime_c_path().ok_or_else(|| {
+        "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
+    })?;
+    let runtime_src = runtime_src.to_string_lossy().into_owned();
     let runtime_obj = format!("{}_runtime.o", output_name);
 
     let db_cfg = read_database_config();

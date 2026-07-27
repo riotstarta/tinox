@@ -2,6 +2,29 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [1.0.1] - 2026-07-27
+
+Packaging fix, no language/stdlib changes.
+
+### Fixed
+
+- The `tinox` binary was not relocatable: `tinox build`/`tinox run`
+  located `runtime.c` via an absolute path baked in at Rust compile time
+  (`CARGO_MANIFEST_DIR`), with no fallback or override. On any machine
+  other than the one it was built on, every build failed
+  ("Runtime compilation failed"). Standard library imports
+  (`import tinox.core.*` — used by nearly every non-trivial program) had
+  a partial fix already (`TINOX_PATH` env var) but no system-install
+  fallback either, failing with `"TINOX_PATH not set and dev path not
+  found"`.
+
+  Both now additionally fall back to a fixed system path
+  (`/usr/share/tinox/runtime.c` and `/usr/share/tinox/core`) after the
+  existing `TINOX_PATH`/dev-checkout checks, so a distro-packaged
+  `tinox` binary (e.g. the AUR `tinox-bin` package, which installs to
+  those paths) works standalone. See
+  [#85](https://github.com/subnix-work/tinox/issues/85).
+
 ## [1.0.0] - 2026-07-27
 
 First official release. Tinox is a native, statically typed programming
