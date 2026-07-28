@@ -2,6 +2,95 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [1.0.2] - 2026-07-28
+
+Security and robustness hardening. 23 issues found by an automated
+security review and independently verified against current source
+before fixing — see [#86](https://github.com/subnix-work/tinox/issues/86)
+through [#108](https://github.com/subnix-work/tinox/issues/108) for full
+root-cause/fix/verification details on each. No breaking changes.
+
+### Fixed
+
+- **AMQP 1.0 / 0-9-1**: `Amqp10Reader`/`AmqpReader091` had no bounds
+  checking, so a malformed or truncated broker frame (including a
+  heartbeat reused as a SASL frame) crashed the client
+  ([#86](https://github.com/subnix-work/tinox/issues/86),
+  [#89](https://github.com/subnix-work/tinox/issues/89)). SCRAM-SHA-256's
+  broker-supplied iteration count had no upper bound, enabling a CPU-DoS
+  during connect
+  ([#87](https://github.com/subnix-work/tinox/issues/87)).
+  `Amqp10Connection::connect()` had no TLS variant, so SASL
+  credentials went out in cleartext — added `connectTls()`
+  ([#88](https://github.com/subnix-work/tinox/issues/88)). Failed dials
+  leaked the socket fd
+  ([#90](https://github.com/subnix-work/tinox/issues/90)).
+- **WebSocket / HTTP / HTTP/2**: TLS accept had no receive timeout, so
+  one stalled client could hang the whole HTTPS/WSS server
+  ([#91](https://github.com/subnix-work/tinox/issues/91)). WebSocket
+  control frames (Ping/Pong/Close) didn't enforce RFC 6455's
+  FIN/length limits
+  ([#92](https://github.com/subnix-work/tinox/issues/92)). An HTTP/2
+  stream's header block/body could grow without bound across
+  CONTINUATION/DATA frames
+  ([#94](https://github.com/subnix-work/tinox/issues/94)). The response
+  header buffer could overflow on the stack
+  ([#95](https://github.com/subnix-work/tinox/issues/95)), and
+  Content-Length had no cap
+  ([#96](https://github.com/subnix-work/tinox/issues/96)).
+- **Runtime memory safety**: an integer overflow in the array allocator
+  could corrupt the heap for large peer-controlled lengths
+  ([#93](https://github.com/subnix-work/tinox/issues/93)). The JSON
+  parser could loop forever on malformed input
+  ([#97](https://github.com/subnix-work/tinox/issues/97)). The ZIP
+  reader trusted an entry's uncompressed size independent of its
+  compressed size, allowing an out-of-bounds read from a crafted archive
+  ([#98](https://github.com/subnix-work/tinox/issues/98)). The
+  Prometheus metrics formatter could overflow its output buffer with
+  long metric names
+  ([#99](https://github.com/subnix-work/tinox/issues/99)).
+- **Package manager**: `tinox install` used a dependency's
+  group/artifactId/version directly as filesystem path components,
+  allowing a malicious `tinox.yaml` to write files outside
+  `.tinox/deps` (critical)
+  ([#100](https://github.com/subnix-work/tinox/issues/100)).
+- **Concurrency**: the cross-function exception slot
+  (`@__tinox_err`) was a process-wide global instead of thread-local,
+  so concurrent HTTP request handlers could race on each other's
+  thrown/caught values — now `thread_local`
+  ([#101](https://github.com/subnix-work/tinox/issues/101)). The
+  SQLite statement cache and the Postgres connection had no locking
+  despite the HTTP server running handlers concurrently
+  ([#102](https://github.com/subnix-work/tinox/issues/102),
+  [#103](https://github.com/subnix-work/tinox/issues/103)).
+- **Auth / REST framework**: `@Auth("bearer"/"basic")` only checked
+  the Authorization header's scheme prefix and never validated the
+  actual credential — it now fails closed by default and requires the
+  application to register a real validator via the new
+  `RestApi::setAuthValidator()`
+  ([#104](https://github.com/subnix-work/tinox/issues/104)).
+  `Jwt::verify()`/`decode()` ignored `exp`/`nbf` claims, accepting
+  expired tokens
+  ([#105](https://github.com/subnix-work/tinox/issues/105)).
+  `Http::setHeader()` had no CRLF validation, allowing header
+  injection from `RestClient`/`RequestBuilder`
+  ([#106](https://github.com/subnix-work/tinox/issues/106)). Generated
+  `toString()`/`toJson()` keyed the `@Sensitive`/`@Masked`/
+  `@DoNotSerialize` skip-set by the wrong class, so an inherited
+  sensitive field leaked in a subclass's output
+  ([#107](https://github.com/subnix-work/tinox/issues/107)).
+- **CI**: the `jgrep-tinox` dogfood checkout was unpinned and the
+  workflow had no explicit least-privilege `permissions:` — now pinned
+  to a commit SHA with `contents: read`
+  ([#108](https://github.com/subnix-work/tinox/issues/108)).
+
+### Added
+
+- `Amqp10Connection::connectTls(host, port, user, pass, verify)` — TLS
+  variant of `connect()`.
+- `RestApi::setAuthValidator(fnc(String, String) -> Bool)` — registers
+  the credential validator used by `@Auth`-protected routes.
+
 ## [1.0.1] - 2026-07-27
 
 Packaging fix, no language/stdlib changes.
