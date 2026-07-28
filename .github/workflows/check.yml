@@ -18,6 +18,12 @@ on:
     branches: [main]
   pull_request:
 
+# Bug 108: least-privilege default. This workflow only checks out code and
+# runs `make check` -- it never needs to write to the repo, so read-only
+# is enough even though actions/checkout persists a token by default.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -27,9 +33,19 @@ jobs:
         with:
           path: tinox
 
+      # Bug 108: pinned to a specific commit SHA instead of floating on
+      # jgrep-tinox's default branch. dogfood.sh (via `make check`) runs
+      # `bash build.sh` and the test suite straight out of this checkout --
+      # an unpinned ref means a compromise or malicious push to that repo
+      # would execute arbitrary code in this CI run on the next push/PR,
+      # with whatever the checkout token's permissions allow (see the
+      # `permissions:` block above). Bump this SHA deliberately when
+      # jgrep-tinox needs to move forward (e.g. after reviewing its diff),
+      # not automatically.
       - uses: actions/checkout@v5
         with:
           repository: subnix-work/jgrep-tinox
+          ref: 1a9149dc4906c079af19d88aebe5ea1101308b29 # main, as of 2026-07-28
           path: jgrep-tinox
 
       - name: System-Toolchain installieren
