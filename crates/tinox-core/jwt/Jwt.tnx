@@ -33,7 +33,12 @@ namespace tinox.core.jwt
                 throw "Invalid signature";
             }
             let payloadJson: String = Base64::decode(parts[1]);
-            return Json::parse(payloadJson).asTable();
+            let payload: Map<String, JsonValue> = Json::parse(payloadJson).asTable();
+            // Bug 105: a correctly-signed token was accepted regardless of
+            // its exp/nbf claims -- isExpired() existed but neither verify()
+            // nor decode() (the two actual authentication gates) called it.
+            Jwt::checkTemporalClaims(payload);
+            return payload;
         }
 
         fn verify(token: String, secret: String) -> Bool
@@ -45,7 +50,40 @@ namespace tinox.core.jwt
             }
             let message: String = parts[0] + "." + parts[1];
             let expectedSig: String = Crypto::hmacSha256(message, secret);
-            return expectedSig == parts[2];
+            if expectedSig != parts[2]
+            {
+                return false;
+            }
+            let payloadJson: String = Base64::decode(parts[1]);
+            let payload: Map<String, JsonValue> = Json::parse(payloadJson).asTable();
+            let now: Int64 = Time::now() / 1000;
+            if payload.contains("exp") && now > payload["exp"].asInt()
+            {
+                return false;
+            }
+            if payload.contains("nbf") && now < payload["nbf"].asInt()
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /*
+         * Bug 105: shared exp/nbf check for decode() (throws, since decode()
+         * already throws on format/signature errors). verify() inlines the
+         * same two checks since it returns Bool instead.
+         */
+        fn checkTemporalClaims(payload: Map<String, JsonValue>) -> Nothing
+        {
+            let now: Int64 = Time::now() / 1000;
+            if payload.contains("exp") && now > payload["exp"].asInt()
+            {
+                throw "Token expired";
+            }
+            if payload.contains("nbf") && now < payload["nbf"].asInt()
+            {
+                throw "Token not yet valid (nbf)";
+            }
         }
 
         fn extractPayload(token: String) -> Map<String, JsonValue>

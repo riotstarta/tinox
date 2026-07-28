@@ -45,6 +45,18 @@ namespace tinox.core.http
 
         fn setHeader(name: String, value: String) -> Nothing
         {
+            // Bug 106: name/value are frequently built from concatenated
+            // caller-controlled strings (RestClient/RequestBuilder split a
+            // "Name: value" string on ':' and pass the pieces straight
+            // through). Without this check, an embedded \r or \n let a
+            // caller inject additional header lines -- or terminate the
+            // header block early and inject a body -- into the outbound
+            // HTTP request. This is the single choke point all higher-level
+            // header-setting APIs go through, so validating here covers them.
+            if name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n")
+            {
+                throw "invalid HTTP header: name/value must not contain CR or LF";
+            }
             httpSetHeader(name, value);
         }
 

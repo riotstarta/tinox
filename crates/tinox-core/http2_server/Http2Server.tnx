@@ -321,6 +321,20 @@ namespace tinox.core.http2_server
                 i = i + 1;
             }
 
+            // Bug 94: a single HEADERS frame is already bounded by the 24-bit
+            // wire length field (~16MB), but a stream's header block
+            // accumulates across an UNBOUNDED number of CONTINUATION frames
+            // (RFC 7540 §6.10 sets no limit itself) — an unauthenticated
+            // client can otherwise grow one stream's headerBlock without
+            // bound just by sending more CONTINUATION frames. Cap the
+            // cumulative size and abort the stream instead of the connection.
+            if stream.headerBlock.len() > 1048576
+            {
+                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
+                stream.state = "closed";
+                return;
+            }
+
             let endHeaders: Bool = (frame.flags & Http2Flags::END_HEADERS()) != 0;
             let endStream: Bool = (frame.flags & Http2Flags::END_STREAM()) != 0;
             if endStream
@@ -355,6 +369,16 @@ namespace tinox.core.http2_server
             }
             let stream: Http2Stream = conn.streams[sid];
             this.appendBytes(stream.headerBlock, frame.payload);
+
+            // Bug 94: same cumulative cap as processHeaders() — this is the
+            // actual CONTINUATION-flood path (RFC 7540 §6.10 sets no limit
+            // on how many CONTINUATION frames may follow a HEADERS frame).
+            if stream.headerBlock.len() > 1048576
+            {
+                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
+                stream.state = "closed";
+                return;
+            }
 
             if (frame.flags & Http2Flags::END_HEADERS()) != 0
             {
@@ -394,6 +418,16 @@ namespace tinox.core.http2_server
             {
                 stream.body.push(frame.payload[i]);
                 i = i + 1;
+            }
+
+            // Bug 94: a single DATA frame is already bounded by the 24-bit
+            // wire length field (~16MB), but a stream's body accumulates
+            // across an unbounded number of DATA frames with no overall cap.
+            if stream.body.len() > 16777216
+            {
+                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
+                stream.state = "closed";
+                return;
             }
 
             if (frame.flags & Http2Flags::END_STREAM()) != 0

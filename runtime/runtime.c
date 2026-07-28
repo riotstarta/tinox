@@ -193,6 +193,17 @@ static void tinox_checked_expect(const void* p, unsigned char kind, const char* 
 int64_t* tinox_array_new(int64_t len, int64_t cap) {
     if (cap < len) cap = len;
     if (cap < 4) cap = 4;
+    // Bug 93: `cap` can be attacker-controlled (e.g. a WebSocket/AMQP frame
+    // length flowing through httpConnReadN(conn, n)). `cap * sizeof(int64_t)`
+    // used to be computed with no overflow check -- for cap around 2^61 that
+    // wraps size_t to a tiny value, so GC_malloc below allocates far less
+    // than `cap` claims while `a->cap` still stores the huge original value,
+    // and later tinox_array_push() calls trust that capacity and write past
+    // the undersized buffer. Reject instead of silently wrapping.
+    if (cap < 0 || (uint64_t)cap > (SIZE_MAX / sizeof(int64_t))) {
+        fprintf(stderr, "runtime error: array capacity %lld is invalid\n", (long long)cap);
+        exit(1);
+    }
     TinoxArray* a = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
     a->len = len;
     a->cap = cap;
@@ -1142,14 +1153,31 @@ char* socketReceive(int64_t fd, int64_t size) {
     return buf;
 }
 
-// Roh-Bytes von einem fd lesen (HTTP/2-Server-Framing). Bis zu count Bytes;
-// die tatsächlich gelesenen werden als String zurückgegeben ("" bei EOF/Fehler).
+// Roh-Bytes von einem fd lesen (HTTP/2-Server-Framing). Liest GENAU count
+// Bytes (blockierend, loop ueber kurze reads) und liefert sie als String
+// zurueck; kuerzer als count bedeutet EOF/Fehler mittendrin.
+//
+// Bug 94: used to be a single non-retrying read() call, so a frame whose
+// payload arrived across more than one TCP segment (routine for anything
+// beyond a few KB) was silently truncated instead of fully read — the
+// HTTP/2 frame parser (http2_server/Http2Server.tnx: readFrame) would then
+// misparse the rest of the connection. Also had no cap of its own on
+// `count`; the wire format bounds a single frame's length field to 24 bits
+// (~16MB, http2_server/Http2Server.tnx: readFrame), but this primitive is
+// generic — cap it here too as defense in depth against any caller that
+// doesn't already enforce that.
+#define TINOX_HTTP2_MAX_RAW_READ (16 * 1024 * 1024)
 char* httpServerReadRawBytes(int64_t fd, int64_t count) {
     if (fd < 0 || count <= 0) return GC_strdup("");
+    if (count > TINOX_HTTP2_MAX_RAW_READ) count = TINOX_HTTP2_MAX_RAW_READ;
     char* buf = (char*)GC_malloc((size_t)count + 1);
-    ssize_t n = read((int)fd, buf, (size_t)count);
-    if (n <= 0) { buf[0] = '\0'; return buf; }
-    buf[n] = '\0';
+    size_t got = 0;
+    while ((int64_t)got < count) {
+        ssize_t n = read((int)fd, buf + got, (size_t)count - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    buf[got] = '\0';
     return buf;
 }
 
@@ -1419,7 +1447,15 @@ static int tinox_zip_parse(const char* path, TinoxZipMember** out) {
         size_t name_off = pos + 30;
         size_t data_off = name_off + nlen + elen;
         if (data_off + csize > len) break;
-        if (method == 0) {
+        // Bug 98: STORED entries (method 0) have no compression, so usize
+        // MUST equal csize by definition. The bounds check above only
+        // validates csize (data_off + csize <= len), but the memcpy below
+        // copies `usize` bytes -- a crafted archive with a small, in-bounds
+        // csize and a much larger usize would read far past the allocated
+        // archive buffer. Enforce the STORED invariant instead of trusting
+        // usize independently; a mismatching entry is just skipped (pos
+        // still advances by the validated csize below).
+        if (method == 0 && usize == csize) {
             char* nm = (char*)malloc((size_t)nlen + 1);
             memcpy(nm, buf + name_off, nlen); nm[nlen] = 0;
             unsigned char* d = (unsigned char*)malloc((size_t)usize + 1);
@@ -2313,6 +2349,10 @@ int64_t httpServerAcceptConn(int64_t server_fd) {
 static __thread char*  g_recv_buf = NULL;
 static __thread size_t g_recv_cap = 0;
 
+// Bug 96: moved up from the route-based API section below (where it was
+// defined but never referenced) so conn_read_request() can enforce it.
+#define TINOX_MAX_BODY   (4 * 1024 * 1024)  /* 4 MB */
+
 // Reads a full HTTP/1.1 request from the connection into g_recv_buf (static, not freed by caller).
 // Works for both plaintext (ssl==NULL) and TLS connections via conn_recv.
 static char* conn_read_request(TinoxConn* c) {
@@ -2348,12 +2388,27 @@ static char* conn_read_request(TinoxConn* c) {
         if (cl) {
             long body_len = atol(cl + 15);
             long header_len = (long)(hdr_end - buf) + 4;
+            // Bug 96: Content-Length is attacker-controlled and used to be
+            // trusted with no maximum and no bound on how far the loop below
+            // would grow `cap` trying to fit it (TINOX_MAX_BODY was defined
+            // but never enforced) -- an unauthenticated client could send
+            // headers with a huge Content-Length and little/no body to force
+            // an unbounded allocation attempt. Clamp instead: a negative or
+            // over-cap value truncates the body to what we're willing to
+            // buffer rather than growing without bound (still safe even
+            // though a legitimately larger body would be truncated, which is
+            // an acceptable degradation for an abusive value).
+            if (body_len < 0 || body_len > TINOX_MAX_BODY) body_len = TINOX_MAX_BODY;
             long total = header_len + body_len;
             while ((long)used < total) {
                 while (cap < (size_t)total + 1) {
-                cap *= 2; buf = (char*)realloc(buf, cap);
-                g_recv_buf = buf; g_recv_cap = cap;
-            }
+                    cap *= 2;
+                    char* nb = (char*)realloc(buf, cap);
+                    if (!nb) { cap /= 2; break; } // OOM: give up growing, keep what we have
+                    buf = nb;
+                    g_recv_buf = buf; g_recv_cap = cap;
+                }
+                if (cap < (size_t)total + 1) break; // couldn't grow enough; stop reading the body
                 ssize_t m = conn_recv(c, buf + used, (size_t)(total - (long)used));
                 if (m <= 0) break;
                 used += (size_t)m;
@@ -2444,6 +2499,16 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     if (fd < 0) return -1;
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    // Bug 91: same 5s zombie guard as the plaintext path (httpServerAcceptConn
+    // above). Without it, a client that opens the TCP connection and never
+    // sends TLS ClientHello bytes blocks SSL_accept() forever; since both
+    // HttpServer::listenTls and WsServer::acceptTls run a single-threaded
+    // blocking accept loop, one such client prevents the server from ever
+    // accepting anyone else. The timeout persists on `fd` for the life of
+    // the connection, so it also protects later blocking reads after a
+    // successful handshake (an idle client stalling mid-request/mid-frame).
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     SSL* ssl = SSL_new(g_tls_ctx);
     if (!ssl) { close(fd); return -1; }
     SSL_set_fd(ssl, fd);
@@ -2542,7 +2607,10 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     c->ssl = ssl;
     return (int64_t)(intptr_t)c;
 #else
-    (void)fd; (void)host; (void)verify;
+    // Bug 90: the TLS-enabled branch above closes `fd` on every error path;
+    // this fallback used to just ignore it and leak the fd on every call.
+    (void)host; (void)verify;
+    if (fd >= 0) close((int)fd);
     fprintf(stderr, "httpConnFromFdTls: runtime ohne TLS gebaut (TINOX_TLS=0)\n");
     return -1;
 #endif
@@ -2747,7 +2815,6 @@ char* aesDecryptRaw(const char* hexInput, const char* key) {
 // ---- HttpServer route-based API ----
 
 #define TINOX_MAX_ROUTES 64
-#define TINOX_MAX_BODY   (4 * 1024 * 1024)  /* 4 MB */
 
 typedef void (*TinoxRouteHandler)(int64_t ctx);
 
@@ -3007,8 +3074,18 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     }
     if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
         static const char ct[] = "Content-Type: application/json\r\n";
-        memcpy(hdr_buf + hdr_off, ct, sizeof(ct) - 1);
-        hdr_off += sizeof(ct) - 1;
+        // Bug 95: this fallback copy was unconditional, unlike every other
+        // write into hdr_buf above (each bounds-checked against
+        // sizeof(hdr_buf)). A handler that sets enough response headers to
+        // bring hdr_off close to 4096 while omitting Content-Type overflowed
+        // the stack buffer here. Apply the same bounds check as the loop
+        // above instead — if it doesn't fit, skip the fallback header
+        // (matches the existing per-header behavior of silently dropping a
+        // header that doesn't fit, rather than corrupting the stack).
+        if (hdr_off + (sizeof(ct) - 1) < sizeof(hdr_buf)) {
+            memcpy(hdr_buf + hdr_off, ct, sizeof(ct) - 1);
+            hdr_off += sizeof(ct) - 1;
+        }
     }
     // Connection header
     static const char conn_ka[]    = "Connection: keep-alive\r\n";
@@ -3291,7 +3368,16 @@ static char* json_parse_string_raw(const char** p) {
     const char* scan = *p;
     size_t max_len = 0;
     while (*scan && *scan != '"') {
-        if (*scan == '\\') scan++;
+        if (*scan == '\\') {
+            scan++;
+            // Bug 97: a trailing backslash right at end-of-input (a
+            // truncated escape, e.g. malformed JSON `"abc\` with no closing
+            // quote and nothing after the backslash) used to fall through
+            // to the unconditional scan++ below, advancing past the NUL
+            // terminator into out-of-bounds memory and continuing the scan
+            // there. Stop instead.
+            if (!*scan) break;
+        }
         scan++;
         max_len++;
     }
@@ -3300,6 +3386,9 @@ static char* json_parse_string_raw(const char** p) {
     while (**p && **p != '"') {
         if (**p == '\\') {
             (*p)++;
+            // Bug 97: same trailing-backslash-at-EOF case as the pre-scan
+            // loop above -- stop before reading/advancing past the NUL.
+            if (!**p) break;
             char esc = **p;
             if      (esc == 'n')  buf[len++] = '\n';
             else if (esc == 't')  buf[len++] = '\t';
@@ -3438,6 +3527,20 @@ static TinoxJsonValue* json_parse_value(const char** p) {
     while (**p >= '0' && **p <= '9') (*p)++;
     if (**p == '.') { is_float = 1; (*p)++; while (**p >= '0' && **p <= '9') (*p)++; }
     if (**p == 'e' || **p == 'E') { is_float = 1; (*p)++; if (**p == '+' || **p == '-') (*p)++; while (**p >= '0' && **p <= '9') (*p)++; }
+    // Bug 97: an unrecognized token (not a string/object/array/true/false/
+    // null, and not even the start of a number) used to fall through to
+    // here with *p left unchanged, silently returning JSON_INT(0) without
+    // advancing the cursor. A caller looping until it sees the closing
+    // bracket/brace (the array parser above in particular) would then call
+    // json_parse_value() on the exact same position forever, appending a
+    // new dummy element every iteration -- an infinite loop + unbounded
+    // memory growth on malformed input like `[x]`. Force forward progress:
+    // if nothing number-like was actually consumed, treat this byte as a
+    // malformed token and skip it instead of looping in place.
+    if (*p == start) {
+        (*p)++;
+        return json_alloc(JSON_NULL);
+    }
     if (is_float) {
         TinoxJsonValue* v = json_alloc(JSON_FLOAT);
         v->float_val = atof(start);
@@ -4091,18 +4194,39 @@ void tinox_gauge_set(const char* name, int64_t value) {
 }
 
 // Returns a heap-allocated Prometheus-format string; caller need not free (GC-managed).
+// Bug 99: appends `text` (of length `n`, as returned by snprintf -- the
+// would-be length, NOT necessarily what actually fit) to `*pos`, clamped to
+// `cap`. snprintf's return value can exceed the space it was given
+// (`cap - *pos`) when the formatted text doesn't fit -- metric names are
+// caller-controlled (up to 255 bytes each) and a histogram line repeats the
+// name 5 times, easily exceeding the old flat 512-byte-per-entry estimate.
+// The old code did `pos += (size_t)snprintf(...)` unconditionally: once pos
+// overshot cap this way, the next call's `cap - pos` (both size_t) underflowed
+// to a huge value, and `buf + pos` could already be past the allocation --
+// a heap out-of-bounds write. Clamping pos to cap after every append makes
+// every subsequent `cap - pos` well-defined (falls back to a safe,
+// no-op-but-correct snprintf(..., 0, ...) once full) at the cost of
+// silently truncating the output if the buffer genuinely runs out.
+static void tinox_metrics_append(size_t* pos, size_t cap, int n) {
+    if (n < 0) return;
+    *pos += (size_t)n;
+    if (*pos > cap) *pos = cap;
+}
+
 char* tinox_metrics_prometheus(void) {
     pthread_mutex_lock(&_tinox_metrics_mu);
-    // Rough upper bound: 256 bytes per metric entry
-    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 512 + 64;
+    // Upper bound per entry: histogram lines repeat a (up to 255-byte)
+    // name 5 times plus ~200 bytes of fixed text -- comfortably under 2048.
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 64;
     char* buf = (char*)GC_malloc(cap);
     size_t pos = 0;
 
     for (int i = 0; i < _tinox_counter_n; i++) {
-        pos += (size_t)snprintf(buf + pos, cap - pos,
+        int n = snprintf(buf + pos, cap - pos,
             "# TYPE %s_total counter\n%s_total %lld\n",
             _tinox_counters[i].name, _tinox_counters[i].name,
             (long long)_tinox_counters[i].value);
+        tinox_metrics_append(&pos, cap, n);
     }
     for (int i = 0; i < _tinox_histogram_n; i++) {
         double sum_s   = (double)_tinox_histograms[i].sum_ns / 1e9;
@@ -4110,19 +4234,21 @@ char* tinox_metrics_prometheus(void) {
         double max_s   = (double)_tinox_histograms[i].max_ns / 1e9;
         int64_t count  = _tinox_histograms[i].count;
         const char* n  = _tinox_histograms[i].name;
-        pos += (size_t)snprintf(buf + pos, cap - pos,
+        int written = snprintf(buf + pos, cap - pos,
             "# TYPE %s_duration_seconds summary\n"
             "%s_duration_seconds_count %lld\n"
             "%s_duration_seconds_sum %.9f\n"
             "%s_duration_seconds_min %.9f\n"
             "%s_duration_seconds_max %.9f\n",
             n, n, (long long)count, n, sum_s, n, min_s, n, max_s);
+        tinox_metrics_append(&pos, cap, written);
     }
     for (int i = 0; i < _tinox_gauge_n; i++) {
-        pos += (size_t)snprintf(buf + pos, cap - pos,
+        int n = snprintf(buf + pos, cap - pos,
             "# TYPE %s gauge\n%s %lld\n",
             _tinox_gauges[i].name, _tinox_gauges[i].name,
             (long long)_tinox_gauges[i].value);
+        tinox_metrics_append(&pos, cap, n);
     }
     pthread_mutex_unlock(&_tinox_metrics_mu);
     return buf;
@@ -4152,6 +4278,12 @@ void* tinox_db_get_conn(void) {
 }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    // Bug 103: _tinox_db_mu was declared but never locked. The HTTP server
+    // runs request handlers concurrently (one worker pthread per CPU), and
+    // libpq's PGconn is not safe for concurrent use by multiple threads --
+    // two requests calling tinox_db_exec at the same time on the same
+    // connection could corrupt libpq's connection/result state.
+    pthread_mutex_lock(&_tinox_db_mu);
     PGresult* res = PQexecParams(
         (PGconn*)conn, sql,
         (int)n_params, NULL,
@@ -4161,6 +4293,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
         fprintf(stderr, "Query error: %s\nSQL: %s\n", PQresultErrorMessage(res), sql);
     }
+    pthread_mutex_unlock(&_tinox_db_mu);
     return (void*)res;
 }
 
@@ -4247,7 +4380,18 @@ static void _stmt_cache_put(const char* sql, sqlite3_stmt* stmt) {
     _stmt_cache[h].stmt = stmt;
 }
 
+// Bug 102: the statement cache above is a plain global array with no
+// locking, and tinox_db_exec's reset/bind/step sequence operates on a
+// cached sqlite3_stmt* shared across calls. The HTTP server runs request
+// handlers concurrently (one worker pthread per CPU) -- two concurrent
+// requests hitting the same cached query could interleave binding and
+// stepping on the same statement (corrupting each other's parameters/
+// results), and if the cache fills, one thread could finalize a statement
+// (_stmt_cache_put's eviction path) while another is still using it.
+static pthread_mutex_t _tinox_sqlite_mu = PTHREAD_MUTEX_INITIALIZER;
+
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    pthread_mutex_lock(&_tinox_sqlite_mu);
     sqlite3* db = (sqlite3*)conn;
     sqlite3_stmt* stmt = _stmt_cache_get(sql);
     if (stmt) {
@@ -4256,6 +4400,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     } else {
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
             fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
+            pthread_mutex_unlock(&_tinox_sqlite_mu);
             return NULL;
         }
         _stmt_cache_put(sql, stmt);
@@ -4298,6 +4443,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         res->data = NULL;
     }
     if (rows) free(rows);
+    pthread_mutex_unlock(&_tinox_sqlite_mu);
     return (void*)res;
 }
 
@@ -4536,13 +4682,17 @@ char* tinox_int_to_param(int64_t val) {
 
 extern int64_t tinox_main(void);
 
-// Globaler Fehler-Slot aus dem generierten IR (@__tinox_err = global i64 0).
-// Ein `throw` ohne umschließendes `try` parkt hier den Fehlerwert und die
-// werfende Funktion kehrt mit einem Default-Wert zurück; ein `try` weiter oben
-// konsumiert den Slot und setzt ihn zurück auf 0. Ist nach Ende von tinox_main
-// noch ein Wert gesetzt, wurde der throw NIRGENDS gefangen — das darf nicht
-// still durchgehen (Bug 35): laut auf stderr melden und mit Exit != 0 abbrechen.
-extern int64_t __tinox_err;
+// Fehler-Slot aus dem generierten IR (@__tinox_err = thread_local global i64
+// 0, seit Bug 101 -- vorher ein plain global, das sich HTTP-Worker-Threads
+// geteilt haben). Ein `throw` ohne umschließendes `try` parkt hier den
+// Fehlerwert und die werfende Funktion kehrt mit einem Default-Wert zurück;
+// ein `try` weiter oben konsumiert den Slot und setzt ihn zurück auf 0. Ist
+// nach Ende von tinox_main (auf dem Main-Thread) noch ein Wert gesetzt,
+// wurde der throw NIRGENDS gefangen — das darf nicht still durchgehen (Bug
+// 35): laut auf stderr melden und mit Exit != 0 abbrechen. Die
+// Storage-Class hier MUSS mit der `thread_local`-Deklaration im generierten
+// IR uebereinstimmen (codegen.rs), sonst TLS-Relocation-Mismatch beim Linken.
+extern __thread int64_t __tinox_err;
 
 int main(int argc, char** argv) {
     GC_INIT();

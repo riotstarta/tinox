@@ -44,9 +44,44 @@ namespace tinox.core.rest_framework
         /** Allowed origins for CORS */
         var corsOrigin: String;
 
+        /**
+         * Validates the credential extracted from an @Auth-protected route's
+         * Authorization header: called as (authType, credential) where
+         * credential is the header value with the "Bearer "/"Basic " scheme
+         * prefix already stripped. Defaults to rejecting everything (Bug
+         * 104) -- previously @Auth only checked that the header started
+         * with the right scheme prefix and never validated the credential
+         * itself, so any syntactically-shaped Authorization header passed.
+         * Wire up real validation with setAuthValidator(), e.g. checking a
+         * bearer token against Jwt::verify() or a basic-auth credential
+         * against a user store.
+         */
+        var authValidator: fnc(String, String) -> Bool;
+
         fn new(port: Int64) -> RestApi
         {
-            return RestApi { server: HttpServer::new(port), routeEntries: [], globalMiddleware: [], corsEnabled: false, corsOrigin: "" };
+            return RestApi {
+                server: HttpServer::new(port),
+                routeEntries: [],
+                globalMiddleware: [],
+                corsEnabled: false,
+                corsOrigin: "",
+                authValidator: fnc(authType: String, credential: String) -> Bool { return false; }
+            };
+        }
+
+        /**
+         * Registers the credential validator used by @Auth-protected routes
+         * (see authValidator). Must be set explicitly -- without it, every
+         * @Auth-protected route rejects all requests.
+         *
+         * @param validator fn(authType, credential) -> Bool
+         * @return this RestApi for chaining
+         */
+        fn setAuthValidator(validator: fnc(String, String) -> Bool) -> RestApi
+        {
+            this.authValidator = validator;
+            return this;
         }
 
         /**
@@ -261,6 +296,7 @@ namespace tinox.core.rest_framework
             let consumes: MediaType = entry.consumes;
             let authType: String = entry.authType;
             let originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
+            let authenticator: fnc(String, String) -> Bool = this.authValidator;
 
             return fnc(ctx: HttpContext) -> Nothing {
                 if consumes != MediaType::None
@@ -290,6 +326,18 @@ namespace tinox.core.rest_framework
                     if authType == "basic" && authHeader.startsWith("Basic ") == false
                     {
                         ctx.response.status(401).text("Unauthorized: Basic auth required");
+                        return;
+                    }
+                    // Bug 104: the checks above only ever validated the
+                    // Authorization header's scheme prefix -- any syntactically
+                    // correct but arbitrary "Bearer ..."/"Basic ..." header
+                    // passed. Actually validate the credential now.
+                    var credential: String = authHeader;
+                    if authType == "bearer" { credential = authHeader.substring(7, authHeader.len()); }
+                    if authType == "basic" { credential = authHeader.substring(6, authHeader.len()); }
+                    if credential.len() == 0 || authenticator(authType, credential) == false
+                    {
+                        ctx.response.status(401).text("Unauthorized");
                         return;
                     }
                 }

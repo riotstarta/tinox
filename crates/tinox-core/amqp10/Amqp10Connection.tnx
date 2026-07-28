@@ -58,7 +58,36 @@ namespace tinox.core.amqp10
             if conn <= 0 {
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
+            return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
+        }
 
+        /*
+         * amqps:// variant of connect() (Bug 88). connect() hardcoded
+         * Amqp10::dial() (plaintext TCP), so SASL PLAIN/SCRAM credentials
+         * and all subsequent traffic went out in cleartext even though
+         * Amqp10::dialTls() already existed as a primitive — this is the
+         * high-level API equivalent using it. `verify` has the same meaning
+         * as Amqp10::dialTls's verify parameter (true: check cert chain +
+         * hostname against the system CA store; false: opt-out for
+         * self-signed test certs).
+         */
+        fn connectTls(host: String, port: Int64, user: String, pass: String, verify: Bool) -> Amqp10Connection
+        {
+            let conn = Amqp10::dialTls(host, port, verify);
+            if conn <= 0 {
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "TLS-dial fehlgeschlagen", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
+        }
+
+        /*
+         * Shared SASL-Negotiation + AMQP-Header/open/open-ok-Handshake fuer
+         * connect()/connectTls() (Bug 88) — extrahiert, damit die TLS-
+         * Variante die Handshake-Logik nicht komplett dupliziert (dial()
+         * vs. dialTls() ist der einzige Unterschied zwischen beiden).
+         */
+        fn negotiateOnConn(conn: Int64, host: String, port: Int64, user: String, pass: String) -> Amqp10Connection
+        {
             // --- SASL-Header + Negotiation ---
             Amqp10::sendSaslProtocolHeader(conn);
             if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0]) {

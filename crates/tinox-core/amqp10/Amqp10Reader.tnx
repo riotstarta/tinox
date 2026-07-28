@@ -17,10 +17,20 @@ namespace tinox.core.amqp10
     {
         var bytes: List<Int64>;
         var pos: Int64;
+        // Bug 86: sticky flag set once a read runs past the end of `bytes`.
+        // A malicious/compromised broker frame (or a genuine but truncated
+        // one) can be shorter than what the format codes inside it claim —
+        // readU8() used to index straight into `bytes` and hard-crash the
+        // whole client process. Now it returns a dummy 0 and sets this
+        // instead, and readValueOfCode() short-circuits to ErrorVal once
+        // it's set, so decoding a truncated body fails gracefully (like
+        // the existing "unbekannter Formatcode" error path) instead of
+        // crashing or recursing forever on the dummy 0x00 bytes.
+        var truncated: Bool;
 
         fn new(bytes: List<Int64>) -> Amqp10Reader
         {
-            return Amqp10Reader { bytes: bytes, pos: 0 };
+            return Amqp10Reader { bytes: bytes, pos: 0, truncated: false };
         }
 
         fn remaining() -> Int64
@@ -30,6 +40,10 @@ namespace tinox.core.amqp10
 
         fn readU8() -> Int64
         {
+            if this.pos >= this.bytes.len() {
+                this.truncated = true;
+                return 0;
+            }
             let v = this.bytes[this.pos];
             this.pos = this.pos + 1;
             return v;
@@ -88,6 +102,10 @@ namespace tinox.core.amqp10
         {
             var s: String = "";
             for i in 0..n {
+                // Bug 86: a broker-controlled length prefix (n) can vastly
+                // exceed the actual remaining bytes — stop as soon as we
+                // run out instead of looping n times over dummy 0 bytes.
+                if this.truncated { break; }
                 let b = this.readU8();
                 s = s + fromCharCode(b);
             }
@@ -98,6 +116,7 @@ namespace tinox.core.amqp10
         {
             var out: List<Int64> = [];
             for i in 0..n {
+                if this.truncated { break; }
                 out.push(this.readU8());
             }
             return out;
@@ -110,6 +129,15 @@ namespace tinox.core.amqp10
          * ist der gemeinsame Kern für beide Fälle. */
         fn readValueOfCode(code: Int64) -> Amqp10Value
         {
+            // Bug 86: once truncated, `code` is a dummy 0x00 — dispatching
+            // it to the 0x00 branch below (readDescribed(), which itself
+            // calls readValue() twice) would recurse forever, since every
+            // further readU8() also returns dummy 0x00. Bail out here
+            // instead, same error-marker convention as the other fatal
+            // parse-error branches at the bottom of this function.
+            if this.truncated {
+                return Amqp10Value::ErrorVal("truncated: unexpected end of input");
+            }
             if code == 0x40 { return Amqp10Value::NullVal; }
             if code == 0x41 { return Amqp10Value::BoolVal(true); }
             if code == 0x42 { return Amqp10Value::BoolVal(false); }
@@ -169,6 +197,10 @@ namespace tinox.core.amqp10
         {
             var items: List<Amqp10Value> = [];
             for i in 0..count {
+                // Bug 86: count is broker-controlled (up to 2^32-1 for a
+                // list32) and unrelated to the actual remaining bytes —
+                // stop once truncated instead of looping count times.
+                if this.truncated { break; }
                 items.push(this.readValue());
             }
             return Amqp10Value::ListVal(items);
@@ -178,6 +210,7 @@ namespace tinox.core.amqp10
         {
             var pairs: List<Amqp10Value> = [];
             for i in 0..count {
+                if this.truncated { break; }
                 pairs.push(this.readValue());
             }
             return Amqp10Value::MapVal(pairs);
@@ -191,6 +224,7 @@ namespace tinox.core.amqp10
             let elementCode = this.readU8();
             var items: List<Amqp10Value> = [];
             for i in 0..count {
+                if this.truncated { break; }
                 items.push(this.readValueOfCode(elementCode));
             }
             return Amqp10Value::ListVal(items);

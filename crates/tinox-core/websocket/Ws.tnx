@@ -67,6 +67,17 @@ namespace tinox.core.websocket
             if rsv != 0 || !masked {
                 return WsFrame { fin: true, opcode: -2, payload: [] };
             }
+            // Bug 92 (RFC 6455 §5.5): control frames (8=Close, 9=Ping,
+            // 10=Pong) MUST have FIN set and payload length <= 125 — they
+            // can never use the 126/127 extended-length encoding and must
+            // never be fragmented. Reject immediately, before reading the
+            // extended length/mask/payload, so a client can't smuggle an
+            // oversized control-frame payload past readMessage()'s
+            // automatic Ping->Pong / Close->Close echo (memory DoS).
+            let isControlFrame = opcode >= 8 && opcode <= 10;
+            if isControlFrame && (!fin || plen > 125) {
+                return WsFrame { fin: true, opcode: -2, payload: [] };
+            }
             if plen == 126 {
                 let ext = httpConnReadN(conn, 2);
                 if ext.len() < 2 {

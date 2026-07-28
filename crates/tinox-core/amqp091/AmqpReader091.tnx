@@ -14,10 +14,18 @@ namespace tinox.core.amqp091
     {
         var bytes: List<Int64>;
         var pos: Int64;
+        // Bug 89: sticky flag set once a read runs past the end of `bytes`,
+        // same pattern as Amqp10Reader (Bug 86). A malicious/compromised
+        // broker frame — e.g. a METHOD frame shorter than the class-id/
+        // method-id header decodeMethodPayload() always reads, or a
+        // field-table/array whose declared length exceeds what's actually
+        // present — used to index straight into `bytes` and hard-crash the
+        // client. Now octet() returns a dummy 0 and sets this instead.
+        var truncated: Bool;
 
         fn new(bytes: List<Int64>) -> AmqpReader091
         {
-            return AmqpReader091 { bytes: bytes, pos: 0 };
+            return AmqpReader091 { bytes: bytes, pos: 0, truncated: false };
         }
 
         fn remaining() -> Int64
@@ -27,6 +35,10 @@ namespace tinox.core.amqp091
 
         fn octet() -> Int64
         {
+            if this.pos >= this.bytes.len() {
+                this.truncated = true;
+                return 0;
+            }
             let v = this.bytes[this.pos];
             this.pos = this.pos + 1;
             return v;
@@ -141,6 +153,12 @@ namespace tinox.core.amqp091
             let endPos = this.pos + tableLen;
             var result: Map<String, AmqpFieldValue091> = Map::new();
             while this.pos < endPos {
+                // Bug 89: endPos comes from the broker-controlled tableLen
+                // and can exceed what's actually in `bytes`. Once octet()
+                // hits the end it no longer advances `pos` (see above), so
+                // without this check `this.pos < endPos` would stay true
+                // forever — an infinite loop instead of a crash.
+                if this.truncated { break; }
                 let key = this.shortstr();
                 let value = this.fieldValue();
                 result.insert(key, value);
@@ -154,6 +172,7 @@ namespace tinox.core.amqp091
             let endPos = this.pos + arrLen;
             var result: List<AmqpFieldValue091> = [];
             while this.pos < endPos {
+                if this.truncated { break; }
                 result.push(this.fieldValue());
             }
             return result;

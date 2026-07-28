@@ -447,6 +447,27 @@ impl CodeGen {
         }
     }
 
+    /// Bug 107: sensitive_fields/masked_fields/do_not_serialize_fields are
+    /// keyed by `(declaring_class, field_name)` -- the class the annotation
+    /// processor saw the field ON, which for an inherited field is the
+    /// PARENT, not whatever subclass is currently being generated. A
+    /// subclass's struct_layouts includes inherited fields, so generating
+    /// `Child_toString`/`Child_toJson` and checking `(Child, field_name)`
+    /// against those sets never matches an @Sensitive/@Masked/@DoNotSerialize
+    /// field declared on `Parent` -- it silently serializes as if unmasked.
+    /// Walk class_parents to find which ancestor's OWN layout first
+    /// introduced this field name, so the check uses the right key.
+    fn field_declaring_class(&self, class_name: &str, field_name: &str) -> String {
+        if let Some(parent) = self.class_parents.get(class_name) {
+            if let Some(parent_layout) = self.struct_layouts.get(parent) {
+                if parent_layout.iter().any(|f| f == field_name) {
+                    return self.field_declaring_class(parent, field_name);
+                }
+            }
+        }
+        class_name.to_string()
+    }
+
     /// Collect all field names for a class in inheritance order: ancestor fields first, own last.
     fn collect_inherited_fields(
         name: &str,
@@ -962,7 +983,18 @@ impl CodeGen {
         // Global error slot for cross-function throw propagation:
         // throw without an enclosing try stores here and returns; statements
         // inside a try body check the slot and branch to the catch.
-        writeln!(&mut self.ir, "@__tinox_err = global i64 0").unwrap();
+        //
+        // Bug 101: this used to be a plain (process-wide) global. The HTTP
+        // server runs each request handler on its own pthread (one worker
+        // per CPU by default), so two concurrent requests shared this exact
+        // slot -- a throw in one request's handler could be consumed by a
+        // try/catch running concurrently in another request's handler on a
+        // different thread, corrupting both requests' control flow. `thread_local`
+        // gives every pthread (including each async/spawn task and each HTTP
+        // worker) its own independent slot; load/store IR against it is
+        // unchanged; only the extern declaration in runtime.c also needs the
+        // matching `__thread` storage class (see main()'s use of it there).
+        writeln!(&mut self.ir, "@__tinox_err = thread_local global i64 0").unwrap();
         writeln!(&mut self.ir).unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_int(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_string(i8*)").unwrap();
@@ -2952,8 +2984,9 @@ impl CodeGen {
                 let raw = self.temp();
                 writeln!(&mut self.ir, "  {} = load i64, i64* {}", raw, fptr).unwrap();
 
-                let is_sensitive = sensitive_set.contains(&(class_name.clone(), field_name.clone()));
-                let is_masked = masked_set.contains(&(class_name.clone(), field_name.clone()));
+                let owner_class = self.field_declaring_class(&class_name, field_name);
+                let is_sensitive = sensitive_set.contains(&(owner_class.clone(), field_name.clone()));
+                let is_masked = masked_set.contains(&(owner_class, field_name.clone()));
 
                 let val_str = if is_sensitive {
                     let stars = "***";
@@ -3037,7 +3070,10 @@ impl CodeGen {
             let data_fields: Vec<(String, usize, String)> = layout.iter()
                 .enumerate()
                 .filter(|(_, f)| *f != "__vtable__" && *f != "log")
-                .filter(|(_, f)| !do_not_serialize_set.contains(&(class_name.clone(), f.to_string())))
+                .filter(|(_, f)| {
+                    let owner = self.field_declaring_class(&class_name, f);
+                    !do_not_serialize_set.contains(&(owner, f.to_string()))
+                })
                 .filter_map(|(idx, f)| llvm_types.get(f).map(|ty| (f.clone(), idx, ty.clone())))
                 .collect();
 
@@ -13447,6 +13483,60 @@ mod tests {
         assert!(ir.contains("Record_toJson"), "toJson should be emitted for @JsonSerializable");
         assert!(ir.contains("***"), "@Sensitive field should be masked in toString");
         assert!(!ir.contains("\"internalId\""), "@DoNotSerialize field must not appear in toJson");
+    }
+
+    // Bug 107: sensitive_fields/masked_fields/do_not_serialize_fields are
+    // keyed by the class that DECLARED the field. A subclass's toString/toJson
+    // includes inherited fields in its layout, so generating them for the
+    // subclass must still recognize a field declared @Sensitive/@Masked/
+    // @DoNotSerialize on an ancestor class instead of silently emitting it.
+    #[test]
+    fn test_inherited_sensitive_field_masked_in_subclass_tostring() {
+        // AdminAccount has its own @Masked field (email), which is what
+        // triggers AdminAccount_toString generation in the first place --
+        // this matches the finding's exact repro shape. The inherited
+        // @Sensitive field (sessionToken, declared on Account) must still be
+        // masked once that method is generated.
+        let src = concat!(
+            "class Account { var sessionToken: String; }\n",
+            "class AdminAccount extends Account { var email: String; }\n",
+            "fn main() -> Int64 { return 0; }"
+        );
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex");
+        let ast = Parser::new(tokens).parse().expect("parse");
+        let mut cg = CodeGen::new();
+        cg.set_annotation_info(AnnotationInfo {
+            sensitive_fields: vec![LogMaskFieldInfo { class_name: "Account".to_string(), field_name: "sessionToken".to_string() }],
+            masked_fields: vec![LogMaskFieldInfo { class_name: "AdminAccount".to_string(), field_name: "email".to_string() }],
+            ..Default::default()
+        });
+        cg.gen(&ast).expect("codegen");
+        let ir = cg.into_ir();
+        assert!(ir.contains("define i8* @AdminAccount_toString"), "AdminAccount_toString should be emitted");
+        assert!(ir.contains("***"), "inherited @Sensitive field must still be masked in the subclass's toString");
+    }
+
+    #[test]
+    fn test_inherited_do_not_serialize_field_absent_from_subclass_tojson() {
+        let src = concat!(
+            "class Account { var sessionToken: String; }\n",
+            "class AdminAccount extends Account { var role: String; }\n",
+            "fn main() -> Int64 { return 0; }"
+        );
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex");
+        let ast = Parser::new(tokens).parse().expect("parse");
+        let mut cg = CodeGen::new();
+        cg.set_annotation_info(AnnotationInfo {
+            do_not_serialize_fields: vec![LogMaskFieldInfo { class_name: "Account".to_string(), field_name: "sessionToken".to_string() }],
+            json_serializable_classes: vec!["AdminAccount".to_string()],
+            ..Default::default()
+        });
+        cg.gen(&ast).expect("codegen");
+        let ir = cg.into_ir();
+        assert!(ir.contains("define i8* @AdminAccount_toJson"), "AdminAccount_toJson should be emitted");
+        assert!(!ir.contains("\"sessionToken\""), "inherited @DoNotSerialize field must not appear in the subclass's toJson");
     }
 
     #[test]

@@ -15,6 +15,10 @@ namespace tinox.core.amqp10
         {
             let fd = socketCreateTcp();
             if !socketConnect(fd, host, port) {
+                // Bug 90 (same leak found in the sibling amqp091 module):
+                // a reconnect loop against an unreachable/refusing broker
+                // used to leak `fd` on every attempt.
+                socketClose(fd);
                 return -1;
             }
             return httpConnFromFd(fd);
@@ -31,6 +35,8 @@ namespace tinox.core.amqp10
         {
             let fd = socketCreateTcp();
             if !socketConnect(fd, host, port) {
+                // Bug 90: same fd leak as dial() above.
+                socketClose(fd);
                 return -1;
             }
             return httpConnFromFdTls(fd, host, verify);
@@ -537,6 +543,15 @@ namespace tinox.core.amqp10
             }
             if saltB64.len() == 0 || iterations <= 0 {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-first-message ohne gueltiges Salt/Iterations-Feld" };
+            }
+            // Bug 87: `iterations` is broker-controlled and fed straight into
+            // an O(iterations) PBKDF2-HMAC loop below. A malicious/compromised
+            // broker (or a plaintext MITM before amqps:// TLS is negotiated)
+            // could otherwise force unbounded CPU consumption during connect()
+            // with an absurd `i=` value. 200000 is well above real-world
+            // broker defaults (typically 4096-100000) but caps the worst case.
+            if iterations > 200000 {
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: iteration count " + iterations.toString() + " exceeds safety cap (200000)" };
             }
 
             // --- SaltedPassword / ClientKey / StoredKey ---

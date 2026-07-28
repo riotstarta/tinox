@@ -58,25 +58,48 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
     fs::write(&yaml_path, content).map_err(|e| format!("Cannot write tinox.yaml: {}", e))
 }
 
-pub fn dep_install_dir(root: &Path, dep: &Dependency) -> PathBuf {
-    root.join(".tinox")
+/// Rejects anything that isn't a single, plain path segment: empty, ".", "..",
+/// or containing a path separator would let a dependency's group/artifactId/version
+/// escape `.tinox/deps` (e.g. via an absolute path or a `..` segment).
+fn sanitize_path_component(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+    {
+        return Err(format!(
+            "invalid dependency {}: {:?} is not a valid path segment",
+            field, value
+        ));
+    }
+    Ok(())
+}
+
+pub fn dep_install_dir(root: &Path, dep: &Dependency) -> Result<PathBuf, String> {
+    sanitize_path_component(&dep.group, "group")?;
+    sanitize_path_component(&dep.artifact_id, "artifactId")?;
+    sanitize_path_component(&dep.version, "version")?;
+    Ok(root
+        .join(".tinox")
         .join("deps")
         .join(&dep.group)
         .join(&dep.artifact_id)
-        .join(&dep.version)
+        .join(&dep.version))
 }
 
 pub fn installed_dep_dirs(root: &Path, manifest: &TinoxManifest) -> Vec<PathBuf> {
     manifest
         .dependencies
         .iter()
-        .map(|d| dep_install_dir(root, d))
+        .filter_map(|d| dep_install_dir(root, d).ok())
         .filter(|p| p.exists())
         .collect()
 }
 
 fn install_dep(root: &Path, dep: &Dependency) -> Result<(), String> {
-    let install_dir = dep_install_dir(root, dep);
+    let install_dir = dep_install_dir(root, dep)?;
     if install_dir.exists() {
         println!(
             "  already installed: {}:{} {}",
@@ -319,5 +342,46 @@ pub fn cmd_add(args: &[String]) {
     match install_dep(&root, &dep) {
         Ok(_) => {}
         Err(e) => eprintln!("warning: install failed: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dep(group: &str, artifact_id: &str, version: &str) -> Dependency {
+        Dependency {
+            group: group.to_string(),
+            artifact_id: artifact_id.to_string(),
+            version: version.to_string(),
+            url: "https://example.com/lib.tnx".to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_dotdot_traversal_in_any_field() {
+        let root = Path::new("/project");
+        assert!(dep_install_dir(root, &dep("../../etc", "x", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("x", "../../etc", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("x", "y", "..")).is_err());
+        assert!(dep_install_dir(root, &dep("x", "y", "../../../tmp/evil")).is_err());
+    }
+
+    #[test]
+    fn rejects_absolute_and_separator_segments() {
+        let root = Path::new("/project");
+        assert!(dep_install_dir(root, &dep("/etc", "x", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("x", "a/b", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("x", "a\\b", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("", "x", "1.0")).is_err());
+        assert!(dep_install_dir(root, &dep("x", ".", "1.0")).is_err());
+    }
+
+    #[test]
+    fn accepts_normal_coordinates_and_stays_under_deps() {
+        let root = Path::new("/project");
+        let dir = dep_install_dir(root, &dep("com.example", "mylib", "1.2.3")).unwrap();
+        assert!(dir.starts_with(root.join(".tinox").join("deps")));
+        assert_eq!(dir, root.join(".tinox/deps/com.example/mylib/1.2.3"));
     }
 }

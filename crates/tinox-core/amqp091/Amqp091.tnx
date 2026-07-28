@@ -14,6 +14,10 @@ namespace tinox.core.amqp091
         {
             let fd = socketCreateTcp();
             if !socketConnect(fd, host, port) {
+                // Bug 90: used to leak `fd` on every failed connect — a
+                // reconnect loop against an unreachable/refusing broker
+                // could exhaust the process fd limit over time.
+                socketClose(fd);
                 return -1;
             }
             return httpConnFromFd(fd);
@@ -31,6 +35,8 @@ namespace tinox.core.amqp091
         {
             let fd = socketCreateTcp();
             if !socketConnect(fd, host, port) {
+                // Bug 90: same fd leak as dial() above.
+                socketClose(fd);
                 return -1;
             }
             return httpConnFromFdTls(fd, host, verify);
