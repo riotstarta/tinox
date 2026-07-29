@@ -7048,6 +7048,7 @@ println(chain.unwrapOr("No result"));</code></pre>
   <h2>logger</h2>
   <p class="import-hint"><code>import tinox.core.logger;</code></p>
   <p>The <strong>logger</strong> module provides a structured logging system with configurable log levels. Each logger has a name and outputs messages with a timestamp, level, and name. The <code>LogLevel</code> class defines the four levels Debug, Info, Warn, and Error.</p>
+  <p>Setting the environment variable <code>TINOX_LOG_JSON=true</code> makes every <code>Logger</code> (including instances injected via <code>@Log</code>) emit a JSON object with the fields <code>timestamp</code>, <code>level</code>, <code>logger</code>, and <code>message</code> instead of the plain-text line – handy for structured log pipelines. Without the variable (or with any value other than <code>"true"</code>), the previous plain-text format <code>[timestamp] [LEVEL] [name] message</code> is unchanged.</p>
   <h3>Classes &amp; Methods</h3>
   <table>
     <thead>
@@ -7090,6 +7091,13 @@ let dbLog: Logger = Logger::new("database");
 Logger::setLevel(dbLog, LogLevel::Warn());
 Logger::info(dbLog, "This info is suppressed.");
 Logger::warn(dbLog, "Connection pool nearly exhausted.");</code></pre>
+  <h3>JSON Output</h3>
+  <pre><code>// Set before the process starts (or via Env::setVar):
+// TINOX_LOG_JSON=true
+
+let log: Logger = Logger::new("my-app");
+Logger::info(log, "Application started.");
+// {"timestamp":"...","level":"INFO","logger":"my-app","message":"Application started."}</code></pre>
   </div>
 
   <!-- ══════════════ ORM ══════════════ -->

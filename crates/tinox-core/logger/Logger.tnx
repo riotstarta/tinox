@@ -1,6 +1,8 @@
 module tinox.core.logger;
 
 import tinox.core.time;
+import tinox.core.env;
+import tinox.core.json;
 
 namespace tinox.core.logger
 {
@@ -8,10 +10,16 @@ namespace tinox.core.logger
     {
         var name: String;
         var level: Int64;
+        var jsonFormat: Bool;
 
+        // JSON output is opt-in via the TINOX_LOG_JSON=true environment
+        // variable, read once at construction time. This lets a @Log-
+        // injected `log: Logger` field (see the @Log annotation) switch to
+        // structured JSON logging without any code change in the annotated
+        // class — just set the env var before the process starts.
         fn new(name: String) -> Logger
         {
-            return Logger { name: name, level: LogLevel::Info };
+            return Logger { name: name, level: LogLevel::Info, jsonFormat: Env::getVar("TINOX_LOG_JSON") == "true" };
         }
 
         fn debug(logger: Logger, message: String) -> Nothing
@@ -54,14 +62,22 @@ namespace tinox.core.logger
         fn log(logger: Logger, level: String, message: String) -> Nothing
         {
             let timestamp: String = Time::now().toString();
-            print("[");
-            print(timestamp);
-            print("] [");
-            print(level);
-            print("] [");
-            print(logger.name);
-            print("] ");
-            println(message);
+            if logger.jsonFormat
+            {
+                let record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
+                println(Json::serialize(record));
+            }
+            else
+            {
+                print("[");
+                print(timestamp);
+                print("] [");
+                print(level);
+                print("] [");
+                print(logger.name);
+                print("] ");
+                println(message);
+            }
         }
     }
 }

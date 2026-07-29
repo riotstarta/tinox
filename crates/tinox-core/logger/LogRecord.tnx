@@ -1,0 +1,17 @@
+module tinox.core.logger;
+
+import tinox.core.json;
+
+namespace tinox.core.logger
+{
+    // Structured representation of a single log line, used by Logger::log
+    // when JSON output is enabled (see Logger.tnx / TINOX_LOG_JSON).
+    @JsonSerializable
+    class LogRecord
+    {
+        var timestamp: String;
+        var level: String;
+        var logger: String;
+        var message: String;
+    }
+}

@@ -7057,6 +7057,7 @@ println(kette.unwrapOr("Kein Ergebnis"));</code></pre>
   <h2>logger</h2>
   <p class="import-hint"><code>import tinox.core.logger;</code></p>
   <p>Das Modul <strong>logger</strong> bietet ein strukturiertes Logging-System mit konfigurierbaren Log-Levels. Jeder Logger besitzt einen Namen und gibt Meldungen mit Zeitstempel, Level und Namen aus. Die Klasse <code>LogLevel</code> definiert die vier Stufen Debug, Info, Warn und Error.</p>
+  <p>Per Umgebungsvariable <code>TINOX_LOG_JSON=true</code> gibt jeder <code>Logger</code> (auch per <code>@Log</code> injizierte Instanzen) statt der Klartextzeile ein JSON-Objekt mit den Feldern <code>timestamp</code>, <code>level</code>, <code>logger</code> und <code>message</code> aus – praktisch für strukturierte Log-Pipelines. Ohne die Variable (bzw. jedem anderen Wert als <code>"true"</code>) bleibt das bisherige Klartextformat <code>[timestamp] [LEVEL] [name] message</code> unverändert.</p>
   <h3>Klassen &amp; Methoden</h3>
   <table>
     <thead>
@@ -7099,6 +7100,13 @@ let dbLog: Logger = Logger::new("datenbank");
 Logger::setLevel(dbLog, LogLevel::Warn());
 Logger::info(dbLog, "Diese Info wird unterdrückt.");
 Logger::warn(dbLog, "Verbindungspool fast erschöpft.");</code></pre>
+  <h3>JSON-Ausgabe</h3>
+  <pre><code>// Vor dem Programmstart (oder per Env::setVar) setzen:
+// TINOX_LOG_JSON=true
+
+let log: Logger = Logger::new("meine-app");
+Logger::info(log, "Anwendung gestartet.");
+// {"timestamp":"...","level":"INFO","logger":"meine-app","message":"Anwendung gestartet."}</code></pre>
   </div>
 
 
