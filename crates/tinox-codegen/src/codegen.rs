@@ -7430,7 +7430,7 @@ impl CodeGen {
                             name_ptr, str_len, str_len, str_label).unwrap();
                         let logger_raw = self.temp();
                         writeln!(&mut self.ir,
-                            "{} = call i64* @Logger_new(i8* {})",
+                            "{} = call i64* @Logger_new(i64* null, i8* {})",
                             logger_raw, name_ptr).unwrap();
                         let log_as_i64 = self.temp();
                         writeln!(&mut self.ir, "{} = ptrtoint i64* {} to i64", log_as_i64, logger_raw).unwrap();

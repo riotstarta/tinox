@@ -4696,6 +4696,13 @@ extern __thread int64_t __tinox_err;
 
 int main(int argc, char** argv) {
     GC_INIT();
+    // stdout is fully buffered (~4KB) by default when not attached to a
+    // TTY (e.g. piped to `docker logs`, `journalctl`, `tee`, a log
+    // aggregator). For long-running processes that print periodically
+    // (services, loggers) this delays output indefinitely until the
+    // buffer fills or the process exits — force line buffering so every
+    // println()'d line reaches the pipe promptly.
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
     int64_t rc = tinox_main();
