@@ -128,6 +128,15 @@ namespace tinox.core.hpack
          */
         fn decodeInt(data: List<Int64>, offset: Int64, prefixBits: Int64) -> HpackIntResult
         {
+            // offset comes from a caller-computed nextOffset (e.g. decodeStr
+            // re-entering at exactly data.len() on a truncated header block)
+            // — reject before the unconditional data[offset] below instead
+            // of hitting the array-bounds check, which exit()s the whole
+            // process, not just this connection.
+            if offset < 0 || offset >= data.len()
+            {
+                return HpackIntResult { value: 0, nextOffset: data.len() };
+            }
             let mask: Int64 = (1 << prefixBits) - 1;
             var value: Int64 = data[offset] & mask;
             var pos: Int64 = offset + 1;
@@ -136,7 +145,11 @@ namespace tinox.core.hpack
                 return HpackIntResult { value: value, nextOffset: pos };
             }
             var m: Int64 = 0;
-            while pos < data.len()
+            // RFC 7541 §5.1 continuation bytes are unbounded on the wire;
+            // cap at m < 63 (9 continuation bytes — enough for the largest
+            // value an Int64 can hold) so a hostile run of 0x80-prefixed
+            // bytes can't shift `m` up to/past 64 and hit shift-overflow.
+            while pos < data.len() && m < 63
             {
                 let b: Int64 = data[pos];
                 pos = pos + 1;
@@ -165,12 +178,18 @@ namespace tinox.core.hpack
             let pos: Int64 = lenResult.nextOffset;
             var str: String = "";
             var i: Int64 = 0;
-            while i < strLen
+            // strLen comes straight off the wire (decodeInt) and can claim
+            // far more bytes than are actually left in `data` — stop at the
+            // buffer end instead of reading past it (was: unconditional
+            // data[pos + i] for i in [0, strLen), so a truncated/malformed
+            // length crashed the whole process via tinox_array_get's bounds
+            // check, not just this connection).
+            while i < strLen && (pos + i) < data.len()
             {
                 str = str + fromCharCode(data[pos + i]);
                 i = i + 1;
             }
-            return HpackStrResult { value: str, nextOffset: pos + strLen };
+            return HpackStrResult { value: str, nextOffset: pos + i };
         }
 
         /**
