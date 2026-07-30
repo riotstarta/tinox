@@ -45,7 +45,7 @@ fn run() {
         "check"   => check(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
-        "install" => pm::cmd_install(),
+        "install" => pm::cmd_install(&args[2..]),
         "add"     => pm::cmd_add(&args[2..]),
         "package" => pm::cmd_package(),
         "help" | "--help" | "-h" => print_help(),
@@ -72,6 +72,7 @@ fn print_help() {
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
     println!("  tinox install              Download and install all dependencies");
+    println!("  tinox install --update     Re-pin tinox.lock instead of verifying against it");
     println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
     println!("  tinox package              Pack src/ into <name>-<version>.tar.gz");
     println!("  tinox help                 Show this help message");

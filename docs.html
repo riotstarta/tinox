@@ -2063,11 +2063,21 @@ conn.close();
     zum Bauen verfügbar ist.
   </p>
   <p>
+    Heartbeats (§4.2.7) laufen wie bei <code>amqp10</code> auf einem
+    Hintergrund-Thread, explizites Opt-in: <code>conn.heartbeat</code> ist das
+    vom Broker in <code>connection.tune</code> vorgeschlagene Intervall in
+    Sekunden (rein informativ, bis <code>startHeartbeat</code> aufgerufen wird).
+  </p>
+  <pre><code>conn.startHeartbeat(<span class="num">20000</span>);   <span class="cmt">// alle 20s ein Heartbeat-Frame, im Hintergrund</span>
+<span class="cmt">// ...</span>
+conn.stopHeartbeat();         <span class="cmt">// oder einfach conn.close(), das stoppt ihn mit</span>
+</code></pre>
+  <p>
     <strong>Bewusste v1-Lücken:</strong> kein Multi-Channel, kein
     <code>exchange.declare</code> (nur Default-Exchange und
     broker-vordefinierte Exchanges wie <code>amq.direct</code>), keine
     Publisher-Confirms/Transaktionen, keine Annotation-getriebene Consumer-API,
-    kein Heartbeat-Sender/Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
+    kein Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
     <code>connectTls</code> (verifiziert nur gegen die System-CA-Stores). AMQP
     1.0 ist nicht Teil dieses Moduls.
   </p>
@@ -6830,7 +6840,7 @@ println("Listener nach Entfernung: "
 
   <h2>time</h2>
   <p class="import-hint"><code>import tinox.core.time;</code></p>
-  <p>Das Modul <strong>time</strong> stellt Hilfsmittel für Zeitoperationen bereit: Die Klasse <code>Time</code> ist die Einstiegspunkt-Fabrik, <code>Duration</code> repräsentiert Zeitspannen, <code>Timer</code> misst eine definierte Start-Stop-Zeitspanne und <code>Stopwatch</code> erfasst die verstrichene Zeit nur während des Laufens.</p>
+  <p>Das Modul <strong>time</strong> stellt Hilfsmittel für Zeitoperationen bereit: Die Klasse <code>Time</code> ist die Einstiegspunkt-Fabrik, <code>Duration</code> repräsentiert Zeitspannen, <code>Timer</code> misst eine definierte Start-Stop-Zeitspanne und <code>Stopwatch</code> ist das Pendant mit zusätzlicher <code>isRunning()</code>-Abfrage.</p>
   <h3>Klassen &amp; Methoden</h3>
   <table>
     <thead>
@@ -6861,7 +6871,7 @@ println("Listener nach Entfernung: "
       <tr><td><code>Stopwatch::start</code></td><td><code>fn start() -&gt; Nothing</code></td><td>Startet die Stoppuhr.</td></tr>
       <tr><td><code>Stopwatch::stop</code></td><td><code>fn stop() -&gt; Nothing</code></td><td>Stoppt die Stoppuhr.</td></tr>
       <tr><td><code>Stopwatch::isRunning</code></td><td><code>fn isRunning() -&gt; Bool</code></td><td>Gibt <code>true</code> zurück, wenn die Stoppuhr gerade läuft.</td></tr>
-      <tr><td><code>Stopwatch::elapsed</code></td><td><code>fn elapsed() -&gt; Int64</code></td><td>Gibt die verstrichene Zeit in Millisekunden zurück, solange die Stoppuhr läuft; andernfalls 0.</td></tr>
+      <tr><td><code>Stopwatch::elapsed</code></td><td><code>fn elapsed() -&gt; Int64</code></td><td>Gibt die verstrichene Zeit in Millisekunden zurück: während des Laufens die Zeit seit <code>start()</code>, nach <code>stop()</code> die eingefrorene Start-Stop-Spanne, sonst 0.</td></tr>
     </tbody>
   </table>
   <h3>Beispiel</h3>

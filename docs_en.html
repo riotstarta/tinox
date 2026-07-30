@@ -2059,11 +2059,21 @@ conn.close();
     available for building.
   </p>
   <p>
+    Heartbeats (§4.2.7) run on a background thread, same explicit opt-in as
+    <code>amqp10</code>: <code>conn.heartbeat</code> is the interval (seconds)
+    the broker proposed in <code>connection.tune</code> — informational only
+    until <code>startHeartbeat</code> is called.
+  </p>
+  <pre><code>conn.startHeartbeat(<span class="num">20000</span>);   <span class="cmt">// one heartbeat frame every 20s, in the background</span>
+<span class="cmt">// ...</span>
+conn.stopHeartbeat();         <span class="cmt">// or just conn.close(), which stops it for you</span>
+</code></pre>
+  <p>
     <strong>Deliberate v1 gaps:</strong> no multi-channel support, no
     <code>exchange.declare</code> (only the default exchange and
     broker-predefined exchanges like <code>amq.direct</code>), no publisher
-    confirms/transactions, no annotation-driven consumer API, no heartbeat
-    sender/auto-reconnect, no dedicated CA-bundle parameter for
+    confirms/transactions, no annotation-driven consumer API, no
+    auto-reconnect, no dedicated CA-bundle parameter for
     <code>connectTls</code> (verifies only against the system CA stores).
     AMQP 1.0 is not part of this module.
   </p>
@@ -6821,7 +6831,7 @@ println("Listeners after removal: "
 
   <h2>time</h2>
   <p class="import-hint"><code>import tinox.core.time;</code></p>
-  <p>The <strong>time</strong> module provides utilities for time operations: The <code>Time</code> class is the entry-point factory, <code>Duration</code> represents time spans, <code>Timer</code> measures a defined start-stop interval, and <code>Stopwatch</code> tracks elapsed time only while running.</p>
+  <p>The <strong>time</strong> module provides utilities for time operations: The <code>Time</code> class is the entry-point factory, <code>Duration</code> represents time spans, <code>Timer</code> measures a defined start-stop interval, and <code>Stopwatch</code> is the counterpart with an additional <code>isRunning()</code> query.</p>
   <h3>Classes &amp; Methods</h3>
   <table>
     <thead>
@@ -6852,7 +6862,7 @@ println("Listeners after removal: "
       <tr><td><code>Stopwatch::start</code></td><td><code>fn start() -&gt; Nothing</code></td><td>Starts the stopwatch.</td></tr>
       <tr><td><code>Stopwatch::stop</code></td><td><code>fn stop() -&gt; Nothing</code></td><td>Stops the stopwatch.</td></tr>
       <tr><td><code>Stopwatch::isRunning</code></td><td><code>fn isRunning() -&gt; Bool</code></td><td>Returns <code>true</code> if the stopwatch is currently running.</td></tr>
-      <tr><td><code>Stopwatch::elapsed</code></td><td><code>fn elapsed() -&gt; Int64</code></td><td>Returns the elapsed time in milliseconds while the stopwatch is running; otherwise 0.</td></tr>
+      <tr><td><code>Stopwatch::elapsed</code></td><td><code>fn elapsed() -&gt; Int64</code></td><td>Returns the elapsed time in milliseconds: while running, the time since <code>start()</code>; after <code>stop()</code>, the frozen start-to-stop span; otherwise 0.</td></tr>
     </tbody>
   </table>
   <h3>Example</h3>

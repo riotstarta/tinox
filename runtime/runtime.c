@@ -1,5 +1,19 @@
 // Tinox Runtime
 
+// Linux-only by design, not by oversight (#113): the HTTP/WebSocket/HTTP2
+// event loop uses epoll (sys/epoll.h below, no kqueue/IOCP fallback), the
+// event-driven socket code relies on Linux's MSG_NOSIGNAL, and the Boehm
+// GC's stop-the-world suspend + crash backtraces (execinfo.h) assume a
+// glibc/ELF target. Failing here with one clear message beats the reader
+// hitting a cascade of "sys/epoll.h: No such file or directory" and
+// similar errors scattered across this file with no indication of why —
+// see CLAUDE.md's "kein Silent-Garbage" principle and
+// https://github.com/subnix-work/tinox/issues/113 for what porting this
+// to another OS would actually require.
+#ifndef __linux__
+#error "Tinox's runtime only supports Linux (epoll-based event loop, glibc/ELF-specific GC + backtraces) — see https://github.com/subnix-work/tinox/issues/113"
+#endif
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>

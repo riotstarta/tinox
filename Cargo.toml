@@ -28,6 +28,7 @@ ureq = "2"
 flate2 = "1"
 tar = "0.4"
 zip = "2"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

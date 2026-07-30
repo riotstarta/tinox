@@ -13,6 +13,9 @@ namespace tinox.core.time
         /** The time when start() was called */
         var startTime: Int64;
 
+        /** The time when stop() was called (0 if never stopped) */
+        var stopTime: Int64;
+
         /** Whether the stopwatch is currently running */
         var running: Bool;
 
@@ -23,7 +26,7 @@ namespace tinox.core.time
          */
         fn new() -> Stopwatch
         {
-            return Stopwatch { startTime: 0, running: false };
+            return Stopwatch { startTime: 0, stopTime: 0, running: false };
         }
 
         /**
@@ -36,10 +39,12 @@ namespace tinox.core.time
         }
 
         /**
-         * Stops the stopwatch
+         * Stops the stopwatch, freezing the current time so elapsed()
+         * keeps reporting the start-to-stop duration afterward
          */
         fn stop() -> Nothing
         {
+            this.stopTime = now();
             this.running = false;
         }
 
@@ -54,11 +59,14 @@ namespace tinox.core.time
         }
 
         /**
-         * Returns the elapsed time while running
+         * Returns the elapsed time
          *
-         * If the stopwatch is not running, returns 0.
+         * While running, returns the time from start() to now. Once
+         * stopped, keeps returning the frozen start-to-stop duration
+         * (rather than resetting to 0) so callers can read the result
+         * after stop(). Returns 0 if start() was never called.
          *
-         * @return elapsed time in milliseconds, or 0 if not running
+         * @return elapsed time in milliseconds
          */
         fn elapsed() -> Int64
         {
@@ -66,7 +74,7 @@ namespace tinox.core.time
             {
                 return now() - this.startTime;
             }
-            return 0;
+            return this.stopTime - this.startTime;
         }
     }
 }

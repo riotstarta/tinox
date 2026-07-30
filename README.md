@@ -15,7 +15,7 @@
 | Type Checker | ✅ Done     | Base types, classes, enums, generics, annotations |
 | Code Gen     | ✅ Done     | LLVM IR backend, `@inline` support     |
 | Runtime      | ✅ Done     | C runtime (pthread-based)              |
-| CLI          | ✅ Done     | build, run, check, fmt                 |
+| CLI          | ✅ Done     | build, run, dev, test, doc, check, fmt, repl, install |
 
 ## Installation
 
@@ -28,15 +28,77 @@ cargo build --release
 
 Requirements: `clang`, `llc` (LLVM tools)
 
+**Platform: Linux only, by design.** The C runtime's HTTP/WebSocket/HTTP2
+event loop is epoll-based (no kqueue/IOCP fallback), it relies on Linux's
+`MSG_NOSIGNAL` socket flag, and crash backtraces + the Boehm GC's
+stop-the-world suspend assume a glibc/ELF target. Compiling
+`runtime/runtime.c` on another OS fails immediately with a clear error
+rather than a confusing cascade of missing-header errors. Tracked as
+[#113](https://github.com/subnix-work/tinox/issues/113) if you're
+interested in what porting this would take.
+
 ## Usage
 
 ```bash
-tinox run program.tnx           # Compile and run
-tinox build program.tnx         # Compile (produces ./a.out)
-tinox check program.tnx         # Type-check only
-tinox fmt program.tnx           # Format (writes to stdout)
-tinox fmt --write program.tnx   # Format and overwrite the file
+tinox new <name>                             # Scaffold a new project (writes tinox.toml)
+tinox build [file]                           # Compile to an executable (uses tinox.toml if no file)
+tinox run   [file]                           # Compile and run (uses tinox.toml if no file)
+tinox dev   [file]                           # Dev mode: hot-reload on file changes
+tinox test  [file]                           # Run all @Test-annotated methods
+tinox test --watch                           # Re-run tests on file changes (TDD mode)
+tinox doc   [--open]                         # Generate HTML documentation in docs/
+tinox check program.tnx                      # Type-check only, no compilation
+tinox fmt program.tnx                        # Format (writes to stdout)
+tinox fmt --write program.tnx                # Format and overwrite the file
+tinox repl                                   # Start the interactive REPL
+tinox install                                # Download and install all dependencies (tinox.yaml)
+tinox add <group> <artifact> <version> <url> # Add + install a dependency
+tinox package                                # Pack src/ into <name>-<version>.tar.gz
 ```
+
+Run `tinox help` for the same list from the CLI itself.
+
+### Testing
+
+Methods annotated `@Test` (optionally `@Test("description")`) are discovered and
+run by `tinox test`:
+
+```tinox
+class MathSuite
+{
+    @Test("addition works")
+    fn testAdd() -> Nothing
+    {
+        assert(1 + 1 == 2);
+    }
+}
+```
+
+```bash
+tinox test              # run once
+tinox test --watch      # re-run on file changes
+```
+
+### Package Manager
+
+`tinox install`/`tinox add` resolve dependencies declared in a project's
+`tinox.yaml`:
+
+```yaml
+package:
+  name: my-project
+  version: "0.1.0"
+dependencies:
+  - group: someorg
+    artifactId: somelib
+    version: "1.0.0"
+    url: "https://example.com/somelib.tnx"
+```
+
+Each dependency is a plain URL download into `.tinox/deps/<group>/<artifactId>/<version>/`
+(no central registry/index — you point at wherever the source lives).
+`tinox add <group> <artifact> <version> <url>` appends an entry to
+`tinox.yaml` and installs it in one step.
 
 ## Hello World
 
@@ -605,7 +667,15 @@ conn.close();
 let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
 ```
 
-Known v1 gaps: no multi-channel, no `exchange.declare` (only the default exchange plus broker-predefined exchanges), no publisher confirms, no annotation-driven consumer API, no heartbeat/auto-reconnect. AMQP 1.0 is a separate, later roadmap phase (different type system) — details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (feature history, marked done there).
+Heartbeats (§4.2.7) can be sent on a background thread, same explicit-opt-in pattern as `amqp10` — `conn.heartbeat` is the broker's proposed interval in seconds (from `connection.tune`, informational only until you start sending):
+
+```tinox
+conn.startHeartbeat(20000);   // send a heartbeat frame every 20s, in the background
+// ...
+conn.stopHeartbeat();         // or just conn.close(), which stops it for you
+```
+
+Known v1 gaps: no multi-channel, no `exchange.declare` (only the default exchange plus broker-predefined exchanges), no publisher confirms, no annotation-driven consumer API, no auto-reconnect. AMQP 1.0 is a separate, later roadmap phase (different type system) — details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (feature history, marked done there).
 
 ### AMQP-1.0 Client
 
@@ -686,7 +756,11 @@ class MyConsumer
 | Eclipse plugin                 | ✅ Done        |
 | File I/O                       | ✅ Done        |
 | Formatter (`tinox fmt`)        | ✅ Done        |
-| REPL                            | ⏳ Planned     |
+| REPL (`tinox repl`)             | ✅ Done        |
+| Test runner (`@Test`, `tinox test`) | ✅ Done   |
+| Dev mode / hot-reload (`tinox dev`) | ✅ Done   |
+| HTML docs (`tinox doc`)        | ✅ Done        |
+| Package manager (`tinox install`/`add`/`package`) | ✅ Done |
 
 ## Project Structure
 
@@ -720,6 +794,21 @@ tinox/
 | System       | `fs`, `io`, `env`, `process`, `os`                   |
 | Utilities    | `math`, `mathf`, `string_utils`, `date`, `uuid`      |
 | Async        | `cron`, `events`, `pool`, `cache`, `pubsub`          |
+
+## Garbage Collection
+
+The runtime uses the [Boehm GC](https://www.hboehm.info/gc/) in its
+default conservative, **stop-the-world, non-generational, non-incremental**
+configuration — every collection is a full mark-sweep over the entire
+live heap, pausing all threads (`spawn` is real pthreads) simultaneously.
+Measured pause times scale with live heap size, not total heap size:
+roughly 90 µs at 10k live objects (0.6 MB) up to ~31 ms at 5M live
+objects (~300 MB) on the dev machine — see
+[`benchmarks/gc_pause_results.md`](benchmarks/gc_pause_results.md) for
+full numbers and methodology (`benchmarks/bench_gc_pause.tnx`). No
+tuning knobs are currently exposed beyond
+`tinox.core.debug.Debug::gcCollect()`/`::memoryUsage()`; if a workload's
+live set is large enough for this to matter, that's the number to watch.
 
 ## Changelog
 

@@ -17,20 +17,25 @@ namespace tinox.core.amqp091
         var channelMax: Int64;
         var heartbeat: Int64;
         var errorMessage: String;
+        var heartbeatRunning: Bool;
+        var heartbeatHandle: Int64;
 
         /*
          * Baut eine komplette AMQP-0-9-1-Verbindung auf: dial + Protokoll-
          * Header + connection.start empfangen + start-ok (SASL PLAIN)
          * senden + tune empfangen + tune-ok senden + open + open-ok.
-         * v1: übernimmt die Server-Vorschläge aus tune (channel-max,
-         * frame-max), Heartbeat wird auf 0 (deaktiviert) geklemmt — es gibt
-         * noch keinen Heartbeat-Sender (s. tasklist.md "Später").
+         * `heartbeat` ist der vom BROKER in tune vorgeschlagene und vom
+         * Client in tune-ok bestaetigte Intervall in Sekunden (0 = vom
+         * Broker deaktiviert); rein informativ, solange niemand
+         * startHeartbeat() aufruft — analog zu amqp10s idleTimeoutMs
+         * (s. Amqp10Connection::startHeartbeat()), v1-Tradeoff bewusst
+         * identisch: kein automatischer Heartbeat ohne expliziten Aufruf.
          */
         fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
         {
             let conn = Amqp091::dial(host, port);
             if conn <= 0 {
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen", heartbeatRunning: false, heartbeatHandle: -1 };
             }
             return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
         }
@@ -49,7 +54,7 @@ namespace tinox.core.amqp091
         {
             let conn = Amqp091::dialTls(host, port, verify);
             if conn <= 0 {
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen (TLS)" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial fehlgeschlagen (TLS)", heartbeatRunning: false, heartbeatHandle: -1 };
             }
             return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
         }
@@ -68,12 +73,12 @@ namespace tinox.core.amqp091
             let f1 = Amqp091::readFrame(conn);
             if f1.frameType != 1 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Protokoll-Header abgelehnt oder Handshake fehlgeschlagen (frameType=" + f1.frameType.toString() + ")" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Protokoll-Header abgelehnt oder Handshake fehlgeschlagen (frameType=" + f1.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1 };
             }
             let startMethod = Amqp091::decodeMethodPayload(f1.payload);
             if startMethod.classId != 10 || startMethod.methodId != 10 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.start, bekam class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString() };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.start, bekam class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1 };
             }
             let startArgs = AmqpReader091::new(startMethod.args);
             startArgs.octet(); // version-major (ungeprüft — schon via Protokoll-Header validiert)
@@ -84,7 +89,7 @@ namespace tinox.core.amqp091
 
             if !mechanisms.contains("PLAIN") {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Broker bietet SASL-Mechanismus PLAIN nicht an (angeboten: " + mechanisms + ")" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "Broker bietet SASL-Mechanismus PLAIN nicht an (angeboten: " + mechanisms + ")", heartbeatRunning: false, heartbeatHandle: -1 };
             }
 
             // --- connection.start-ok ---
@@ -104,21 +109,22 @@ namespace tinox.core.amqp091
             let f2 = Amqp091::readFrame(conn);
             if f2.frameType != 1 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune (frameType=" + f2.frameType.toString() + ")" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune (frameType=" + f2.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1 };
             }
             let tuneMethod = Amqp091::decodeMethodPayload(f2.payload);
             if tuneMethod.classId == 10 && tuneMethod.methodId == 50 {
                 let msg = Amqp091::describeAndAckClose(conn, 0, tuneMethod, 51);
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/Handshake fehlgeschlagen: " + msg };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/Handshake fehlgeschlagen: " + msg, heartbeatRunning: false, heartbeatHandle: -1 };
             }
             if tuneMethod.classId != 10 || tuneMethod.methodId != 30 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune, bekam class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString() };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.tune, bekam class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1 };
             }
             let tuneArgs = AmqpReader091::new(tuneMethod.args);
             let serverChannelMax = tuneArgs.short();
             let serverFrameMax = tuneArgs.long();
+            let serverHeartbeat = tuneArgs.short();
 
             // --- connection.tune-ok ---
             var negotiatedFrameMax: Int64 = 131072;
@@ -128,7 +134,12 @@ namespace tinox.core.amqp091
             let w2 = AmqpWriter091::new();
             w2.short(serverChannelMax);
             w2.long(negotiatedFrameMax);
-            w2.short(0); // Heartbeat deaktiviert (v1: kein Heartbeat-Sender)
+            // Echo the broker's proposed heartbeat interval back as-is
+            // (RabbitMQ and most brokers default to 60s; 0 = broker
+            // disabled heartbeats). Sending doesn't start automatically —
+            // see startHeartbeat() below, same explicit-opt-in v1 design
+            // as Amqp10Connection::startHeartbeat().
+            w2.short(serverHeartbeat);
             let tuneOkPayload = Amqp091::encodeMethodPayload(10, 31, w2.bytes);
             Amqp091::writeFrame(conn, 1, 0, tuneOkPayload);
 
@@ -143,30 +154,74 @@ namespace tinox.core.amqp091
             let f3 = Amqp091::readFrame(conn);
             if f3.frameType != 1 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok (frameType=" + f3.frameType.toString() + ")" };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok (frameType=" + f3.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1 };
             }
             let openMethod = Amqp091::decodeMethodPayload(f3.payload);
             if openMethod.classId == 10 && openMethod.methodId == 50 {
                 let msg = Amqp091::describeAndAckClose(conn, 0, openMethod, 51);
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open fehlgeschlagen: " + msg };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open fehlgeschlagen: " + msg, heartbeatRunning: false, heartbeatHandle: -1 };
             }
             if openMethod.classId != 10 || openMethod.methodId != 41 {
                 httpConnClose(conn);
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok, bekam class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString() };
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "erwartete connection.open-ok, bekam class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1 };
             }
 
-            return AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: 0, errorMessage: "" };
+            return AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: serverHeartbeat, errorMessage: "", heartbeatRunning: false, heartbeatHandle: -1 };
         }
 
         /*
-         * Schließt die Verbindung spec-konform: connection.close senden
-         * und auf close-ok warten (kurzes Timeout-Risiko wird v1 bewusst
-         * in Kauf genommen — kein Heartbeat/Timeout-Mechanismus), dann den
-         * Socket schließen.
+         * Sendet EIN Heartbeat-Frame (frameType 8, Channel 0, leerer
+         * Payload — §4.2.7). Kann manuell aufgerufen werden, fuer den
+         * ueblichen Fall aber s. startHeartbeat().
+         */
+        fn sendHeartbeat() -> Nothing
+        {
+            Amqp091::writeFrame(this.conn, 8, 0, []);
+        }
+
+        /*
+         * Startet einen Hintergrund-Task (echter Thread, s. spawn), der
+         * alle `intervalMs` ein Heartbeat sendet, bis stopHeartbeat()
+         * (oder close()) aufgerufen wird — identisches Muster zu
+         * Amqp10Connection::startHeartbeat() (s. dort fuer die
+         * Thread-Sicherheits-Begruendung: httpConnWriteBytes() ist pro
+         * Connection-Handle gemutext, Issue 82). `intervalMs` sollte
+         * deutlich unter `this.heartbeat * 1000` liegen (Spec-Empfehlung:
+         * haeufiger senden als das ausgehandelte Intervall, wegen
+         * Taktungenauigkeit) — v1 ueberlaesst die konkrete Wahl bewusst
+         * dem Aufrufer statt sie automatisch aus heartbeat abzuleiten,
+         * analog zum expliziten grantCredit()-Muster.
+         */
+        fn startHeartbeat(intervalMs: Int64) -> Nothing
+        {
+            this.heartbeatRunning = true;
+            this.heartbeatHandle = spawn amqp091HeartbeatLoop(this, intervalMs);
+        }
+
+        /*
+         * Stoppt den Heartbeat-Task und wartet, bis er wirklich beendet
+         * ist (await joint den Task) — WICHTIG vor close(), sonst koennte
+         * der Heartbeat-Task noch versuchen, ueber ein bereits
+         * geschlossenes Handle zu schreiben.
+         */
+        fn stopHeartbeat() -> Nothing
+        {
+            if this.heartbeatRunning {
+                this.heartbeatRunning = false;
+                await this.heartbeatHandle;
+            }
+        }
+
+        /*
+         * Schließt die Verbindung spec-konform: Heartbeat-Task zuerst
+         * sauber stoppen (s. stopHeartbeat()), dann connection.close
+         * senden und auf close-ok warten (v1 ungeprüft), dann den Socket
+         * schließen.
          */
         fn close() -> Nothing
         {
+            this.stopHeartbeat();
             let w = AmqpWriter091::new();
             w.short(200); // reply-code: normal shutdown (RabbitMQ-Konvention)
             w.shortstr("OK");
@@ -177,5 +232,24 @@ namespace tinox.core.amqp091
             Amqp091::readFrame(this.conn); // erwartet close-ok, v1 ungeprüft
             httpConnClose(this.conn);
         }
+    }
+
+    /*
+     * Hintergrund-Schleife fuer AmqpConnection091::startHeartbeat() — als
+     * freie Funktion statt Instanzmethode, weil spawn eine eigenstaendige
+     * Funktion braucht (kein spawnbarer this-gebundener Methodenaufruf);
+     * `conn` ist dieselbe (Referenz-)Instanz wie beim Aufrufer, Mutationen
+     * an conn.heartbeatRunning sind fuer beide Threads sichtbar (Class-
+     * Instanzen sind Heap-Objekte). Identisch zu amqp10HeartbeatLoop.
+     */
+    async fn amqp091HeartbeatLoop(conn: AmqpConnection091, intervalMs: Int64) -> Int64
+    {
+        while conn.heartbeatRunning {
+            sleep_ms(intervalMs);
+            if conn.heartbeatRunning {
+                conn.sendHeartbeat();
+            }
+        }
+        return 1;
     }
 }
