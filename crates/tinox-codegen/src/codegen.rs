@@ -3522,6 +3522,121 @@ impl CodeGen {
         }
     }
 
+    /// `DB.of(T).save(entity)` / `DB.of(T).delete(entity)`. `save` inserts when
+    /// the @Id field is 0 (unset) and updates otherwise, mirroring the id-based
+    /// upsert convention used by `examples/crud` (`entity.id = id; DB.of(T).save(entity)`
+    /// for updates, no id set for creates).
+    fn gen_orm_save_delete(
+        &mut self,
+        entity_class: &str,
+        op: &str,
+        arg: &Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let entity = match self.entity_entries.iter().find(|e| e.class_name == entity_class).cloned() {
+            Some(e) => e,
+            None => return Ok(("0".to_string(), "i64".to_string())),
+        };
+        let id_slot = entity.fields.iter().position(|f| f.is_id).unwrap_or(0);
+
+        let (arg_val, arg_ty) = self.gen_expr(arg, ctx)?;
+        let entity_ptr = if arg_ty == "i64" {
+            let p = self.temp();
+            writeln!(&mut self.ir, "  {p} = inttoptr i64 {arg_val} to i64*").unwrap();
+            p
+        } else {
+            arg_val.clone()
+        };
+
+        let conn_reg = self.temp();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+
+        if op == "delete" {
+            let id_ptr = self.temp();
+            writeln!(&mut self.ir, "  {id_ptr} = getelementptr i64, i64* {entity_ptr}, i64 {id_slot}").unwrap();
+            let id_val = self.temp();
+            writeln!(&mut self.ir, "  {id_val} = load i64, i64* {id_ptr}").unwrap();
+            let id_param = self.temp();
+            writeln!(&mut self.ir, "  {id_param} = call i8* @tinox_int_to_param(i64 {id_val})").unwrap();
+            let params_arr = self.temp();
+            writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 1)").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 0, i8* {id_param})").unwrap();
+            let sql_ptr = self.temp();
+            writeln!(&mut self.ir, "  {sql_ptr} = call i8* @{entity_class}_deleteSql()").unwrap();
+            let result_reg = self.temp();
+            writeln!(
+                &mut self.ir,
+                "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 1)"
+            )
+            .unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            let as_i64 = self.temp();
+            writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+            return Ok((as_i64, "i64".to_string()));
+        }
+
+        // save: id == 0 → INSERT (and write the RETURNING id back into the entity),
+        // id != 0 → UPDATE.
+        let id_ptr = self.temp();
+        writeln!(&mut self.ir, "  {id_ptr} = getelementptr i64, i64* {entity_ptr}, i64 {id_slot}").unwrap();
+        let id_val = self.temp();
+        writeln!(&mut self.ir, "  {id_val} = load i64, i64* {id_ptr}").unwrap();
+        let is_insert = self.temp();
+        writeln!(&mut self.ir, "  {is_insert} = icmp eq i64 {id_val}, 0").unwrap();
+        let insert_bb = self.new_bb("orm_save_insert");
+        let update_bb = self.new_bb("orm_save_update");
+        let done_bb = self.new_bb("orm_save_done");
+        writeln!(&mut self.ir, "  br i1 {is_insert}, label %{insert_bb}, label %{update_bb}").unwrap();
+
+        writeln!(&mut self.ir, "{insert_bb}:").unwrap();
+        let n_ins = entity.fields.iter().filter(|f| !f.is_generated).count() as i64;
+        let out_n = self.temp();
+        writeln!(&mut self.ir, "  {out_n} = alloca i64").unwrap();
+        let ins_params = self.temp();
+        writeln!(
+            &mut self.ir,
+            "  {ins_params} = call i8** @{entity_class}_toParams(i64* {entity_ptr}, i64* {out_n})"
+        )
+        .unwrap();
+        let ins_sql = self.temp();
+        writeln!(&mut self.ir, "  {ins_sql} = call i8* @{entity_class}_insertSql()").unwrap();
+        let ins_result = self.temp();
+        writeln!(
+            &mut self.ir,
+            "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})"
+        )
+        .unwrap();
+        let new_id = self.temp();
+        writeln!(&mut self.ir, "  {new_id} = call i64 @tinox_db_getval_int(i8* {ins_result}, i64 0, i64 0)").unwrap();
+        writeln!(&mut self.ir, "  store i64 {new_id}, i64* {id_ptr}").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {ins_result})").unwrap();
+        writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+        writeln!(&mut self.ir, "{update_bb}:").unwrap();
+        let n_upd = entity.fields.iter().filter(|f| !f.is_id).count() as i64 + 1;
+        let upd_params = self.temp();
+        writeln!(
+            &mut self.ir,
+            "  {upd_params} = call i8** @{entity_class}_toUpdateParams(i64* {entity_ptr})"
+        )
+        .unwrap();
+        let upd_sql = self.temp();
+        writeln!(&mut self.ir, "  {upd_sql} = call i8* @{entity_class}_updateSql()").unwrap();
+        let upd_result = self.temp();
+        writeln!(
+            &mut self.ir,
+            "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})"
+        )
+        .unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
+        writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+        writeln!(&mut self.ir, "{done_bb}:").unwrap();
+        let as_i64 = self.temp();
+        writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+        Ok((as_i64, "i64".to_string()))
+    }
+
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
     fn emit_entity_code(&mut self) {
         // Emit DB init via @llvm.global_ctors if a connection URL is configured
@@ -3579,6 +3694,7 @@ impl CodeGen {
             // fromRow and toParams
             self.emit_entity_from_row(&cn, &fields);
             self.emit_entity_to_params(&cn, &fields);
+            self.emit_entity_to_update_params(&cn, &fields);
         }
     }
 
@@ -3656,6 +3772,57 @@ impl CodeGen {
             writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {param_idx}, i8* {pstr})").unwrap();
         }
         writeln!(&mut self.ir, "  store i64 {n}, i64* %out_n").unwrap();
+        writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
+    /// UPDATE variant of `emit_entity_to_params`: non-id fields (in field order,
+    /// matching `SET col = $1, ...`), then the @Id field's current value last
+    /// (matching the `WHERE id = $N` placeholder in `{class}_updateSql`).
+    fn emit_entity_to_update_params(&mut self, class_name: &str, fields: &[EntityFieldEntry]) {
+        let non_id: Vec<(usize, &EntityFieldEntry)> = fields.iter()
+            .enumerate()
+            .filter(|(_, f)| !f.is_id)
+            .collect();
+        let id_field = fields.iter().enumerate().find(|(_, f)| f.is_id);
+        let n = non_id.len() + if id_field.is_some() { 1 } else { 0 };
+        writeln!(&mut self.ir, "define i8** @{class_name}_toUpdateParams(i64* %entity) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let arr = self.temp();
+        writeln!(&mut self.ir, "  {arr} = call i8** @tinox_params_alloc(i64 {n})").unwrap();
+        for (param_idx, (slot_idx, field)) in non_id.iter().enumerate() {
+            let fptr = self.temp();
+            let fval = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
+            writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
+            let pstr = if field.field_llvm_type == "i8*" {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
+                s
+            } else {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
+                s
+            };
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {param_idx}, i8* {pstr})").unwrap();
+        }
+        if let Some((slot_idx, field)) = id_field {
+            let fptr = self.temp();
+            let fval = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
+            writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
+            let pstr = if field.field_llvm_type == "i8*" {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
+                s
+            } else {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
+                s
+            };
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {non_id_len}, i8* {pstr})", non_id_len = non_id.len()).unwrap();
+        }
         writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
@@ -6198,6 +6365,25 @@ impl CodeGen {
                         if self.entity_entries.iter().any(|e| e.class_name == chain.entity_class) {
                             let chain = chain.clone();
                             return self.gen_orm_query(&chain, ctx);
+                        }
+                    }
+                }
+
+                // ORM save/delete: DB.of(T).save(entity) / DB.of(T).delete(entity)
+                if matches!(method.as_str(), "save" | "delete") && args.len() == 1 {
+                    if let ExprKind::MethodCall { obj: of_obj, method: of_method, args: of_args } = &obj.node {
+                        if of_method == "of" {
+                            if let ExprKind::Ident(db_name) = &of_obj.node {
+                                if db_name == "DB" {
+                                    if let Some(ExprKind::Ident(class_name)) = of_args.first().map(|a| &a.node) {
+                                        if self.entity_entries.iter().any(|e| &e.class_name == class_name) {
+                                            let entity_class = class_name.clone();
+                                            let entity_arg = args[0].clone();
+                                            return self.gen_orm_save_delete(&entity_class, method.as_str(), &entity_arg, ctx);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
