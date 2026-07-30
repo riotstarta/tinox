@@ -60,3 +60,13 @@ benchmarks/bench_sum_new
 benchmarks/bench_sum_opt
 .tinox_dev_*
 massif.out.*
+
+# Fuzzing (fuzz/, see fuzz/README.md) — built binaries and the
+# fuzzer-grown working corpus/crash artifacts; fuzz/*/seeds/ is checked in
+fuzz/*/*_fuzzer
+fuzz/*/corpus/
+fuzz/*/crashes/
+fuzz/*/crash-*
+fuzz/*/leak-*
+fuzz/*/timeout-*
+fuzz/*/oom-*

@@ -34,6 +34,8 @@
 #define GC_free(p)       ((void)(p))
 #define GC_strdup(s)     strdup(s)
 #define GC_INIT()        ((void)0)
+#define GC_gcollect()      ((void)0)
+#define GC_get_heap_size() ((size_t)0)
 #else
 // Boehm GC — redirect all heap allocation through the collector
 #define GC_THREADS
