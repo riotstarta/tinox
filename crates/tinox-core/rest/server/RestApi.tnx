@@ -1,8 +1,8 @@
-module tinox.core.rest_framework;
+module tinox.core.rest.server;
 
 import tinox.core.http_server;
 
-namespace tinox.core.rest_framework
+namespace tinox.core.rest.server
 {
     /**
      * Main REST framework class for building and starting an HTTP API server.

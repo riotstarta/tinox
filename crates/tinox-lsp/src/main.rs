@@ -74,15 +74,22 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     ("process",       include_str!("../../tinox-core/process/Process.tnx")),
     ("random",        include_str!("../../tinox-core/random/Random.tnx")),
     ("regex",         include_str!("../../tinox-core/regex/Regex.tnx")),
-    ("rest",          concat!(
-        include_str!("../../tinox-core/rest/HttpStatus.tnx"),
-        include_str!("../../tinox-core/rest/HttpStatusHelper.tnx"),
-        include_str!("../../tinox-core/rest/MediaType.tnx"),
-        include_str!("../../tinox-core/rest/MediaTypeHelper.tnx"),
-        include_str!("../../tinox-core/rest/RequestBuilder.tnx"),
-        include_str!("../../tinox-core/rest/RestClient.tnx"),
-        include_str!("../../tinox-core/rest/RestResponse.tnx"),
-        include_str!("../../tinox-core/rest/Url.tnx"),
+    // Keyed "client", not "rest.client": module_names_from_imports() below
+    // only ever takes the import path's last segment (a pre-existing
+    // simplification in this LSP, separate from and not as general as
+    // tinox's own resolve_imports() in crates/tinox/src/main.rs, which
+    // does understand tinox.core.X.Y nesting) — for `import
+    // tinox.core.rest.client;` that lookup key is "client", so this entry
+    // has to match it to actually be found.
+    ("client",        concat!(
+        include_str!("../../tinox-core/rest/client/HttpStatus.tnx"),
+        include_str!("../../tinox-core/rest/client/HttpStatusHelper.tnx"),
+        include_str!("../../tinox-core/rest/client/MediaType.tnx"),
+        include_str!("../../tinox-core/rest/client/MediaTypeHelper.tnx"),
+        include_str!("../../tinox-core/rest/client/RequestBuilder.tnx"),
+        include_str!("../../tinox-core/rest/client/RestClient.tnx"),
+        include_str!("../../tinox-core/rest/client/RestResponse.tnx"),
+        include_str!("../../tinox-core/rest/client/Url.tnx"),
     )),
     ("result",        include_str!("../../tinox-core/result/Result.tnx")),
     ("set",           include_str!("../../tinox-core/set/Set.tnx")),

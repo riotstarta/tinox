@@ -1,6 +1,6 @@
-module tinox.core.rest_framework;
+module tinox.core.rest.server;
 
-namespace tinox.core.rest_framework
+namespace tinox.core.rest.server
 {
     /**
      * Marks a method as a GET endpoint.

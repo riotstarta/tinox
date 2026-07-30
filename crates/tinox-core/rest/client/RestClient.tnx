@@ -3,12 +3,12 @@
  * RESTful client implementation for building and executing
  * HTTP requests with JSON support, headers, and error handling
  */
-module tinox.core.rest;
+module tinox.core.rest.client;
 
 import tinox.core.http;
 import tinox.core.base64;
 
-namespace tinox.core.rest
+namespace tinox.core.rest.client
 {
     /**
      * REST client for making HTTP requests to RESTful APIs

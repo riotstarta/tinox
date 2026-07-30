@@ -786,7 +786,7 @@ tinox/
 
 | Category     | Modules                                              |
 |--------------|-----------------------------------------------------|
-| HTTP         | `http_server`, `rest_framework`, `mini_http`, `websocket` |
+| HTTP         | `http_server`, `rest.client`, `rest.server`, `mini_http`, `websocket` |
 | Messaging    | `amqp091`, `amqp10`                                  |
 | Data         | `json`, `csv`, `xml`, `regex`                        |
 | Security     | `crypto`, `jwt`, `bcrypt`                            |

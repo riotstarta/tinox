@@ -1,9 +1,9 @@
-module tinox.core.rest;
+module tinox.core.rest.client;
 
 import tinox.core.http;
 import tinox.core.json;
 
-namespace tinox.core.rest
+namespace tinox.core.rest.client
 {
     /**
      * REST response wrapper providing convenient access to

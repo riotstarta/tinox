@@ -1746,6 +1746,11 @@ fn resolve_imports(
         // 1. Relative to source file directory
         // 2. Installed package dependencies (.tinox/deps/...)
         // 3. tinox.core.X  →  <stdlib_dir>/X.tnx or <stdlib_dir>/X/*.tnx
+        //    tinox.core.X.Y  →  <stdlib_dir>/X/Y.tnx or <stdlib_dir>/X/Y/*.tnx
+        //    (everything after "tinox.core" nests as a subdirectory of the
+        //    stdlib dir, same rule as the relative-import case above; when
+        //    there's no "core" segment to anchor on, falls back to just the
+        //    last segment, unchanged from before this nesting support)
         let full_paths: Vec<PathBuf> = if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
             p
         } else if let Some(p) = dep_dirs
@@ -1754,10 +1759,22 @@ fn resolve_imports(
         {
             p
         } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
-            // stdlib import: take the last segment as filename/directory name
-            let last = import.path.last().unwrap();
-            let stdlib_rel_file = PathBuf::from(format!("{}.tnx", last));
-            let stdlib_rel_dir = PathBuf::from(last);
+            let tail: Vec<&String> = if import.path.len() >= 3 && import.path[1] == "core" {
+                import.path[2..].iter().collect()
+            } else {
+                import.path.last().into_iter().collect()
+            };
+            let mut stdlib_rel_file = PathBuf::new();
+            let mut stdlib_rel_dir = PathBuf::new();
+            for (i, seg) in tail.iter().enumerate() {
+                if i == tail.len() - 1 {
+                    stdlib_rel_file.push(format!("{}.tnx", seg));
+                    stdlib_rel_dir.push(seg);
+                } else {
+                    stdlib_rel_file.push(seg);
+                    stdlib_rel_dir.push(seg);
+                }
+            }
             let dir = stdlib_dir().ok_or_else(|| {
                 format!(
                     "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",

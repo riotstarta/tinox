@@ -1,6 +1,6 @@
-module tinox.core.rest;
+module tinox.core.rest.client;
 
-namespace tinox.core.rest
+namespace tinox.core.rest.client
 {
     /**
      * Common MIME type enum for Content-Type headers

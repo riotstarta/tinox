@@ -1,8 +1,8 @@
-module tinox.core.rest;
+module tinox.core.rest.client;
 
 import tinox.core.http;
 
-namespace tinox.core.rest
+namespace tinox.core.rest.client
 {
     /**
      * HTTP request builder for constructing requests

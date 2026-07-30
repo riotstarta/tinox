@@ -353,15 +353,15 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
-        key: "rest_framework",
-        imports: &["tinox.core.rest_framework"],
+        key: "rest.server",
+        imports: &["tinox.core.rest.server"],
         body: "let g: GET = GET::new(\"/x\");\n    println(g.path);",
         expects: &["/x"],
         contains: &[],
     },
     Smoke {
-        key: "rest",
-        imports: &["tinox.core.rest"],
+        key: "rest.client",
+        imports: &["tinox.core.rest.client"],
         body: "let c: RestClient = RestClient::new(\"http://localhost:1\");\n    println(\"ok\");",
         expects: &["ok"],
         contains: &[],
@@ -536,21 +536,48 @@ fn emit_case(s: &Smoke) -> (String, String) {
 /// Jedes Stdlib-Modul hat einen Smoke-Fall oder steht begründet in EXCLUDED.
 #[test]
 fn stdlib_smoke_completeness() {
-    // A module is either a legacy single `<name>.tnx` file (not yet migrated)
-    // or a `<name>/` directory of one-type-per-file `.tnx` files (migrated,
-    // one-type-per-file convention) — either way the module key is the
-    // top-level entry's name minus any `.tnx` extension.
+    // A module is either a legacy single `<name>.tnx` file (not yet migrated),
+    // a `<name>/` directory of one-type-per-file `.tnx` files directly inside
+    // it (migrated, one-type-per-file convention), or — since the compiler
+    // gained nested `tinox.core.X.Y` stdlib import support (rest/client,
+    // rest/server) — a `<name>/` directory containing ONLY subdirectories
+    // (no `.tnx` files of its own), a pure grouping directory: descend one
+    // level and key each child as `"<name>.<child>"`, matching the import
+    // path (`tinox.core.rest.client`) rather than the directory name.
     let modules: BTreeSet<String> = fs::read_dir(stdlib_dir())
         .expect("crates/tinox-core lesbar")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter_map(|p| {
+        .flat_map(|p| -> Vec<String> {
             if p.is_dir() {
-                p.file_name().map(|n| n.to_string_lossy().to_string())
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string());
+                let Some(name) = name else { return vec![] };
+                let has_own_tnx = fs::read_dir(&p)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .any(|e| e.path().extension().map(|x| x == "tnx").unwrap_or(false))
+                    })
+                    .unwrap_or(true); // unreadable -> don't misclassify as a grouping dir
+                if has_own_tnx {
+                    vec![name]
+                } else {
+                    fs::read_dir(&p)
+                        .map(|entries| {
+                            entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| e.path().is_dir())
+                                .filter_map(|e| e.file_name().to_str().map(|s| format!("{name}.{s}")))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }
             } else if p.extension().map(|x| x == "tnx").unwrap_or(false) {
-                p.file_stem().map(|s| s.to_string_lossy().to_string())
+                p.file_stem()
+                    .map(|s| vec![s.to_string_lossy().to_string()])
+                    .unwrap_or_default()
             } else {
-                None
+                vec![]
             }
         })
         .collect();

@@ -493,8 +493,8 @@
     <li><a href="#mod-websocket">websocket</a></li>
     <li><a href="#mod-hpack">hpack</a></li>
     <li><a href="#mod-http">http</a></li>
-    <li><a href="#mod-rest">rest</a></li>
-    <li><a href="#mod-rest_framework">rest_framework</a></li>
+    <li><a href="#mod-rest-client">rest.client</a></li>
+    <li><a href="#mod-rest-server">rest.server</a></li>
     <li><a href="#mod-socket">socket</a></li>
 
     <li class="section-label">Messaging</li>
@@ -2294,10 +2294,10 @@ print("Content-Type: " + patch.header("Content-Type"));
 </code></pre>
   </div>
 
-  <div class="mod-section" id="mod-rest">
+  <div class="mod-section" id="mod-rest-client">
 
-  <h2>rest</h2>
-  <p class="import-hint"><code>import tinox.core.rest;</code></p>
+  <h2>rest.client</h2>
+  <p class="import-hint"><code>import tinox.core.rest.client;</code></p>
   <p>
     RESTful HTTP client with convenient abstraction over the low-level
     <code>http</code> module. Provides <code>RestClient</code> for requests with
@@ -2347,7 +2347,7 @@ print("Content-Type: " + patch.header("Content-Type"));
     </tbody>
   </table>
   <h3>Example</h3>
-  <pre><code>import tinox.core.rest;
+  <pre><code>import tinox.core.rest.client;
 
 // RestClient mit Bearer-Auth
 let client: RestClient = RestClient::new("https://api.example.com");
@@ -2381,10 +2381,10 @@ if resp.isClientError() {
 </code></pre>
   </div>
 
-  <div class="mod-section" id="mod-rest_framework">
+  <div class="mod-section" id="mod-rest-server">
 
-  <h2>rest_framework</h2>
-  <p class="import-hint"><code>import tinox.core.rest_framework;</code></p>
+  <h2>rest.server</h2>
+  <p class="import-hint"><code>import tinox.core.rest.server;</code></p>
   <p>
     Annotation-driven REST framework for building HTTP APIs with
     declarative routing. Controller classes are declared with annotations such as
@@ -2426,7 +2426,7 @@ if resp.isClientError() {
     </tbody>
   </table>
   <h3>Example</h3>
-  <pre><code>import tinox.core.rest_framework;
+  <pre><code>import tinox.core.rest.server;
 
 @Path("/api/users")
 class UserController : RestController
