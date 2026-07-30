@@ -44,12 +44,16 @@ namespace tinox.core.websocket
         }
 
         /*
-         * Liest genau EINEN Frame (blockierend). Client-Frames MÜSSEN
-         * maskiert sein (RFC 6455 §5.1) — unmaskiert ist ein Protokollfehler.
-         * EOF/kurzer Read -> opcode -1; Protokollfehler -> opcode -2
-         * (Close sendet hier NICHT — das macht readMessage).
+         * Liest genau EINEN Frame (blockierend). requireMasked steuert die
+         * Rollen-Erwartung (RFC 6455 §5.1: Client->Server MUSS maskiert
+         * sein, Server->Client MUSS unmaskiert sein) — readFrame() (Server-
+         * Rolle, unverändert) ruft dies mit true, WsClient mit false.
+         * EOF/kurzer Read -> opcode -1; Protokollfehler (falsche
+         * Maskierungsrichtung, RSV-Bits, fragmentiertes/übergroßes Control-
+         * Frame) -> opcode -2 (Close sendet hier NICHT — das macht der
+         * jeweilige readMessage-Aufrufer).
          */
-        fn readFrame(conn: Int64) -> WsFrame
+        fn readFrameGeneric(conn: Int64, requireMasked: Bool) -> WsFrame
         {
             let bad = WsFrame { fin: true, opcode: -1, payload: [] };
             let hdr = httpConnReadN(conn, 2);
@@ -63,15 +67,16 @@ namespace tinox.core.websocket
             let opcode = b0 & 0x0F;
             let masked = (b1 & 0x80) != 0;
             var plen: Int64 = b1 & 0x7F;
-            // RSV-Bits ohne Extension und unmaskierte Client-Frames: Protokollfehler
-            if rsv != 0 || !masked {
+            // RSV-Bits ohne Extension, und Maskierung in der falschen
+            // Richtung für diese Rolle: Protokollfehler
+            if rsv != 0 || masked != requireMasked {
                 return WsFrame { fin: true, opcode: -2, payload: [] };
             }
             // Bug 92 (RFC 6455 §5.5): control frames (8=Close, 9=Ping,
             // 10=Pong) MUST have FIN set and payload length <= 125 — they
             // can never use the 126/127 extended-length encoding and must
             // never be fragmented. Reject immediately, before reading the
-            // extended length/mask/payload, so a client can't smuggle an
+            // extended length/mask/payload, so a peer can't smuggle an
             // oversized control-frame payload past readMessage()'s
             // automatic Ping->Pong / Close->Close echo (memory DoS).
             let isControlFrame = opcode >= 8 && opcode <= 10;
@@ -99,9 +104,16 @@ namespace tinox.core.websocket
             if plen < 0 || plen > 16777216 {
                 return WsFrame { fin: true, opcode: -2, payload: [] };
             }
-            let mask = httpConnReadN(conn, 4);
-            if mask.len() < 4 {
-                return bad;
+            // Das Mask-Feld existiert auf der Leitung nur, wenn das
+            // Mask-Bit gesetzt ist (masked == requireMasked, s.o.) — bei
+            // unmaskierten Frames (Server->Client) direkt den Payload lesen.
+            var mask: List<Int64> = [0, 0, 0, 0];
+            if masked {
+                let readMask = httpConnReadN(conn, 4);
+                if readMask.len() < 4 {
+                    return bad;
+                }
+                mask = readMask;
             }
             var payload: List<Int64> = [];
             if plen > 0 {
@@ -109,39 +121,80 @@ namespace tinox.core.websocket
                 if raw.len() < plen {
                     return bad;
                 }
-                for i in 0..plen {
-                    payload.push(raw[i] ^ mask[i % 4]);
+                if masked {
+                    for i in 0..plen {
+                        payload.push(raw[i] ^ mask[i % 4]);
+                    }
+                } else {
+                    payload = raw;
                 }
             }
             return WsFrame { fin: fin, opcode: opcode, payload: payload };
         }
 
         /*
-         * Schreibt einen Frame Server->Client (unmaskiert, FIN=1).
+         * Liest genau EINEN Frame als Server (Client-Frames MÜSSEN maskiert
+         * sein, RFC 6455 §5.1) — unverändertes Verhalten/Signatur ggü. vor
+         * WsClient (issue #121), s. readFrameGeneric.
          */
-        fn writeFrame(conn: Int64, opcode: Int64, payload: List<Int64>) -> Nothing
+        fn readFrame(conn: Int64) -> WsFrame
+        {
+            return Ws::readFrameGeneric(conn, true);
+        }
+
+        /*
+         * Schreibt einen Frame (FIN=1). masked steuert die Rollen-Erwartung
+         * (RFC 6455 §5.1: Client->Server MUSS maskiert sein mit einer
+         * zufälligen 32-Bit-Maske, Server->Client MUSS unmaskiert sein) —
+         * writeFrame() (Server-Rolle, unverändert) ruft dies mit false,
+         * WsClient mit true.
+         */
+        fn writeFrameGeneric(conn: Int64, opcode: Int64, payload: List<Int64>, masked: Bool) -> Nothing
         {
             var out: List<Int64> = [];
             out.push(0x80 | (opcode & 0x0F));
             let n = payload.len();
+            let maskBit: Int64 = masked ? 0x80 : 0;
             if n < 126 {
-                out.push(n);
+                out.push(maskBit | n);
             } else if n < 65536 {
-                out.push(126);
+                out.push(maskBit | 126);
                 out.push((n >> 8) & 0xFF);
                 out.push(n & 0xFF);
             } else {
-                out.push(127);
+                out.push(maskBit | 127);
                 var shift: Int64 = 56;
                 while shift >= 0 {
                     out.push((n >> shift) & 0xFF);
                     shift = shift - 8;
                 }
             }
-            for i in 0..n {
-                out.push(payload[i] & 0xFF);
+            if masked {
+                var maskBytes: List<Int64> = [];
+                for i in 0..4 {
+                    maskBytes.push(randomInt(0, 256));
+                }
+                for i in 0..4 {
+                    out.push(maskBytes[i]);
+                }
+                for i in 0..n {
+                    out.push((payload[i] & 0xFF) ^ maskBytes[i % 4]);
+                }
+            } else {
+                for i in 0..n {
+                    out.push(payload[i] & 0xFF);
+                }
             }
             httpConnWriteBytes(conn, out);
+        }
+
+        /*
+         * Schreibt einen Frame Server->Client (unmaskiert, FIN=1). Unverändertes
+         * Verhalten/Signatur ggü. vor WsClient (issue #121), s. writeFrameGeneric.
+         */
+        fn writeFrame(conn: Int64, opcode: Int64, payload: List<Int64>) -> Nothing
+        {
+            Ws::writeFrameGeneric(conn, opcode, payload, false);
         }
 
         /*
@@ -156,42 +209,47 @@ namespace tinox.core.websocket
          * Payloads zusammengesetzt — für Aufrufer nicht von einer
          * unfragmentierten Nachricht zu unterscheiden. Control-Frames
          * (Ping/Pong/Close) dürfen zwischen den Fragmenten auftauchen (§5.5,
-         * bereits in readFrame erzwungen: FIN=1, payload<=125) und werden
-         * hier wie gewohnt sofort behandelt, ohne die laufende Assemblierung
-         * zu stören. Protokollfehler (Continuation ohne Start-Frame, neues
-         * Text/Binary-Frame mitten in einer laufenden Fragmentierung,
-         * zusammengesetzte Nachricht über dem Speicher-Cap) -> Close +
-         * opcode -2, wie bei den bestehenden Protokollfehlern.
+         * bereits in readFrameGeneric erzwungen: FIN=1, payload<=125) und
+         * werden hier wie gewohnt sofort behandelt, ohne die laufende
+         * Assemblierung zu stören. Protokollfehler (Continuation ohne
+         * Start-Frame, neues Text/Binary-Frame mitten in einer laufenden
+         * Fragmentierung, zusammengesetzte Nachricht über dem Speicher-Cap)
+         * -> Close + opcode -2, wie bei den bestehenden Protokollfehlern.
+         *
+         * requireMasked/maskOutgoing steuern die Rollen-Erwartung wie bei
+         * readFrameGeneric/writeFrameGeneric — readMessage() (Server-Rolle,
+         * unverändert) ruft dies mit (true, false), WsClient mit
+         * (false, true).
          */
-        fn readMessage(conn: Int64) -> WsFrame
+        fn readMessageGeneric(conn: Int64, requireMasked: Bool, maskOutgoing: Bool) -> WsFrame
         {
             var assembling: Bool = false;
             var msgOpcode: Int64 = -1;
             var payload: List<Int64> = [];
             while true {
-                let f = Ws::readFrame(conn);
+                let f = Ws::readFrameGeneric(conn, requireMasked);
                 if f.opcode == 9 {
-                    Ws::writeFrame(conn, 10, f.payload);
+                    Ws::writeFrameGeneric(conn, 10, f.payload, maskOutgoing);
                     continue;
                 }
                 if f.opcode == 10 {
                     continue;
                 }
                 if f.opcode == 8 {
-                    Ws::writeFrame(conn, 8, f.payload);
+                    Ws::writeFrameGeneric(conn, 8, f.payload, maskOutgoing);
                     return f;
                 }
                 if f.opcode == -1 {
                     return f;
                 }
                 if f.opcode == -2 {
-                    Ws::sendClose(conn, 1002);
+                    Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
                     return f;
                 }
                 if !assembling {
                     if f.opcode == 0 {
                         // Continuation-Frame ohne vorausgehendes Start-Frame
-                        Ws::sendClose(conn, 1002);
+                        Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
                         return WsFrame { fin: true, opcode: -2, payload: [] };
                     }
                     if f.fin {
@@ -203,7 +261,7 @@ namespace tinox.core.websocket
                 } else {
                     if f.opcode != 0 {
                         // Neues Text/Binary-Frame mitten in laufender Fragmentierung
-                        Ws::sendClose(conn, 1002);
+                        Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
                         return WsFrame { fin: true, opcode: -2, payload: [] };
                     }
                     for i in 0..f.payload.len() {
@@ -214,13 +272,26 @@ namespace tinox.core.websocket
                     }
                 }
                 // Speicher-Cap für die zusammengesetzte Nachricht — dieselbe
-                // 16-MB-Grenze wie für einen einzelnen Frame in readFrame.
+                // 16-MB-Grenze wie für einen einzelnen Frame in readFrameGeneric.
                 if payload.len() > 16777216 {
-                    Ws::sendClose(conn, 1009);
+                    Ws::sendCloseGeneric(conn, 1009, maskOutgoing);
                     return WsFrame { fin: true, opcode: -2, payload: [] };
                 }
             }
             return WsFrame { fin: true, opcode: -1, payload: [] };
+        }
+
+        /*
+         * Liest die nächste DATEN-Nachricht als Server: beantwortet Ping
+         * automatisch mit Pong (Payload gespiegelt), quittiert Close mit
+         * Close und liefert den Close-Frame zurück (Aufrufer beendet die
+         * Schleife und schließt). Unverändertes Verhalten/Signatur ggü. vor
+         * WsClient (issue #121), s. readMessageGeneric für Details zur
+         * Fragment-Zusammensetzung (§5.4) und Protokollfehlern.
+         */
+        fn readMessage(conn: Int64) -> WsFrame
+        {
+            return Ws::readMessageGeneric(conn, true, false);
         }
 
         /*
@@ -261,12 +332,17 @@ namespace tinox.core.websocket
             Ws::writeFrame(conn, 9, []);
         }
 
-        fn sendClose(conn: Int64, code: Int64) -> Nothing
+        fn sendCloseGeneric(conn: Int64, code: Int64, masked: Bool) -> Nothing
         {
             var payload: List<Int64> = [];
             payload.push((code >> 8) & 0xFF);
             payload.push(code & 0xFF);
-            Ws::writeFrame(conn, 8, payload);
+            Ws::writeFrameGeneric(conn, 8, payload, masked);
+        }
+
+        fn sendClose(conn: Int64, code: Int64) -> Nothing
+        {
+            Ws::sendCloseGeneric(conn, code, false);
         }
 
         fn close(conn: Int64) -> Nothing

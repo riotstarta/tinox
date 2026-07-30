@@ -1,0 +1,70 @@
+// WebSocket client mode (issue #121): WsClient::connect performs the
+// client-side handshake (RFC 6455 §4.1) and exchanges masked/unmasked
+// frames with a real WsServer over a real loopback connection (spawn =
+// real thread, not a simulated peer — see amqp091_heartbeat.tnx for the
+// same pattern).
+// expect: ok-accept
+// expect: ok-echo
+// expect: ok-ping
+// expect: ok-close
+
+import tinox.core.websocket;
+import tinox.core.socket;
+
+async fn fakeServer(srv: Int64) -> Int64 {
+    let conn = WsServer::accept(srv);
+    if conn <= 0 {
+        return 0;
+    }
+    let f = Ws::readMessage(conn);
+    if f.opcode != 1 {
+        return 0;
+    }
+    Ws::sendText(conn, Ws::text(f));
+
+    // Second readMessage: internally auto-Pongs the client's Ping (see
+    // below) before it reaches the client's subsequent Close.
+    let f2 = Ws::readMessage(conn);
+    Ws::close(conn);
+    if f2.opcode == 8 {
+        return 1;
+    }
+    return 0;
+}
+
+fn main() -> Int32 {
+    let srv = WsServer::listen(47633);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+    let handle = spawn fakeServer(srv);
+
+    let conn = WsClient::connect("127.0.0.1", 47633, "/chat");
+    if conn > 0 {
+        println("ok-accept");
+    }
+
+    WsClient::sendText(conn, "hello from client");
+    let f = WsClient::readMessage(conn);
+    if WsClient::text(f) == "hello from client" {
+        println("ok-echo");
+    }
+
+    WsClient::sendPing(conn);
+    let pongFrame = WsClient::readFrame(conn);
+    if pongFrame.opcode == 10 {
+        println("ok-ping");
+    }
+
+    WsClient::sendClose(conn, 1000);
+    WsClient::close(conn);
+
+    let result = await handle;
+    if result == 1 {
+        println("ok-close");
+    }
+
+    httpServerClose(srv);
+    return 0;
+}

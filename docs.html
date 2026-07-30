@@ -1950,10 +1950,12 @@ while true {
 }
 </code></pre>
   <p>
-    <strong>Bewusste v1-Lücken:</strong> keine Fragmentierung/Continuation-Frames
-    (→ Close 1003), kein Client (<code>WsClient</code>) und kein
-    permessage-deflate. Payload-Cap 16&nbsp;MB. <code>wss://</code> (TLS) wird
-    unterstützt, s. <code>listenTls</code>/<code>acceptTls</code> oben.
+    <strong>Bewusste v1-Lücken:</strong> kein permessage-deflate. Payload-Cap
+    16&nbsp;MB (gilt auch für zusammengesetzte fragmentierte Nachrichten, s. u.).
+    <code>wss://</code> (TLS) wird unterstützt, s. <code>listenTls</code>/<code>acceptTls</code>
+    oben. Fragmentierte Nachrichten (Continuation-Frames, §5.4) werden von
+    <code>readMessage</code> transparent zusammengesetzt; ausgehende
+    Verbindungen als Client deckt <code>WsClient</code> ab, s. u.
   </p>
   <h3>wss:// (TLS)</h3>
   <p>
@@ -1993,6 +1995,39 @@ if srv < <span class="num">0</span> { <span class="kw">return</span> <span class
         Ws::sendText(conn, <span class="str">"echo: "</span> + msg);
     }
 }
+</code></pre>
+  <h3>WsClient (ausgehende Verbindungen)</h3>
+  <p>
+    <code>WsClient</code> verbindet umgekehrt <em>nach außen</em> zu einem
+    WS-Server, statt (wie <code>WsServer</code>) eingehende Verbindungen
+    anzunehmen. Rollenumkehr ggü. Server-API (RFC 6455 §5.1): ausgehende
+    Frames sind maskiert, eingehende vom Server müssen unmaskiert sein —
+    beide Richtungen teilen sich denselben Frame-Codec wie
+    <code>Ws</code>/<code>WsServer</code>, keine separate Implementierung.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>WsClient::connect</code></td><td><code>fn connect(host: String, port: Int64, path: String) -&gt; Int64</code></td><td>Öffnet eine TCP-Verbindung und führt den Client-seitigen Handshake durch (eigener Sec-WebSocket-Key, prüft die Server-Antwort samt Accept-Header). Gibt das Conn-Handle zurück oder <code>-1</code> (Verbindung ist dann bereits geschlossen).</td></tr>
+      <tr><td><code>WsClient::readMessage</code></td><td><code>fn readMessage(conn: Int64) -&gt; WsFrame</code></td><td>Wie <code>Ws::readMessage</code> (inkl. automatischem Ping→Pong, Close-Quittierung, Fragment-Zusammensetzung), nur mit vertauschter Maskierungsrichtung.</td></tr>
+      <tr><td><code>WsClient::readFrame</code></td><td><code>fn readFrame(conn: Int64) -&gt; WsFrame</code></td><td>Liest genau einen rohen Frame (kein automatisches Control-Frame-Handling) — wie <code>Ws::readFrame</code>, für Server-Rolle vertauscht.</td></tr>
+      <tr><td><code>WsClient::sendText</code> / <code>sendBinary</code> / <code>sendPing</code> / <code>sendClose</code></td><td>wie bei <code>Ws</code></td><td>Wie die gleichnamigen <code>Ws</code>-Methoden, senden aber maskierte Frames (Client-Pflicht).</td></tr>
+      <tr><td><code>WsClient::close</code></td><td><code>fn close(conn: Int64) -&gt; Nothing</code></td><td>Schließt die zugrunde liegende Verbindung.</td></tr>
+    </tbody>
+  </table>
+  <pre><code>import tinox.core.websocket;
+
+<span class="kw">let</span> conn: Int64 = WsClient::connect(<span class="str">"example.org"</span>, <span class="num">8080</span>, <span class="str">"/chat"</span>);
+<span class="kw">if</span> conn < <span class="num">0</span> { <span class="kw">return</span> <span class="num">1</span>; } <span class="cmt">// Verbindung/Handshake fehlgeschlagen</span>
+
+WsClient::sendText(conn, <span class="str">"hello"</span>);
+<span class="kw">let</span> f: WsFrame = WsClient::readMessage(conn);
+println(WsClient::text(f));
+
+WsClient::sendClose(conn, <span class="num">1000</span>);
+WsClient::close(conn);
 </code></pre>
   </div>
 
