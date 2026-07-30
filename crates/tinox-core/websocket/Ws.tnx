@@ -148,11 +148,26 @@ namespace tinox.core.websocket
          * Liest die nächste DATEN-Nachricht: beantwortet Ping automatisch mit
          * Pong (Payload gespiegelt), quittiert Close mit Close und liefert
          * den Close-Frame zurück (Aufrufer beendet die Schleife und schließt).
-         * Continuation/fragmentierte Frames: bewusst nicht unterstützt ->
-         * Close 1003 + opcode -2 (s. tasklist.md).
+         *
+         * Fragmentierte Nachrichten (RFC 6455 §5.4): ein Start-Frame
+         * (Text/Binary, FIN=0) gefolgt von null oder mehr Continuation-Frames
+         * (Opcode 0), das letzte davon mit FIN=1, werden hier zu EINER
+         * WsFrame mit dem Opcode des Start-Frames und den aneinandergehängten
+         * Payloads zusammengesetzt — für Aufrufer nicht von einer
+         * unfragmentierten Nachricht zu unterscheiden. Control-Frames
+         * (Ping/Pong/Close) dürfen zwischen den Fragmenten auftauchen (§5.5,
+         * bereits in readFrame erzwungen: FIN=1, payload<=125) und werden
+         * hier wie gewohnt sofort behandelt, ohne die laufende Assemblierung
+         * zu stören. Protokollfehler (Continuation ohne Start-Frame, neues
+         * Text/Binary-Frame mitten in einer laufenden Fragmentierung,
+         * zusammengesetzte Nachricht über dem Speicher-Cap) -> Close +
+         * opcode -2, wie bei den bestehenden Protokollfehlern.
          */
         fn readMessage(conn: Int64) -> WsFrame
         {
+            var assembling: Bool = false;
+            var msgOpcode: Int64 = -1;
+            var payload: List<Int64> = [];
             while true {
                 let f = Ws::readFrame(conn);
                 if f.opcode == 9 {
@@ -166,15 +181,44 @@ namespace tinox.core.websocket
                     Ws::writeFrame(conn, 8, f.payload);
                     return f;
                 }
-                if f.opcode == 0 || !f.fin {
-                    Ws::sendClose(conn, 1003);
-                    return WsFrame { fin: true, opcode: -2, payload: [] };
+                if f.opcode == -1 {
+                    return f;
                 }
                 if f.opcode == -2 {
                     Ws::sendClose(conn, 1002);
                     return f;
                 }
-                return f;
+                if !assembling {
+                    if f.opcode == 0 {
+                        // Continuation-Frame ohne vorausgehendes Start-Frame
+                        Ws::sendClose(conn, 1002);
+                        return WsFrame { fin: true, opcode: -2, payload: [] };
+                    }
+                    if f.fin {
+                        return f;
+                    }
+                    assembling = true;
+                    msgOpcode = f.opcode;
+                    payload = f.payload;
+                } else {
+                    if f.opcode != 0 {
+                        // Neues Text/Binary-Frame mitten in laufender Fragmentierung
+                        Ws::sendClose(conn, 1002);
+                        return WsFrame { fin: true, opcode: -2, payload: [] };
+                    }
+                    for i in 0..f.payload.len() {
+                        payload.push(f.payload[i]);
+                    }
+                    if f.fin {
+                        return WsFrame { fin: true, opcode: msgOpcode, payload: payload };
+                    }
+                }
+                // Speicher-Cap für die zusammengesetzte Nachricht — dieselbe
+                // 16-MB-Grenze wie für einen einzelnen Frame in readFrame.
+                if payload.len() > 16777216 {
+                    Ws::sendClose(conn, 1009);
+                    return WsFrame { fin: true, opcode: -2, payload: [] };
+                }
             }
             return WsFrame { fin: true, opcode: -1, payload: [] };
         }

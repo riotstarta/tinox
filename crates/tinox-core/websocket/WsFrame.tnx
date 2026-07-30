@@ -9,8 +9,9 @@ module tinox.core.websocket;
  * C-String-basierten Pfade (httpConnReadRequest/SendRaw) werden NUR für den
  * textuellen Handshake benutzt.
  *
- * Bewusste v1-Lücken (tasklist.md "Später"): keine Fragmentierung
- * (Continuation-Frames -> Close 1003), kein Client, kein permessage-deflate.
+ * Bewusste v1-Lücken (tasklist.md "Später"): kein Client, kein
+ * permessage-deflate. Fragmentierte Nachrichten (Continuation-Frames,
+ * RFC 6455 §5.4) werden von Ws::readMessage zusammengesetzt (issue #120).
  *
  * Verwendung (Echo-Server):
  *   let srv = WsServer::listen(8080);
