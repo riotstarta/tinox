@@ -92,10 +92,59 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * `queue.bind` + `-ok`. v1 nutzt nur den Default-Exchange (`""`)
-         * ohne `exchange.declare` — Routing-Key = Queue-Name deckt den
-         * einfachsten Fall ab (s. tasklist.md "Später" für benannte
-         * Exchanges).
+         * `exchange.declare` + `-ok` (issue #124 — vorher konnte nur der
+         * Default-Exchange bzw. ein broker-vordefinierter Exchange
+         * (`amq.direct` etc.) per Name benutzt werden, aber kein eigener
+         * Exchange vom Client angelegt werden). `exchangeType` üblich:
+         * "direct", "fanout", "topic", "headers" (broker-seitig geprüft,
+         * v1 validiert den String nicht). `exchange.declare-ok` hat laut
+         * Spec keine Argumente — Erfolg = Frame korrekt empfangen.
+         */
+        fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -> Bool
+        {
+            let w = AmqpWriter091::new();
+            w.short(0); // reserved-1 (ticket, deprecated)
+            w.shortstr(name);
+            w.shortstr(exchangeType);
+            var flags: Int64 = 0; // Bit 0 (passive) v1 immer 0
+            if durable {
+                flags = flags | 2;
+            }
+            if autoDelete {
+                flags = flags | 4;
+            }
+            w.octet(flags); // Bit 3 (internal), Bit 4 (no-wait) v1 immer 0
+            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
+            w.fieldTable(emptyArgs);
+            if w.hasError() {
+                this.errorMessage = "Exchange-Name/-Typ zu lang (max 255 Byte, shortstr): " + name.len().toString() + " Byte";
+                return false;
+            }
+            let payload = Amqp091::encodeMethodPayload(40, 10, w.bytes);
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+
+            let f = Amqp091::readFrame(this.conn);
+            if f.frameType != 1 {
+                this.errorMessage = "exchange.declare fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                return false;
+            }
+            let mf = Amqp091::decodeMethodPayload(f.payload);
+            if mf.classId == 20 && mf.methodId == 40 {
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
+                return false;
+            }
+            if mf.classId != 40 || mf.methodId != 11 {
+                this.errorMessage = "erwartete exchange.declare-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                return false;
+            }
+            return true;
+        }
+
+        /*
+         * `queue.bind` + `-ok`. Bindet an einen beliebigen Exchange (Name
+         * `""` = Default-Exchange, Routing-Key = Queue-Name; oder einen per
+         * `declareExchange()` angelegten bzw. broker-vordefinierten
+         * Exchange).
          */
         fn bindQueue(queue: String, exchange: String, routingKey: String) -> Bool
         {

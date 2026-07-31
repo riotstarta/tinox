@@ -2050,7 +2050,8 @@ WsClient::close(conn);
       <tr><td><code>AmqpConnection091::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Closes the connection per spec (<code>connection.close</code>, waits for <code>close-ok</code>).</td></tr>
       <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Opens a channel on the connection (v1: fixed channel 1, no pool).</td></tr>
       <tr><td><code>AmqpChannel091::declareQueue</code></td><td><code>fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -&gt; String</code></td><td>Declares a queue, returns the (possibly server-generated) name, or <code>""</code> on failure.</td></tr>
-      <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Binds a queue to an exchange. Binding to the default exchange (<code>""</code>) is forbidden by spec (the broker responds with an error) — queues are implicitly bound there under their own name.</td></tr>
+      <tr><td><code>AmqpChannel091::declareExchange</code></td><td><code>fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -&gt; Bool</code></td><td>Declares an exchange (<code>exchangeType</code>: <code>"direct"</code>, <code>"fanout"</code>, <code>"topic"</code>, <code>"headers"</code> — validated broker-side). <code>true</code> on success, <code>false</code> + <code>errorMessage</code> on failure.</td></tr>
+      <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Binds a queue to an exchange (the default exchange, one created via <code>declareExchange()</code>, or a broker-predefined one). Binding to the default exchange (<code>""</code>) is forbidden by spec (the broker responds with an error) — queues are implicitly bound there under their own name.</td></tr>
       <tr><td><code>AmqpChannel091::qos</code></td><td><code>fn qos(prefetchCount: Int64) -&gt; Bool</code></td><td>Sets the prefetch limit before <code>consume()</code>.</td></tr>
       <tr><td><code>AmqpChannel091::publish</code></td><td><code>fn publish(exchange: String, routingKey: String, body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Publishes a message (no return value, asynchronous per spec). The body is automatically split across multiple frames at <code>frameMax</code>.</td></tr>
       <tr><td><code>AmqpChannel091::consume</code></td><td><code>fn consume(queue: String) -&gt; String</code></td><td>Registers the client as a consumer, returns the consumer tag, or <code>""</code> on failure.</td></tr>
@@ -2104,11 +2105,11 @@ conn.close();
 conn.stopHeartbeat();         <span class="cmt">// or just conn.close(), which stops it for you</span>
 </code></pre>
   <p>
-    <strong>Deliberate v1 gaps:</strong> no multi-channel support, no
-    <code>exchange.declare</code> (only the default exchange and
-    broker-predefined exchanges like <code>amq.direct</code>), no publisher
-    confirms/transactions, no annotation-driven consumer API, no
-    auto-reconnect, no dedicated CA-bundle parameter for
+    <strong>Deliberate v1 gaps:</strong> no real multi-channel support
+    (<code>AmqpChannel091::open</code> always uses channel 1 in v1 —
+    multiple independent channels with parallel message delivery aren't
+    supported yet), no publisher confirms/transactions, no annotation-driven
+    consumer API, no auto-reconnect, no dedicated CA-bundle parameter for
     <code>connectTls</code> (verifies only against the system CA stores).
     AMQP 1.0 is not part of this module.
   </p>
