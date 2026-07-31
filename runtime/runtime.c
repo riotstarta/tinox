@@ -1252,122 +1252,12 @@ void httpClearHeaders(void) {
     _tinox_http_req_headers = NULL;
 }
 
-// Zerlegt "http://host[:port]/path" → host, port, path. Gibt 0 bei Nicht-http.
-static int http_parse_url(const char* url, char* host, size_t host_sz,
-                          int* port, char* path, size_t path_sz) {
-    const char* p = url;
-    if (strncmp(p, "http://", 7) == 0) p += 7;
-    else if (strncmp(p, "https://", 8) == 0) return 0; // TLS nicht unterstützt
-    else return 0;
-
-    const char* host_start = p;
-    while (*p && *p != ':' && *p != '/') p++;
-    size_t hlen = (size_t)(p - host_start);
-    if (hlen == 0 || hlen >= host_sz) return 0;
-    memcpy(host, host_start, hlen);
-    host[hlen] = '\0';
-
-    *port = 80;
-    if (*p == ':') {
-        p++;
-        *port = atoi(p);
-        while (*p && *p != '/') p++;
-    }
-    if (*p == '\0') {
-        snprintf(path, path_sz, "/");
-    } else {
-        snprintf(path, path_sz, "%s", p);
-    }
-    return 1;
-}
-
-static char* http_recv_all(int fd) {
-    size_t cap = 8192, len = 0;
-    char* buf = (char*)malloc(cap);
-    ssize_t n;
-    while ((n = recv(fd, buf + len, cap - len, 0)) > 0) {
-        len += (size_t)n;
-        if (len == cap) {
-            cap *= 2;
-            char* grown = (char*)malloc(cap);
-            memcpy(grown, buf, len);
-            buf = grown;
-        }
-    }
-    buf[len] = '\0';
-    return buf;
-}
-
-static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
-    TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
-    resp->status = 0;
-    resp->body = GC_strdup("");
-    resp->headers = GC_strdup("");
-
-    char host[256], path[2048];
-    int port;
-    if (!http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) return resp;
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return resp;
-
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) { close(fd); return resp; }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { freeaddrinfo(res); close(fd); return resp; }
-    freeaddrinfo(res);
-
-    size_t body_len = body ? strlen(body) : 0;
-    const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
-    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + body_len + 256;
-    char* req = (char*)malloc(req_cap);
-    int req_len = snprintf(req, req_cap,
-        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s"
-        "Content-Length: %zu\r\n\r\n",
-        method, path, host, extra, body_len);
-    if (body_len) {
-        memcpy(req + req_len, body, body_len);
-        req_len += (int)body_len;
-    }
-
-    ssize_t sent_total = 0;
-    while (sent_total < req_len) {
-        ssize_t s = send(fd, req + sent_total, (size_t)(req_len - sent_total), 0);
-        if (s <= 0) break;
-        sent_total += s;
-    }
-
-    char* raw = http_recv_all(fd);
-    close(fd);
-
-    // Statuszeile: "HTTP/1.1 200 OK"
-    const char* sp = strchr(raw, ' ');
-    if (sp) resp->status = atoi(sp + 1);
-
-    // Header/Body-Trennung an "\r\n\r\n"
-    char* sep = strstr(raw, "\r\n\r\n");
-    if (sep) {
-        size_t hdr_len = (size_t)(sep - raw);
-        char* hdrs = (char*)GC_malloc(hdr_len + 1);
-        memcpy(hdrs, raw, hdr_len);
-        hdrs[hdr_len] = '\0';
-        resp->headers = hdrs;
-        resp->body = GC_strdup(sep + 4);
-    } else {
-        resp->body = GC_strdup(raw);
-    }
-    return resp;
-}
-
-int64_t* httpGet(const char* url)                    { return (int64_t*)http_request("GET", url, NULL); }
-int64_t* httpPost(const char* url, const char* body) { return (int64_t*)http_request("POST", url, body); }
-int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_request("PUT", url, body); }
-int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
-int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
+// http_parse_url/http_request/httpGet/httpPost/httpPut/httpDelete/httpPatch
+// moved below (after the TLS connection-handle section, ~"---- Binärsichere
+// Conn-Primitiven ----") so http_request can use g_tls_client_ctx for
+// https:// -- that global (and the openssl headers it needs) aren't
+// declared yet at this point in the file, and TINOX_TLS=0 opt-out builds
+// must not require <openssl/ssl.h> unconditionally at the top of the file.
 
 int64_t httpStatusCode(int64_t* resp) {
     return resp ? ((TinoxHttpResponse*)resp)->status : 0;
@@ -2808,6 +2698,200 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 #endif
 }
 
+// ---- HTTP/1.1 client builtins (tinox.core.http), continued ----
+// Placed here (not right after httpSetHeader/httpClearHeaders above) so
+// http_request can use g_tls_client_ctx for https:// -- that global is
+// declared earlier in this TLS section, and TINOX_TLS=0 opt-out builds
+// must not require <openssl/ssl.h> unconditionally at the top of the
+// file. Zerlegt "http[s]://host[:port]/path" -> host, port, path,
+// is_https. Gibt 0 bei unbekanntem Schema.
+static int http_parse_url(const char* url, char* host, size_t host_sz,
+                          int* port, char* path, size_t path_sz, int* is_https) {
+    const char* p = url;
+    *is_https = 0;
+    if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+    } else if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+        *is_https = 1;
+    } else {
+        return 0;
+    }
+
+    const char* host_start = p;
+    while (*p && *p != ':' && *p != '/') p++;
+    size_t hlen = (size_t)(p - host_start);
+    if (hlen == 0 || hlen >= host_sz) return 0;
+    memcpy(host, host_start, hlen);
+    host[hlen] = '\0';
+
+    *port = *is_https ? 443 : 80;
+    if (*p == ':') {
+        p++;
+        *port = atoi(p);
+        while (*p && *p != '/') p++;
+    }
+    if (*p == '\0') {
+        snprintf(path, path_sz, "/");
+    } else {
+        snprintf(path, path_sz, "%s", p);
+    }
+    return 1;
+}
+
+static char* http_recv_all(int fd) {
+    size_t cap = 8192, len = 0;
+    char* buf = (char*)malloc(cap);
+    ssize_t n;
+    while ((n = recv(fd, buf + len, cap - len, 0)) > 0) {
+        len += (size_t)n;
+        if (len == cap) {
+            cap *= 2;
+            char* grown = (char*)malloc(cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+        }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+#ifdef TINOX_TLS
+static char* http_recv_all_tls(SSL* ssl) {
+    size_t cap = 8192, len = 0;
+    char* buf = (char*)malloc(cap);
+    int n;
+    while ((n = SSL_read(ssl, buf + len, (int)(cap - len))) > 0) {
+        len += (size_t)n;
+        if (len == cap) {
+            cap *= 2;
+            char* grown = (char*)malloc(cap);
+            memcpy(grown, buf, len);
+            buf = grown;
+        }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+#endif
+
+static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
+    TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
+    resp->status = 0;
+    resp->body = GC_strdup("");
+    resp->headers = GC_strdup("");
+
+    char host[256], path[2048];
+    int port;
+    int is_https;
+    if (!http_parse_url(url, host, sizeof(host), &port, path, sizeof(path), &is_https)) return resp;
+
+#ifndef TINOX_TLS
+    if (is_https) return resp; // TINOX_TLS=0: https:// not available, same "empty response" contract as any other connect failure
+#endif
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return resp;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) { close(fd); return resp; }
+    if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { freeaddrinfo(res); close(fd); return resp; }
+    freeaddrinfo(res);
+
+    size_t body_len = body ? strlen(body) : 0;
+    const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
+    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + body_len + 256;
+    char* req = (char*)malloc(req_cap);
+    int req_len = snprintf(req, req_cap,
+        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s"
+        "Content-Length: %zu\r\n\r\n",
+        method, path, host, extra, body_len);
+    if (body_len) {
+        memcpy(req + req_len, body, body_len);
+        req_len += (int)body_len;
+    }
+
+    char* raw;
+#ifdef TINOX_TLS
+    if (is_https) {
+        if (!g_tls_client_ctx) {
+            SSL_library_init();
+            SSL_load_error_strings();
+            OpenSSL_add_ssl_algorithms();
+            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+            if (g_tls_client_ctx) {
+                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            }
+        }
+        if (!g_tls_client_ctx) { close(fd); free(req); return resp; }
+        SSL* ssl = SSL_new(g_tls_client_ctx);
+        if (!ssl) { close(fd); free(req); return resp; }
+        SSL_set_tlsext_host_name(ssl, host); // SNI
+        SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+        SSL_set1_host(ssl, host); // hostname must match the peer certificate
+        SSL_set_fd(ssl, fd);
+        if (SSL_connect(ssl) <= 0) {
+            ERR_print_errors_fp(stderr);
+            SSL_free(ssl);
+            close(fd);
+            free(req);
+            return resp;
+        }
+        int wr_total = 0;
+        while (wr_total < req_len) {
+            int w = SSL_write(ssl, req + wr_total, req_len - wr_total);
+            if (w <= 0) break;
+            wr_total += w;
+        }
+        raw = http_recv_all_tls(ssl);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(fd);
+    } else
+#endif
+    {
+        ssize_t sent_total = 0;
+        while (sent_total < req_len) {
+            ssize_t s = send(fd, req + sent_total, (size_t)(req_len - sent_total), 0);
+            if (s <= 0) break;
+            sent_total += s;
+        }
+        raw = http_recv_all(fd);
+        close(fd);
+    }
+    free(req);
+
+    // Statuszeile: "HTTP/1.1 200 OK"
+    const char* sp = strchr(raw, ' ');
+    if (sp) resp->status = atoi(sp + 1);
+
+    // Header/Body-Trennung an "\r\n\r\n"
+    char* sep = strstr(raw, "\r\n\r\n");
+    if (sep) {
+        size_t hdr_len = (size_t)(sep - raw);
+        char* hdrs = (char*)GC_malloc(hdr_len + 1);
+        memcpy(hdrs, raw, hdr_len);
+        hdrs[hdr_len] = '\0';
+        resp->headers = hdrs;
+        resp->body = GC_strdup(sep + 4);
+    } else {
+        resp->body = GC_strdup(raw);
+    }
+    return resp;
+}
+
+int64_t* httpGet(const char* url)                    { return (int64_t*)http_request("GET", url, NULL); }
+int64_t* httpPost(const char* url, const char* body) { return (int64_t*)http_request("POST", url, body); }
+int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_request("PUT", url, body); }
+int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
+int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
+
 // ---- Binärsichere Conn-Primitiven (WebSocket-Frames u.ä.) ----
 // httpConnReadRequest/httpConnSendRaw sind C-String-basiert und reißen am
 // ersten NUL-Byte ab — Frame-Daten sind binär (Masking!). Diese Varianten
@@ -3016,6 +3100,34 @@ char* aesDecryptRaw(const char* hexInput, const char* key) {
     (void)hexInput; (void)key;
     fprintf(stderr, "aesDecryptRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
     return GC_strdup("");
+#endif
+}
+
+// Cryptographically secure random bytes via RAND_bytes (issue #131, OAuth2
+// `state`/PKCE `code_verifier`) -- distinct from `randomInt`/`randomFloat`
+// (tinox.core.random), which are backed by `srandom(time^getpid)`: fine
+// for jitter/test data, but predictable, which defeats the entire point of
+// an OAuth2 CSRF `state` value or a PKCE verifier. Returns an empty array
+// on any failure (TINOX_TLS=0, or RAND_bytes itself failing) rather than
+// a short/zero-filled one -- the caller (Crypto::secureRandomBytes) throws
+// on a length mismatch instead of silently using weak/absent randomness.
+int64_t* secureRandomBytesRaw(int64_t n) {
+#ifdef TINOX_TLS
+    if (n <= 0) return tinox_array_new(0, 4);
+    unsigned char* buf = (unsigned char*)malloc((size_t)n);
+    if (RAND_bytes(buf, (int)n) != 1) {
+        fprintf(stderr, "secureRandomBytesRaw: RAND_bytes fehlgeschlagen\n");
+        free(buf);
+        return tinox_array_new(0, 4);
+    }
+    int64_t* nh = tinox_array_new(0, n);
+    for (int64_t i = 0; i < n; i++) tinox_array_push(nh, buf[i]);
+    free(buf);
+    return nh;
+#else
+    (void)n;
+    fprintf(stderr, "secureRandomBytesRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    return tinox_array_new(0, 4);
 #endif
 }
 

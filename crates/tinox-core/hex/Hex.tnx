@@ -33,6 +33,29 @@ namespace tinox.core.hex
             return result;
         }
 
+        // Wie decode(), aber liefert die rohen Bytes als List<Int64> statt
+        // sie in einer Tinox-String zu materialisieren (issue #131: OAuth2
+        // PKCE braucht die rohen 32 Bytes eines SHA-256-Digests für
+        // base64url, nicht deren Hex-Text). Derselbe Grund wie
+        // Base64::decodeBytes: ein Tinox-String ist intern ein C-String
+        // (strlen-basiert) — ein Digest mit einem eingebetteten 0-Byte
+        // (bei 32 Zufallsbytes nicht selten, s. Base64::encodeBytes'
+        // Kommentar zum genau selben Fund) würde über decode()+fromCharCode
+        // stillschweigend am ersten 0-Byte abgeschnitten.
+        fn decodeBytes(hex: String) -> List<Int64>
+        {
+            var result: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < hex.len()
+            {
+                let high: Int64 = Hex::charToNibble(hex.substring(i, i + 1));
+                let low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2));
+                result.push((high << 4) | low);
+                i = i + 2;
+            }
+            return result;
+        }
+
         fn nibbleToChar(n: Int64) -> String
         {
             if n < 10

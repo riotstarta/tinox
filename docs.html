@@ -553,6 +553,7 @@
     <li><a href="#mod-crypto">crypto</a></li>
     <li><a href="#mod-hash">hash</a></li>
     <li><a href="#mod-jwt">jwt</a></li>
+    <li><a href="#mod-oauth2">oauth2</a></li>
     <li><a href="#mod-validation">validation</a></li>
     <li><a href="#mod-uuid">uuid</a></li>
 
@@ -2373,6 +2374,17 @@ encTable.setMaxSize(2048);
     zurückgegeben, die den Statuscode, den Body und einzelne Header-Werte liefert.
     Für höherwertige Abstraktion empfiehlt sich das Modul <code>rest</code>.
   </p>
+  <p>
+    <strong><code>https://</code> wird unterstützt</strong> (issue #131) — anhand
+    des Schemas in der URL automatisch erkannt, keine separate Methode nötig.
+    Zertifikatskette + Hostname werden immer gegen die System-CA-Stores
+    geprüft (kein Opt-out wie bei <code>connectTls</code>/<code>listenTls</code>
+    in anderen Modulen — dieser Client ist v1 bewusst nur für echte, öffentlich
+    vertrauenswürdige Endpunkte gedacht, z. B. OAuth2-Token-Endpunkte,
+    s. Modul <code>oauth2</code>). Bei <code>TINOX_TLS=0</code> gebaut liefert
+    ein <code>https://</code>-Aufruf denselben leeren <code>HttpResponse</code>
+    (<code>statusCode() == 0</code>) wie jeder andere Verbindungsfehler.
+  </p>
   <h3>Klassen &amp; Methoden</h3>
   <table>
     <thead>
@@ -2727,6 +2739,105 @@ let checkJwt: fnc(HttpContext) -> Bool = ctx => {
     return true;
 };
 </code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-oauth2">
+
+  <h2>oauth2</h2>
+  <p class="import-hint"><code>import tinox.core.oauth2;</code></p>
+  <p>
+    OAuth2-Client für den Authorization-Code-Grant mit PKCE (RFC 6749 +
+    RFC 7636) — der empfohlene Flow für Server- und Public-Clients gegen
+    Drittanbieter-Provider (Google, GitHub, …). <code>OAuth2Client</code>
+    kapselt den kompletten Ablauf: Authorize-URL bauen (inkl. sicherem
+    <code>state</code> für CSRF-Schutz und PKCE-<code>code_challenge</code>),
+    den Callback-Code gegen ein Token-Paar tauschen, und Tokens erneuern.
+    Der zugrundeliegende <code>http</code>-Client unterstützt seit diesem
+    Modul auch <code>https://</code> (strikte Zertifikatsprüfung), sodass
+    echte Provider-Endpunkte direkt angesprochen werden können.
+  </p>
+  <p>
+    <strong>Bewusste v1-Lücken:</strong> kein OIDC-ID-Token-Verifizieren
+    (bräuchte RS256/JWKS im Modul <code>jwt</code>, das aktuell nur HS256
+    kann und dessen Signatur-Wire-Format ohnehin noch ein offenes Problem
+    hat — s. Issue #137), nur Authorization Code + PKCE (kein
+    <code>client_credentials</code>/<code>implicit</code>/
+    <code>device_code</code>), kein Token-Storage — das bleibt wie beim
+    restlichen <code>rest</code>/<code>http_server</code>-Framework
+    Aufrufer-Sache.
+  </p>
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>OAuth2Client::new</code></td>
+        <td><code>fn new(authorizeUrl: String, tokenUrl: String, clientId: String, clientSecret: String, redirectUri: String) -&gt; OAuth2Client</code></td>
+        <td>Erstellt einen Client für einen konkreten Provider (Authorize-/Token-Endpunkt) und diese Anwendung (Client-ID/-Secret, registrierte Redirect-URI).</td>
+      </tr>
+      <tr>
+        <td><code>OAuth2Client::buildAuthorizeUrl</code></td>
+        <td><code>fn buildAuthorizeUrl(scope: String) -&gt; OAuth2AuthorizeRequest</code></td>
+        <td>Baut die URL, zu der der Browser des Nutzers weitergeleitet wird. Generiert dabei einen kryptographisch sicheren <code>state</code> (CSRF) sowie einen PKCE <code>code_verifier</code>/<code>code_challenge</code> (S256). <code>state</code> und <code>codeVerifier</code> aus dem Ergebnis MÜSSEN session-seitig gespeichert werden.</td>
+      </tr>
+      <tr>
+        <td><code>OAuth2Client::exchangeCode</code></td>
+        <td><code>fn exchangeCode(code: String, codeVerifier: String) -&gt; OAuth2TokenResponse</code></td>
+        <td>Tauscht den vom Provider im Callback gelieferten Code gegen ein Access-/Refresh-Token-Paar (RFC 6749 §4.1.3, form-urlencoded POST). <code>codeVerifier</code> muss der zuvor gespeicherte Wert aus <code>buildAuthorizeUrl</code> sein.</td>
+      </tr>
+      <tr>
+        <td><code>OAuth2Client::refresh</code></td>
+        <td><code>fn refresh(refreshToken: String) -&gt; OAuth2TokenResponse</code></td>
+        <td>Tauscht einen Refresh-Token gegen ein frisches Token-Paar (RFC 6749 §6).</td>
+      </tr>
+      <tr>
+        <td><code>OAuth2AuthorizeRequest</code></td>
+        <td><code>{ url: String, state: String, codeVerifier: String }</code></td>
+        <td>Ergebnis von <code>buildAuthorizeUrl</code>. <code>state</code>/<code>codeVerifier</code> müssen bis zum Callback aufbewahrt werden.</td>
+      </tr>
+      <tr>
+        <td><code>OAuth2TokenResponse</code></td>
+        <td><code>{ accessToken, refreshToken, tokenType: String, expiresIn: Int64, ok: Bool, errorMessage: String }</code></td>
+        <td><code>ok == false</code> bei jedem Fehler (Netzwerk/TLS, HTTP-Fehlerstatus, oder RFC-6749-§5.2-Fehlerantwort vom Provider) — <code>errorMessage</code> beschreibt die Ursache statt ein leeres/falsches Token still durchzureichen.</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.oauth2;
+
+fn main() -> Nothing
+{
+    let client: OAuth2Client = OAuth2Client::new(
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        "https://oauth2.googleapis.com/token",
+        "meine-client-id",
+        "mein-client-secret",
+        "https://meine-app.example.com/callback"
+    );
+
+    // 1. Nutzer zur Provider-Login-Seite weiterleiten
+    let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+    // authReq.state und authReq.codeVerifier session-seitig speichern,
+    // dann den Browser zu authReq.url weiterleiten.
+    println("Weiterleiten zu: " + authReq.url);
+
+    // 2. Im Callback-Handler: state gegen den gespeicherten Wert prüfen,
+    //    dann den Code gegen ein Token-Paar tauschen.
+    let tokens: OAuth2TokenResponse = client.exchangeCode("code-aus-dem-callback", authReq.codeVerifier);
+    if tokens.ok {
+        println("Access-Token: " + tokens.accessToken);
+    } else {
+        println("Fehler: " + tokens.errorMessage);
+    }
+
+    // 3. Später: Token erneuern
+    let refreshed: OAuth2TokenResponse = client.refresh(tokens.refreshToken);
+    if refreshed.ok {
+        println("Neues Access-Token: " + refreshed.accessToken);
+    }
+}</code></pre>
   </div>
 
   <div class="mod-section" id="mod-json">
@@ -3385,6 +3496,11 @@ fn main() -> Nothing
         <td><code>fn encodeBytes(data: List&lt;Int64&gt;) -&gt; String</code></td>
         <td>Kodiert eine Liste von Byte-Werten (<code>Int64</code>) zeichenweise als Base64-String.</td>
       </tr>
+      <tr>
+        <td><code>Base64::encodeUrlBytes</code></td>
+        <td><code>fn encodeUrlBytes(data: List&lt;Int64&gt;) -&gt; String</code></td>
+        <td>Wie <code>encodeBytes</code>, aber mit dem URL-/Dateiname-sicheren Alphabet (<code>-</code>/<code>_</code> statt <code>+</code>/<code>/</code>) und ohne <code>=</code>-Padding (RFC 4648 §5) — z. B. für PKCE <code>code_verifier</code>/<code>code_challenge</code> im Modul <code>oauth2</code> (issue #131).</td>
+      </tr>
     </tbody>
   </table>
   <h3>Beispiel</h3>
@@ -3459,6 +3575,11 @@ fn main() -> Nothing
         <td><code>Hex::charToNibble</code></td>
         <td><code>fn charToNibble(c: String) -&gt; Int64</code></td>
         <td>Konvertiert ein einzelnes Hex-Zeichen (0–9, a–f, A–F) in seinen numerischen Wert (0–15).</td>
+      </tr>
+      <tr>
+        <td><code>Hex::decodeBytes</code></td>
+        <td><code>fn decodeBytes(hex: String) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Wie <code>decode</code>, gibt aber die rohen Bytes als <code>List&lt;Int64&gt;</code> statt als Tinox-<code>String</code> zurück — wichtig, wenn ein eingebettetes 0-Byte im Digest sonst über den String-Umweg (z. B. <code>fromCharCode</code>) still abgeschnitten würde, etwa beim Zurückwandeln eines <code>Crypto::sha256</code>-Hex-Digests in rohe Bytes (s. Modul <code>oauth2</code>, issue #131).</td>
       </tr>
     </tbody>
   </table>
@@ -6552,6 +6673,7 @@ print(Template::execute(compiled, admin) + "\n");
       <tr><td><code>Crypto::aesDecrypt</code></td><td><code>fn aesDecrypt(data: String, key: String) -&gt; String</code></td><td>Entschlüsselt mit <code>aesEncrypt</code> erzeugte Daten. Wirft bei falschem Schlüssel oder manipulierten/beschädigten Daten (GCM-Authentifizierung schlägt fehl) statt stillschweigend falschen Klartext zurückzugeben.</td></tr>
       <tr><td><code>Crypto::generateKey</code></td><td><code>fn generateKey(length: Int64) -&gt; String</code></td><td>Generiert einen kryptographisch zufälligen Schlüssel der gewünschten Bytelänge.</td></tr>
       <tr><td><code>Crypto::pbkdf2</code></td><td><code>fn pbkdf2(password: String, salt: String, iterations: Int64, keyLength: Int64) -&gt; String</code></td><td>Leitet einen Schlüssel aus einem Passwort ab (PBKDF2 mit SHA-256-Iterationen). Gibt die ersten <code>keyLength</code> Zeichen des abgeleiteten Schlüssels zurück.</td></tr>
+      <tr><td><code>Crypto::secureRandomBytes</code></td><td><code>fn secureRandomBytes(n: Int64) -&gt; List&lt;Int64&gt;</code></td><td>Erzeugt <code>n</code> kryptographisch sichere Zufallsbytes (OpenSSL <code>RAND_bytes</code>) als rohe Byte-Liste — anders als <code>generateKey</code> kein Hex-/String-Umweg, daher direkt für PKCE-<code>code_verifier</code> & Co. geeignet (s. Modul <code>oauth2</code>, issue #131). Wirft bei Fehler statt einer zu kurzen Liste.</td></tr>
     </tbody>
   </table>
   <h3>Beispiel</h3>

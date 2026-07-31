@@ -4,8 +4,32 @@ import tinox.core.random;
 
 namespace tinox.core.crypto
 {
+    extern fn secureRandomBytesRaw(n: Int64) -> List<Int64>;
+
     class Crypto
     {
+        /*
+         * Kryptografisch sichere Zufallsbytes via OpenSSL RAND_bytes —
+         * issue #131 (OAuth2 `state`/PKCE `code_verifier`). Bewusst
+         * getrennt von `Random`/`Crypto::generateKey` (beide letztlich
+         * `randomInt` -> `srandom(time^getpid)`, vorhersagbar): ein
+         * vorhersagbarer `state`-Wert bricht die CSRF-Absicherung des
+         * OAuth2-Handshakes, ein vorhersagbarer PKCE-`code_verifier`
+         * bricht PKCE komplett. Wirft hart statt eines stillen zu
+         * kurzen/leeren Ergebnisses (Runtime ohne TLS/OpenSSL gebaut,
+         * oder RAND_bytes selbst fehlgeschlagen) — kein Silent-Garbage
+         * bei einer sicherheitskritischen Zufallsquelle.
+         */
+        fn secureRandomBytes(n: Int64) -> List<Int64>
+        {
+            let result = secureRandomBytesRaw(n);
+            if result.len() != n
+            {
+                throw "Crypto::secureRandomBytes fehlgeschlagen (Runtime ohne TLS/OpenSSL gebaut, oder RAND_bytes fehlgeschlagen)";
+            }
+            return result;
+        }
+
         fn md5(data: String) -> String
         {
             return md5Hash(data);

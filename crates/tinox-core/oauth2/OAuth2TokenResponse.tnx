@@ -1,0 +1,22 @@
+module tinox.core.oauth2;
+
+namespace tinox.core.oauth2
+{
+    /*
+     * Ergebnis von OAuth2Client::exchangeCode()/refresh() (issue #131).
+     * `ok == false` bei jedem Fehler (Aufrufer MUSS prüfen, kein
+     * Silent-Garbage) — `errorMessage` beschreibt dann die Ursache
+     * (Netzwerkfehler, HTTP-Fehlerstatus, oder der Token-Endpoint-Fehler
+     * selbst, RFC 6749 §5.2: `error`/`error_description` aus der
+     * JSON-Antwort).
+     */
+    class OAuth2TokenResponse
+    {
+        var accessToken: String;
+        var refreshToken: String;
+        var tokenType: String;
+        var expiresIn: Int64;
+        var ok: Bool;
+        var errorMessage: String;
+    }
+}

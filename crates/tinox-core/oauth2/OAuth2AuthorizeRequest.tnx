@@ -1,0 +1,24 @@
+module tinox.core.oauth2;
+
+namespace tinox.core.oauth2
+{
+    /*
+     * Rückgabe von OAuth2Client::buildAuthorizeUrl() (issue #131). `state`
+     * und `codeVerifier` MÜSSEN vom Aufrufer session-/anfrageseitig
+     * gespeichert werden (z. B. in der User-Session oder einem signierten
+     * Cookie) — nach dem Redirect zum Authorization Server und zurück
+     * MUSS der Aufrufer:
+     *   1. den `state`-Query-Parameter des Callbacks gegen das hier
+     *      gespeicherte `state` vergleichen (CSRF-Schutz — OAuth2Client
+     *      selbst kann das nicht tun, weil es zwischen den beiden
+     *      Aufrufen keinen eigenen Zustand hält, absichtlich, um keine
+     *      Server-Session-Semantik vorzuschreiben);
+     *   2. das gespeicherte `codeVerifier` an exchangeCode() zurückgeben.
+     */
+    class OAuth2AuthorizeRequest
+    {
+        var url: String;
+        var state: String;
+        var codeVerifier: String;
+    }
+}

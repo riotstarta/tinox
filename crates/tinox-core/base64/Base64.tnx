@@ -165,6 +165,47 @@ namespace tinox.core.base64
             return result;
         }
 
+        // base64url (RFC 4648 §5, PADDING GESTRIPPT) statt Standard-Alphabet
+        // — issue #131 (OAuth2 PKCE `code_challenge`, RFC 7636 §4.2 verlangt
+        // explizit "Base64 URL Encoding without padding"). `+`/`/` sind in
+        // einer URL-Query nicht sicher (muessten sonst noch prozent-kodiert
+        // werden), `-`/`_` sind es; das `=`-Padding ist bei fester
+        // Eingabelaenge (hier: ein SHA-256-Digest, immer 32 Byte) ohnehin
+        // redundant und laut Spec zu entfernen, nicht nur optional.
+        fn encodeUrlBytes(data: List<Int64>) -> String
+        {
+            let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            var result: String = "";
+            var i: Int64 = 0;
+            let len: Int64 = data.len();
+            while i < len
+            {
+                let b0: Int64 = data[i];
+                let hasB1: Bool = i + 1 < len;
+                let b1: Int64 = hasB1 ? data[i + 1] : 0;
+                let hasB2: Bool = i + 2 < len;
+                let b2: Int64 = hasB2 ? data[i + 2] : 0;
+
+                let c0: Int64 = (b0 >> 2) & 63;
+                let c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
+                let c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
+                let c3: Int64 = b2 & 63;
+
+                result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
+                if hasB1
+                {
+                    result = result + alphabet.substring(c2, c2 + 1);
+                }
+                if hasB2
+                {
+                    result = result + alphabet.substring(c3, c3 + 1);
+                }
+
+                i = i + 3;
+            }
+            return result;
+        }
+
         // Wie decode(), aber liefert die rohen Bytes als List<Int64> statt
         // sie in einer Tinox-String zu materialisieren — decode() haengt
         // dekodierte 0-Bytes intern via fromCharCode() an, was ein
