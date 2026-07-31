@@ -1,6 +1,16 @@
+use std::sync::Arc;
 use tinox_common::{Span, Spanned};
 
 pub type Ident = String;
+
+/// Placeholder `file` value set by the parser (which has no notion of a
+/// filename — it only sees a token stream, see `Parser::new`). The real
+/// path is stamped onto every `Function`/`Method` in a source file right
+/// after parsing (`stamp_file_identity` in `tinox/src/main.rs`), before
+/// `resolve_imports` merges files together — see issue #114 (DWARF debug
+/// info needs a real per-declaration file identity for multi-file
+/// programs).
+pub const UNKNOWN_FILE: &str = "<unknown>";
 
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -361,6 +371,13 @@ pub struct Function {
     pub is_async: bool,
     pub doc: Option<String>,
     pub annotations: Vec<Annotation>,
+    /// Source file this function was parsed from (absolute path), or
+    /// `UNKNOWN_FILE` until `stamp_file_identity` sets it post-parse —
+    /// see that constant's doc comment. Used for DWARF debug info
+    /// (issue #114): unlike `Span`, which has no file identity, this
+    /// survives `resolve_imports` merging multiple files' declarations
+    /// into one flat list.
+    pub file: Arc<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -376,6 +393,8 @@ pub struct Method {
     pub is_async: bool,
     pub doc: Option<String>,
     pub annotations: Vec<Annotation>,
+    /// See `Function::file`.
+    pub file: Arc<str>,
 }
 
 #[derive(Debug, Clone)]

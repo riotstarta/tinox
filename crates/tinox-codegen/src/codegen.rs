@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
+use std::sync::Arc;
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
     BinaryOp, CatchClause, DeclKind, Expr, ExprKind, Literal, Method, Pattern,
@@ -175,6 +176,29 @@ pub struct CodeGen {
     lambda_ir: String,
     strings: HashMap<String, String>,
     temp_count: usize,
+    /// DWARF debug info (issue #114): source file path (as stamped by
+    /// `stamp_file_identity` in `tinox/src/main.rs`) -> its `!DIFile`
+    /// metadata node id. Populated lazily the first time a given file is
+    /// seen while emitting a `!dbg` attachment for a real user
+    /// function/method (`gen_fn`/`gen_class_method` — the only two
+    /// `define` sites with a meaningful source `Span`; compiler-
+    /// synthesized helpers like `toString`/`toJson`/DI/ORM glue get no
+    /// debug info, they have no single source line to point at).
+    di_file_ids: HashMap<Arc<str>, u32>,
+    /// Accumulated `!N = ...` debug metadata definitions, appended at the
+    /// end of the module in `into_ir()` (metadata may be forward-
+    /// referenced in LLVM's textual IR, so definition order doesn't
+    /// matter — matches where real compilers like clang put it).
+    di_metadata: Vec<String>,
+    /// Next free debug metadata node id.
+    di_next_id: u32,
+    /// Id of the single `distinct !DICompileUnit(...)` node, created
+    /// lazily on the first function that gets debug info.
+    di_compile_unit_id: Option<u32>,
+    /// Id of one shared, minimal `!DISubroutineType(types: !{null})` node
+    /// used by every `!DISubprogram` — issue #114's scope is function-
+    /// level (name/file/line), not per-argument/return type modeling.
+    di_subroutine_type_id: Option<u32>,
     struct_layouts: HashMap<String, Vec<String>>,
     #[allow(dead_code)]
     closure_envs: HashMap<String, String>,
@@ -322,6 +346,11 @@ impl CodeGen {
             lambda_ir: String::new(),
             strings: HashMap::new(),
             temp_count: 0,
+            di_file_ids: HashMap::new(),
+            di_metadata: Vec::new(),
+            di_next_id: 0,
+            di_compile_unit_id: None,
+            di_subroutine_type_id: None,
             struct_layouts: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
@@ -2383,6 +2412,165 @@ impl CodeGen {
         out
     }
 
+    /// Escapes a string for an LLVM debug-metadata string literal
+    /// (`!DIFile(filename: "...")` etc.) — standard C-style backslash
+    /// escaping, distinct from `escape_llvm_string`'s hex-byte escaping
+    /// used for `[N x i8] c"..."` global string constants.
+    fn escape_di_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\22"),
+                '\\' => out.push_str("\\5C"),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Gets or creates the `!DIFile` metadata node id for `file` (issue
+    /// #114). `file` is an absolute path stamped by `stamp_file_identity`
+    /// (`tinox/src/main.rs`) — split into directory/filename here since
+    /// that's `!DIFile`'s own field split.
+    fn di_file_id(&mut self, file: &Arc<str>) -> u32 {
+        if let Some(&id) = self.di_file_ids.get(file) {
+            return id;
+        }
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        let path = Path::new(file.as_ref());
+        let filename = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.to_string());
+        let directory = path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.di_metadata.push(format!(
+            "!{id} = !DIFile(filename: \"{}\", directory: \"{}\")",
+            Self::escape_di_string(&filename),
+            Self::escape_di_string(&directory)
+        ));
+        self.di_file_ids.insert(file.clone(), id);
+        id
+    }
+
+    /// Gets or creates the single `distinct !DICompileUnit(...)` node
+    /// (issue #114) — one per module, lazily created against whichever
+    /// file's function is compiled first (its `!DIFile` doesn't need to
+    /// be THE "main" file; every `!DISubprogram` still names its own
+    /// correct file via `di_file_id`, `unit:` just anchors the module).
+    fn di_compile_unit_id(&mut self, file: &Arc<str>) -> u32 {
+        if let Some(id) = self.di_compile_unit_id {
+            return id;
+        }
+        let file_id = self.di_file_id(file);
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{id} = distinct !DICompileUnit(language: DW_LANG_C99, file: !{file_id}, producer: \"tinox\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)"
+        ));
+        self.di_compile_unit_id = Some(id);
+        id
+    }
+
+    /// Gets or creates one shared, minimal `!DISubroutineType(types:
+    /// !{null})` node reused by every `!DISubprogram` — issue #114's
+    /// scope is function-level debug info (name/file/line so `gdb`/
+    /// `addr2line` can resolve a crash address), not per-argument/return
+    /// type modeling, which would be a much larger undertaking.
+    fn di_subroutine_type_id(&mut self) -> u32 {
+        if let Some(id) = self.di_subroutine_type_id {
+            return id;
+        }
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata
+            .push(format!("!{id} = !DISubroutineType(types: !{{null}})"));
+        self.di_subroutine_type_id = Some(id);
+        id
+    }
+
+    /// Returns `(define_suffix, call_suffix)` for a function/method with
+    /// debug info attached (issue #114), or two empty strings if `file`
+    /// is `tinox_parser::UNKNOWN_FILE` — a specialized/synthesized
+    /// declaration whose real source file couldn't be determined.
+    /// Attaching debug info naming the wrong file would be actively
+    /// misleading (worse than the bare hex addresses today), so this
+    /// skips debug info entirely rather than guess — see this issue's
+    /// investigation history for why that distinction matters.
+    ///
+    /// `define_suffix` (` !dbg !N`) goes right before the `define` line's
+    /// opening `{`. `call_suffix` (`, !dbg !L`) must be appended to
+    /// EVERY `call` instruction inside that function's body — LLVM
+    /// requires any call site inside a function that carries `!dbg` to
+    /// itself carry a `!dbg` location (`opt`'s debug-info verifier calls
+    /// this "inlinable function call in a function with debug info must
+    /// have a !dbg location" and silently strips the whole function's
+    /// debug info otherwise, discovered empirically while implementing
+    /// this — not documented anywhere in the original investigation).
+    /// Since instruction-level location tracking is out of scope here
+    /// (that's the "1,457 call sites" problem the investigation ruled
+    /// out), every call in the function shares this one location
+    /// pointing at the function's own declaration line — coarser than
+    /// real per-statement info, but enough for `gdb`/`addr2line` to
+    /// resolve a crash to the right function, file, and roughly which
+    /// declared line, matching this issue's actual goal.
+    fn dbg_suffix(&mut self, name: &str, file: &Arc<str>, line: u32) -> (String, String) {
+        if file.as_ref() == tinox_parser::UNKNOWN_FILE {
+            return (String::new(), String::new());
+        }
+        let cu_id = self.di_compile_unit_id(file);
+        let file_id = self.di_file_id(file);
+        let subty_id = self.di_subroutine_type_id();
+        let sp_id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{sp_id} = distinct !DISubprogram(name: \"{}\", scope: !{file_id}, file: !{file_id}, line: {line}, type: !{subty_id}, spFlags: DISPFlagDefinition, unit: !{cu_id})",
+            Self::escape_di_string(name)
+        ));
+        let loc_id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{loc_id} = !DILocation(line: {line}, column: 1, scope: !{sp_id})"
+        ));
+        (format!(" !dbg !{sp_id}"), format!(", !dbg !{loc_id}"))
+    }
+
+    /// Appends `call_suffix` (see `dbg_suffix`) to every `call`
+    /// instruction line in `ir[body_start..]`, in place. Scoped to text
+    /// generated between a function's `define` line and its closing `}`
+    /// — a targeted post-process instead of threading a suffix through
+    /// the ~300 individual call-emission sites across this file, since
+    /// every one of them already produces exactly one `call ...` per
+    /// line (never split across lines, never emits the substring
+    /// `" call "`/a leading `"call "` any other way — string literals
+    /// are hoisted to module-level globals, never inlined as instruction
+    /// text, so this can't misfire on user data).
+    fn attach_call_dbg(ir: &mut String, body_start: usize, call_suffix: &str) {
+        if call_suffix.is_empty() {
+            return;
+        }
+        let body = &ir[body_start..];
+        let mut out = String::with_capacity(body.len() + call_suffix.len() * 8);
+        for line in body.split_inclusive('\n') {
+            let (content, ending) = match line.strip_suffix('\n') {
+                Some(c) => (c, "\n"),
+                None => (line, ""),
+            };
+            let trimmed = content.trim_start();
+            if trimmed.starts_with("call ") || trimmed.contains(" = call ") {
+                out.push_str(content);
+                out.push_str(call_suffix);
+            } else {
+                out.push_str(content);
+            }
+            out.push_str(ending);
+        }
+        ir.replace_range(body_start.., &out);
+    }
+
     fn capitalize_first(s: &str) -> String {
         let mut chars = s.chars();
         match chars.next() {
@@ -2397,6 +2585,29 @@ impl CodeGen {
         let body = self.ir.replacen("; @@SPEC_TYPES@@", self.spec_type_defs.trim_end(), 1);
         let mut result = body;
         result.push_str(&self.lambda_ir);
+        // DWARF debug info (issue #114): metadata may be forward-
+        // referenced in LLVM's textual IR (every `!dbg !N` above already
+        // points at a node defined here, further down), so appending at
+        // the very end is safe — matches where real compilers put it.
+        // Only emitted at all if at least one function got a real
+        // `!DISubprogram` (di_compile_unit_id set) — a program with no
+        // user-authored fn/method bodies (unlikely, but e.g. a pure
+        // `extern fn` declarations file) gets no debug info section.
+        if let Some(cu_id) = self.di_compile_unit_id {
+            result.push_str(&format!("\n!llvm.dbg.cu = !{{!{}}}\n", cu_id));
+            result.push_str(&format!(
+                "!llvm.module.flags = !{{!{}}}\n",
+                self.di_next_id
+            ));
+            for m in &self.di_metadata {
+                result.push_str(m);
+                result.push('\n');
+            }
+            result.push_str(&format!(
+                "!{} = !{{i32 2, !\"Debug Info Version\", i32 3}}\n",
+                self.di_next_id
+            ));
+        }
         result
     }
 
@@ -2464,13 +2675,15 @@ impl CodeGen {
             "define "
         };
 
+        let (dbg, call_dbg) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
         writeln!(
             &mut self.ir,
-            "{}{} @{}({}) {{",
-            linkage, ret_type, fn_name, params_str
+            "{}{} @{}({}){} {{",
+            linkage, ret_type, fn_name, params_str, dbg
         )
         .unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let body_start = self.ir.len();
 
         // @Counted — increment call counter at function entry
         let counted_metric = self.metric_entries.iter().find(|m| {
@@ -2512,6 +2725,7 @@ impl CodeGen {
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
+        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
 
         Ok(())
     }
@@ -2579,13 +2793,16 @@ impl CodeGen {
             "define "
         };
 
+        let dbg_name = format!("{}.{}", class_name, method.name);
+        let (dbg, call_dbg) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
         writeln!(
             &mut self.ir,
-            "{}{} @{}({}) {{",
-            linkage, ret_type, fn_name, params_str
+            "{}{} @{}({}){} {{",
+            linkage, ret_type, fn_name, params_str, dbg
         )
         .unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let body_start = self.ir.len();
 
         // @Counted — increment call counter at method entry
         let counted_metric = self.metric_entries.iter().find(|m| {
@@ -2632,6 +2849,7 @@ impl CodeGen {
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
+        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
 
         Ok(())
     }
@@ -10591,6 +10809,7 @@ impl CodeGen {
                 is_async: gm.is_async,
                 doc: None,
                 annotations: vec![],
+                file: gm.file.clone(),
             };
             // Signatur + Ret-Klasse registrieren, damit Inferenz am Call-Site greift
             let param_llvm: Vec<String> = specialized
@@ -11058,6 +11277,7 @@ impl CodeGen {
             is_async: f.is_async,
             doc: f.doc.clone(),
             annotations: vec![],
+            file: f.file.clone(),
         }
     }
 
@@ -11293,6 +11513,7 @@ impl CodeGen {
                 is_async: m.is_async,
                 doc: m.doc.clone(),
                 annotations: vec![],
+                file: m.file.clone(),
             }).collect(),
             span: c.span,
             doc: c.doc.clone(),
@@ -11869,6 +12090,117 @@ mod tests {
         let mut cg = CodeGen::new();
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
+    }
+
+    /// Mirrors `stamp_file_identity`/`stamp_file_identity_with` in
+    /// `tinox/src/main.rs` (issue #114) — that function lives in the
+    /// binary crate, not reachable from here, so this test-only helper
+    /// duplicates its (small, mechanical) decl-walking logic to set a
+    /// real `file` on every `Function`/`Method` before codegen. Without
+    /// this, `compile_to_ir` leaves every declaration's `file` at the
+    /// parser's `UNKNOWN_FILE` default and `dbg_suffix` correctly emits
+    /// no debug info at all (see `test_debug_info_skips_unknown_file`).
+    fn stamp_file_for_test(decls: &mut [tinox_parser::Decl], file: &Arc<str>) {
+        for decl in decls {
+            match &mut decl.node {
+                DeclKind::Function(f) => f.file = file.clone(),
+                DeclKind::Class(c) => {
+                    for m in &mut c.methods {
+                        m.file = file.clone();
+                    }
+                }
+                DeclKind::Namespace(ns) => stamp_file_for_test(&mut ns.decls, file),
+                _ => {}
+            }
+        }
+    }
+
+    fn compile_to_ir_with_file(src: &str, file: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let mut ast = parser.parse().expect("parse failed");
+        stamp_file_for_test(&mut ast.decls, &Arc::from(file));
+        let mut cg = CodeGen::new();
+        cg.gen(&ast).expect("codegen failed");
+        cg.into_ir()
+    }
+
+    // --- DWARF debug info (issue #114) ---
+
+    #[test]
+    fn test_debug_info_skips_unknown_file() {
+        // compile_to_ir (no stamped file) leaves every decl at
+        // UNKNOWN_FILE — dbg_suffix must skip debug info entirely rather
+        // than emit it against a fabricated/wrong file.
+        let src = "fn main() -> Int64 {\n  return 1;\n}";
+        let ir = compile_to_ir(src);
+        assert!(!ir.contains("!dbg"), "no file identity means no debug info at all");
+        assert!(!ir.contains("DISubprogram"));
+    }
+
+    #[test]
+    fn test_debug_info_emits_disubprogram_for_function() {
+        let src = "fn add(a: Int64, b: Int64) -> Int64 {\n  return a + b;\n}\nfn main() -> Int64 {\n  return add(1, 2);\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        assert!(ir.contains("define i64 @add"), "define line must be unaffected (substring still present)");
+        assert!(ir.contains("!dbg !"), "define line should get a !dbg attachment");
+        assert!(ir.contains("distinct !DISubprogram(name: \"add\""));
+        assert!(ir.contains("distinct !DISubprogram(name: \"main\""));
+        assert!(ir.contains("!DIFile(filename: \"probe.tnx\", directory: \"/tmp\")"));
+        assert!(ir.contains("distinct !DICompileUnit("));
+        assert!(ir.contains("!llvm.dbg.cu = "));
+        assert!(ir.contains("Debug Info Version"));
+    }
+
+    #[test]
+    fn test_debug_info_call_sites_get_dbg_location() {
+        // LLVM requires every call inside a function that itself carries
+        // !dbg to also carry a !dbg location, or opt's debug-info
+        // verifier silently strips the whole function's debug info
+        // (discovered empirically, see dbg_suffix's doc comment).
+        let src = "fn add(a: Int64, b: Int64) -> Int64 {\n  return a + b;\n}\nfn main() -> Int64 {\n  return add(1, 2);\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        let call_line = ir.lines().find(|l| l.contains("call i64 @add")).expect("call site should exist");
+        assert!(call_line.contains(", !dbg !"), "call site must carry a !dbg location: {call_line}");
+        assert!(ir.contains("!DILocation("));
+    }
+
+    #[test]
+    fn test_debug_info_two_files_get_distinct_difile() {
+        // The whole point of issue #114's file-identity work: a
+        // multi-file program must NOT misattribute a function to the
+        // wrong file's DIFile.
+        let helper_src = "class Helper {\n  fn double(x: Int64) -> Int64 {\n    return x * 2;\n  }\n}";
+        let mut lexer = Lexer::new(helper_src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let mut helper_ast = parser.parse().expect("parse failed");
+        stamp_file_for_test(&mut helper_ast.decls, &Arc::from("/proj/Helper.tnx"));
+
+        let main_src = "fn main() -> Int64 {\n  return 0;\n}";
+        let mut lexer2 = Lexer::new(main_src);
+        let tokens2 = lexer2.tokenize().expect("lex failed");
+        let mut parser2 = Parser::new(tokens2);
+        let mut main_ast = parser2.parse().expect("parse failed");
+        stamp_file_for_test(&mut main_ast.decls, &Arc::from("/proj/main.tnx"));
+
+        // Merge like resolve_imports would (imported decls first).
+        let mut merged = helper_ast.decls;
+        merged.extend(main_ast.decls);
+        let source = tinox_parser::SourceFile { decls: merged, span: Span::dummy() };
+
+        let mut cg = CodeGen::new();
+        cg.gen(&source).expect("codegen failed");
+        let ir = cg.into_ir();
+
+        assert!(ir.contains("!DIFile(filename: \"Helper.tnx\", directory: \"/proj\")"));
+        assert!(ir.contains("!DIFile(filename: \"main.tnx\", directory: \"/proj\")"));
+        // Exactly one DIFile per distinct path, not re-created per function.
+        assert_eq!(ir.matches("!DIFile(filename: \"Helper.tnx\"").count(), 1);
+        assert_eq!(ir.matches("!DIFile(filename: \"main.tnx\"").count(), 1);
+        // A single shared DICompileUnit, not one per file.
+        assert_eq!(ir.matches("distinct !DICompileUnit(").count(), 1);
     }
 
     #[test]

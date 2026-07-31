@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_lexer::{InterpPart, Keyword, Lexer, Token, TokenKind};
 
@@ -178,6 +180,7 @@ impl Parser {
             is_async: false,
             doc: None,
             annotations: vec![],
+            file: Arc::from(UNKNOWN_FILE),
         }))
     }
 
@@ -235,6 +238,7 @@ impl Parser {
             is_async: false,
             doc: None,
             annotations: vec![],
+            file: Arc::from(UNKNOWN_FILE),
         })
     }
 
@@ -391,6 +395,7 @@ impl Parser {
             is_async: false,
             doc: None,
             annotations: vec![],
+            file: Arc::from(UNKNOWN_FILE),
         })
     }
 

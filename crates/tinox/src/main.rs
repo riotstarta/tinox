@@ -1660,6 +1660,44 @@ fn check_one_type_per_file(decls: &[tinox_parser::Decl], path: &Path) -> Result<
     }
 }
 
+/// Stamps every `Function`/`Class` method's `file` field with `path`
+/// (issue #114): the parser has no notion of a filename (`Parser::new`
+/// only sees a token stream), so it always leaves `file` at
+/// `tinox_parser::UNKNOWN_FILE`. This is the one place — called right
+/// after each individual file is parsed, both for the entry file
+/// (`compile_file`) and every imported file (`resolve_imports`), BEFORE
+/// `resolve_imports` merges everything into one flat decl list — where
+/// the real path is actually known. Recurses into `Namespace` decls
+/// (matches `CodeGen::gen`'s own decl-walking for `gen_fn`/
+/// `gen_class_method`, the only two codegen sites that read `file`).
+/// Uses the canonicalized absolute path so DWARF's `!DIFile` directory/
+/// filename split (`tinox-codegen`) is well-defined regardless of the
+/// cwd `tinox build` was invoked from.
+fn stamp_file_identity(decls: &mut [tinox_parser::Decl], path: &Path) {
+    let file: std::sync::Arc<str> = std::sync::Arc::from(
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .into_owned(),
+    );
+    stamp_file_identity_with(decls, &file);
+}
+
+fn stamp_file_identity_with(decls: &mut [tinox_parser::Decl], file: &std::sync::Arc<str>) {
+    for decl in decls {
+        match &mut decl.node {
+            DeclKind::Function(f) => f.file = file.clone(),
+            DeclKind::Class(c) => {
+                for m in &mut c.methods {
+                    m.file = file.clone();
+                }
+            }
+            DeclKind::Namespace(ns) => stamp_file_identity_with(&mut ns.decls, file),
+            _ => {}
+        }
+    }
+}
+
 /// Resolves a module reference to a list of source files: prefers a single
 /// `<name>.tnx` file (legacy / not-yet-migrated modules); if that doesn't
 /// exist, falls back to a `<name>/` directory containing one `.tnx` file per
@@ -1808,6 +1846,7 @@ fn resolve_imports(
                 .parse()
                 .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
             check_one_type_per_file(&imported.decls, &full_path)?;
+            stamp_file_identity(&mut imported.decls, &full_path);
 
             let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
             resolve_imports(&mut imported, &imported_dir, visited, dep_dirs)?;
@@ -1840,6 +1879,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .parse()
         .map_err(|e| format!("Parse error: {:?}", e))?;
     check_one_type_per_file(&ast.decls, Path::new(input_path))?;
+    stamp_file_identity(&mut ast.decls, Path::new(input_path));
 
     let base_dir = Path::new(input_path)
         .parent()
