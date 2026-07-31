@@ -176,6 +176,18 @@ pub struct Amqp10ConsumerInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct Amqp091ConsumerInfo {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub queue: String,
+    pub on_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct MetricInfo {
     pub kind: MetricKind,
     /// Custom label from the annotation argument, e.g. @Timed("my_label").
@@ -207,6 +219,7 @@ pub struct AnnotationProcessingResult {
     pub entity_entries: Vec<EntityInfo>,
     pub ws_endpoints: Vec<WsEndpointInfo>,
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
+    pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -359,7 +372,7 @@ impl AnnotationProcessor {
                 valid_targets: vec![AnnotationTarget::Method],
                 min_args: 0,
                 max_args: 0,
-                description: "Marks the method called for each incoming message; exact signature depends on the enclosing class annotation: fn(conn: Int64, msg: String) -> Nothing for @WebsocketEndpoint, fn(msg: Amqp10Message) -> Nothing for @Amqp10Consumer".to_string(),
+                description: "Marks the method called for each incoming message; exact signature depends on the enclosing class annotation: fn(conn: Int64, msg: String) -> Nothing for @WebsocketEndpoint, fn(msg: Amqp10Message) -> Nothing for @Amqp10Consumer, fn(msg: AmqpMessage091) -> Nothing for @Amqp091Consumer".to_string(),
             },
         );
         registry.insert(
@@ -382,6 +395,18 @@ impl AnnotationProcessor {
                 min_args: 5,
                 max_args: 5,
                 description: "@Amqp10Consumer(host, port, user, pass, address) — marks a class as an auto-run AMQP-1.0 receiver; the compiler generates a connect/begin/attach/grantCredit/nextMessage/ack loop as `main` that calls the class's @OnMessage method for each delivered message. Only valid when the file defines no `main` and has exactly one @Amqp10Consumer class.".to_string(),
+            },
+        );
+
+        // AMQP-0-9-1 annotation-driven consumer (Issue #126)
+        registry.insert(
+            "Amqp091Consumer".to_string(),
+            AnnotationInfo {
+                name: "Amqp091Consumer".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 6,
+                max_args: 6,
+                description: "@Amqp091Consumer(host, port, vhost, user, pass, queue) — marks a class as an auto-run AMQP-0-9-1 receiver; the compiler generates a connect/open/qos/consume/nextMessage/ack loop as `main` that calls the class's @OnMessage method for each delivered message. Only valid when the file defines no `main` and has exactly one @Amqp091Consumer class.".to_string(),
             },
         );
 
@@ -763,6 +788,7 @@ impl AnnotationProcessor {
         let mut ws_endpoint_path: Option<String> = None;
         let mut ws_endpoint_port: Option<i64> = None;
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
+        let mut amqp091_consumer_args: Option<(String, i64, String, String, String, String)> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
@@ -787,6 +813,17 @@ impl AnnotationProcessor {
                     let address = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(4) { Some(s.clone()) } else { None };
                     if let (Some(host), Some(port), Some(user), Some(pass), Some(address)) = (host, port, user, pass, address) {
                         amqp10_consumer_args = Some((host, port, user, pass, address));
+                    }
+                }
+                "Amqp091Consumer" => {
+                    let host = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() { Some(s.clone()) } else { None };
+                    let port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.get(1) { Some(*p) } else { None };
+                    let vhost = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(2) { Some(s.clone()) } else { None };
+                    let user = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(3) { Some(s.clone()) } else { None };
+                    let pass = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(4) { Some(s.clone()) } else { None };
+                    let queue = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(5) { Some(s.clone()) } else { None };
+                    if let (Some(host), Some(port), Some(vhost), Some(user), Some(pass), Some(queue)) = (host, port, vhost, user, pass, queue) {
+                        amqp091_consumer_args = Some((host, port, vhost, user, pass, queue));
                     }
                 }
                 "Auth" => {
@@ -1024,6 +1061,27 @@ impl AnnotationProcessor {
                 user,
                 pass,
                 address,
+                on_message,
+            });
+        }
+
+        if let Some((host, port, vhost, user, pass, queue)) = amqp091_consumer_args {
+            let mut on_message: Option<String> = None;
+            for method in &class.methods {
+                for ann in &method.annotations {
+                    if ann.name == "OnMessage" {
+                        on_message = Some(method.name.clone());
+                    }
+                }
+            }
+            result.amqp091_consumers.push(Amqp091ConsumerInfo {
+                class_name: class.name.clone(),
+                host,
+                port,
+                vhost,
+                user,
+                pass,
+                queue,
                 on_message,
             });
         }

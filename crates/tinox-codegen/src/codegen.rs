@@ -140,6 +140,19 @@ pub struct Amqp10ConsumerEntry {
     pub on_message: Option<String>,
 }
 
+/// AMQP-0-9-1 consumer entry produced by @Amqp091Consumer annotation processing (Issue #126).
+#[derive(Debug, Clone)]
+pub struct Amqp091ConsumerEntry {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub queue: String,
+    pub on_message: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -264,6 +277,8 @@ pub struct CodeGen {
     ws_endpoints: Vec<WsEndpointEntry>,
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
+    /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
+    amqp091_consumers: Vec<Amqp091ConsumerEntry>,
     /// Rich per-expression types from the checker (type-system unification): the
     /// full ValueType per node id, incl. generic args. Since phase 3 the ONLY
     /// checker→codegen type channel (the lossy flat marker table it replaced is
@@ -349,6 +364,7 @@ impl CodeGen {
             entity_entries: Vec::new(),
             ws_endpoints: Vec::new(),
             amqp10_consumers: Vec::new(),
+            amqp091_consumers: Vec::new(),
             expr_value_types: HashMap::new(),
             db_url: None,
             metrics_path: None,
@@ -399,6 +415,10 @@ impl CodeGen {
 
     pub fn set_amqp10_consumers(&mut self, consumers: Vec<Amqp10ConsumerEntry>) {
         self.amqp10_consumers = consumers;
+    }
+
+    pub fn set_amqp091_consumers(&mut self, consumers: Vec<Amqp091ConsumerEntry>) {
+        self.amqp091_consumers = consumers;
     }
 
     pub fn set_db_url(&mut self, url: Option<String>) {
@@ -1594,6 +1614,9 @@ impl CodeGen {
         // Emit the auto-run connect/receive loop for an @Amqp10Consumer class
         self.emit_amqp10_consumer_code();
 
+        // Emit the auto-run connect/receive loop for an @Amqp091Consumer class
+        self.emit_amqp091_consumer_code();
+
         // Emit DI globals, getters, factories, and startup initializer
         self.emit_di_code();
 
@@ -2123,6 +2146,107 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
         writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
         writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
+        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        self.has_main = true;
+    }
+
+    /// Generates an auto-run `main` for a single `@Amqp091Consumer`-annotated
+    /// class (Issue #126): connect/open/qos/consume/nextMessage/ack loop,
+    /// calling the class's `@OnMessage` method directly by its mangled
+    /// `{Class}_{method}` symbol — same hand-emitted-IR technique as
+    /// `emit_amqp10_consumer_code`, calling the already-compiled
+    /// `AmqpConnection091`/`AmqpChannel091` static/instance methods from
+    /// `tinox.core.amqp091` (which the file must import). The handler
+    /// receives the whole `AmqpMessage091` pointer (not a decoded body) so
+    /// no string-building loop needs to be hand-rolled in raw IR. Prefetch
+    /// is hardcoded to 1 (mirrors amqp10's per-message `grantCredit(1)`) —
+    /// no annotation argument for it in v1, s. tasklist.md "Später".
+    ///
+    /// Only fires when there is exactly one consumer and no user `main`
+    /// (mirrors the WS/AMQP-1.0 auto-main precedence); more than one
+    /// consumer is a hard error raised before codegen runs (see main.rs),
+    /// so this defensively no-ops instead of silently picking one.
+    fn emit_amqp091_consumer_code(&mut self) {
+        if self.amqp091_consumers.is_empty() || self.has_main || self.amqp091_consumers.len() > 1 {
+            return;
+        }
+        let c = self.amqp091_consumers[0].clone();
+
+        if !self.class_named_types.contains("AmqpMessage091") {
+            panic!("@Amqp091Consumer requires `import tinox.core.amqp091;` (AmqpMessage091 type not found)");
+        }
+
+        let inst_size = self.struct_layouts.get(c.class_name.as_str())
+            .map(|f| (f.len().max(1) * 8) as i64)
+            .unwrap_or(8);
+
+        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+
+        let host_ptr = self.emit_lambda_string_literal(&c.host);
+        let vhost_ptr = self.emit_lambda_string_literal(&c.vhost);
+        let user_ptr = self.emit_lambda_string_literal(&c.user);
+        let pass_ptr = self.emit_lambda_string_literal(&c.pass);
+        let queue_ptr = self.emit_lambda_string_literal(&c.queue);
+
+        writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @AmqpConnection091_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {vhost_ptr}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
+        writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.AmqpConnection091, ptr %conn_obj, i32 0, i32 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_open").unwrap();
+
+        writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+
+        writeln!(&mut self.lambda_ir, "do_open:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %chan_obj = call i64* @AmqpChannel091_open(i64* null, i64* %conn_obj)").unwrap();
+        writeln!(&mut self.lambda_ir, "  %chanid_field = getelementptr %class.AmqpChannel091, ptr %chan_obj, i32 0, i32 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %chanid_val = load i64, i64* %chanid_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chanid_val, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
+
+        writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
+
+        writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %qos_ok = call i1 @AmqpChannel091_qos(i64* %chan_obj, i64 1)").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
+
+        writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
+
+        writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %tag_ptr = call i8* @AmqpChannel091_consume(i64* %chan_obj, i8* {queue_ptr})").unwrap();
+        writeln!(&mut self.lambda_ir, "  %tag_len = call i64 @tinox_string_length(i8* %tag_ptr)").unwrap();
+        writeln!(&mut self.lambda_ir, "  %tag_bad = icmp eq i64 %tag_len, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
+
+        writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
+
+        writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+        writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
+        writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
+        writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
+
+        writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+        if let Some(ref on_message) = c.on_message {
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+        }
+        writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
         writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
         writeln!(&mut self.lambda_ir, "}}").unwrap();

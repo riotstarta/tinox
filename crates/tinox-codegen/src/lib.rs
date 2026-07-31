@@ -17,3 +17,4 @@ pub use codegen::EntityEntry;
 pub use codegen::EntityFieldEntry;
 pub use codegen::WsEndpointEntry;
 pub use codegen::Amqp10ConsumerEntry;
+pub use codegen::Amqp091ConsumerEntry;

@@ -1121,9 +1121,10 @@
         <tr><td><code>@annotation</code></td><td>Klasse</td><td>Eigene Annotation definieren</td></tr>
         <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Klasse</td><td>WebSocket: generiert einen Accept/Message-Loop als <code>main</code> (nur bei genau einer Endpoint-Klasse und ohne eigenes <code>main</code>)</td></tr>
         <tr><td><code>@OnOpen</code></td><td>Methode</td><td>WebSocket: Aufruf bei neuer Verbindung, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
-        <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: Amqp10Message) -&gt; Nothing</code></td></tr>
+        <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: Amqp10Message) -&gt; Nothing</code>. AMQP-0-9-1: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: AmqpMessage091) -&gt; Nothing</code></td></tr>
         <tr><td><code>@OnClose</code></td><td>Methode</td><td>WebSocket: Aufruf beim Verbindungsende, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
         <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Klasse</td><td>AMQP-1.0: generiert einen Connect/Attach/Receive-Loop als <code>main</code> (nur bei genau einer Consumer-Klasse und ohne eigenes <code>main</code>)</td></tr>
+        <tr><td><code>@Amqp091Consumer(host, port, vhost, user, pass, queue)</code></td><td>Klasse</td><td>AMQP-0-9-1: generiert einen Connect/Open/Qos/Consume/Receive-Loop als <code>main</code> (nur bei genau einer Consumer-Klasse und ohne eigenes <code>main</code>); Prefetch ist v1 fest auf 1</td></tr>
       </tbody>
     </table>
   </section>
@@ -2115,10 +2116,10 @@ conn.stopHeartbeat();         <span class="cmt">// oder einfach conn.close(), da
     <strong>Bewusste v1-Lücken:</strong> kein echtes Multi-Channel
     (<code>AmqpChannel091::open</code> nutzt v1 immer Channel 1 — mehrere
     unabhängige Channels mit paralleler Nachrichten-Zustellung sind noch
-    nicht unterstützt), keine Transaktionen (<code>tx.select</code>), keine
-    Annotation-getriebene Consumer-API, kein Auto-Reconnect, kein eigener
-    CA-Bundle-Parameter bei <code>connectTls</code> (verifiziert nur gegen
-    die System-CA-Stores). AMQP 1.0 ist nicht Teil dieses Moduls.
+    nicht unterstützt), keine Transaktionen (<code>tx.select</code>), kein
+    Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
+    <code>connectTls</code> (verifiziert nur gegen die System-CA-Stores).
+    AMQP 1.0 ist nicht Teil dieses Moduls.
   </p>
   <h3>Publisher-Confirms</h3>
   <pre><code>let selected = ch.confirmSelect();
@@ -2130,6 +2131,31 @@ let confirm = ch.waitForConfirm();
     } <span class="kw">else</span> {
         <span class="cmt">// basic.nack -- Broker konnte sie nicht verarbeiten, ggf. neu senden</span>
     }
+}
+</code></pre>
+  <h3>Annotation-getriebene Consumer-Variante</h3>
+  <p>
+    Wie bei WebSocket/AMQP-1.0 generiert der Compiler alternativ den
+    kompletten Connect/Open/Qos/Consume/Receive-Loop selbst — siehe
+    <a href="#annotationen">Annotationen</a> (<code>@Amqp091Consumer</code>/
+    <code>@OnMessage</code>). Gilt nur, wenn die Datei kein eigenes
+    <code>main</code> definiert und genau eine <code>@Amqp091Consumer</code>-
+    Klasse enthält (mehrere sind ein Compile-Fehler, kein stilles
+    Ignorieren). Prefetch ist v1 fest auf 1 (kein Annotation-Argument
+    dafür). Der Handler bekommt die komplette <code>AmqpMessage091</code>
+    übergeben (nicht einen bereits dekodierten String) — Body-Dekodierung
+    bleibt beim Aufrufer, genau wie im manuellen Beispiel oben:
+  </p>
+  <pre><code>import tinox.core.amqp091;
+
+<span class="ann">@Amqp091Consumer</span>(<span class="str">"localhost"</span>, <span class="num">5672</span>, <span class="str">"/"</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>, <span class="str">"tinox-demo-queue"</span>)
+<span class="kw">class</span> <span class="type">DemoConsumer091</span>
+{
+    <span class="ann">@OnMessage</span>
+    <span class="kw">fn</span> <span class="fn">onMessage</span>(msg: AmqpMessage091) -> Nothing
+    {
+        <span class="cmt">// msg.body (List&lt;Int64&gt;) selbst dekodieren, dann z. B. loggen
+    </span>}
 }
 </code></pre>
   </div>

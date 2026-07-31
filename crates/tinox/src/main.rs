@@ -1928,6 +1928,28 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
+    if ann_result.amqp091_consumers.len() > 1 {
+        return Err(format!(
+            "found {} @Amqp091Consumer classes ({}); v1 supports exactly one auto-run AMQP-0-9-1 consumer per program",
+            ann_result.amqp091_consumers.len(),
+            ann_result.amqp091_consumers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let amqp091_consumers: Vec<tinox_codegen::Amqp091ConsumerEntry> = ann_result
+        .amqp091_consumers
+        .iter()
+        .map(|e| tinox_codegen::Amqp091ConsumerEntry {
+            class_name: e.class_name.clone(),
+            host: e.host.clone(),
+            port: e.port,
+            vhost: e.vhost.clone(),
+            user: e.user.clone(),
+            pass: e.pass.clone(),
+            queue: e.queue.clone(),
+            on_message: e.on_message.clone(),
+        })
+        .collect();
+
     let di_components: Vec<tinox_codegen::DiComponentInfo> = ann_result.di_components
         .iter()
         .map(|c| tinox_codegen::DiComponentInfo {
@@ -2046,6 +2068,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_entity_entries(entity_entries);
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
+    codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_db_url(read_database_config().map(|c| c.url));
     codegen
         .gen(&ast)
