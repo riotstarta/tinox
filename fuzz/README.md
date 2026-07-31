@@ -22,11 +22,14 @@ against clang 22.1.8.
 | JSON parser | `json/` | `jsonParse(const char*)` directly | none — `jsonParse` already takes a raw buffer |
 | ZIP reader | `zip/` | `zipEntryCount(const char*)` → `tinox_zip_parse()` | writes each input to an anonymous `O_TMPFILE`, passes `/proc/self/fd/<n>` as the path (the zip\*() functions are path-based, not buffer-based) |
 | HPACK decoder | `hpack/` | `Hpack::decode(List<Int64>, HpackDynTable)` (`crates/tinox-core/hpack/Hpack.tnx`) | `hpack_driver.tnx` imports the real module and adds a one-line `tinoxHpackDecode` wrapper; `build.sh` compiles it via the real `tinox build` to LLVM IR, then recompiles that IR with ASan/coverage instrumentation — see "HPACK: calling compiled Tinox code" below |
+| AMQP-0-9-1 frame reader | `amqp091/` | `Amqp091::readFrame(Int64)` (`crates/tinox-core/amqp091/Amqp091.tnx`) | `amqp091_driver.tnx` wraps it same as HPACK; the fuzz bytes arrive via a pre-filled, write-shutdown `socketpair()` instead of a plain buffer — see "AMQP frame readers: calling compiled Tinox code that reads from a socket" below |
+| AMQP-1.0 frame reader | `amqp10/` | `Amqp10::readFrame(Int64)` (`crates/tinox-core/amqp10/Amqp10.tnx`) | same socketpair bridging as `amqp091/` |
 
-JSON and ZIP call straight into the real `runtime/runtime.c`; HPACK calls
-straight into the real, compiled `crates/tinox-core/hpack/Hpack.tnx` — none
-of the three are a copy of the parsing logic, so a fix or a regression in
-either is picked up automatically.
+JSON and ZIP call straight into the real `runtime/runtime.c`; HPACK,
+AMQP-0-9-1, and AMQP-1.0 call straight into the real, compiled
+`crates/tinox-core/{hpack,amqp091,amqp10}/*.tnx` — none of the five are a
+copy of the parsing logic, so a fix or a regression in any of them is
+picked up automatically.
 
 ### HPACK: calling compiled Tinox code, not C
 
@@ -60,12 +63,51 @@ not just HPACK — the driver-module + recompiled-IR pattern doesn't care
 what the function does, only that it takes/returns primitives or handles
 with a stable, C-callable ABI.
 
+### AMQP frame readers: calling compiled Tinox code that reads from a socket
+
+`Amqp091::readFrame`/`Amqp10::readFrame` are the "not standalone
+functions" case flagged as future work in earlier revisions of this
+README: they don't take a buffer, they read directly off a `conn` handle
+(a `runtime.c` `TinoxConn*` wrapping a socket fd) via `httpConnReadN`,
+which loops on `conn_recv()` until it gets N bytes or hits EOF (checked
+in the source, not assumed, before relying on it here). So the driver
+can't be a plain `(List<Int64>) -> X` wrapper like `tinoxHpackDecode` —
+`amqp091_driver.tnx`/`amqp10_driver.tnx` instead wrap
+`fn tinoxAmqpXXXReadFrame(conn: Int64) -> Int64`, taking an
+already-open conn handle and returning just the `frameType`.
+
+The fuzzer harness (`amqp091_fuzzer.cc`/`amqp10_fuzzer.cc`) builds that
+conn handle from a `socketpair(AF_UNIX, SOCK_STREAM, ...)`: write the
+whole fuzz input into one end, `shutdown(SHUT_WR)` that end so the kernel
+signals EOF once the buffered bytes are drained, then call
+`httpConnFromFd()` (a plain `runtime.c` function, called directly from
+C++ same as the compiled driver symbol) on the read end and pass the
+resulting conn handle to `tinoxAmqpXXXReadFrame`. No feeder thread
+needed — the whole input is already sitting in the kernel's socket
+buffer before `readFrame` ever calls `conn_recv`, and `httpConnReadN`'s
+short-read handling means an input shorter than whatever frame length it
+declares terminates the read loop instead of blocking.
+
+One thing this technique requires closing explicitly that the buffer-only
+targets don't: `close()` both ends of the socketpair every iteration. The
+heap allocations this `-DTINOX_NO_GC` harness makes are leaked on
+purpose (see below) — file descriptors are not, and a typical `ulimit -n`
+(1024) is exhausted in well under a second of fuzzing otherwise, long
+before the memory-based OOM these harnesses otherwise rely on as their
+natural restart point.
+
+This socketpair bridging works for any Tinox function whose input arrives
+by reading off a conn/fd handle rather than a pre-built buffer — the
+driver-module + recompiled-IR part is identical to HPACK's.
+
 ## Building and running
 
 ```bash
-fuzz/json/build.sh  && fuzz/json/json_fuzzer   fuzz/json/corpus/  fuzz/json/seeds/
-fuzz/zip/build.sh   && fuzz/zip/zip_fuzzer     fuzz/zip/corpus/   fuzz/zip/seeds/
-fuzz/hpack/build.sh && fuzz/hpack/hpack_fuzzer fuzz/hpack/corpus/ fuzz/hpack/seeds/
+fuzz/json/build.sh    && fuzz/json/json_fuzzer     fuzz/json/corpus/    fuzz/json/seeds/
+fuzz/zip/build.sh     && fuzz/zip/zip_fuzzer       fuzz/zip/corpus/     fuzz/zip/seeds/
+fuzz/hpack/build.sh   && fuzz/hpack/hpack_fuzzer   fuzz/hpack/corpus/   fuzz/hpack/seeds/
+fuzz/amqp091/build.sh && fuzz/amqp091/amqp091_fuzzer fuzz/amqp091/corpus/ fuzz/amqp091/seeds/
+fuzz/amqp10/build.sh  && fuzz/amqp10/amqp10_fuzzer  fuzz/amqp10/corpus/  fuzz/amqp10/seeds/
 ```
 
 `corpus/` is the fuzzer's working corpus (gitignored — it grows large and
@@ -126,30 +168,69 @@ capping `decodeInt`'s continuation-byte loop so a long run of
 `crates/tinox-core/hpack/Hpack.tnx` and the `tests/e2e/hpack_truncated_input.tnx`
 regression test. Exactly the bug class this issue set out to catch.
 
-## Extending to other parsers
+## What the AMQP-0-9-1 target found
 
-The original issue also flagged `amqp091`/`amqp10` frame parsing and the
-HTTP/2 frame parser as candidates, beyond HPACK above:
+Within seconds of running `fuzz/amqp091/amqp091_fuzzer`, it hit libFuzzer's
+`-rss_limit_mb` OOM abort orders of magnitude faster than the other
+targets (tens of thousands of executions instead of the ~230k baseline
+above) — not from a memory-safety bug (ASan never flagged an
+out-of-bounds/use-after-free access across a 35M+-execution `-fork=4`
+run after the fix below), but from a single allocation: a crashing input
+made `runtime.c`'s `httpConnReadN` allocate gigabytes across a modest
+number of iterations. Root cause: `httpConnReadN(conn, n)` pre-allocated
+a buffer sized to the full DECLARED `n` upfront, before confirming that
+many bytes actually existed on the connection — a 7-byte AMQP frame
+header claiming a size just under `readFrame`'s own 16MB cap triggered a
+~128MB array allocation (`n` elements × 8 bytes/`Int64` slot) even when
+the connection was closed right after the header, without a single
+payload byte sent. Any peer (a malicious/compromised broker against this
+AMQP *client*) could repeat that cheaply.
 
-- **ZIP and JSON were the easy cases** because their parse entry points
-  (`jsonParse`, `zipEntryCount`/`tinox_zip_parse`) are plain C functions
-  taking a buffer or a path — call them directly (JSON) or bridge via a
-  temp file (ZIP), no different from any other libFuzzer target.
-- **HPACK is Tinox source, not C, but still buffer-in/buffer-out** — see
-  "HPACK: calling compiled Tinox code, not C" above for how a driver
-  module plus a recompiled-IR step bridges that.
-- **AMQP-0-9-1/1.0 and HTTP/2 frame parsing are not standalone
-  functions** — they read directly from a live socket fd in the middle of
-  the connection state machine (`conn_recv`/`conn_send` and friends), not
-  from an in-memory buffer handed to a `parse(bytes)`-shaped entry point
-  the way `Hpack::decode` is. Fuzzing them means feeding fixed bytes
-  through something that looks like a socket to that code, e.g. a
-  `socketpair()` where a second thread (or a pre-filled kernel send
-  buffer) supplies the fuzz input on the read end, driving a compiled
-  Tinox connection-handler entry point (reachable the same way
-  `tinoxHpackDecode` is here) rather than a single pure function. That's a
-  meaningfully bigger harness than any target here and is left out of
-  this pass — tracked as follow-up work in
-  [#111](https://github.com/subnix-work/tinox/issues/111) rather than
-  attempted alongside it, per this project's "gezielt statt pauschal
-  fixen" convention (CLAUDE.md).
+The exact same shape existed a second time, arguably more severely,
+outside anything this fuzz target directly exercises: `runtime.c`'s
+`httpServerReadRawBytes` (which `Http2Server::readFrame` uses for RFC
+7540 frame headers/payloads) pre-allocated a C string buffer sized to a
+peer-declared HTTP/2 frame length the same way — server-side, so any
+HTTP/2 *client* could trigger it against a Tinox HTTP/2 server, found by
+inspection once the `httpConnReadN` pattern was recognized rather than by
+a dedicated HTTP/2 fuzz target (see "Extending further" below).
+
+Fixed both by capping the *initial* allocation to the read loop's own
+chunk size (4096) and growing it — via `tinox_array_push`'s existing
+amortized doubling for `httpConnReadN`, via an equivalent doubling loop
+added to `httpServerReadRawBytes` — only as bytes are actually received,
+so the worst case is bounded by what a peer actually sends, not by what
+it merely claims. Neither function's external behavior/return value
+changed (same result, same short-read/EOF semantics), so every caller
+across `amqp091`, `amqp10`, and WebSocket (`httpConnReadN`) and HTTP/2
+(`httpServerReadRawBytes`) is protected by this one runtime-level fix
+with no per-protocol changes needed. See `runtime.c`'s `httpConnReadN`/
+`httpServerReadRawBytes` and the `tests/e2e/amqp091_readframe_declared_size.tnx`
+/ `tests/e2e/http2_readrawbytes_declared_size.tnx` regression tests.
+
+## What the AMQP-1.0 target found
+
+Nothing beyond the `httpConnReadN` fix above, which already covered it —
+`Amqp10::readFrame` uses the same `httpConnReadN` primitive as
+`Amqp091::readFrame`, so the fix found via the AMQP-0-9-1 target closed
+the identical amplification path here too. 47M+ executions across a
+`-fork=4` run turned up no ASan findings.
+
+## Extending further
+
+`amqp091`/`amqp10`/HPACK are now covered; ZIP and JSON were covered from
+the start (see "HPACK: calling compiled Tinox code, not C" above for why
+those three needed different bridging techniques). What's left, tracked
+as follow-up in [#111](https://github.com/subnix-work/tinox/issues/111):
+
+- **A dedicated HTTP/2 frame-parsing fuzz target.** `Http2Server::readFrame`
+  is an *instance* method needing a constructed `Http2Server` (routes,
+  middleware, socket state), not a free function like
+  `Amqp091::readFrame`/`Amqp10::readFrame` — the socketpair bridging
+  technique above still applies to the byte-reading layer, but driving a
+  realistic amount of the surrounding HTTP/2 connection state machine
+  (SETTINGS exchange, HPACK-decoded headers, stream multiplexing) to
+  reach deeper frame handling than just the header-length parsing already
+  covered by the `httpServerReadRawBytes` fix above is a meaningfully
+  bigger harness than any target here — intentionally left out of this
+  pass per "gezielt statt pauschal fixen" (CLAUDE.md).

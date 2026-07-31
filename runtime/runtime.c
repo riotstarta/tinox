@@ -1183,13 +1183,36 @@ char* socketReceive(int64_t fd, int64_t size) {
 // generic — cap it here too as defense in depth against any caller that
 // doesn't already enforce that.
 #define TINOX_HTTP2_MAX_RAW_READ (16 * 1024 * 1024)
+// `count` is a peer-declared HTTP/2 frame length (Http2Server::readFrame,
+// RFC 7540 §4.1's 24-bit Length field), confirmed only after the fact --
+// same amplification shape as httpConnReadN's `n` (see that function's
+// comment, found by fuzz/amqp091, issue #111): pre-allocating a buffer
+// sized to the full (possibly ~16MB, TINOX_HTTP2_MAX_RAW_READ) `count`
+// before any bytes are confirmed to exist on the socket let a malicious/
+// misbehaving HTTP/2 client trigger an outsized SERVER-side allocation
+// per frame header while sending almost no actual bytes -- arguably worse
+// here than the AMQP client-side case, since an HTTP/2 server accepts
+// connections from arbitrary untrusted clients. Grow in the same bounded-
+// chunk + amortized-doubling shape as httpConnReadN instead of trusting
+// `count` upfront.
 char* httpServerReadRawBytes(int64_t fd, int64_t count) {
     if (fd < 0 || count <= 0) return GC_strdup("");
     if (count > TINOX_HTTP2_MAX_RAW_READ) count = TINOX_HTTP2_MAX_RAW_READ;
-    char* buf = (char*)GC_malloc((size_t)count + 1);
+    size_t cap = (size_t)count < 4096 ? (size_t)count : 4096;
+    if (cap < 1) cap = 1;
+    char* buf = (char*)GC_malloc(cap + 1);
     size_t got = 0;
     while ((int64_t)got < count) {
-        ssize_t n = read((int)fd, buf + got, (size_t)count - got);
+        if (got == cap) {
+            size_t ncap = cap * 2;
+            char* nbuf = (char*)GC_malloc(ncap + 1);
+            memcpy(nbuf, buf, got);
+            buf = nbuf;
+            cap = ncap;
+        }
+        size_t want = (size_t)count - got;
+        size_t chunk = want < (cap - got) ? want : (cap - got);
+        ssize_t n = read((int)fd, buf + got, chunk);
         if (n <= 0) break;
         got += (size_t)n;
     }
@@ -2642,8 +2665,23 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 // Liest EXAKT n Bytes (blockierend, loop über kurze reads). Rückgabe: Array
 // der gelesenen Bytes; Länge < n bedeutet EOF/Fehler mittendrin — der
 // Aufrufer MUSS die Länge prüfen (kein stilles Auffüllen).
+//
+// `n` ist oft ein direkt von der Gegenseite deklarierter Wert (AMQP-0-9-1/
+// 1.0 Frame-Größe, WS Payload-Länge, ...), BEVOR feststeht, ob überhaupt so
+// viele Bytes tatsächlich ankommen. Vorallozieren auf die volle deklarierte
+// `n` (statt auf tatsächlich empfangene Bytes) erlaubt einem böswilligen/
+// gestörten Peer, mit einem winzigen, nie vollständig gelieferten Header
+// eine unverhältnismäßig große Allokation auszulösen (gefunden von
+// fuzz/amqp091, Issue #111: ein 7-Byte-AMQP-Frame-Header, der ~16MB
+// deklariert, löst eine ~128MB-Array-Allokation aus, auch wenn die
+// Verbindung danach ohne jeden Payload-Byte geschlossen wird). Vorallozieren
+// nur bis zur Chunk-Größe unten (4096) und tinox_array_push()s vorhandenes
+// amortisiertes Verdoppeln den Rest übernehmen lassen begrenzt den
+// Worst-Case auf tatsächlich empfangene Bytes statt auf die bloße Behauptung
+// der Gegenseite.
 int64_t* httpConnReadN(int64_t conn, int64_t n) {
-    int64_t* nh = tinox_array_new(0, n > 0 ? n : 4);
+    int64_t initial_cap = n > 0 ? (n < 4096 ? n : 4096) : 4;
+    int64_t* nh = tinox_array_new(0, initial_cap);
     if (conn <= 0 || n <= 0) return nh;
     TinoxConn* c = (TinoxConn*)(intptr_t)conn;
     unsigned char buf[4096];

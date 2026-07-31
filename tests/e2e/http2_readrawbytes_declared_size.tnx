@@ -1,0 +1,86 @@
+// Regression test for a bug found alongside fuzz/amqp091 (issue #111):
+// runtime.c's httpServerReadRawBytes(fd, count) — the raw byte reader
+// Http2Server::readFrame uses for RFC 7540 frame headers/payloads — used
+// to pre-allocate a buffer sized to the full DECLARED `count` upfront,
+// before confirming that many bytes actually exist on the socket. A
+// malicious/misbehaving HTTP/2 client could send a frame header
+// declaring a large length and then send almost nothing, forcing the
+// SERVER to allocate up to ~16MB (TINOX_HTTP2_MAX_RAW_READ) per such
+// frame header — the same amplification shape as httpConnReadN (see
+// tests/e2e/amqp091_readframe_declared_size.tnx), just server-side and
+// via a plain C string buffer instead of a TinoxArray. Fixed by growing
+// the buffer in the same bounded-chunk + amortized-doubling shape as
+// httpConnReadN instead of trusting `count` upfront.
+//
+// This test exercises httpServerReadRawBytes directly (not the full
+// HTTP/2 connection/HPACK/multiplexing state machine, which has no e2e
+// coverage at all yet — a much bigger gap tracked in issue #111 as
+// "AMQP-0-9-1/1.0 and HTTP/2 frame parsing" beyond what this fix covers):
+// a full read exercising the growth path (>4096 bytes, so the initial
+// capacity must double at least twice) and a short read (connection
+// closed after only 100 of a declared 5000 bytes) that must return
+// promptly with just the bytes actually received, not hang or crash.
+// expect: ok-len
+// expect: ok-content
+// expect: ok-short-read
+
+import tinox.core.http2_server;
+import tinox.core.socket;
+
+fn main() -> Int32 {
+    let srv = httpServerCreate(47639);
+    if srv < 0 {
+        println("bind fehlgeschlagen");
+        return 1;
+    }
+
+    let cfd = socketCreateTcp();
+    socketConnect(cfd, "127.0.0.1", 47639);
+    let clientFd = httpServerAcceptConn(srv);
+
+    var payload: String = "";
+    for i in 0..10000 {
+        payload = payload + "x";
+    }
+    var bytes: List<Int64> = [];
+    for i in 0..payload.len() {
+        bytes.push(payload.charCodeAt(i));
+    }
+    let cconn = httpConnFromFd(cfd);
+    httpConnWriteBytes(cconn, bytes);
+
+    let got = httpServerReadRawBytes(clientFd, 10000);
+    if got.len() == 10000 {
+        println("ok-len");
+    }
+    var allX: Bool = true;
+    for i in 0..got.len() {
+        if got.charCodeAt(i) != 120 {
+            allX = false;
+        }
+    }
+    if allX {
+        println("ok-content");
+    }
+
+    // Short read: only 100 bytes actually sent (then connection closed),
+    // but the caller declares/requests 5000 — must not hang or over-read.
+    let cfd2 = socketCreateTcp();
+    socketConnect(cfd2, "127.0.0.1", 47639);
+    let clientFd2 = httpServerAcceptConn(srv);
+    var small: List<Int64> = [];
+    for i in 0..100 {
+        small.push(65);
+    }
+    let cconn2 = httpConnFromFd(cfd2);
+    httpConnWriteBytes(cconn2, small);
+    httpConnClose(cconn2);
+
+    let got2 = httpServerReadRawBytes(clientFd2, 5000);
+    if got2.len() == 100 {
+        println("ok-short-read");
+    }
+
+    httpServerClose(srv);
+    return 0;
+}
