@@ -2812,8 +2812,25 @@ impl TypeChecker {
                 ValueType::Nothing
             }
             ExprKind::Recv(inner) => {
-                self.infer_type(inner);
-                ValueType::Int // received value
+                let ch_ty = self.infer_type(inner);
+                // `channel`'s own inferred type is always a bare Int
+                // (opaque handle, see ExprKind::Channel above — there's no
+                // element type to infer at creation time), but the
+                // variable/field/parameter it's assigned/declared into
+                // carries the real `Channel<T>` annotation (ValueType::
+                // Named("Channel", [T]), via ValueType::from_parser_type's
+                // generic-type fallback). Recover T from there so `recv`
+                // on a `Channel<SomeClass>` (not just `Channel<Int64>`,
+                // which happened to already work since Int was the
+                // correct answer by coincidence) type-checks its result
+                // as the real element type instead of always Int64 —
+                // issue #123 needed this for `Channel<AmqpFrame091>`.
+                if let ValueType::Named(name, args) = &ch_ty {
+                    if name == "Channel" && args.len() == 1 {
+                        return args[0].clone();
+                    }
+                }
+                ValueType::Int // unknown channel element type — unchanged fallback
             }
             ExprKind::Cast { expr, ty } => {
                 self.infer_type(expr);
@@ -3580,6 +3597,14 @@ impl TypeChecker {
                     .map(|ifaces| ifaces.iter().any(|i| i == iface))
                     .unwrap_or(false)
             }
+            // `channel` (a bare Int — see ExprKind::Channel/Recv above,
+            // there's no element type to infer at creation) is compatible
+            // with any declared `Channel<T>` annotation: `let x: Channel<
+            // SomeClass> = channel;` needs this, since the RHS's inferred
+            // type is always Int regardless of what T the declaration
+            // says. Mirrors how ExprKind::Recv recovers T from the
+            // declared side instead of the (always-Int) channel handle.
+            (ValueType::Named(name, _), ValueType::Int) if name == "Channel" => true,
             _ => false,
         }
     }

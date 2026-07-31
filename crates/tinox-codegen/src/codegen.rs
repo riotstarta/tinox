@@ -9114,9 +9114,34 @@ impl CodeGen {
                 let (ch_i64, _) = self.gen_expr(inner, ctx)?;
                 let ch_ptr = self.temp();
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ch_ptr, ch_i64).unwrap();
-                let result = self.temp();
-                writeln!(&mut self.ir, "  {} = call i64 @tinox_channel_recv(i8* {})", result, ch_ptr).unwrap();
-                Ok((result, "i64".to_string()))
+                let raw = self.temp();
+                writeln!(&mut self.ir, "  {} = call i64 @tinox_channel_recv(i8* {})", raw, ch_ptr).unwrap();
+                // tinox_channel_recv always returns the stored value as a
+                // raw i64 (the runtime channel is an opaque handle with no
+                // notion of element type — see ExprKind::Channel above).
+                // For a `Channel<SomeClass>` (issue #123 needed this for
+                // `Channel<AmqpFrame091>`, not just `Channel<Int64>` which
+                // happened to already work since i64 was the right answer
+                // by coincidence), the typechecker resolves this
+                // expression's static type to the class via `inner`'s
+                // declared `Channel<T>` — recover that here the same way
+                // and inttoptr back to a real pointer, or every downstream
+                // field access on the received value would misinterpret
+                // it as a plain integer.
+                use tinox_typecheck::ValueType as VT;
+                let elem_llvm = match self.expr_value_types.get(&inner.id) {
+                    Some(VT::Named(name, args)) if name == "Channel" && args.len() == 1 => {
+                        Self::valuetype_to_llvm(&args[0])
+                    }
+                    _ => "i64".to_string(),
+                };
+                if elem_llvm.ends_with('*') {
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "  {} = inttoptr i64 {} to {}", result, raw, elem_llvm).unwrap();
+                    Ok((result, elem_llvm))
+                } else {
+                    Ok((raw, elem_llvm))
+                }
             }
             ExprKind::CompoundAssign { op, target, value } => {
                 self.gen_compound_assign(op, target, value, ctx)
@@ -10070,6 +10095,17 @@ impl CodeGen {
             Type::Generic { name, args } if name == "Array" => {
                 args.first().map(|t| format!("{}*", Self::type_to_llvm(t))).unwrap_or_else(|| "i64*".to_string())
             }
+            // Channel<T> handles are always a bare i64 (ptrtoint'd i8*),
+            // regardless of T — see ExprKind::Channel/Recv, which
+            // consistently treat the handle itself as i64 and only
+            // convert the ELEMENT read out of it based on T. Without this
+            // case a declared `Channel<T>` local/field/param fell through
+            // to the generic-class default of i64* below, mismatching
+            // every actual channel/send/recv expression's i64 (issue
+            // #123 hit this the first time this language feature was
+            // used with a real T beyond the parser-only test coverage it
+            // had before).
+            Type::Generic { name, .. } if name == "Channel" => "i64".to_string(),
             Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),

@@ -41,6 +41,27 @@ fn makeName(n: Int64) -> String {
     return s;
 }
 
+/*
+ * Baut ein AmqpChannel091 mit Dummy-Handles (conn/chanId = -1), OHNE
+ * echten Dispatcher (issue #123 fuehrte einen Hintergrund-Task ein, der
+ * normalerweise `open()` startet, hier aber bewusst nicht existiert,
+ * s. Datei-Kommentar oben zu "kein Netzwerk/spawn-Broker"). Vorher liess
+ * ein `conn <= 0` beim rohen `Amqp091::readFrame()` einen lesenden
+ * Methodenaufruf einfach sofort mit frameType -1 zurueckkommen; seit
+ * Channel-Reads ueber `recv this.inbox` laufen, wuerde ein NIE bestueckter
+ * Kanal fuer immer blockieren (keine Dispatcher-Task sendet je etwas
+ * hinein). Die Inbox hier einmalig mit genau dem synthetischen
+ * "Verbindung zu"-Frame vorzufuellen, das der Dispatcher bei einem
+ * echten EOF senden wuerde, reproduziert das alte Verhalten ohne echtes
+ * Netzwerk.
+ */
+fn dummyChannel091() -> AmqpChannel091
+{
+    let inbox: Channel<AmqpFrame091> = channel;
+    send inbox -> AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
+    return AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox };
+}
+
 fn main() -> Int32 {
     let name255 = makeName(255);
     let name256 = makeName(256);
@@ -49,7 +70,7 @@ fn main() -> Int32 {
     // (dial schlaegt zwar fehl, conn=-1, aber die shortstr-Laengenpruefung
     // selbst darf NICHT anschlagen; die Encodierung erreicht in diesem
     // Fall den Punkt VOR dem Senden ohne Fehlermeldung).
-    let chBoundary = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+    let chBoundary = dummyChannel091();
     let rBoundary = chBoundary.declareQueue(name255, true, false, false);
     // conn=-1 laesst den eigentlichen Netzwerkaufruf natuerlich fehlschlagen
     // (kein echter Socket) -- entscheidend ist NUR, dass die Laengenpruefung
@@ -61,7 +82,7 @@ fn main() -> Int32 {
 
     // 256 Byte: jenseits des shortstr-Maximums -- muss hart clientseitig
     // abgelehnt werden.
-    let ch1 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+    let ch1 = dummyChannel091();
     let r1 = ch1.declareQueue(name256, true, false, false);
     if r1 == "" {
         if ch1.errorMessage.len() > 0 {
@@ -69,7 +90,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch2 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+    let ch2 = dummyChannel091();
     let r2 = ch2.bindQueue(name256, "x", "y");
     if r2 == false {
         if ch2.errorMessage.len() > 0 {
@@ -77,7 +98,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch3 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+    let ch3 = dummyChannel091();
     let r3 = ch3.consume(name256);
     if r3 == "" {
         if ch3.errorMessage.len() > 0 {
@@ -85,7 +106,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch4 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+    let ch4 = dummyChannel091();
     var body: List<Int64> = [];
     ch4.publish(name256, "y", body, "");
     if ch4.errorMessage.len() > 0 {

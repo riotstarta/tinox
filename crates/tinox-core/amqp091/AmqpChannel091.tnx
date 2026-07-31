@@ -5,9 +5,15 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Ein geöffneter Channel auf einer AmqpConnection091 (§1.4.2.2). v1:
-     * genau ein fester Channel pro Verbindung (Channel-ID 1), kein Pool —
-     * s. tasklist.md "Später" für Multi-Channel.
+     * Ein geöffneter Channel auf einer AmqpConnection091 (§1.4.2.2).
+     * Mehrere Channels pro Verbindung mit unabhängigem Traffic werden
+     * unterstützt (issue #123): jeder Channel bekommt beim Öffnen eine
+     * eigene, fortlaufend vergebene Channel-ID (AmqpConnection091::
+     * allocateChanId()) und eine eigene Frame-Inbox, die vom
+     * connection-weiten Hintergrund-Dispatcher (amqp091DispatchLoop in
+     * AmqpConnection091.tnx) anhand der chanId beliefert wird — jeder
+     * lesende Aufruf hier (`recv this.inbox`) liest also nur Frames für
+     * GENAU diesen Channel, nie die eines anderen.
      */
     class AmqpChannel091
     {
@@ -17,31 +23,38 @@ namespace tinox.core.amqp091
         var errorMessage: String;
         var confirmsEnabled: Bool;
         var lastDeliveryTag: Int64;
+        var inbox: Channel<AmqpFrame091>;
 
         fn open(connection: AmqpConnection091) -> AmqpChannel091
         {
             if connection.conn <= 0 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "Connection nicht aufgebaut: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0 };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "Connection nicht aufgebaut: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
-            let chanId = 1;
+            let chanId = connection.allocateChanId();
+            let inbox: Channel<AmqpFrame091> = channel;
+            // MUSS vor writeFrame passieren: sonst könnte channel.open-ok
+            // ankommen, bevor der Dispatcher weiß, wohin er es routen soll
+            // (s. AmqpConnection091::registerChannelInbox).
+            connection.registerChannelInbox(chanId, inbox);
+
             let w = AmqpWriter091::new();
             w.shortstr(""); // reserved-1 (out-of-band, deprecated)
             let openPayload = Amqp091::encodeMethodPayload(20, 10, w.bytes);
             Amqp091::writeFrame(connection.conn, 1, chanId, openPayload);
 
-            let f = Amqp091::readFrame(connection.conn);
+            let f = recv inbox;
             if f.frameType != 1 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0 };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
             if mf.classId == 20 && mf.methodId == 40 {
                 let msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41);
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen: " + msg, confirmsEnabled: false, lastDeliveryTag: 0 };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             if mf.classId != 20 || mf.methodId != 11 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "erwartete channel.open-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0 };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "erwartete channel.open-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
-            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
+            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox };
         }
 
         /*
@@ -75,7 +88,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(50, 10, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "queue.declare fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return "";
@@ -125,7 +138,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(40, 10, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "exchange.declare fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return false;
@@ -165,7 +178,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(50, 20, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "queue.bind fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return false;
@@ -196,7 +209,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(60, 10, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "basic.qos fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return false;
@@ -231,7 +244,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(85, 10, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "confirm.select fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return false;
@@ -350,7 +363,7 @@ namespace tinox.core.amqp091
             let payload = Amqp091::encodeMethodPayload(60, 20, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 this.errorMessage = "basic.consume fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
                 return "";
@@ -383,7 +396,7 @@ namespace tinox.core.amqp091
          */
         fn nextMessage() -> AmqpMessage091
         {
-            let f1 = Amqp091::readFrame(this.conn);
+            let f1 = recv this.inbox;
             if f1.frameType != 1 {
                 return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete basic.deliver (frameType=" + f1.frameType.toString() + ")" };
             }
@@ -402,7 +415,7 @@ namespace tinox.core.amqp091
             let exchange = r.shortstr();
             let routingKey = r.shortstr();
 
-            let f2 = Amqp091::readFrame(this.conn);
+            let f2 = recv this.inbox;
             if f2.frameType != 2 {
                 return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete Content-Header-Frame (frameType=" + f2.frameType.toString() + ")" };
             }
@@ -431,7 +444,7 @@ namespace tinox.core.amqp091
 
             var body: List<Int64> = [];
             while body.len() < bodySize {
-                let f3 = Amqp091::readFrame(this.conn);
+                let f3 = recv this.inbox;
                 if f3.frameType != 3 {
                     return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete Body-Frame (frameType=" + f3.frameType.toString() + ")" };
                 }
@@ -459,15 +472,18 @@ namespace tinox.core.amqp091
          * gleiche Wire-Struktur wie `basic.ack`, nur Klasse+Methode 60/120
          * statt 60/80, plus ein zusätzliches Requeue-Bit das v1 ignoriert)
          * — analog zu `nextMessage()` für Consumer. Setzt vorausgesetzt
-         * `confirmSelect()` wurde aufgerufen; auf einem Channel, der
-         * gleichzeitig konsumiert, würden `basic.deliver`-Frames hier
-         * fälschlich als Confirm interpretiert (kein Frame-Dispatcher nach
-         * Typ/Channel in v1 — s. issue #123 für die gleiche strukturelle
-         * Lücke bei mehreren Channels).
+         * `confirmSelect()` wurde aufgerufen. Frames eines ANDEREN Channels
+         * landen nie hier (issue #123: eigene Inbox pro Channel, s.
+         * Klassen-Kommentar oben) — auf DEMSELBEN Channel gleichzeitig zu
+         * konsumieren UND auf Confirms zu warten bleibt aber unsicher:
+         * `basic.deliver`-Frames würden hier fälschlich als Confirm
+         * interpretiert, weil innerhalb eines Channels nach wie vor nicht
+         * nach Methodentyp (deliver vs. ack/nack) dispatcht wird, nur nach
+         * chanId.
          */
         fn waitForConfirm() -> AmqpConfirmResult091
         {
-            let f = Amqp091::readFrame(this.conn);
+            let f = recv this.inbox;
             if f.frameType != 1 {
                 return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "erwartete basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" };
             }

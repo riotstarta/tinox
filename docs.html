@@ -2082,7 +2082,7 @@ WsClient::close(conn);
       <tr><td><code>AmqpConnection091::connect</code></td><td><code>fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -&gt; AmqpConnection091</code></td><td>Verbindet, führt SASL-PLAIN-Auth + Negotiation durch. <code>.conn &lt;= 0</code> + <code>.errorMessage</code> bei jedem Fehlschlag (Auth-Fehler, unbekannter vhost, Verbindungsfehler).</td></tr>
       <tr><td><code>AmqpConnection091::connectTls</code></td><td><code>fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -&gt; AmqpConnection091</code></td><td><code>amqps://</code>-Variante von <code>connect</code> (Broker-Standardport 5671). OpenSSL ist standardmäßig gelinkt. <code>verify=true</code> prüft Zertifikatskette + Hostname gegen die System-CA-Stores, <code>verify=false</code> ist ein bewusster Opt-out für selbstsignierte Testzertifikate.</td></tr>
       <tr><td><code>AmqpConnection091::close</code></td><td><code>fn close() -&gt; Nothing</code></td><td>Schließt die Verbindung spec-konform (<code>connection.close</code> + <code>close-ok</code> abwarten).</td></tr>
-      <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Öffnet einen Channel auf der Verbindung (v1: fester Channel 1, kein Pool).</td></tr>
+      <tr><td><code>AmqpChannel091::open</code></td><td><code>fn open(connection: AmqpConnection091) -&gt; AmqpChannel091</code></td><td>Öffnet einen neuen Channel auf der Verbindung (fortlaufende Channel-ID, beliebig oft aufrufbar — mehrere unabhängige Channels pro Connection, s. u.).</td></tr>
       <tr><td><code>AmqpChannel091::declareQueue</code></td><td><code>fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -&gt; String</code></td><td>Deklariert eine Queue, liefert den (ggf. server-generierten) Namen oder <code>""</code> bei Fehler.</td></tr>
       <tr><td><code>AmqpChannel091::declareExchange</code></td><td><code>fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -&gt; Bool</code></td><td>Deklariert einen Exchange (<code>exchangeType</code>: <code>"direct"</code>, <code>"fanout"</code>, <code>"topic"</code>, <code>"headers"</code> — broker-seitig geprüft). <code>true</code> bei Erfolg, <code>false</code> + <code>errorMessage</code> bei Fehler.</td></tr>
       <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Bindet eine Queue an einen Exchange (Default-Exchange, ein per <code>declareExchange()</code> angelegter, oder ein broker-vordefinierter). Binden an den Default-Exchange (<code>""</code>) ist laut Spec verboten (Broker antwortet mit Fehler) — Queues sind dort implizit unter ihrem eigenen Namen gebunden.</td></tr>
@@ -2142,13 +2142,34 @@ conn.close();
 conn.stopHeartbeat();         <span class="cmt">// oder einfach conn.close(), das stoppt ihn mit</span>
 </code></pre>
   <p>
-    <strong>Bewusste v1-Lücken:</strong> kein echtes Multi-Channel
-    (<code>AmqpChannel091::open</code> nutzt v1 immer Channel 1 — mehrere
-    unabhängige Channels mit paralleler Nachrichten-Zustellung sind noch
-    nicht unterstützt), keine Transaktionen (<code>tx.select</code>), kein
-    Auto-Reconnect, kein eigener CA-Bundle-Parameter bei
-    <code>connectTls</code> (verifiziert nur gegen die System-CA-Stores).
-    AMQP 1.0 ist nicht Teil dieses Moduls.
+    <strong>Bewusste v1-Lücken:</strong> keine Transaktionen
+    (<code>tx.select</code>), kein Auto-Reconnect, kein eigener
+    CA-Bundle-Parameter bei <code>connectTls</code> (verifiziert nur gegen
+    die System-CA-Stores). AMQP 1.0 ist nicht Teil dieses Moduls.
+  </p>
+  <h3>Mehrere Channels</h3>
+  <p>
+    <code>AmqpChannel091::open</code> kann beliebig oft auf derselben
+    <code>AmqpConnection091</code> aufgerufen werden — jeder Aufruf bekommt
+    eine eigene, fortlaufend vergebene Channel-ID und eine eigene
+    Frame-Inbox. Ein Hintergrund-Task pro Connection liest jeden Frame vom
+    Socket und routet ihn per Channel-ID an die richtige Inbox, sodass ein
+    Channel mit unabhängigem Traffic (z. B. ein laufender Consumer) einen
+    anderen Channel, der gerade synchron auf seine eigene Antwort wartet
+    (<code>declareQueue</code>/<code>qos</code>/<code>consume</code>/...),
+    nicht stört:
+  </p>
+  <pre><code>let conn = AmqpConnection091::connect(<span class="str">"127.0.0.1"</span>, <span class="num">5672</span>, <span class="str">"/"</span>, <span class="str">"guest"</span>, <span class="str">"guest"</span>);
+<span class="kw">let</span> ch1 = AmqpChannel091::open(conn);   <span class="cmt">// Channel-ID 1</span>
+<span class="kw">let</span> ch2 = AmqpChannel091::open(conn);   <span class="cmt">// Channel-ID 2, unabhaengig von ch1</span>
+</code></pre>
+  <p>
+    Innerhalb EINES Channels bleibt die v1-Einschränkung bestehen, dass
+    nicht nach Methodentyp dispatcht wird — z. B. gleichzeitig auf
+    demselben Channel zu konsumieren UND auf Publisher-Confirms zu warten
+    ist weiterhin unsicher (<code>waitForConfirm</code> könnte ein
+    <code>basic.deliver</code> fälschlich als Confirm lesen). Für diesen
+    Fall getrennte Channels verwenden.
   </p>
   <h3>Publisher-Confirms</h3>
   <pre><code>let selected = ch.confirmSelect();
