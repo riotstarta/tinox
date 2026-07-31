@@ -15,11 +15,13 @@ namespace tinox.core.amqp091
         var chanId: Int64;
         var frameMax: Int64;
         var errorMessage: String;
+        var confirmsEnabled: Bool;
+        var lastDeliveryTag: Int64;
 
         fn open(connection: AmqpConnection091) -> AmqpChannel091
         {
             if connection.conn <= 0 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "Connection nicht aufgebaut: " + connection.errorMessage };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "Connection nicht aufgebaut: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0 };
             }
             let chanId = 1;
             let w = AmqpWriter091::new();
@@ -29,17 +31,17 @@ namespace tinox.core.amqp091
 
             let f = Amqp091::readFrame(connection.conn);
             if f.frameType != 1 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen (frameType=" + f.frameType.toString() + ")" };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0 };
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
             if mf.classId == 20 && mf.methodId == 40 {
                 let msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41);
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen: " + msg };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen: " + msg, confirmsEnabled: false, lastDeliveryTag: 0 };
             }
             if mf.classId != 20 || mf.methodId != 11 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "erwartete channel.open-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "erwartete channel.open-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0 };
             }
-            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "" };
+            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
         }
 
         /*
@@ -212,14 +214,56 @@ namespace tinox.core.amqp091
         }
 
         /*
+         * `confirm.select` + `-ok` (issue #125 — RabbitMQ-Erweiterung,
+         * Extension-Klasse 85). Aktiviert Publisher-Confirms: ab jetzt
+         * bekommt jede via `publish()` gesendete Nachricht eine
+         * fortlaufende Delivery-Tag-Nummer (1, 2, 3, ...) zugewiesen
+         * (`publish()`s Rückgabewert), und der Broker beantwortet jede
+         * Nachricht später asynchron mit `basic.ack`/`basic.nack` —
+         * abholen über `waitForConfirm()` (blockierender Pull, analog zu
+         * `nextMessage()`). Muss vor dem ersten `publish()` aufgerufen
+         * werden, sonst bleibt `publish()`s Rückgabewert 0.
+         */
+        fn confirmSelect() -> Bool
+        {
+            let w = AmqpWriter091::new();
+            w.octet(0); // nowait = false
+            let payload = Amqp091::encodeMethodPayload(85, 10, w.bytes);
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+
+            let f = Amqp091::readFrame(this.conn);
+            if f.frameType != 1 {
+                this.errorMessage = "confirm.select fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                return false;
+            }
+            let mf = Amqp091::decodeMethodPayload(f.payload);
+            if mf.classId == 20 && mf.methodId == 40 {
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
+                return false;
+            }
+            if mf.classId != 85 || mf.methodId != 11 {
+                this.errorMessage = "erwartete confirm.select-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                return false;
+            }
+            this.confirmsEnabled = true;
+            this.lastDeliveryTag = 0;
+            return true;
+        }
+
+        /*
          * `basic.publish` (kein `-ok`, per Spec asynchron) + Content-Header
          * + Body-Frame(s). v1: genau zwei Properties unterstützt
          * (content-type optional, delivery-mode fest auf 2/persistent) —
          * s. tasklist.md "Später" für den vollen Property-Satz. Body wird
          * bei `frameMax` gesplittet (Frame-Overhead: 7-Byte-Header +
          * 1-Byte-Terminator = 8 Byte Sicherheitsabzug).
+         *
+         * Rückgabewert (issue #125): der zugewiesene Delivery-Tag, wenn
+         * `confirmSelect()` vorher aufgerufen wurde (fortlaufend ab 1),
+         * sonst 0 — abholen des zugehörigen Confirms über
+         * `waitForConfirm()`.
          */
-        fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Nothing
+        fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Int64
         {
             let w = AmqpWriter091::new();
             w.short(0); // reserved-1
@@ -228,7 +272,7 @@ namespace tinox.core.amqp091
             w.octet(0); // mandatory=false, immediate=false
             if w.hasError() {
                 this.errorMessage = "Exchange-/Routing-Key-Name zu lang (max 255 Byte, shortstr) -- basic.publish NICHT gesendet";
-                return;
+                return 0;
             }
 
             var flags: Int64 = 0;
@@ -241,7 +285,13 @@ namespace tinox.core.amqp091
             pw.octet(2); // persistent
             if pw.hasError() {
                 this.errorMessage = "Content-Type zu lang (max 255 Byte, shortstr) -- basic.publish NICHT gesendet";
-                return;
+                return 0;
+            }
+
+            var assignedTag: Int64 = 0;
+            if this.confirmsEnabled {
+                this.lastDeliveryTag = this.lastDeliveryTag + 1;
+                assignedTag = this.lastDeliveryTag;
             }
 
             let payload = Amqp091::encodeMethodPayload(60, 40, w.bytes);
@@ -274,6 +324,7 @@ namespace tinox.core.amqp091
                 Amqp091::writeFrame(this.conn, 3, this.chanId, chunk);
                 offset = end;
             }
+            return assignedTag;
         }
 
         /*
@@ -400,6 +451,40 @@ namespace tinox.core.amqp091
             w.octet(0); // multiple = false
             let payload = Amqp091::encodeMethodPayload(60, 80, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+        }
+
+        /*
+         * Blockierender Pull: liest EIN Publisher-Confirm (`basic.ack`
+         * oder `basic.nack`, letzteres eine RabbitMQ-Erweiterung —
+         * gleiche Wire-Struktur wie `basic.ack`, nur Klasse+Methode 60/120
+         * statt 60/80, plus ein zusätzliches Requeue-Bit das v1 ignoriert)
+         * — analog zu `nextMessage()` für Consumer. Setzt vorausgesetzt
+         * `confirmSelect()` wurde aufgerufen; auf einem Channel, der
+         * gleichzeitig konsumiert, würden `basic.deliver`-Frames hier
+         * fälschlich als Confirm interpretiert (kein Frame-Dispatcher nach
+         * Typ/Channel in v1 — s. issue #123 für die gleiche strukturelle
+         * Lücke bei mehreren Channels).
+         */
+        fn waitForConfirm() -> AmqpConfirmResult091
+        {
+            let f = Amqp091::readFrame(this.conn);
+            if f.frameType != 1 {
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "erwartete basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" };
+            }
+            let mf = Amqp091::decodeMethodPayload(f.payload);
+            if mf.classId == 20 && mf.methodId == 40 {
+                let msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: msg };
+            }
+            if mf.classId != 60 || (mf.methodId != 80 && mf.methodId != 120) {
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "erwartete basic.ack/basic.nack, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+            }
+            let r = AmqpReader091::new(mf.args);
+            let deliveryTag = r.longlong();
+            let bits = r.octet();
+            let multiple = (bits & 1) != 0;
+            let ack = mf.methodId == 80;
+            return AmqpConfirmResult091 { deliveryTag: deliveryTag, multiple: multiple, ack: ack, ok: true, errorMessage: "" };
         }
     }
 }

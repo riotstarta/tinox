@@ -1,0 +1,23 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    /*
+     * Ein per `waitForConfirm()` empfangenes Publisher-Confirm
+     * (`basic.ack`/`basic.nack` vom Broker nach `confirmSelect()`).
+     * `ok == false` bei jedem Fehler (Aufrufer MUSS prüfen, kein
+     * Silent-Garbage) — `errorMessage` beschreibt dann die Ursache.
+     * `multiple == true` bedeutet: alle Delivery-Tags bis einschließlich
+     * `deliveryTag` sind (n)acked, nicht nur dieser eine.
+     */
+    class AmqpConfirmResult091
+    {
+        var deliveryTag: Int64;
+        var multiple: Bool;
+        var ack: Bool;
+        var ok: Bool;
+        var errorMessage: String;
+    }
+}

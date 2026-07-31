@@ -2053,11 +2053,14 @@ WsClient::close(conn);
       <tr><td><code>AmqpChannel091::declareExchange</code></td><td><code>fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -&gt; Bool</code></td><td>Declares an exchange (<code>exchangeType</code>: <code>"direct"</code>, <code>"fanout"</code>, <code>"topic"</code>, <code>"headers"</code> — validated broker-side). <code>true</code> on success, <code>false</code> + <code>errorMessage</code> on failure.</td></tr>
       <tr><td><code>AmqpChannel091::bindQueue</code></td><td><code>fn bindQueue(queue: String, exchange: String, routingKey: String) -&gt; Bool</code></td><td>Binds a queue to an exchange (the default exchange, one created via <code>declareExchange()</code>, or a broker-predefined one). Binding to the default exchange (<code>""</code>) is forbidden by spec (the broker responds with an error) — queues are implicitly bound there under their own name.</td></tr>
       <tr><td><code>AmqpChannel091::qos</code></td><td><code>fn qos(prefetchCount: Int64) -&gt; Bool</code></td><td>Sets the prefetch limit before <code>consume()</code>.</td></tr>
-      <tr><td><code>AmqpChannel091::publish</code></td><td><code>fn publish(exchange: String, routingKey: String, body: List&lt;Int64&gt;, contentType: String) -&gt; Nothing</code></td><td>Publishes a message (no return value, asynchronous per spec). The body is automatically split across multiple frames at <code>frameMax</code>.</td></tr>
+      <tr><td><code>AmqpChannel091::confirmSelect</code></td><td><code>fn confirmSelect() -&gt; Bool</code></td><td>Enables publisher confirms (RabbitMQ extension, class 85). Must be called before the first <code>publish()</code>, whose return value otherwise stays <code>0</code> forever.</td></tr>
+      <tr><td><code>AmqpChannel091::publish</code></td><td><code>fn publish(exchange: String, routingKey: String, body: List&lt;Int64&gt;, contentType: String) -&gt; Int64</code></td><td>Publishes a message (asynchronous per spec). Return value: the assigned delivery tag (sequential starting at 1) if <code>confirmSelect()</code> was called beforehand, otherwise <code>0</code>. The body is automatically split across multiple frames at <code>frameMax</code>.</td></tr>
+      <tr><td><code>AmqpChannel091::waitForConfirm</code></td><td><code>fn waitForConfirm() -&gt; AmqpConfirmResult091</code></td><td>Blocking pull of the next publisher confirm (requires <code>confirmSelect()</code>). Not safe to mix with <code>nextMessage()</code> on a channel that's consuming at the same time (no frame dispatch by type in v1).</td></tr>
       <tr><td><code>AmqpChannel091::consume</code></td><td><code>fn consume(queue: String) -&gt; String</code></td><td>Registers the client as a consumer, returns the consumer tag, or <code>""</code> on failure.</td></tr>
       <tr><td><code>AmqpChannel091::nextMessage</code></td><td><code>fn nextMessage() -&gt; AmqpMessage091</code></td><td>Blocking pull of the next message (requires <code>consume()</code>). Automatically reassembles body frames.</td></tr>
       <tr><td><code>AmqpChannel091::ack</code></td><td><code>fn ack(deliveryTag: Int64) -&gt; Nothing</code></td><td>Acknowledges a message received via <code>nextMessage()</code>.</td></tr>
       <tr><td><code>AmqpMessage091</code></td><td><code>{ deliveryTag: Int64, exchange: String, routingKey: String, contentType: String, body: List&lt;Int64&gt;, ok: Bool, errorMessage: String }</code></td><td>A message received via <code>nextMessage()</code>. <code>ok == false</code> on any failure, <code>errorMessage</code> describes the cause.</td></tr>
+      <tr><td><code>AmqpConfirmResult091</code></td><td><code>{ deliveryTag: Int64, multiple: Bool, ack: Bool, ok: Bool, errorMessage: String }</code></td><td>A confirm received via <code>waitForConfirm()</code>. <code>ack == false</code> means <code>basic.nack</code> (the broker couldn't process the message), <code>multiple == true</code> confirms every tag up to and including <code>deliveryTag</code> at once. <code>ok == false</code> on any failure, <code>errorMessage</code> describes the cause.</td></tr>
     </tbody>
   </table>
   <h3>Example</h3>
@@ -2108,11 +2111,23 @@ conn.stopHeartbeat();         <span class="cmt">// or just conn.close(), which s
     <strong>Deliberate v1 gaps:</strong> no real multi-channel support
     (<code>AmqpChannel091::open</code> always uses channel 1 in v1 —
     multiple independent channels with parallel message delivery aren't
-    supported yet), no publisher confirms/transactions, no annotation-driven
-    consumer API, no auto-reconnect, no dedicated CA-bundle parameter for
-    <code>connectTls</code> (verifies only against the system CA stores).
-    AMQP 1.0 is not part of this module.
+    supported yet), no transactions (<code>tx.select</code>), no
+    annotation-driven consumer API, no auto-reconnect, no dedicated
+    CA-bundle parameter for <code>connectTls</code> (verifies only against
+    the system CA stores). AMQP 1.0 is not part of this module.
   </p>
+  <h3>Publisher confirms</h3>
+  <pre><code>let selected = ch.confirmSelect();
+let tag = ch.publish(<span class="str">"amq.direct"</span>, <span class="str">"rk"</span>, body, <span class="str">"text/plain"</span>); <span class="cmt">// tag == 1, 2, 3, ...</span>
+let confirm = ch.waitForConfirm();
+<span class="kw">if</span> confirm.ok {
+    <span class="kw">if</span> confirm.ack {
+        <span class="cmt">// the broker accepted the message with tag confirm.deliveryTag</span>
+    } <span class="kw">else</span> {
+        <span class="cmt">// basic.nack -- the broker couldn't process it, consider resending</span>
+    }
+}
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-amqp10">

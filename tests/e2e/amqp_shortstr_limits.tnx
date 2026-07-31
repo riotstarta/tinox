@@ -49,7 +49,7 @@ fn main() -> Int32 {
     // (dial schlaegt zwar fehl, conn=-1, aber die shortstr-Laengenpruefung
     // selbst darf NICHT anschlagen; die Encodierung erreicht in diesem
     // Fall den Punkt VOR dem Senden ohne Fehlermeldung).
-    let chBoundary = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let chBoundary = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
     let rBoundary = chBoundary.declareQueue(name255, true, false, false);
     // conn=-1 laesst den eigentlichen Netzwerkaufruf natuerlich fehlschlagen
     // (kein echter Socket) -- entscheidend ist NUR, dass die Laengenpruefung
@@ -61,7 +61,7 @@ fn main() -> Int32 {
 
     // 256 Byte: jenseits des shortstr-Maximums -- muss hart clientseitig
     // abgelehnt werden.
-    let ch1 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let ch1 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
     let r1 = ch1.declareQueue(name256, true, false, false);
     if r1 == "" {
         if ch1.errorMessage.len() > 0 {
@@ -69,7 +69,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch2 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let ch2 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
     let r2 = ch2.bindQueue(name256, "x", "y");
     if r2 == false {
         if ch2.errorMessage.len() > 0 {
@@ -77,7 +77,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch3 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let ch3 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
     let r3 = ch3.consume(name256);
     if r3 == "" {
         if ch3.errorMessage.len() > 0 {
@@ -85,7 +85,7 @@ fn main() -> Int32 {
         }
     }
 
-    let ch4 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "" };
+    let ch4 = AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0 };
     var body: List<Int64> = [];
     ch4.publish(name256, "y", body, "");
     if ch4.errorMessage.len() > 0 {
