@@ -2,12 +2,45 @@ module tinox.core.websocket;
 
 namespace tinox.core.websocket
 {
+    // permessage-deflate (RFC 7692, issue #122) native helpers.
+    // wsSetCompressed/wsIsCompressed store the per-connection negotiation
+    // result directly on the runtime's conn handle (no side-table, no fd-
+    // reuse hazard — see runtime.c's TinoxConn.wsCompressed comment).
+    // tinoxDeflateRaw/tinoxInflateRaw are deliberately stateless per call:
+    // this module always negotiates client_no_context_takeover +
+    // server_no_context_takeover (see handshake() below), so every
+    // message gets a fresh DEFLATE context — there is no persistent
+    // z_stream to leak or wire into the connection lifecycle. This is a
+    // deliberate scope reduction from full permessage-deflate (which
+    // defaults to context takeover, requiring genuinely persistent
+    // per-connection compression state — see issue #122's investigation
+    // history for why that shape was ruled out for v1) rather than an
+    // oversight: RFC 7692 §7.1.1 explicitly allows a server to include
+    // both no-context-takeover parameters in its handshake response
+    // regardless of what the client's offer contained, so this is a
+    // fully spec-compliant, interoperable-with-real-browsers negotiation
+    // outcome, just one with a slightly lower compression ratio for a
+    // stream of many small messages than context takeover would give.
+    extern fn wsSetCompressed(conn: Int64, enabled: Bool) -> Nothing;
+    extern fn wsIsCompressed(conn: Int64) -> Bool;
+    extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn wsLastInflateOk() -> Bool;
+
     class Ws
     {
         /*
          * Handshake auf einer frisch akzeptierten Verbindung (RFC 6455 §4.2.2):
          * liest den HTTP-Request, prüft Upgrade+Key+Version 13 und antwortet
          * mit 101. Negativ-Pfade hart: 400 + false (Aufrufer schließt).
+         *
+         * permessage-deflate (issue #122): wenn der Request
+         * `Sec-WebSocket-Extensions: permessage-deflate` anbietet, wird das
+         * IMMER mit `client_no_context_takeover; server_no_context_takeover`
+         * angenommen (RFC 7692 §7.1.1 erlaubt dem Server, diese Parameter
+         * unilateral in seine Response zu setzen, unabhängig davon, ob der
+         * Client sie im Offer hatte) — s. Modul-Kommentar oben für die
+         * Begründung dieser bewussten v1-Vereinfachung.
          */
         fn handshake(conn: Int64) -> Bool
         {
@@ -18,6 +51,7 @@ namespace tinox.core.websocket
             var key: String = "";
             var version: String = "";
             var hasUpgrade: Bool = false;
+            var offeredDeflate: Bool = false;
             let lines = req.split("\r\n");
             for i in 0..lines.len() {
                 let line = lines[i];
@@ -33,13 +67,24 @@ namespace tinox.core.websocket
                         hasUpgrade = true;
                     }
                 }
+                if lower.startsWith("sec-websocket-extensions:") {
+                    if lower.contains("permessage-deflate") {
+                        offeredDeflate = true;
+                    }
+                }
             }
             if !hasUpgrade || key.len() == 0 || version != "13" {
                 httpConnSendRaw(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
                 return false;
             }
             let accept = wsAcceptKey(key);
-            httpConnSendRaw(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
+            var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n";
+            if offeredDeflate {
+                wsSetCompressed(conn, true);
+                response = response + "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n";
+            }
+            response = response + "\r\n";
+            httpConnSendRaw(conn, response);
             return true;
         }
 
@@ -52,10 +97,19 @@ namespace tinox.core.websocket
          * Maskierungsrichtung, RSV-Bits, fragmentiertes/übergroßes Control-
          * Frame) -> opcode -2 (Close sendet hier NICHT — das macht der
          * jeweilige readMessage-Aufrufer).
+         *
+         * RSV1 (issue #122): nur erlaubt auf einem Nicht-Control-Frame,
+         * wenn diese Verbindung permessage-deflate ausgehandelt hat
+         * (wsIsCompressed) — sonst Protokollfehler wie jedes andere
+         * unerwartete RSV-Bit. Das eigentliche De-/Komprimieren passiert
+         * NICHT hier (ein Frame trägt bei fragmentierten Nachrichten nur
+         * einen Teil des komprimierten Bytestreams), sondern erst in
+         * readMessageGeneric nach vollständiger Reassemblierung — dieses
+         * Frame liefert das RSV1-Bit nur über WsFrame.rsv1 weiter.
          */
         fn readFrameGeneric(conn: Int64, requireMasked: Bool) -> WsFrame
         {
-            let bad = WsFrame { fin: true, opcode: -1, payload: [] };
+            let bad = WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
             let hdr = httpConnReadN(conn, 2);
             if hdr.len() < 2 {
                 return bad;
@@ -63,25 +117,26 @@ namespace tinox.core.websocket
             let b0 = hdr[0];
             let b1 = hdr[1];
             let fin = (b0 & 0x80) != 0;
-            let rsv = b0 & 0x70;
+            let rsv1 = (b0 & 0x40) != 0;
+            let rsvOther = (b0 & 0x30) != 0;
             let opcode = b0 & 0x0F;
             let masked = (b1 & 0x80) != 0;
             var plen: Int64 = b1 & 0x7F;
-            // RSV-Bits ohne Extension, und Maskierung in der falschen
-            // Richtung für diese Rolle: Protokollfehler
-            if rsv != 0 || masked != requireMasked {
-                return WsFrame { fin: true, opcode: -2, payload: [] };
-            }
             // Bug 92 (RFC 6455 §5.5): control frames (8=Close, 9=Ping,
             // 10=Pong) MUST have FIN set and payload length <= 125 — they
             // can never use the 126/127 extended-length encoding and must
-            // never be fragmented. Reject immediately, before reading the
-            // extended length/mask/payload, so a peer can't smuggle an
-            // oversized control-frame payload past readMessage()'s
-            // automatic Ping->Pong / Close->Close echo (memory DoS).
+            // never be fragmented. Computed before the RSV check below
+            // since RSV1 must never appear on a control frame either way.
             let isControlFrame = opcode >= 8 && opcode <= 10;
+            // RSV2/RSV3 (no extension ever uses them here), RSV1 without
+            // negotiated compression or on a control frame, and
+            // Maskierung in der falschen Richtung für diese Rolle:
+            // Protokollfehler.
+            if rsvOther || (rsv1 && (isControlFrame || !wsIsCompressed(conn))) || masked != requireMasked {
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
             if isControlFrame && (!fin || plen > 125) {
-                return WsFrame { fin: true, opcode: -2, payload: [] };
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
             }
             if plen == 126 {
                 let ext = httpConnReadN(conn, 2);
@@ -102,7 +157,7 @@ namespace tinox.core.websocket
                 }
             }
             if plen < 0 || plen > 16777216 {
-                return WsFrame { fin: true, opcode: -2, payload: [] };
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
             }
             // Das Mask-Feld existiert auf der Leitung nur, wenn das
             // Mask-Bit gesetzt ist (masked == requireMasked, s.o.) — bei
@@ -129,7 +184,7 @@ namespace tinox.core.websocket
                     payload = raw;
                 }
             }
-            return WsFrame { fin: fin, opcode: opcode, payload: payload };
+            return WsFrame { fin: fin, opcode: opcode, payload: payload, rsv1: rsv1 };
         }
 
         /*
@@ -148,12 +203,27 @@ namespace tinox.core.websocket
          * zufälligen 32-Bit-Maske, Server->Client MUSS unmaskiert sein) —
          * writeFrame() (Server-Rolle, unverändert) ruft dies mit false,
          * WsClient mit true.
+         *
+         * permessage-deflate (issue #122): Text/Binary-Payloads werden
+         * komprimiert und RSV1 gesetzt, wenn diese Verbindung die Extension
+         * ausgehandelt hat (wsIsCompressed) — Control-Frames (Ping/Pong/
+         * Close, Opcode 8-10) werden laut RFC 7692 NIE komprimiert. v1
+         * fragmentiert ausgehende Nachrichten nie (unverändert), daher
+         * trägt bei einer komprimierten Nachricht immer genau dieser eine
+         * Frame den kompletten komprimierten Bytestream.
          */
         fn writeFrameGeneric(conn: Int64, opcode: Int64, payload: List<Int64>, masked: Bool) -> Nothing
         {
+            var actualPayload: List<Int64> = payload;
+            var rsv1Bit: Int64 = 0;
+            let isDataFrame = opcode == 1 || opcode == 2;
+            if isDataFrame && wsIsCompressed(conn) {
+                actualPayload = tinoxDeflateRaw(payload);
+                rsv1Bit = 0x40;
+            }
             var out: List<Int64> = [];
-            out.push(0x80 | (opcode & 0x0F));
-            let n = payload.len();
+            out.push(0x80 | rsv1Bit | (opcode & 0x0F));
+            let n = actualPayload.len();
             let maskBit: Int64 = masked ? 0x80 : 0;
             if n < 126 {
                 out.push(maskBit | n);
@@ -178,11 +248,11 @@ namespace tinox.core.websocket
                     out.push(maskBytes[i]);
                 }
                 for i in 0..n {
-                    out.push((payload[i] & 0xFF) ^ maskBytes[i % 4]);
+                    out.push((actualPayload[i] & 0xFF) ^ maskBytes[i % 4]);
                 }
             } else {
                 for i in 0..n {
-                    out.push(payload[i] & 0xFF);
+                    out.push(actualPayload[i] & 0xFF);
                 }
             }
             httpConnWriteBytes(conn, out);
@@ -220,11 +290,21 @@ namespace tinox.core.websocket
          * readFrameGeneric/writeFrameGeneric — readMessage() (Server-Rolle,
          * unverändert) ruft dies mit (true, false), WsClient mit
          * (false, true).
+         *
+         * permessage-deflate (issue #122): RSV1 wird nur auf dem ERSTEN
+         * Frame einer Nachricht gesetzt (nie auf Continuation-Frames) und
+         * gilt für den GESAMTEN komprimierten Bytestream über alle
+         * Fragmente hinweg — deshalb wird hier erst NACH vollständiger
+         * Reassemblierung dekomprimiert, nicht pro Frame in
+         * readFrameGeneric. Ein Dekompressions-Fehler (kaputter/zu großer
+         * Bytestream, wsLastInflateOk()==false) wird wie jeder andere
+         * Protokollfehler behandelt: Close 1002 + opcode -2.
          */
         fn readMessageGeneric(conn: Int64, requireMasked: Bool, maskOutgoing: Bool) -> WsFrame
         {
             var assembling: Bool = false;
             var msgOpcode: Int64 = -1;
+            var msgCompressed: Bool = false;
             var payload: List<Int64> = [];
             while true {
                 let f = Ws::readFrameGeneric(conn, requireMasked);
@@ -250,35 +330,56 @@ namespace tinox.core.websocket
                     if f.opcode == 0 {
                         // Continuation-Frame ohne vorausgehendes Start-Frame
                         Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
-                        return WsFrame { fin: true, opcode: -2, payload: [] };
+                        return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
                     }
                     if f.fin {
-                        return f;
+                        return Ws::finishMessage(conn, maskOutgoing, f.opcode, f.payload, f.rsv1);
                     }
                     assembling = true;
                     msgOpcode = f.opcode;
+                    msgCompressed = f.rsv1;
                     payload = f.payload;
                 } else {
                     if f.opcode != 0 {
                         // Neues Text/Binary-Frame mitten in laufender Fragmentierung
                         Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
-                        return WsFrame { fin: true, opcode: -2, payload: [] };
+                        return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
                     }
                     for i in 0..f.payload.len() {
                         payload.push(f.payload[i]);
                     }
                     if f.fin {
-                        return WsFrame { fin: true, opcode: msgOpcode, payload: payload };
+                        return Ws::finishMessage(conn, maskOutgoing, msgOpcode, payload, msgCompressed);
                     }
                 }
                 // Speicher-Cap für die zusammengesetzte Nachricht — dieselbe
                 // 16-MB-Grenze wie für einen einzelnen Frame in readFrameGeneric.
                 if payload.len() > 16777216 {
                     Ws::sendCloseGeneric(conn, 1009, maskOutgoing);
-                    return WsFrame { fin: true, opcode: -2, payload: [] };
+                    return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
                 }
             }
-            return WsFrame { fin: true, opcode: -1, payload: [] };
+            return WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
+        }
+
+        /*
+         * Letzter Schritt von readMessageGeneric: dekomprimiert die
+         * vollständig zusammengesetzte Nachricht, wenn compressed=true
+         * (RSV1 auf dem ersten Frame gesetzt) — sonst reine Passthrough.
+         * Ein Dekompressions-Fehler wird wie jeder andere Protokollfehler
+         * behandelt (Close 1002 + opcode -2), s. readMessageGeneric.
+         */
+        fn finishMessage(conn: Int64, maskOutgoing: Bool, opcode: Int64, payload: List<Int64>, compressed: Bool) -> WsFrame
+        {
+            if !compressed {
+                return WsFrame { fin: true, opcode: opcode, payload: payload, rsv1: false };
+            }
+            let decompressed = tinoxInflateRaw(payload);
+            if !wsLastInflateOk() {
+                Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
+            return WsFrame { fin: true, opcode: opcode, payload: decompressed, rsv1: false };
         }
 
         /*

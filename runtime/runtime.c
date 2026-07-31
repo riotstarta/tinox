@@ -34,6 +34,7 @@
 #include <sys/epoll.h>
 #include <time.h>
 #include <errno.h>
+#include <zlib.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #endif
@@ -2089,6 +2090,132 @@ char* wsAcceptKey(const char* client_key) {
     return tinox_b64_encode(digest, 20);
 }
 
+// permessage-deflate (RFC 7692 §7.2.1) raw DEFLATE (windowBits=-15: no
+// zlib/gzip header) compress/decompress. Deliberately stateless per call
+// — issue #122's chosen design always negotiates
+// client_no_context_takeover + server_no_context_takeover (see
+// Ws::handshake), so every message gets a fresh DEFLATE context; there
+// is no persistent per-connection z_stream to leak or wire into the
+// connection lifecycle. §7.2.1: the compressor always ends a message
+// with Z_SYNC_FLUSH's trailing 4-byte 0x00 0x00 0xFF 0xFF marker, which
+// the sender discards and the receiver re-appends before inflating —
+// both sides below implement exactly that.
+int64_t* tinoxDeflateRaw(int64_t* bytes) {
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc(n > 0 ? (size_t)n : 1);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(in);
+        return tinox_array_new(0, 4);
+    }
+    strm.next_in = in;
+    strm.avail_in = (uInt)n;
+
+    size_t cap = (size_t)(n > 0 ? n : 1) + 64;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    for (;;) {
+        strm.next_out = out + total;
+        strm.avail_out = (uInt)(cap - total);
+        deflate(&strm, Z_SYNC_FLUSH); // can't fail once deflateInit2 succeeded
+        total = cap - strm.avail_out;
+        if (strm.avail_out > 0) break; // this call didn't need the whole buffer -> done
+        cap *= 2;
+        out = (unsigned char*)realloc(out, cap);
+    }
+    deflateEnd(&strm);
+    free(in);
+
+    if (total >= 4 && out[total-4] == 0x00 && out[total-3] == 0x00
+        && out[total-2] == 0xFF && out[total-1] == 0xFF) {
+        total -= 4;
+    }
+
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
+// Thread-local companion to tinoxInflateRaw (mirrors this file's
+// existing _tinox_http_req_headers thread-local pattern) — tinoxInflateRaw
+// itself must return List<Int64> (matching its Tinox extern fn
+// signature), so a distinguishable "decompression failed" signal (kein
+// Silent-Garbage: a truncated/malformed/bomb payload must not silently
+// look like a valid empty message) travels out-of-band via this flag,
+// checked by the caller immediately after each call.
+static __thread bool _tinox_inflate_ok = true;
+
+bool wsLastInflateOk(void) {
+    return _tinox_inflate_ok;
+}
+
+int64_t* tinoxInflateRaw(int64_t* bytes) {
+    _tinox_inflate_ok = true;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc((size_t)n + 4);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+    in[n] = 0x00; in[n+1] = 0x00; in[n+2] = 0xFF; in[n+3] = 0xFF;
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (inflateInit2(&strm, -15) != Z_OK) {
+        free(in);
+        _tinox_inflate_ok = false;
+        return tinox_array_new(0, 4);
+    }
+    strm.next_in = in;
+    strm.avail_in = (uInt)(n + 4);
+
+    size_t cap = 4096;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    bool failed = false;
+    for (;;) {
+        strm.next_out = out + total;
+        strm.avail_out = (uInt)(cap - total);
+        uInt avail_in_before = strm.avail_in;
+        uInt avail_out_before = strm.avail_out;
+        int ret = inflate(&strm, Z_NO_FLUSH);
+        total = cap - strm.avail_out;
+        // Decompression-bomb cap: matches Ws::readMessageGeneric's 16MB
+        // reassembled-message limit -- a small compressed payload
+        // expanding far past that is treated as an attack, not data.
+        if (total > 16777216) { failed = true; break; }
+        if (ret == Z_STREAM_END) break;
+        if (ret != Z_OK && ret != Z_BUF_ERROR) { failed = true; break; }
+        if (strm.avail_in == avail_in_before && strm.avail_out == avail_out_before) {
+            // No progress this call: genuinely done if there's no input
+            // left to give it, otherwise the stream is truncated/stuck.
+            if (strm.avail_in == 0) break;
+            failed = true;
+            break;
+        }
+        if (strm.avail_out == 0) {
+            cap *= 2;
+            out = (unsigned char*)realloc(out, cap);
+        }
+    }
+    inflateEnd(&strm);
+    free(in);
+
+    if (failed) {
+        free(out);
+        _tinox_inflate_ok = false;
+        return tinox_array_new(0, 4);
+    }
+
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
 // ---- Regex builtins ----
 
 #include <regex.h>
@@ -2287,7 +2414,16 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // schreiben. Betrifft nur MEHRFACH schreibende Verbindungen (AMQP 1.0
 // Heartbeat-Feature); alle anderen Nutzer zahlen nur den Lock/Unlock-Preis
 // eines unkontendierten Mutex.
-typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; } TinoxConn;   // ssl==NULL => Plaintext
+// wsCompressed (issue #122): set by Ws::handshake() when the peer
+// negotiated permessage-deflate (RFC 7692) for this connection. Lives on
+// TinoxConn -- the per-connection struct that already exists for
+// exactly this kind of state -- rather than a separate side-table
+// keyed by conn/fd, which would need its own cleanup-on-close to avoid
+// a stale `true` entry misapplying to an unrelated later connection
+// that happens to reuse the same fd number. Every construction site
+// below sets it to false explicitly (malloc doesn't zero); it becomes
+// true only if handshake() actually negotiates the extension.
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => Plaintext
 
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
@@ -2561,6 +2697,7 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     pthread_mutex_init(&c->writeLock, NULL);
     c->fd = fd;
     c->ssl = ssl;
+    c->wsCompressed = false;
     return (int64_t)(intptr_t)c;
 #else
     (void)server_fd;
@@ -2577,6 +2714,7 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = NULL;
+    c->wsCompressed = false;
     return (int64_t)(intptr_t)c;
 }
 
@@ -2601,7 +2739,21 @@ int64_t httpConnFromFd(int64_t fd) {
     pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = NULL;
+    c->wsCompressed = false;
     return (int64_t)(intptr_t)c;
+}
+
+// wsCompressed accessors (issue #122) — see TinoxConn's wsCompressed
+// field comment for why this lives on the conn struct instead of a
+// side-table. conn<=0 is silently ignored (matches every other
+// conn-handle builtin's convention in this file).
+void wsSetCompressed(int64_t conn, bool val) {
+    if (conn <= 0) return;
+    ((TinoxConn*)(intptr_t)conn)->wsCompressed = val;
+}
+bool wsIsCompressed(int64_t conn) {
+    if (conn <= 0) return false;
+    return ((TinoxConn*)(intptr_t)conn)->wsCompressed;
 }
 
 // Wickelt einen bereits verbundenen Socket-fd (Client-Seite, z.B. via
@@ -2644,6 +2796,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
     c->ssl = ssl;
+    c->wsCompressed = false;
     return (int64_t)(intptr_t)c;
 #else
     // Bug 90: the TLS-enabled branch above closes `fd` on every error path;

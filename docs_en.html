@@ -1919,7 +1919,7 @@ server.listen();
       <tr><td><code>Ws::sendClose</code></td><td><code>fn sendClose(conn: Int64, code: Int64) -&gt; Nothing</code></td><td>Sends a close frame with the given status code.</td></tr>
       <tr><td><code>Ws::close</code></td><td><code>fn close(conn: Int64) -&gt; Nothing</code></td><td>Closes the underlying connection.</td></tr>
       <tr><td><code>Ws::text</code></td><td><code>fn text(f: WsFrame) -&gt; String</code></td><td>Converts a frame's payload to a string (byte-based).</td></tr>
-      <tr><td><code>WsFrame</code></td><td><code>{ fin: Bool, opcode: Int64, payload: List&lt;Int64&gt; }</code></td><td>A frame that was read. Opcode as per RFC 6455 (1 text, 2 binary, 8 close, 9 ping, 10 pong); additionally <code>-1</code> = connection closed/EOF, <code>-2</code> = protocol error (the connection has already been answered with a close).</td></tr>
+      <tr><td><code>WsFrame</code></td><td><code>{ fin: Bool, opcode: Int64, payload: List&lt;Int64&gt;, rsv1: Bool }</code></td><td>A frame that was read. Opcode as per RFC 6455 (1 text, 2 binary, 8 close, 9 ping, 10 pong); additionally <code>-1</code> = connection closed/EOF, <code>-2</code> = protocol error (the connection has already been answered with a close). <code>rsv1</code> is only relevant internally (permessage-deflate reassembly) — <code>payload</code> is already decompressed by the time <code>readMessage</code> returns it.</td></tr>
     </tbody>
   </table>
   <h3>Example</h3>
@@ -1947,12 +1947,40 @@ while true {
 }
 </code></pre>
   <p>
-    <strong>Deliberate v1 gaps:</strong> no permessage-deflate. Payload cap
-    16&nbsp;MB (also applies to a reassembled fragmented message, see below).
+    <strong>Deliberate v1 gaps:</strong> payload cap
+    16&nbsp;MB (also applies to a reassembled fragmented message, see below,
+    and to permessage-deflate's decompressed output, see below).
     <code>wss://</code> (TLS) is supported, see <code>listenTls</code>/<code>acceptTls</code>
     above. Fragmented messages (continuation frames, §5.4) are transparently
     reassembled by <code>readMessage</code>; outgoing connections as a client
-    are covered by <code>WsClient</code>, see below.
+    are covered by <code>WsClient</code>, see below — <code>WsClient</code>
+    deliberately doesn't offer permessage-deflate in v1 (see the
+    permessage-deflate section below).
+  </p>
+  <h3>permessage-deflate (RFC 7692)</h3>
+  <p>
+    If a client offers <code>Sec-WebSocket-Extensions: permessage-deflate</code>
+    in its handshake request, <code>Ws::handshake</code> (and therefore
+    <code>WsServer::accept</code>/<code>acceptTls</code>) <strong>always</strong>
+    accepts it with <code>client_no_context_takeover;
+    server_no_context_takeover</code> (RFC 7692 §7.1.1 lets the server include
+    these parameters unilaterally in its response) — every message gets a
+    fresh DEFLATE context this way, so there's no persistent per-connection
+    compression state to manage or free on close. Fully transparent to
+    callers: <code>readMessage</code> already returns decompressed payload,
+    <code>sendText</code>/<code>sendBinary</code> compress automatically once
+    the connection has negotiated the extension — no API change, no separate
+    <code>*Compressed</code> counterpart. If the client doesn't offer the
+    extension, the connection behaves exactly as before this feature (no
+    compression).
+  </p>
+  <p>
+    <code>WsClient</code> (outgoing connections) deliberately does not offer
+    the extension in v1 — a real third-party server could respond with
+    context takeover (RFC 7692's default), which would require persistent
+    compression state across multiple messages; that's the same
+    architectural tension that originally kept permessage-deflate out of
+    this module, just from the client instead of the server side.
   </p>
   <h3>wss:// (TLS)</h3>
   <p>

@@ -38,5 +38,14 @@ namespace tinox.core.websocket
         var fin: Bool;
         var opcode: Int64;
         var payload: List<Int64>;
+        /*
+         * RSV1 bit (RFC 7692 §7.2.1, issue #122): set on the FIRST frame
+         * of a permessage-deflate-compressed message (never on
+         * continuation frames, never on control frames). readFrameGeneric
+         * only lets this be true when the connection actually negotiated
+         * the extension (wsIsCompressed) — otherwise it's rejected as a
+         * protocol error, same as any other unexpected RSV bit.
+         */
+        var rsv1: Bool;
     }
 }

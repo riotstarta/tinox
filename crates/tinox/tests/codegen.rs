@@ -56,7 +56,7 @@ fn run(source: &str) -> String {
         "runtime compile failed"
     );
     assert!(
-        Command::new("cc").args([&obj, &rt_obj, "-o", &tmp, "-lm", "-lpthread", "-lgc", "-no-pie"])
+        Command::new("cc").args([&obj, &rt_obj, "-o", &tmp, "-lm", "-lpthread", "-lgc", "-lz", "-no-pie"])
             .status().expect("cc link").success(),
         "link failed"
     );

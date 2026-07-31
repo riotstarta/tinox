@@ -615,7 +615,7 @@ fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
     // Compile to executable
     let exe = format!("{}.out", tmp_base);
     let mut cmd = Command::new("clang");
-    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm").arg("-lgc");
+    cmd.arg(&ir_path).arg("-o").arg(&exe).arg("-O0").arg("-lm").arg("-lgc").arg("-lz");
     if let Some(ref rt) = runtime_obj {
         cmd.arg(rt);
     }
@@ -2246,7 +2246,12 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         return Err("Runtime compilation failed".to_string());
     }
 
-    let mut link_args = vec![obj_path.as_str(), runtime_obj.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-no-pie"];
+    // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
+    // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
+    // since OpenSSL isn't always available in minimal build environments),
+    // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
+    // opt-out needed.
+    let mut link_args = vec![obj_path.as_str(), runtime_obj.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
     if db_driver == "postgres" {
         link_args.push("-lpq");
     } else if db_driver == "mysql" {
