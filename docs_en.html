@@ -1987,6 +1987,51 @@ server.listen();
     A complete example (a JSON REST API with GET/POST/PUT/PATCH/DELETE)
     lives at <code>examples/http3_rest_api</code>.
   </p>
+  <h3>@Http3RestController — declarative instead of the fluent API</h3>
+  <p>
+    The same <code>@GET</code>/<code>@POST</code>/<code>@PUT</code>/
+    <code>@PATCH</code>/<code>@DELETE</code>/<code>@Path</code>/
+    <code>@StatusCode</code>/<code>@Produces</code>/<code>@Consumes</code>/
+    <code>@Auth</code>/<code>@OIDCRolesAllowed</code> annotations already
+    used by the plain (TCP) REST auto-server (module <code>rest</code>)
+    also work for HTTP/3 — with one additional class annotation,
+    <code>@Http3RestController(port, certPath, keyPath)</code>, the
+    compiler generates a complete <code>Http3Server::new()</code>/
+    <code>.get()</code>/<code>.post()</code>/…/<code>.listen()</code> `main`,
+    exactly the wiring the hand-written fluent-API version above writes
+    out by hand — <strong>not</strong> the GC-crash-prone TCP auto-server
+    (<code>tinox_HttpServer_listen</code>, issue #140), but
+    <code>Http3Server</code> directly.
+  </p>
+  <p>
+    At most one <code>@Http3RestController</code> class per program (hard
+    error otherwise); every <code>@GET</code>/… route in the whole program
+    ends up on that one server. Cannot be combined with
+    <code>@WebsocketEndpoint</code>/<code>@Amqp10Consumer</code>/
+    <code>@Amqp091Consumer</code> (each generates its own auto-run `main`).
+    Since the compiler allocates a fresh, zeroed controller instance per
+    request by default, a stateful controller additionally needs
+    <code>@ApplicationComponent</code> (a reused singleton instance via
+    <code>{Class}_di_get()</code>) — see
+    <code>examples/http3_rest_api/src/TaskController.tnx</code> for the
+    full example and details.
+  </p>
+  <pre><code>import tinox.core.http3_server;
+
+@ApplicationComponent
+@Http3RestController(8843, "cert.pem", "key.pem")
+class TaskController
+{
+    var tasks: List&lt;Task&gt;;
+
+    @GET
+    @Path("/tasks")
+    fn listTasks(ctx: HttpContext) -> Nothing
+    {
+        ctx.response.json(Json::serialize(this.tasks));
+    }
+}
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-websocket">

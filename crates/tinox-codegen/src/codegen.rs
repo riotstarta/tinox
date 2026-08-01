@@ -168,6 +168,18 @@ pub struct Amqp091ConsumerEntry {
     pub on_message: Option<String>,
 }
 
+/// @Http3RestController(port, certPath, keyPath) entry: routes every
+/// @GET/@POST/@PUT/@PATCH/@DELETE in route_entries through
+/// tinox.core.http3_server.Http3Server instead of the TCP auto-server
+/// (see emit_http3_route_code). At most one per program.
+#[derive(Debug, Clone)]
+pub struct Http3RestControllerEntry {
+    pub class_name: String,
+    pub port: i64,
+    pub cert_path: String,
+    pub key_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -317,6 +329,9 @@ pub struct CodeGen {
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
     amqp091_consumers: Vec<Amqp091ConsumerEntry>,
+    /// @Http3RestController: routes route_entries through Http3Server
+    /// instead of the TCP auto-server (see emit_http3_route_code)
+    http3_rest_controller: Option<Http3RestControllerEntry>,
     /// Rich per-expression types from the checker (type-system unification): the
     /// full ValueType per node id, incl. generic args. Since phase 3 the ONLY
     /// checker→codegen type channel (the lossy flat marker table it replaced is
@@ -408,6 +423,7 @@ impl CodeGen {
             ws_endpoints: Vec::new(),
             amqp10_consumers: Vec::new(),
             amqp091_consumers: Vec::new(),
+            http3_rest_controller: None,
             expr_value_types: HashMap::new(),
             db_url: None,
             metrics_path: None,
@@ -462,6 +478,10 @@ impl CodeGen {
 
     pub fn set_amqp091_consumers(&mut self, consumers: Vec<Amqp091ConsumerEntry>) {
         self.amqp091_consumers = consumers;
+    }
+
+    pub fn set_http3_rest_controller(&mut self, controller: Option<Http3RestControllerEntry>) {
+        self.http3_rest_controller = controller;
     }
 
     pub fn set_db_url(&mut self, url: Option<String>) {
@@ -1651,6 +1671,9 @@ impl CodeGen {
         // Emit REST route shims and registration function
         self.emit_route_code();
 
+        // Emit the auto-run HTTP/3 REST server for an @Http3RestController class
+        self.emit_http3_route_code();
+
         // Emit the auto-run accept/message loop for a @WebsocketEndpoint class
         self.emit_ws_code();
 
@@ -1697,7 +1720,11 @@ impl CodeGen {
     /// Generates route handler shims, `__tinox_register_routes`, and (if needed) a `main`
     /// for all routes collected via REST annotations (@GET, @POST, …).
     fn emit_route_code(&mut self) {
-        if self.route_entries.is_empty() {
+        // @Http3RestController present -> emit_http3_route_code owns
+        // route_entries instead (Http3Server, not tinox_HttpServer_listen/
+        // issue #140) -- must not also emit from here, or both paths would
+        // try to define @tinox_main.
+        if self.route_entries.is_empty() || self.http3_rest_controller.is_some() {
             return;
         }
 
@@ -1713,9 +1740,132 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir).unwrap();
 
         let routes = self.route_entries.clone();
+        self.emit_route_annotation_globals(&routes);
 
-        // ── String constant globals for annotations ─────────────────────────────
-        // Emitted into self.ir before lambda_ir is appended.
+        // ── Shim functions ──────────────────────────────────────────────────────
+        // Signature: void (i64) — ctx_i64 is a ptrtoint of the HttpContext* pointer.
+        //
+        // HttpContext layout (no vtable): [request: i64*, response: i64*]  → offsets 0, 1
+        // HttpResponse layout:            [statusCode: i64, headers: i8*, body: i8*] → offsets 0, 1, 2
+        // HttpRequest layout:             [method, path, queryString, headers, body, params] → offset 3 = headers
+        for (idx, route) in routes.iter().enumerate() {
+            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
+
+            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            self.emit_route_shim_body(idx, route);
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
+        // ── Metrics endpoint shim (if enabled) ──────────────────────────────────
+        let metrics_path = self.metrics_path.clone();
+        if let Some(ref mpath) = metrics_path {
+            let mpath_escaped = Self::escape_llvm_string(mpath);
+            let mpath_len = mpath.len() + 1;
+            writeln!(&mut self.ir,
+                "@__metrics_path = private constant [{mpath_len} x i8] c\"{mpath_escaped}\\00\"").unwrap();
+            // Shim: GET /metrics → call tinox_metrics_prometheus(), return as text/plain
+            writeln!(&mut self.lambda_ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
+            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "define void @__metrics_shim(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            // HttpContext[1] = response ptr (i64*)
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            // Get prometheus text
+            writeln!(&mut self.lambda_ir, "  %prom_text = call i8* @tinox_metrics_prometheus()").unwrap();
+            // Set status 200
+            writeln!(&mut self.lambda_ir, "  %sc_field = getelementptr i64, i64* %resp_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 200, i64* %sc_field").unwrap();
+            // Set body
+            writeln!(&mut self.lambda_ir, "  %body_field = getelementptr i64, i64* %resp_ptr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %body_i64 = ptrtoint i8* %prom_text to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %body_i64, i64* %body_field").unwrap();
+            // Set Content-Type header to text/plain; version=0.0.4
+            let ct = "text/plain; version=0.0.4";
+            let ct_escaped = Self::escape_llvm_string(ct);
+            let ct_len = ct.len() + 1;
+            writeln!(&mut self.ir,
+                "@__metrics_ct = private constant [{ct_len} x i8] c\"{ct_escaped}\\00\"").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %ct_hdr_key = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %ct_hdr_val = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__metrics_ct, i64 0, i64 0").unwrap();
+            // headers are at HttpResponse[1] (i8* to map)
+            writeln!(&mut self.lambda_ir, "  %hdrs_field = getelementptr i64, i64* %resp_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %hdrs_i64 = load i64, i64* %hdrs_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %hdrs_ptr = inttoptr i64 %hdrs_i64 to i8*").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_ptr, i8* %ct_hdr_key, i64 %body_i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
+        // ── __tinox_register_routes ─────────────────────────────────────────────
+        writeln!(&mut self.lambda_ir, "define void @__tinox_register_routes(i64* %server) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+
+        for (idx, route) in routes.iter().enumerate() {
+            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
+            let server_method = format!("tinox_HttpServer_{}", route.http_method.to_lowercase());
+            let path_len = route.path.len() + 1;
+
+            writeln!(&mut self.lambda_ir,
+                "  %fn_{idx} = ptrtoint void (i64)* @{shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+        }
+
+        // Register the /metrics route if enabled
+        if let Some(ref mpath) = metrics_path {
+            let mpath_len = mpath.len() + 1;
+            writeln!(&mut self.lambda_ir,
+                "  %metrics_fn = ptrtoint void (i64)* @__metrics_shim to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %metrics_path = getelementptr [{mpath_len} x i8], [{mpath_len} x i8]* @__metrics_path, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  call void @tinox_HttpServer_get(i64* %server, i8* %metrics_path, i64 %metrics_fn)").unwrap();
+        }
+
+        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        // ── Auto-generated main (only when no user main exists) ─────────────────
+        if !self.has_main {
+            let port = std::env::var("TINOX_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8080);
+            writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {port})").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+    }
+
+    /// String constant globals (`@__route_path_N`, `@__route_produces_N`,
+    /// `@__route_consumes_N`, `@__route_auth_prefix_N`/`_auth_type_N`,
+    /// `@__route_oidc_roles_N`, plus the shared `@__hdr_content_type`/
+    /// `@__hdr_authorization`/`@__str_401`/`@__str_415`) that
+    /// `emit_route_shim_body` references by name. Shared by
+    /// `emit_route_code` (TCP) and `emit_http3_route_code` (HTTP/3) --
+    /// exactly one of the two ever runs per program (see the
+    /// `http3_rest_controller.is_some()` exclusion guard in
+    /// `emit_route_code`), so there is no risk of emitting the same
+    /// `@__route_path_N` global twice.
+    fn emit_route_annotation_globals(&mut self, routes: &[RouteEntry]) {
         for (idx, route) in routes.iter().enumerate() {
             let path = &route.path;
             let escaped = Self::escape_llvm_string(path);
@@ -1770,25 +1920,29 @@ impl CodeGen {
             "@__str_401 = private constant [13 x i8] c\"Unauthorized\\00\"").unwrap();
         writeln!(&mut self.ir,
             "@__str_415 = private constant [23 x i8] c\"Unsupported Media Type\\00\"").unwrap();
+    }
 
-        // ── Shim functions ──────────────────────────────────────────────────────
-        // Signature: void (i64) — ctx_i64 is a ptrtoint of the HttpContext* pointer.
-        //
-        // HttpContext layout (no vtable): [request: i64*, response: i64*]  → offsets 0, 1
-        // HttpResponse layout:            [statusCode: i64, headers: i8*, body: i8*] → offsets 0, 1, 2
-        // HttpRequest layout:             [method, path, queryString, headers, body, params] → offset 3 = headers
-        for (idx, route) in routes.iter().enumerate() {
-            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
+    /// Shared per-route shim body: @Auth guard -> @OIDCRolesAllowed guard ->
+    /// @Consumes check -> @StatusCode -> @Produces -> call the real
+    /// {Class}_{Method} handler. Entirely transport-agnostic (only ever
+    /// touches %ctx_ptr via the hard-coded HttpContext/HttpRequest/
+    /// HttpResponse field offsets documented above `emit_route_code`'s shim
+    /// loop) -- reused unchanged by both the TCP auto-server
+    /// (`emit_route_code`) and the HTTP/3 auto-server (`emit_http3_route_code`,
+    /// @Http3RestController). Caller is responsible for the `define`/
+    /// `entry.tnx:`/`%ctx_ptr` prologue and the `ret void`/`}` epilogue,
+    /// since the two callers use different function signatures (the TCP
+    /// shim is a bare `void(i64)` C callback; the HTTP/3 shim additionally
+    /// takes a trailing `i64* %env` so it can be wrapped as a genuine Tinox
+    /// closure value passed into `Http3Server.get`/etc.).
+    fn emit_route_shim_body(&mut self, idx: usize, route: &RouteEntry) {
+        {
             let method_fn = format!("{}_{}", route.class_name, route.method_name);
             let ctrl_size = self
                 .struct_layouts
                 .get(&route.class_name)
                 .map(|f| f.len().max(1) * 8)
                 .unwrap_or(8);
-
-            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
 
             // ── @Auth guard ──────────────────────────────────────────────────────
             if let Some(ref _auth) = route.auth_type {
@@ -1976,104 +2130,107 @@ impl CodeGen {
                 }
                 writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
             }
-            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
-            writeln!(&mut self.lambda_ir, "}}").unwrap();
-            writeln!(&mut self.lambda_ir).unwrap();
+        }
+    }
+
+    /// Generates an auto-run `main` for the single `@Http3RestController`
+    /// class: builds an `Http3Server` on its port/cert/key, registers every
+    /// `@GET`/`@POST`/`@PUT`/`@PATCH`/`@DELETE` route in the program (the
+    /// exact same `route_entries` + `emit_route_shim_body` guard-chain the
+    /// TCP auto-server uses), and calls `.listen()`. Calls the real,
+    /// already-`define`d `Http3Server_new`/`_get`/`_post`/`_put`/`_patch`/
+    /// `_delete`/`_listen` methods directly by their mangled symbol (no
+    /// `declare`s -- a redundant declare of an already-defined symbol is
+    /// an IR-verifier error) instead of the GC-crash-prone
+    /// `tinox_HttpServer_listen` (issue #140), mirroring how `emit_ws_code`
+    /// calls `WsServer_listen`/`Ws_readMessage`/etc. directly rather than
+    /// any C runtime symbol.
+    ///
+    /// Unlike the TCP shims (raw `void(i64)` C callbacks handed to
+    /// `tinox_HttpServer_get` as a bare pointer), `Http3Server.get`/`post`/
+    /// etc. take a genuine Tinox `fnc(HttpContext) -> Nothing` closure
+    /// value -- always represented as a 16-byte `{fn_ptr: i64, env: i64*}`
+    /// block pointer (see `gen_lambda`'s closure construction) -- so each
+    /// shim here additionally takes a trailing (unused, non-capturing)
+    /// `i64* %env` parameter, and gets wrapped in that block before being
+    /// passed to `Http3Server_{method}`.
+    fn emit_http3_route_code(&mut self) {
+        let Some(controller) = self.http3_rest_controller.clone() else {
+            return;
+        };
+        if self.route_entries.is_empty() || self.has_main {
+            return;
+        }
+        if !self.class_named_types.contains("Http3Server") {
+            panic!("@Http3RestController requires `import tinox.core.http3_server;`");
         }
 
-        // ── Metrics endpoint shim (if enabled) ──────────────────────────────────
-        let metrics_path = self.metrics_path.clone();
-        if let Some(ref mpath) = metrics_path {
-            let mpath_escaped = Self::escape_llvm_string(mpath);
-            let mpath_len = mpath.len() + 1;
-            writeln!(&mut self.ir,
-                "@__metrics_path = private constant [{mpath_len} x i8] c\"{mpath_escaped}\\00\"").unwrap();
-            // Shim: GET /metrics → call tinox_metrics_prometheus(), return as text/plain
-            writeln!(&mut self.lambda_ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
-            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
-            writeln!(&mut self.lambda_ir, "define void @__metrics_shim(i64 %ctx_i64) {{").unwrap();
+        let routes = self.route_entries.clone();
+        self.emit_route_annotation_globals(&routes);
+
+        let cert_escaped = Self::escape_llvm_string(&controller.cert_path);
+        let cert_len = controller.cert_path.len() + 1;
+        writeln!(&mut self.ir,
+            "@__h3_cert = private constant [{cert_len} x i8] c\"{cert_escaped}\\00\"").unwrap();
+        let key_escaped = Self::escape_llvm_string(&controller.key_path);
+        let key_len = controller.key_path.len() + 1;
+        writeln!(&mut self.ir,
+            "@__h3_key = private constant [{key_len} x i8] c\"{key_escaped}\\00\"").unwrap();
+
+        // ── Per-route shims (closure-callable: trailing i64* %env) ──────────────
+        for (idx, route) in routes.iter().enumerate() {
+            let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
+            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
-            // HttpContext[1] = response ptr (i64*)
-            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
-            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
-            // Get prometheus text
-            writeln!(&mut self.lambda_ir, "  %prom_text = call i8* @tinox_metrics_prometheus()").unwrap();
-            // Set status 200
-            writeln!(&mut self.lambda_ir, "  %sc_field = getelementptr i64, i64* %resp_ptr, i64 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  store i64 200, i64* %sc_field").unwrap();
-            // Set body
-            writeln!(&mut self.lambda_ir, "  %body_field = getelementptr i64, i64* %resp_ptr, i64 2").unwrap();
-            writeln!(&mut self.lambda_ir, "  %body_i64 = ptrtoint i8* %prom_text to i64").unwrap();
-            writeln!(&mut self.lambda_ir, "  store i64 %body_i64, i64* %body_field").unwrap();
-            // Set Content-Type header to text/plain; version=0.0.4
-            let ct = "text/plain; version=0.0.4";
-            let ct_escaped = Self::escape_llvm_string(ct);
-            let ct_len = ct.len() + 1;
-            writeln!(&mut self.ir,
-                "@__metrics_ct = private constant [{ct_len} x i8] c\"{ct_escaped}\\00\"").unwrap();
-            writeln!(&mut self.lambda_ir,
-                "  %ct_hdr_key = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
-            writeln!(&mut self.lambda_ir,
-                "  %ct_hdr_val = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__metrics_ct, i64 0, i64 0").unwrap();
-            // headers are at HttpResponse[1] (i8* to map)
-            writeln!(&mut self.lambda_ir, "  %hdrs_field = getelementptr i64, i64* %resp_ptr, i64 1").unwrap();
-            writeln!(&mut self.lambda_ir, "  %hdrs_i64 = load i64, i64* %hdrs_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  %hdrs_ptr = inttoptr i64 %hdrs_i64 to i8*").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_ptr, i8* %ct_hdr_key, i64 %body_i64)").unwrap();
+            self.emit_route_shim_body(idx, route);
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
         }
 
-        // ── __tinox_register_routes ─────────────────────────────────────────────
-        writeln!(&mut self.lambda_ir, "define void @__tinox_register_routes(i64* %server) {{").unwrap();
+        // ── Auto-main: build the Http3Server, register every route as a
+        // closure value, listen ───────────────────────────────────────────────
+        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %h3_certp = getelementptr [{cert_len} x i8], [{cert_len} x i8]* @__h3_cert, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %h3_keyp = getelementptr [{key_len} x i8], [{key_len} x i8]* @__h3_key, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %h3_server = call i64* @Http3Server_new(i64* null, i64 {}, i8* %h3_certp, i8* %h3_keyp)",
+            controller.port).unwrap();
 
         for (idx, route) in routes.iter().enumerate() {
-            let shim = format!("__route_{}_{}", route.class_name, route.method_name);
-            let server_method = format!("tinox_HttpServer_{}", route.http_method.to_lowercase());
+            let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
             let path_len = route.path.len() + 1;
-
+            let server_method = format!("Http3Server_{}", route.http_method.to_lowercase());
             writeln!(&mut self.lambda_ir,
-                "  %fn_{idx} = ptrtoint void (i64)* @{shim} to i64").unwrap();
+                "  %h3_raw_{idx} = call i8* @tinox_alloc(i64 16)").unwrap();
             writeln!(&mut self.lambda_ir,
-                "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
+                "  %h3_block_{idx} = bitcast i8* %h3_raw_{idx} to i64*").unwrap();
             writeln!(&mut self.lambda_ir,
-                "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+                "  %h3_fp_{idx} = ptrtoint void (i64, i64*)* @{shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %h3_fps_{idx} = getelementptr i64, i64* %h3_block_{idx}, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  store i64 %h3_fp_{idx}, i64* %h3_fps_{idx}").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %h3_envs_{idx} = getelementptr i64, i64* %h3_block_{idx}, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  store i64* null, i64* %h3_envs_{idx}").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %h3_pathp_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %h3_reg_{idx} = call i64* @{server_method}(i64* %h3_server, i8* %h3_pathp_{idx}, i64* %h3_block_{idx})").unwrap();
         }
 
-        // Register the /metrics route if enabled
-        if let Some(ref mpath) = metrics_path {
-            let mpath_len = mpath.len() + 1;
-            writeln!(&mut self.lambda_ir,
-                "  %metrics_fn = ptrtoint void (i64)* @__metrics_shim to i64").unwrap();
-            writeln!(&mut self.lambda_ir,
-                "  %metrics_path = getelementptr [{mpath_len} x i8], [{mpath_len} x i8]* @__metrics_path, i64 0, i64 0").unwrap();
-            writeln!(&mut self.lambda_ir,
-                "  call void @tinox_HttpServer_get(i64* %server, i8* %metrics_path, i64 %metrics_fn)").unwrap();
-        }
-
-        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+        writeln!(&mut self.lambda_ir, "  call void @Http3Server_listen(i64* %h3_server)").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        // ── Auto-generated main (only when no user main exists) ─────────────────
-        if !self.has_main {
-            let port = std::env::var("TINOX_PORT")
-                .ok()
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(8080);
-            writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
-            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {port})").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
-            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
-            writeln!(&mut self.lambda_ir, "}}").unwrap();
-            writeln!(&mut self.lambda_ir).unwrap();
-        }
+        self.has_main = true;
     }
 
     /// Generates an auto-run `main` for a single `@WebsocketEndpoint`-annotated class:

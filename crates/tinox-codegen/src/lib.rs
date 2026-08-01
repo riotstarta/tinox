@@ -18,3 +18,4 @@ pub use codegen::EntityFieldEntry;
 pub use codegen::WsEndpointEntry;
 pub use codegen::Amqp10ConsumerEntry;
 pub use codegen::Amqp091ConsumerEntry;
+pub use codegen::Http3RestControllerEntry;

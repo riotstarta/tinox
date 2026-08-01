@@ -72,6 +72,52 @@ curl --http3-only -k -i https://localhost:8843/tasks/999
 self-signed. `-v` on any of these shows the QUIC/TLS-1.3 handshake and
 `ALPN, offering h3` / negotiated `h3` in the log.
 
+## 3. The declarative version (`src/TaskController.tnx`)
+
+The exact same API, but written with the same `@GET`/`@POST`/`@PUT`/
+`@PATCH`/`@DELETE`/`@Path`/`@StatusCode` annotations already used by the
+plain (TCP) REST examples (`examples/rest_minimal`) -- the compiler
+generates the entire `Http3Server::new()`/`.get()`/`.post()`/.../
+`.listen()` wiring that `src/main.tnx` writes out by hand:
+
+```tinox
+@ApplicationComponent
+@Http3RestController(8843, "cert.pem", "key.pem")
+class TaskController
+{
+    var tasks: List<Task>;
+
+    @GET
+    @Path("/tasks")
+    fn listTasks(ctx: HttpContext) -> Nothing
+    {
+        ctx.response.json(Json::serialize(this.tasks));
+    }
+    // ...
+}
+```
+
+`@Http3RestController(port, certPath, keyPath)` is what routes these
+routes through `Http3Server` (QUIC) instead of the default, GC-crash-prone
+TCP auto-server (issue #140) -- at most one per program, and it can't be
+combined with `@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`
+(each generates its own auto-run `main`). `@ApplicationComponent` makes
+the compiler reuse one `TaskController` instance across every request
+(instead of a fresh, zeroed one per call) -- required here since `tasks`
+needs to persist between requests; see the comment at the top of
+`TaskController.tnx` for why `tasks` is lazily seeded in an `ensureInit()`
+method rather than a constructor.
+
+Build and run it exactly like `main.tnx`, just pointing at the other file:
+
+```sh
+TINOX_HTTP3=1 tinox build src/TaskController.tnx -o tasks_api_annotated
+./tasks_api_annotated
+```
+
+Same routes, same responses, same port (8843) -- run one or the other,
+not both.
+
 ## Notes
 
 - Storage is a single in-memory `List<Task>`, shared by every route

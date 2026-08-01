@@ -1992,6 +1992,32 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
+    if ann_result.http3_rest_controllers.len() > 1 {
+        return Err(format!(
+            "found {} @Http3RestController classes ({}); v1 supports exactly one auto-run HTTP/3 REST controller per program",
+            ann_result.http3_rest_controllers.len(),
+            ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !ann_result.http3_rest_controllers.is_empty()
+        && (!ann_result.ws_endpoints.is_empty()
+            || !ann_result.amqp10_consumers.is_empty()
+            || !ann_result.amqp091_consumers.is_empty())
+    {
+        return Err(
+            "@Http3RestController cannot be combined with @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer in the same program (each generates its own auto-run `main`)".to_string(),
+        );
+    }
+    let http3_rest_controller: Option<tinox_codegen::Http3RestControllerEntry> = ann_result
+        .http3_rest_controllers
+        .first()
+        .map(|e| tinox_codegen::Http3RestControllerEntry {
+            class_name: e.class_name.clone(),
+            port: e.port,
+            cert_path: e.cert_path.clone(),
+            key_path: e.key_path.clone(),
+        });
+
     let di_components: Vec<tinox_codegen::DiComponentInfo> = ann_result.di_components
         .iter()
         .map(|c| tinox_codegen::DiComponentInfo {
@@ -2111,6 +2137,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_amqp091_consumers(amqp091_consumers);
+    codegen.set_http3_rest_controller(http3_rest_controller);
     codegen.set_db_url(read_database_config().map(|c| c.url));
     codegen
         .gen(&ast)

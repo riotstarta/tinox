@@ -191,6 +191,21 @@ pub struct Amqp091ConsumerInfo {
     pub on_message: Option<String>,
 }
 
+/// @Http3RestController(port, certPath, keyPath) on a class -- routes
+/// every @GET/@POST/@PUT/@PATCH/@DELETE route in the program (the same
+/// program-wide route_entries the TCP auto-server uses) through
+/// tinox.core.http3_server.Http3Server on this port/cert/key instead of
+/// the GC-crash-prone tinox_HttpServer_listen (issue #140). At most one
+/// per program (checked in main.rs, same as WsEndpointInfo/
+/// Amqp10ConsumerInfo/Amqp091ConsumerInfo).
+#[derive(Debug, Clone)]
+pub struct Http3RestControllerInfo {
+    pub class_name: String,
+    pub port: i64,
+    pub cert_path: String,
+    pub key_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct MetricInfo {
     pub kind: MetricKind,
@@ -224,6 +239,7 @@ pub struct AnnotationProcessingResult {
     pub ws_endpoints: Vec<WsEndpointInfo>,
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
+    pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -397,6 +413,20 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks the method called when the connection ends (Close/EOF/protocol error); signature fn(conn: Int64) -> Nothing".to_string(),
+            },
+        );
+
+        // Annotation-driven HTTP/3 REST controller: routes @GET/@POST/
+        // @PUT/@PATCH/@DELETE methods through tinox.core.http3_server's
+        // Http3Server (not the GC-crash-prone TCP auto-server, issue #140).
+        registry.insert(
+            "Http3RestController".to_string(),
+            AnnotationInfo {
+                name: "Http3RestController".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 3,
+                max_args: 3,
+                description: "@Http3RestController(port, certPath, keyPath) — marks a class whose @GET/@POST/@PUT/@PATCH/@DELETE methods (anywhere in the program) should be served over HTTP/3 (QUIC) via tinox.core.http3_server.Http3Server, instead of the TCP auto-server. Requires `import tinox.core.http3_server;` and a runtime built with TINOX_HTTP3=1. Only valid when the file defines no `main`, has exactly one @Http3RestController class, and no @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer.".to_string(),
             },
         );
 
@@ -803,6 +833,7 @@ impl AnnotationProcessor {
         let mut ws_endpoint_port: Option<i64> = None;
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
         let mut amqp091_consumer_args: Option<(String, i64, String, String, String, String)> = None;
+        let mut http3_rest_controller_args: Option<(i64, String, String)> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
@@ -838,6 +869,14 @@ impl AnnotationProcessor {
                     let queue = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(5) { Some(s.clone()) } else { None };
                     if let (Some(host), Some(port), Some(vhost), Some(user), Some(pass), Some(queue)) = (host, port, vhost, user, pass, queue) {
                         amqp091_consumer_args = Some((host, port, vhost, user, pass, queue));
+                    }
+                }
+                "Http3RestController" => {
+                    let port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.first() { Some(*p) } else { None };
+                    let cert_path = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(1) { Some(s.clone()) } else { None };
+                    let key_path = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(2) { Some(s.clone()) } else { None };
+                    if let (Some(port), Some(cert_path), Some(key_path)) = (port, cert_path, key_path) {
+                        http3_rest_controller_args = Some((port, cert_path, key_path));
                     }
                 }
                 "Auth" => {
@@ -1097,6 +1136,15 @@ impl AnnotationProcessor {
                 pass,
                 queue,
                 on_message,
+            });
+        }
+
+        if let Some((port, cert_path, key_path)) = http3_rest_controller_args {
+            result.http3_rest_controllers.push(Http3RestControllerInfo {
+                class_name: class.name.clone(),
+                port,
+                cert_path,
+                key_path,
             });
         }
     }
@@ -2114,6 +2162,47 @@ class ChatEndpoint {
     fn test_process_no_ws_endpoint_without_annotation() {
         let result = proc("class Plain { fn onMessage(conn: Int64, msg: String) -> Nothing {} }");
         assert!(result.ws_endpoints.is_empty());
+    }
+
+    #[test]
+    fn test_process_http3_rest_controller_full() {
+        let result = proc(r#"
+@Http3RestController(8843, "cert.pem", "key.pem")
+class TaskController {
+    @GET
+    @Path("/tasks")
+    fn listTasks(ctx: HttpContext) -> Nothing {}
+}
+"#);
+        assert_eq!(result.http3_rest_controllers.len(), 1);
+        let c = &result.http3_rest_controllers[0];
+        assert_eq!(c.class_name, "TaskController");
+        assert_eq!(c.port, 8843);
+        assert_eq!(c.cert_path, "cert.pem");
+        assert_eq!(c.key_path, "key.pem");
+        // Method-level @GET/@Path collection is unaffected by the new
+        // class annotation -- same route_entries as plain TCP REST.
+        assert_eq!(result.route_entries.len(), 1);
+        assert_eq!(result.route_entries[0].path, "/tasks");
+    }
+
+    #[test]
+    fn test_process_no_http3_rest_controller_without_annotation() {
+        let result = proc("class Plain { @GET\n@Path(\"/x\")\nfn f(ctx: HttpContext) -> Nothing {} }");
+        assert!(result.http3_rest_controllers.is_empty());
+    }
+
+    #[test]
+    fn test_validate_http3_rest_controller_on_class_ok() {
+        let errors = valid("@Http3RestController(8843, \"cert.pem\", \"key.pem\")\nclass C {}");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_validate_http3_rest_controller_missing_args_err() {
+        let errors = valid("@Http3RestController(8843)\nclass C {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("requires at least"));
     }
 
     #[test]

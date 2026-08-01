@@ -1993,6 +1993,50 @@ server.listen();
     Ein vollständiges Beispiel (JSON-REST-API mit GET/POST/PUT/PATCH/
     DELETE) liegt unter <code>examples/http3_rest_api</code>.
   </p>
+  <h3>@Http3RestController — deklarativ statt fluent API</h3>
+  <p>
+    Dieselben <code>@GET</code>/<code>@POST</code>/<code>@PUT</code>/
+    <code>@PATCH</code>/<code>@DELETE</code>/<code>@Path</code>/
+    <code>@StatusCode</code>/<code>@Produces</code>/<code>@Consumes</code>/
+    <code>@Auth</code>/<code>@OIDCRolesAllowed</code>-Annotationen wie beim
+    normalen (TCP-)REST-Auto-Server (Modul <code>rest</code>) funktionieren
+    auch für HTTP/3 — mit der zusätzlichen Klassen-Annotation
+    <code>@Http3RestController(port, certPath, keyPath)</code> generiert
+    der Compiler einen kompletten <code>Http3Server::new()</code>/
+    <code>.get()</code>/<code>.post()</code>/…/<code>.listen()</code>-`main`,
+    exakt wie ihn die handgeschriebene Fluent-API-Variante oben schreiben
+    würde — <strong>nicht</strong> über den GC-Crash-anfälligen TCP-Auto-Server
+    (<code>tinox_HttpServer_listen</code>, Issue #140), sondern direkt auf
+    <code>Http3Server</code>.
+  </p>
+  <p>
+    Höchstens eine <code>@Http3RestController</code>-Klasse pro Programm
+    (hart erzwungen); alle <code>@GET</code>/… Routen im gesamten Programm
+    landen auf diesem einen Server. Nicht kombinierbar mit
+    <code>@WebsocketEndpoint</code>/<code>@Amqp10Consumer</code>/
+    <code>@Amqp091Consumer</code> (jede erzeugt ihr eigenes Auto-`main`).
+    Da der Compiler pro Request standardmäßig eine frische, genullte
+    Controller-Instanz alloziert, braucht ein Controller mit Zustand
+    zusätzlich <code>@ApplicationComponent</code> (eine wiederverwendete
+    Singleton-Instanz über <code>{Klasse}_di_get()</code>) — Beispiel und
+    Details dazu in <code>examples/http3_rest_api/src/TaskController.tnx</code>.
+  </p>
+  <pre><code>import tinox.core.http3_server;
+
+@ApplicationComponent
+@Http3RestController(8843, "cert.pem", "key.pem")
+class TaskController
+{
+    var tasks: List&lt;Task&gt;;
+
+    @GET
+    @Path("/tasks")
+    fn listTasks(ctx: HttpContext) -> Nothing
+    {
+        ctx.response.json(Json::serialize(this.tasks));
+    }
+}
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-websocket">
