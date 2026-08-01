@@ -111,7 +111,7 @@ namespace tinox.core.rest.client
         {
             let url: String = this.buildUrl(path);
             this.applyHeaders();
-            let response: HttpResponse = Http::get(url);
+            let response: HttpClientResponse = Http::get(url);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -126,7 +126,7 @@ namespace tinox.core.rest.client
         {
             let url: String = this.buildUrl(path);
             this.applyHeaders();
-            let response: HttpResponse = Http::post(url, this.reqBody);
+            let response: HttpClientResponse = Http::post(url, this.reqBody);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -141,7 +141,7 @@ namespace tinox.core.rest.client
         {
             let url: String = this.buildUrl(path);
             this.applyHeaders();
-            let response: HttpResponse = Http::put(url, this.reqBody);
+            let response: HttpClientResponse = Http::put(url, this.reqBody);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -156,7 +156,7 @@ namespace tinox.core.rest.client
         {
             let url: String = this.buildUrl(path);
             this.applyHeaders();
-            let response: HttpResponse = Http::patch(url, this.reqBody);
+            let response: HttpClientResponse = Http::patch(url, this.reqBody);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -171,7 +171,7 @@ namespace tinox.core.rest.client
         {
             let url: String = this.buildUrl(path);
             this.applyHeaders();
-            let response: HttpResponse = Http::delete(url);
+            let response: HttpClientResponse = Http::delete(url);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }

@@ -587,6 +587,10 @@ fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
     match arg {
         AnnotationArg::Literal(lit) => fmt_literal(lit),
         AnnotationArg::EnumValue(type_name, variant) => format!("{}.{}", type_name, variant),
+        AnnotationArg::Array(items) => format!(
+            "[{}]",
+            items.iter().map(fmt_annotation_arg).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 

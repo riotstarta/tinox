@@ -36,7 +36,7 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     ("hash",          include_str!("../../tinox-core/hash/Hash.tnx")),
     ("http",          concat!(
         include_str!("../../tinox-core/http/Http.tnx"),
-        include_str!("../../tinox-core/http/HttpResponse.tnx"),
+        include_str!("../../tinox-core/http/HttpClientResponse.tnx"),
     )),
     ("http_server",   concat!(
         include_str!("../../tinox-core/http_server/HttpContext.tnx"),

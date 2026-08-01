@@ -2,7 +2,10 @@ module tinox.core.http;
 
 namespace tinox.core.http
 {
-    class HttpResponse
+    // Renamed from HttpResponse (issue #139) -- see Http.tnx's comment for
+    // why: this bare name collided with tinox.core.http_server's own
+    // HttpResponse class in the compiler's codegen layout table.
+    class HttpClientResponse
     {
         fn statusCode() -> Int64
         {

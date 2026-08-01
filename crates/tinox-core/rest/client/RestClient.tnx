@@ -98,7 +98,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::get(url);
+            let response: HttpClientResponse = Http::get(url);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -123,7 +123,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::get(url);
+            let response: HttpClientResponse = Http::get(url);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -149,7 +149,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::post(url, body);
+            let response: HttpClientResponse = Http::post(url, body);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -175,7 +175,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::put(url, body);
+            let response: HttpClientResponse = Http::put(url, body);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -201,7 +201,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::patch(url, body);
+            let response: HttpClientResponse = Http::patch(url, body);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }
@@ -225,7 +225,7 @@ namespace tinox.core.rest.client
                 Http::setHeader(name, value);
                 i = i + 1;
             }
-            let response: HttpResponse = Http::delete(url);
+            let response: HttpClientResponse = Http::delete(url);
             Http::clearHeaders();
             return RestResponse::fromHttp(response);
         }

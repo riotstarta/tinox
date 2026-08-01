@@ -31,6 +31,17 @@ namespace tinox.core.http_server
         var params: Map<String, String>;
 
         /**
+         * True if this request arrived as TLS 1.3 0-RTT early data
+         * (tinox.core.http3_server's Http3Server, when enableEarlyData()
+         * is opted into) -- always false for HttpServer/Http2Server,
+         * since neither supports 0-RTT. Early data is replayable by a
+         * network attacker (no round trip to prove the client isn't
+         * replaying a captured ClientHello+request), so handlers that
+         * check this should avoid non-idempotent side effects when true.
+         */
+        var wasEarlyData: Bool;
+
+        /**
          * Creates a new HttpRequest
          *
          * @param method the HTTP method
@@ -42,7 +53,7 @@ namespace tinox.core.http_server
          */
         fn new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
         {
-            return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() };
+            return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new(), wasEarlyData: false };
         }
 
         /**

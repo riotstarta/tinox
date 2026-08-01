@@ -1,0 +1,23 @@
+// Minimal HTTP/3 (QUIC) server used as a fixture by
+// crates/tinox/tests/http3_server_curl.rs. Requires TINOX_HTTP3=1 at build
+// time (opt-in, since ngtcp2/nghttp3 aren't universally installed). Never
+// returns (listen() blocks forever), so this can't be a golden e2e test --
+// the Rust test spawns it as a background process and drives it with a
+// real `curl --http3-only`.
+import tinox.core.http3_server;
+import tinox.core.http_server;
+
+fn main() -> Nothing
+{
+    let server: Http3Server = Http3Server::new(8493, "tls_cert.pem", "tls_key.pem");
+
+    server.get("/hello", ctx => {
+        ctx.response.text("hi from h3");
+    });
+
+    server.post("/echo", ctx => {
+        ctx.response.text("echo:" + ctx.request.body);
+    });
+
+    server.listen();
+}

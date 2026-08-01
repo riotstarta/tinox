@@ -476,11 +476,14 @@ pub struct Namespace {
     pub annotations: Vec<Annotation>,
 }
 
-/// An argument in an annotation — either a literal value or a qualified enum member (Type.Variant).
+/// An argument in an annotation — a literal value, a qualified enum member
+/// (Type.Variant), or a bracketed list of arguments (e.g.
+/// `@OIDCRolesAllowed(["admin", "api-user"])`).
 #[derive(Debug, Clone)]
 pub enum AnnotationArg {
     Literal(Literal),
     EnumValue(String, String), // TypeName, VariantName — e.g. MediaType.APPLICATION_JSON
+    Array(Vec<AnnotationArg>),
 }
 
 #[derive(Debug, Clone)]

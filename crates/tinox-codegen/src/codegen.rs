@@ -82,6 +82,9 @@ pub struct RouteEntry {
     pub produces: Option<String>,
     pub consumes: Option<String>,
     pub auth_type: Option<String>,
+    /// Roles from @OIDCRolesAllowed(["role1", "role2"]) -- empty = no
+    /// OIDC role check on this route.
+    pub oidc_roles: Vec<String>,
     /// true = fnc (static), false = fn (instance, has self)
     pub is_static: bool,
 }
@@ -98,6 +101,17 @@ pub struct MetricEntry {
     pub metric_name: String,
     pub class_name: String,
     pub fn_name: String,
+}
+
+/// `obj[index] = value`'s resolved target parts (map-vs-array, index and
+/// base-container SSA values) — bundled so `gen_index_store` takes it plus
+/// `val`/`val_ty` instead of a 7-argument signature (clippy::too_many_arguments).
+struct IndexTarget {
+    is_map: bool,
+    idx_val: String,
+    idx_ty: String,
+    base_ptr: String,
+    base_ty: String,
 }
 
 /// Bündelt die Annotation-Metadaten aus dem Typecheck für set_annotation_info —
@@ -1728,6 +1742,23 @@ impl CodeGen {
                 writeln!(&mut self.ir,
                     "@__route_auth_prefix_{idx} = private constant [{} x i8] c\"{esc}\\00\"",
                     prefix.len() + 1).unwrap();
+                // Bare authType ("bearer"/"basic", no trailing space) passed
+                // as-is to AuthValidator::validate, if defined (issue: @Auth
+                // previously never validated the credential, only this
+                // prefix -- see the guard below).
+                let esc_type = Self::escape_llvm_string(auth);
+                writeln!(&mut self.ir,
+                    "@__route_auth_type_{idx} = private constant [{} x i8] c\"{esc_type}\\00\"",
+                    auth.len() + 1).unwrap();
+            }
+            if !route.oidc_roles.is_empty() {
+                // Pipe-joined role list, passed as-is to OidcGuard::checkRoles
+                // (module tinox.core.rest.server), which splits on "|" itself.
+                let roles_csv = route.oidc_roles.join("|");
+                let esc = Self::escape_llvm_string(&roles_csv);
+                writeln!(&mut self.ir,
+                    "@__route_oidc_roles_{idx} = private constant [{} x i8] c\"{esc}\\00\"",
+                    roles_csv.len() + 1).unwrap();
             }
         }
         // Static string constants shared across shims
@@ -1786,6 +1817,61 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  store i64 401, i64* %sc_f401_{idx}").unwrap();
                 writeln!(&mut self.lambda_ir, "  ret void").unwrap();
                 writeln!(&mut self.lambda_ir, "auth_pass_{idx}:").unwrap();
+
+                // Bug: @Auth previously stopped here -- any syntactically
+                // correct "Bearer .../Basic ..." header passed, since the
+                // scheme-prefix check above was the *only* check. Actually
+                // validate the credential now: look for a project-defined
+                // `class AuthValidator { fnc validate(authType: String,
+                // credential: String) -> Bool }` (a well-known name, same
+                // convention as the DI `_di_get`/`_di_create` symbols this
+                // file already calls elsewhere) and call it if present.
+                // Mirrors RestApi.authValidator's own fix (Bug 104) for the
+                // separate Tinox-level REST framework: if no validator is
+                // defined, default to rejecting every request rather than
+                // accepting an unauthenticated one.
+                let auth_type_len = _auth.len() + 1;
+                writeln!(&mut self.lambda_ir, "  %cred_len_{idx} = call i64 @tinox_string_length(i8* %auth_str_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %credential_{idx} = call i8* @tinox_string_substring(i8* %auth_str_{idx}, i64 {auth_type_len}, i64 %cred_len_{idx})").unwrap();
+                if self.defined_classes.contains("AuthValidator") {
+                    writeln!(&mut self.lambda_ir, "  %auth_type_ptr_{idx} = getelementptr [{auth_type_len} x i8], [{auth_type_len} x i8]* @__route_auth_type_{idx}, i64 0, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %cred_ok_{idx} = call i1 @AuthValidator_validate(i8* %auth_type_ptr_{idx}, i8* %credential_{idx})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 %cred_ok_{idx}, label %cred_pass_{idx}, label %cred_fail_{idx}").unwrap();
+                } else {
+                    writeln!(&mut self.lambda_ir, "  br label %cred_fail_{idx}").unwrap();
+                }
+                writeln!(&mut self.lambda_ir, "cred_fail_{idx}:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_fcred_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_icred_{idx} = load i64, i64* %resp_fcred_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %resp_pcred_{idx} = inttoptr i64 %resp_icred_{idx} to i64*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %sc_fcred_{idx} = getelementptr i64, i64* %resp_pcred_{idx}, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 401, i64* %sc_fcred_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                if self.defined_classes.contains("AuthValidator") {
+                    writeln!(&mut self.lambda_ir, "cred_pass_{idx}:").unwrap();
+                }
+            }
+
+            // ── @OIDCRolesAllowed guard ──────────────────────────────────────────
+            // Delegates entirely to the real (normally-compiled) Tinox function
+            // OidcGuard::checkRoles (tinox.core.rest.server, module
+            // tinox.core.rest.server always imported when this annotation is in
+            // use) -- unlike @Auth's hand-emitted prefix check, the JWKS fetch/
+            // RS256 verify/role check is far too much logic to hand-write as raw
+            // IR, so this shim just calls the compiled function by its known
+            // symbol name (OidcGuard_checkRoles) exactly like it already calls
+            // the controller's own handler method below. checkRoles() sets
+            // ctx.response itself (401/403 with a JSON error body) on failure,
+            // so there is nothing left to do here but branch on its result.
+            if !route.oidc_roles.is_empty() {
+                let roles_csv = route.oidc_roles.join("|");
+                let roles_len = roles_csv.len() + 1;
+                writeln!(&mut self.lambda_ir, "  %oidc_roles_ptr_{idx} = getelementptr [{roles_len} x i8], [{roles_len} x i8]* @__route_oidc_roles_{idx}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  %oidc_ok_{idx} = call i1 @OidcGuard_checkRoles(i64* %ctx_ptr, i8* %oidc_roles_ptr_{idx})").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %oidc_ok_{idx}, label %oidc_pass_{idx}, label %oidc_fail_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "oidc_fail_{idx}:").unwrap();
+                writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                writeln!(&mut self.lambda_ir, "oidc_pass_{idx}:").unwrap();
             }
 
             // ── @Consumes: validate request Content-Type ─────────────────────────
@@ -5446,99 +5532,9 @@ impl CodeGen {
                             .unwrap();
                     }
                 } else if let ExprKind::Index { obj, index } = &target.node {
-                    // Detect Map type for map[key] = val → tinox_map_set
-                    let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
-                        ctx.local_types.get(n.as_str()).cloned()
-                            // Fallback: reiche Brücke (ungestrippter Marker)
-                            .or_else(|| self.rich_marker(obj))
-                    } else {
-                        // Felder/verschachtelte Ziele (this.m[k] = v)
-                        self.infer_struct_type(obj, ctx)
-                    };
-                    let is_map = obj_declared_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
-
-                    let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
-                    let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
-                        if ctx.params.contains(name) {
-                            self.gen_expr(obj, ctx)?
-                        } else if ctx.locals.contains_key(name) {
-                            let (var_ty, _) = ctx.locals.get(name).unwrap();
-                            let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
-                            let loaded_ptr = self.temp();
-                            writeln!(
-                                &mut self.ir,
-                                "{} = load {}, {}* %{}",
-                                loaded_ptr, var_ty, var_ty, slot
-                            )
-                            .unwrap();
-                            (loaded_ptr, var_ty.clone())
-                        } else {
-                            self.gen_expr(obj, ctx)?
-                        }
-                    } else {
-                        self.gen_expr(obj, ctx)?
-                    };
+                    let idx_target = self.gen_index_target(obj, index, ctx)?;
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
-
-                    if is_map || idx_ty == "i8*" {
-                        // Map: tinox_map_set(i8* map, i8* key, i64 val)
-                        let map_i8 = if base_ty == "i8*" { base_ptr.clone() } else {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
-                            c
-                        };
-                        let key_i8 = if idx_ty == "i8*" { idx_val.clone() } else {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
-                            c
-                        };
-                        let store_val = if val_ty == "i64" || val_ty.is_empty() {
-                            val
-                        } else if val_ty == "i1" {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
-                            c
-                        } else if val_ty == "double" || val_ty == "float" {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                            c
-                        } else {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
-                            c
-                        };
-                        writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_i8, key_i8, store_val).unwrap();
-                    } else {
-                        // Coerce base_ptr to i64* if it's encoded as i64
-                        let base_arr = if base_ty == "i64" {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, base_ptr).unwrap();
-                            c
-                        } else {
-                            base_ptr.clone()
-                        };
-                        let data_ptr = self.emit_array_data(&base_arr);
-                        let ptr_name = self.temp();
-                        writeln!(
-                            &mut self.ir,
-                            "{} = getelementptr i64, ptr {}, i64 {}",
-                            ptr_name, data_ptr, idx_val
-                        )
-                        .unwrap();
-                        // Strings stored as i64 (ptrtoint); bools need zext; others direct
-                        let store_val = if val_ty == "i8*" || val_ty == "i64*" {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                            cast
-                        } else if val_ty == "i1" {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                            cast
-                        } else {
-                            val
-                        };
-                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, ptr_name).unwrap();
-                    }
+                    self.gen_index_store(&idx_target, &val, &val_ty);
                 }
             }
             _ => {}
@@ -9206,6 +9202,15 @@ impl CodeGen {
                         val.clone()
                     };
                     writeln!(&mut self.ir, "store {} {}, {}* %{}", store_ty, store_val, store_ty, slot).unwrap();
+                } else if let ExprKind::Index { obj, index } = &target.node {
+                    // e.g. `this.headers[key] = value;` -- reaches here (not
+                    // StmtKind::Assignment) because the parser's elaborate
+                    // assignment-target parsing only triggers off a leading
+                    // `TokenKind::Ident`, not `this`. See gen_index_store's
+                    // doc comment for the full story (issue #143: this
+                    // silently no-op'd before this Index case existed here).
+                    let idx_target = self.gen_index_target(obj, index, ctx)?;
+                    self.gen_index_store(&idx_target, &val, &val_ty);
                 }
                 Ok((val, val_ty))
             }
@@ -9220,6 +9225,134 @@ impl CodeGen {
                 ));
                 Err(bag)
             }
+        }
+    }
+
+    /// Resolves `obj[index]`'s assignment-target parts (is this a map or an
+    /// array; the index and base-container SSA values) without touching
+    /// `value` — split out from the store itself so each caller can keep its
+    /// own pre-existing relative evaluation order against `value` (see
+    /// `gen_index_store`'s doc comment for why there are two callers).
+    /// Bundled into `IndexTarget` rather than a 5-tuple/more store() params —
+    /// avoids clippy::too_many_arguments on `gen_index_store`.
+    fn gen_index_target(
+        &mut self,
+        obj: &tinox_parser::Expr,
+        index: &tinox_parser::Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<IndexTarget, ErrorBag> {
+        use tinox_parser::ExprKind;
+        // Detect Map type for map[key] = val → tinox_map_set
+        let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
+            ctx.local_types.get(n.as_str()).cloned()
+                // Fallback: reiche Brücke (ungestrippter Marker)
+                .or_else(|| self.rich_marker(obj))
+        } else {
+            // Felder/verschachtelte Ziele (this.m[k] = v)
+            self.infer_struct_type(obj, ctx)
+        };
+        let is_map = obj_declared_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
+
+        let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
+        let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
+            if ctx.params.contains(name) {
+                self.gen_expr(obj, ctx)?
+            } else if ctx.locals.contains_key(name) {
+                let (var_ty, _) = ctx.locals.get(name).unwrap();
+                let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
+                let loaded_ptr = self.temp();
+                writeln!(
+                    &mut self.ir,
+                    "{} = load {}, {}* %{}",
+                    loaded_ptr, var_ty, var_ty, slot
+                )
+                .unwrap();
+                (loaded_ptr, var_ty.clone())
+            } else {
+                self.gen_expr(obj, ctx)?
+            }
+        } else {
+            self.gen_expr(obj, ctx)?
+        };
+        Ok(IndexTarget { is_map, idx_val, idx_ty, base_ptr, base_ty })
+    }
+
+    /// `obj[index] = value` — map[k]=v -> tinox_map_set, arr[i]=v -> GEP+store.
+    /// Takes `(val, val_ty)` already evaluated rather than the raw `value`
+    /// expression: shared by both `StmtKind::Assignment` (statements starting
+    /// with a bare identifier, e.g. `arr[i] = v;`/`m[k] = v;`, which evaluates
+    /// index/obj before value) and `ExprKind::Assign` (everything else at
+    /// statement level, notably anything starting with `this` — the parser's
+    /// elaborate assignment-target parsing only triggers off a leading
+    /// `TokenKind::Ident`, so `this.field[i] = v;` falls through to general
+    /// expression-statement parsing and produces an `ExprKind::Assign` node
+    /// instead of `StmtKind::Assignment`, which evaluates value first). Before
+    /// this was shared, `ExprKind::Assign`'s own handler had no Index case at
+    /// all — `this.headers[key] = value;` silently did nothing (the RHS was
+    /// still evaluated, just never stored anywhere), while `let h =
+    /// this.headers; h[key] = value;` worked, since `h[key]=v` IS a
+    /// bare-Ident statement.
+    fn gen_index_store(&mut self, target: &IndexTarget, val: &str, val_ty: &str) {
+        let IndexTarget { is_map, idx_val, idx_ty, base_ptr, base_ty } = target;
+        let is_map = *is_map;
+        if is_map || idx_ty == "i8*" {
+            // Map: tinox_map_set(i8* map, i8* key, i64 val)
+            let map_i8 = if base_ty == "i8*" { base_ptr.to_string() } else {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
+                c
+            };
+            let key_i8 = if idx_ty == "i8*" { idx_val.to_string() } else {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
+                c
+            };
+            let store_val = if val_ty == "i64" || val_ty.is_empty() {
+                val.to_string()
+            } else if val_ty == "i1" {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
+                c
+            } else if val_ty == "double" || val_ty == "float" {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                c
+            } else {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
+                c
+            };
+            writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_i8, key_i8, store_val).unwrap();
+        } else {
+            // Coerce base_ptr to i64* if it's encoded as i64
+            let base_arr = if base_ty == "i64" {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, base_ptr).unwrap();
+                c
+            } else {
+                base_ptr.to_string()
+            };
+            let data_ptr = self.emit_array_data(&base_arr);
+            let ptr_name = self.temp();
+            writeln!(
+                &mut self.ir,
+                "{} = getelementptr i64, ptr {}, i64 {}",
+                ptr_name, data_ptr, idx_val
+            )
+            .unwrap();
+            // Strings stored as i64 (ptrtoint); bools need zext; others direct
+            let store_val = if val_ty == "i8*" || val_ty == "i64*" {
+                let cast = self.temp();
+                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
+                cast
+            } else if val_ty == "i1" {
+                let cast = self.temp();
+                writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
+                cast
+            } else {
+                val.to_string()
+            };
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, ptr_name).unwrap();
         }
     }
 
@@ -11963,7 +12096,20 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
             }
             collect_free_vars_inner(body, &lambda_params, vars);
         }
-        ExprKind::This | ExprKind::SuperCall { .. } | ExprKind::New { .. } | ExprKind::Is { .. } => {}
+        // `ClassName::method(args)` (static-dispatch call, e.g. Crypto::aesEncrypt(json,
+        // secret)) and `ClassName::new(args)` (constructor call) both carry their
+        // arguments in `args` like a normal Call — a captured outer variable used
+        // ONLY as an argument here was previously invisible to free-var collection,
+        // so it never made it into the lambda's closure environment. Codegen's
+        // Ident fallback then emitted an undefined, wrongly-typed `%name`/`i64`
+        // reference instead (silent invalid-IR miscompile, not caught until `opt`
+        // rejected it) — found while building OidcWebApp's install() closures.
+        ExprKind::EnumValue { args, .. } | ExprKind::New { args, .. } => {
+            for arg in args {
+                collect_free_vars_inner(arg, param_names, vars);
+            }
+        }
+        ExprKind::This | ExprKind::SuperCall { .. } | ExprKind::Is { .. } => {}
         ExprKind::Literal(_) => {}
         _ => {}
     }

@@ -55,6 +55,10 @@ pub struct RouteInfo {
     pub produces: Option<String>,
     pub consumes: Option<String>,
     pub auth_type: Option<String>,
+    /// Roles from @OIDCRolesAllowed(["role1", "role2"]) -- request must
+    /// carry a verified OIDC access token with at least one of these
+    /// realm roles. Empty = no OIDC role check on this route.
+    pub oidc_roles: Vec<String>,
     pub is_static: bool,
 }
 
@@ -331,6 +335,16 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Requires authentication (\"bearer\" or \"basic\")".to_string(),
+            },
+        );
+        registry.insert(
+            "OIDCRolesAllowed".to_string(),
+            AnnotationInfo {
+                name: "OIDCRolesAllowed".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
             },
         );
         registry.insert(
@@ -1152,6 +1166,7 @@ impl AnnotationProcessor {
         let mut produces: Option<String> = None;
         let mut consumes: Option<String> = None;
         let mut auth: Option<String> = class_auth.map(|s| s.to_string());
+        let mut oidc_roles: Vec<String> = Vec::new();
 
         for ann in &method.annotations {
             match ann.name.as_str() {
@@ -1180,6 +1195,17 @@ impl AnnotationProcessor {
                 "Auth" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         auth = Some(s.clone());
+                    }
+                }
+                "OIDCRolesAllowed" => {
+                    if let Some(tinox_parser::AnnotationArg::Array(items)) = ann.args.first() {
+                        oidc_roles = items
+                            .iter()
+                            .filter_map(|a| match a {
+                                tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .collect();
                     }
                 }
                 _ => {}
@@ -1212,6 +1238,7 @@ impl AnnotationProcessor {
             produces,
             consumes,
             auth_type: auth,
+            oidc_roles,
             is_static: method.static_,
         })
     }
@@ -1592,6 +1619,39 @@ class Ctrl {
 }
 "#);
         assert_eq!(result.route_entries[0].auth_type.as_deref(), Some("basic"));
+    }
+
+    // --- process: @OIDCRolesAllowed ---
+
+    #[test]
+    fn test_process_oidc_roles_allowed() {
+        let result = proc(r#"
+class Ctrl {
+    @GET
+    @OIDCRolesAllowed(["admin", "api-user"])
+    fn list() -> Nothing {}
+}
+"#);
+        assert_eq!(result.route_entries[0].oidc_roles, vec!["admin".to_string(), "api-user".to_string()]);
+    }
+
+    #[test]
+    fn test_process_no_oidc_roles_allowed_is_empty() {
+        let result = proc(r#"
+class Ctrl {
+    @GET
+    fn list() -> Nothing {}
+}
+"#);
+        assert!(result.route_entries[0].oidc_roles.is_empty());
+    }
+
+    #[test]
+    fn test_validate_oidc_roles_allowed_on_class_err() {
+        let errors = valid(r#"@OIDCRolesAllowed(["admin"])
+class Ctrl {}"#);
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
     }
 
     // --- process: inline ---

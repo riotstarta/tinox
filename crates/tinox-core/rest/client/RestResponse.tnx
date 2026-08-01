@@ -34,12 +34,12 @@ namespace tinox.core.rest.client
         }
 
         /**
-         * Creates a RestResponse from an HttpResponse
+         * Creates a RestResponse from an HttpClientResponse
          *
          * @param response the raw HTTP response
          * @return a RestResponse instance
          */
-        fn fromHttp(response: HttpResponse) -> RestResponse
+        fn fromHttp(response: HttpClientResponse) -> RestResponse
         {
             let code: Int64 = response.statusCode();
             let bodyText: String = response.body();

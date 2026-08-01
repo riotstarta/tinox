@@ -53,7 +53,22 @@
 #define GC_get_heap_size() ((size_t)0)
 #else
 // Boehm GC — redirect all heap allocation through the collector
+//
+// GC_THREADS alone only enables the thread-aware *API* declarations in
+// gc.h; it does NOT register threads with the collector. That needs
+// GC_PTHREADS too, which pulls in gc_pthread_redirects.h and macro-
+// redirects pthread_create/join/detach (used below by tinox_task_spawn
+// for `spawn` and tinox_worker_run for the HttpServer thread pool) to
+// GC_pthread_create/... . Without it, every thread this runtime spawns
+// via plain pthread_create is *never* registered with the GC -- any
+// GC_malloc from such a thread is undefined behavior, not just "slow":
+// found via a crash inside GC_malloc_kind_global on an HttpServer worker
+// thread doing heavy allocation (RS256/JWKS token verification, many
+// small string concatenations) under concurrent load across the
+// thread-per-CPU worker pool. <pthread.h> above must stay included
+// before <gc.h> for the redirect macros to see the real prototypes first.
 #define GC_THREADS
+#define GC_PTHREADS
 #include <gc.h>
 #undef malloc
 #undef calloc
@@ -2960,6 +2975,1036 @@ void httpConnClose(int64_t conn) {
 void httpServerClose(int64_t server_fd) {
     close((int)server_fd);
 }
+
+// ---- HTTP/3 Server (QUIC/ngtcp2 + nghttp3, RFC 9114) ----
+//
+// Unlike HttpServer (protocol parsed in C) and Http2Server (raw byte I/O
+// in C, framing/HPACK hand-rolled in pure Tinox), HTTP/3 cannot push
+// protocol logic into Tinox: ngtcp2 (QUIC transport, RFC 9000) and
+// nghttp3 (HTTP/3 framing + QPACK, RFC 9114/9204) are C libraries built
+// around C-ABI callback tables, which cannot invoke back into a Tinox
+// closure mid-callback. So ALL QUIC/HTTP-3/QPACK state lives here,
+// behind opaque Int64 handles -- tinox.core.http3_server.Http3Server
+// only registers routes and pumps http3ServerPumpOnce().
+//
+// Single-threaded, poll()-driven event loop over the ONE bound UDP
+// socket: ngtcp2 has no listener/multiplexer concept of its own, so this
+// code owns the DCID -> connection demux itself. Not epoll (the existing
+// epoll fast-path elsewhere in this file solves a different problem --
+// many fds -- whereas QUIC has exactly one fd here) and not
+// one-thread-per-connection (ngtcp2_conn/nghttp3_conn are not
+// thread-safe). Every blocking syscall (poll/recvfrom/sendto) retries on
+// EINTR, same discipline as conn_recv/conn_send above (Bug 68 -- the
+// Boehm GC's SIGPWR stop-the-world signal can interrupt any blocking
+// syscall on any thread).
+#ifdef TINOX_HTTP3
+#include <openssl/rand.h>
+#include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_ossl.h>
+#include <nghttp3/nghttp3.h>
+
+#define HTTP3_CIDLEN 8
+#define HTTP3_CONN_HASH_BUCKETS 64
+#define HTTP3_REQ_HASH_BUCKETS  64
+#define HTTP3_MAX_UDP_PAYLOAD   1452
+#define HTTP3_RETRY_TIMEOUT_NS  (10ULL * NGTCP2_SECONDS)
+
+typedef struct Http3CidEntry {
+    ngtcp2_cid cid;
+    struct Http3Conn* conn;
+    struct Http3CidEntry* next;
+} Http3CidEntry;
+
+typedef struct Http3ReqSlot {
+    int64_t id;
+    struct Http3Conn* conn;
+    int64_t streamId;
+    char* method;
+    char* path;
+    void* headersMap;      // TinoxMap*, populated directly in recv_header
+    char* body;
+    size_t bodyLen;
+    size_t bodyCap;
+    bool endStreamSeen;
+    bool wasEarlyData;
+    // Response side, filled by http3SubmitResponse(); read_data callback
+    // streams respBody out in HTTP3_RESP_CHUNK-sized pieces (Phase 2).
+    bool responseSubmitted;
+    char* respBody;
+    size_t respBodyLen;
+    size_t respBodySent;
+    struct Http3ReqSlot* nextReq;
+} Http3ReqSlot;
+
+typedef struct Http3Conn {
+    ngtcp2_conn* qconn;
+    nghttp3_conn* h3conn;
+    SSL* ssl;
+    ngtcp2_crypto_ossl_ctx* tlsCtx;
+    ngtcp2_crypto_conn_ref connRef;
+    struct sockaddr_storage remoteAddr;   // refreshed on every read_pkt (migration-safe, Phase 4)
+    socklen_t remoteAddrLen;
+    int64_t controlStreamId, qencStreamId, qdecStreamId;
+    bool handshakeCompleted;
+    bool streamsBound;
+    bool draining;
+    bool currentIs0Rtt;    // transient: set by ngtcp2 recv_stream_data just
+                           // before nghttp3_conn_read_stream2, read back by
+                           // nghttp3's begin_headers (Phase 5)
+    struct Http3Server* server;
+    struct Http3Conn* nextActive;   // intrusive list of all live connections
+} Http3Conn;
+
+typedef struct Http3Server {
+    int udpFd;
+    struct sockaddr_in localAddr;
+    SSL_CTX* sslCtx;
+    Http3CidEntry* cidBuckets[HTTP3_CONN_HASH_BUCKETS];
+    Http3ReqSlot* allReqs;   // flat intrusive list, for pump-loop enumeration only
+    Http3Conn* activeConns;
+    uint8_t statelessResetSecret[32];   // regenerated fresh per process start
+                                       // (Phase 3) -- known limitation: a
+                                       // stateless reset issued after a
+                                       // server restart for a CID from
+                                       // before the restart will not
+                                       // validate, since the secret isn't
+                                       // persisted. Acceptable per the
+                                       // plan: full cross-restart
+                                       // durability would need the secret
+                                       // stored in a file/config instead.
+    bool requireRetry;
+    uint8_t retrySecret[32];
+    bool earlyDataEnabled;
+    int64_t maxEarlyDataSize;
+} Http3Server;
+
+static uint64_t http3_fnv1a(const uint8_t* data, size_t len) {
+    uint64_t h = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; i++) h = (h ^ data[i]) * 1099511628211ULL;
+    return h;
+}
+
+static uint64_t http3_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static Http3Conn* http3_conn_find(Http3Server* srv, const ngtcp2_cid* cid) {
+    uint64_t h = http3_fnv1a(cid->data, cid->datalen) % HTTP3_CONN_HASH_BUCKETS;
+    for (Http3CidEntry* e = srv->cidBuckets[h]; e; e = e->next) {
+        if (ngtcp2_cid_eq(&e->cid, cid)) return e->conn;
+    }
+    return NULL;
+}
+
+static void http3_conn_register_cid(Http3Server* srv, const ngtcp2_cid* cid, Http3Conn* conn) {
+    uint64_t h = http3_fnv1a(cid->data, cid->datalen) % HTTP3_CONN_HASH_BUCKETS;
+    Http3CidEntry* e = (Http3CidEntry*)malloc(sizeof(Http3CidEntry));
+    e->cid = *cid;
+    e->conn = conn;
+    e->next = srv->cidBuckets[h];
+    srv->cidBuckets[h] = e;
+}
+
+static void http3_conn_remove_cid(Http3Server* srv, const ngtcp2_cid* cid) {
+    uint64_t h = http3_fnv1a(cid->data, cid->datalen) % HTTP3_CONN_HASH_BUCKETS;
+    Http3CidEntry** pp = &srv->cidBuckets[h];
+    while (*pp) {
+        if (ngtcp2_cid_eq(&(*pp)->cid, cid)) {
+            Http3CidEntry* dead = *pp;
+            *pp = dead->next;
+            free(dead);
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+}
+
+// The requestId Tinox holds IS the Http3ReqSlot pointer, cast to int64_t
+// (same handle convention as TinoxConn/TinoxMap elsewhere in this file) --
+// no separate id->slot lookup table needed. allReqs below is a flat list
+// used ONLY by http3ServerPumpOnce to enumerate in-flight requests when
+// looking for one whose end_stream has fired.
+static void http3_req_register(Http3Server* srv, Http3ReqSlot* slot) {
+    slot->nextReq = srv->allReqs;
+    srv->allReqs = slot;
+}
+
+static void http3_req_unregister(Http3Server* srv, Http3ReqSlot* slot) {
+    Http3ReqSlot** pp = &srv->allReqs;
+    while (*pp) {
+        if (*pp == slot) {
+            Http3ReqSlot* dead = *pp;
+            *pp = dead->nextReq;
+            return;
+        }
+        pp = &(*pp)->nextReq;
+    }
+}
+
+// ---- ngtcp2 callbacks ----
+
+static int http3_ngtcp2_recv_stream_data(ngtcp2_conn* qconn, uint32_t flags,
+                                          int64_t stream_id, uint64_t offset,
+                                          const uint8_t* data, size_t datalen,
+                                          void* user_data, void* stream_user_data) {
+    (void)qconn; (void)offset; (void)stream_user_data;
+    Http3Conn* conn = (Http3Conn*)user_data;
+    conn->currentIs0Rtt = (flags & NGTCP2_STREAM_DATA_FLAG_0RTT) != 0;
+    int fin = (flags & NGTCP2_STREAM_DATA_FLAG_FIN) != 0;
+    nghttp3_ssize consumed = nghttp3_conn_read_stream2(conn->h3conn, stream_id, data, datalen, fin, http3_now_ns());
+    conn->currentIs0Rtt = false;
+    if (consumed < 0) return NGTCP2_ERR_CALLBACK_FAILURE;
+    ngtcp2_conn_extend_max_stream_offset(qconn, stream_id, (uint64_t)consumed);
+    ngtcp2_conn_extend_max_offset(qconn, (uint64_t)consumed);
+    return 0;
+}
+
+static int http3_ngtcp2_acked_stream_data_offset(ngtcp2_conn* qconn, int64_t stream_id,
+                                                  uint64_t offset, uint64_t datalen,
+                                                  void* user_data, void* stream_user_data) {
+    (void)qconn; (void)offset; (void)stream_user_data;
+    Http3Conn* conn = (Http3Conn*)user_data;
+    if (nghttp3_conn_add_ack_offset(conn->h3conn, stream_id, datalen) != 0) {
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
+    return 0;
+}
+
+static int http3_ngtcp2_stream_open(ngtcp2_conn* qconn, int64_t stream_id, void* user_data) {
+    (void)qconn; (void)stream_id; (void)user_data;
+    return 0;
+}
+
+static int http3_ngtcp2_stream_close2(ngtcp2_conn* qconn, uint32_t flags, int64_t stream_id,
+                                       uint64_t rx_app_error_code, uint64_t tx_app_error_code,
+                                       void* user_data, void* stream_user_data) {
+    (void)qconn; (void)stream_user_data;
+    Http3Conn* conn = (Http3Conn*)user_data;
+    uint32_t h3flags = 0;
+    uint64_t err = 0;
+    if (flags & NGTCP2_STREAM_CLOSE_FLAG_APP_ERROR_CODE_SET) { err = rx_app_error_code; (void)tx_app_error_code; }
+    if (conn->h3conn) nghttp3_conn_close_stream(conn->h3conn, stream_id, err); (void)h3flags;
+    return 0;
+}
+
+static int http3_ngtcp2_handshake_completed(ngtcp2_conn* qconn, void* user_data) {
+    Http3Conn* conn = (Http3Conn*)user_data;
+    conn->handshakeCompleted = true;
+    if (!conn->streamsBound) {
+        int rv;
+        rv = ngtcp2_conn_open_uni_stream(qconn, &conn->controlStreamId, NULL);
+        if (rv == 0) rv = ngtcp2_conn_open_uni_stream(qconn, &conn->qencStreamId, NULL);
+        if (rv == 0) rv = ngtcp2_conn_open_uni_stream(qconn, &conn->qdecStreamId, NULL);
+        if (rv == 0) rv = nghttp3_conn_bind_control_stream(conn->h3conn, conn->controlStreamId);
+        if (rv == 0) rv = nghttp3_conn_bind_qpack_streams(conn->h3conn, conn->qencStreamId, conn->qdecStreamId);
+        conn->streamsBound = (rv == 0);
+    }
+    return 0;
+}
+
+static void http3_ngtcp2_rand(uint8_t* dest, size_t destlen, const ngtcp2_rand_ctx* rand_ctx) {
+    (void)rand_ctx;
+    RAND_bytes(dest, (int)destlen);
+}
+
+static int http3_ngtcp2_get_new_connection_id2(ngtcp2_conn* qconn, ngtcp2_cid* cid,
+                                                ngtcp2_stateless_reset_token* token,
+                                                size_t cidlen, void* user_data) {
+    (void)qconn;
+    Http3Conn* conn = (Http3Conn*)user_data;
+    uint8_t buf[NGTCP2_MAX_CIDLEN];
+    RAND_bytes(buf, (int)cidlen);
+    ngtcp2_cid_init(cid, buf, cidlen);
+    if (ngtcp2_crypto_generate_stateless_reset_token(token->data, conn->server->statelessResetSecret,
+                                                      sizeof(conn->server->statelessResetSecret), cid) != 0) {
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
+    http3_conn_register_cid(conn->server, cid, conn);
+    return 0;
+}
+
+static int http3_ngtcp2_remove_connection_id(ngtcp2_conn* qconn, const ngtcp2_cid* cid, void* user_data) {
+    (void)qconn;
+    Http3Conn* conn = (Http3Conn*)user_data;
+    http3_conn_remove_cid(conn->server, cid);
+    return 0;
+}
+
+// ---- nghttp3 callbacks ----
+
+static int http3_nghttp3_begin_headers(nghttp3_conn* h3conn, int64_t stream_id,
+                                        void* conn_user_data, void* stream_user_data) {
+    (void)stream_user_data;
+    Http3Conn* conn = (Http3Conn*)conn_user_data;
+    Http3ReqSlot* slot = (Http3ReqSlot*)malloc(sizeof(Http3ReqSlot));
+    slot->id = (int64_t)(intptr_t)slot;
+    slot->conn = conn;
+    slot->streamId = stream_id;
+    slot->method = NULL;
+    slot->path = NULL;
+    slot->headersMap = tinox_map_create();
+    slot->body = NULL;
+    slot->bodyLen = 0;
+    slot->bodyCap = 0;
+    slot->endStreamSeen = false;
+    slot->wasEarlyData = conn->currentIs0Rtt;
+    slot->responseSubmitted = false;
+    slot->respBody = NULL;
+    slot->respBodyLen = 0;
+    slot->respBodySent = 0;
+    slot->nextReq = NULL;
+    http3_req_register(conn->server, slot);
+    nghttp3_conn_set_stream_user_data(h3conn, stream_id, slot);
+    return 0;
+}
+
+static int http3_nghttp3_recv_header(nghttp3_conn* h3conn, int64_t stream_id, int32_t token,
+                                      nghttp3_rcbuf* name, nghttp3_rcbuf* value, uint8_t flags,
+                                      void* conn_user_data, void* stream_user_data) {
+    (void)h3conn; (void)stream_id; (void)token; (void)flags; (void)conn_user_data;
+    Http3ReqSlot* slot = (Http3ReqSlot*)stream_user_data;
+    if (!slot) return 0;
+    nghttp3_vec nv = nghttp3_rcbuf_get_buf(name);
+    nghttp3_vec vv = nghttp3_rcbuf_get_buf(value);
+    char* nameStr = (char*)malloc(nv.len + 1);
+    memcpy(nameStr, nv.base, nv.len);
+    nameStr[nv.len] = '\0';
+    char* valStr = (char*)malloc(vv.len + 1);
+    memcpy(valStr, vv.base, vv.len);
+    valStr[vv.len] = '\0';
+    if (strcmp(nameStr, ":method") == 0) {
+        slot->method = valStr;
+    } else if (strcmp(nameStr, ":path") == 0) {
+        slot->path = valStr;
+    } else if (nameStr[0] != ':') {
+        tinox_map_set(slot->headersMap, nameStr, (int64_t)(intptr_t)valStr);
+    }
+    return 0;
+}
+
+static int http3_nghttp3_recv_data(nghttp3_conn* h3conn, int64_t stream_id, const uint8_t* data,
+                                    size_t datalen, void* conn_user_data, void* stream_user_data) {
+    (void)h3conn;
+    Http3ReqSlot* slot = (Http3ReqSlot*)stream_user_data;
+    if (slot) {
+        if (slot->bodyLen + datalen + 1 > slot->bodyCap) {
+            size_t newCap = slot->bodyCap == 0 ? 4096 : slot->bodyCap * 2;
+            while (newCap < slot->bodyLen + datalen + 1) newCap *= 2;
+            char* nb = (char*)malloc(newCap);
+            if (slot->body) { memcpy(nb, slot->body, slot->bodyLen); }
+            slot->body = nb;
+            slot->bodyCap = newCap;
+        }
+        memcpy(slot->body + slot->bodyLen, data, datalen);
+        slot->bodyLen += datalen;
+        slot->body[slot->bodyLen] = '\0';
+    }
+    // nghttp3_conn_read_stream2's own "consumed" return value (extended in
+    // http3_ngtcp2_recv_stream_data) deliberately EXCLUDES DATA-frame
+    // application payload bytes -- only recv_data sees those. Since this
+    // implementation buffers the whole body eagerly (no real
+    // backpressure/deferred_consume), credit for those bytes must be
+    // granted here, immediately, or any request body past the initial
+    // flow-control window would stall forever.
+    Http3Conn* conn = (Http3Conn*)conn_user_data;
+    ngtcp2_conn_extend_max_stream_offset(conn->qconn, stream_id, datalen);
+    ngtcp2_conn_extend_max_offset(conn->qconn, datalen);
+    return 0;
+}
+
+static int http3_nghttp3_end_stream(nghttp3_conn* h3conn, int64_t stream_id,
+                                     void* conn_user_data, void* stream_user_data) {
+    (void)h3conn; (void)stream_id; (void)conn_user_data;
+    Http3ReqSlot* slot = (Http3ReqSlot*)stream_user_data;
+    if (slot) slot->endStreamSeen = true;
+    return 0;
+}
+
+static int http3_nghttp3_stream_close(nghttp3_conn* h3conn, int64_t stream_id, uint64_t app_error_code,
+                                       void* conn_user_data, void* stream_user_data) {
+    (void)h3conn; (void)stream_id; (void)app_error_code; (void)conn_user_data;
+    Http3ReqSlot* slot = (Http3ReqSlot*)stream_user_data;
+    // This is the ONE place a slot's memory is actually freed. It would
+    // be premature to free it as soon as Tinox calls http3ReleaseRequest
+    // (right after http3SubmitResponse): submit_response only QUEUES the
+    // response, the response body is pulled later via the read_data
+    // callback during a subsequent write-pump pass, which needs
+    // slot->respBody/respBodyLen/respBodySent to still be valid --
+    // freeing eagerly there caused the response body to silently vanish
+    // (chunk=0 read back) while curl still got a 200 with headers but an
+    // empty body. So http3ReleaseRequest/http3_reject_early_data only
+    // unregister the slot from allReqs (stopping it from being
+    // re-dispatched); actual deallocation waits for nghttp3 itself to
+    // report the stream fully closed, here.
+    if (slot) {
+        http3_req_unregister(slot->conn->server, slot);
+        if (slot->headersMap) tinox_map_free(slot->headersMap);
+        if (slot->method) free(slot->method);
+        if (slot->path) free(slot->path);
+        if (slot->body) free(slot->body);
+        if (slot->respBody) free(slot->respBody);
+        free(slot);
+    }
+    return 0;
+}
+
+static nghttp3_ssize http3_read_data_cb(nghttp3_conn* h3conn, int64_t stream_id, nghttp3_vec* vec,
+                                        size_t veccnt, uint32_t* pflags, void* conn_user_data,
+                                        void* stream_user_data) {
+    (void)h3conn; (void)stream_id; (void)veccnt; (void)conn_user_data;
+    Http3ReqSlot* slot = (Http3ReqSlot*)stream_user_data;
+    #define HTTP3_RESP_CHUNK (64 * 1024)
+    size_t remaining = slot->respBodyLen - slot->respBodySent;
+    size_t chunk = remaining < HTTP3_RESP_CHUNK ? remaining : HTTP3_RESP_CHUNK;
+    vec[0].base = (uint8_t*)slot->respBody + slot->respBodySent;
+    vec[0].len = chunk;
+    slot->respBodySent += chunk;
+    if (slot->respBodySent >= slot->respBodyLen) {
+        *pflags |= NGHTTP3_DATA_FLAG_EOF;
+    }
+    return chunk > 0 || (*pflags & NGHTTP3_DATA_FLAG_EOF) ? 1 : 0;
+}
+
+static void http3_alpn_select_cb_impl(unsigned char** out, unsigned char* outlen,
+                                       const unsigned char* in, unsigned int inlen) {
+    unsigned int i = 0;
+    while (i + 1 < inlen) {
+        unsigned char len = in[i];
+        if (i + 1 + len > inlen) break;
+        if (len == 2 && in[i + 1] == 'h' && in[i + 2] == '3') {
+            *out = (unsigned char*)(in + i + 1);
+            *outlen = 2;
+            return;
+        }
+        i += 1 + len;
+    }
+    *out = NULL;
+    *outlen = 0;
+}
+
+static int http3_alpn_select_cb(SSL* ssl, const unsigned char** out, unsigned char* outlen,
+                                 const unsigned char* in, unsigned int inlen, void* arg) {
+    (void)ssl; (void)arg;
+    unsigned char* o = NULL;
+    http3_alpn_select_cb_impl(&o, outlen, in, inlen);
+    if (!o) return SSL_TLSEXT_ERR_NOACK;
+    *out = o;
+    return SSL_TLSEXT_ERR_OK;
+}
+
+static ngtcp2_conn* http3_crypto_get_conn(ngtcp2_crypto_conn_ref* ref) {
+    Http3Conn* conn = (Http3Conn*)ref->user_data;
+    return conn->qconn;
+}
+
+// Creates a fresh Http3Conn + TLS session for a brand-new client, given
+// the decoded first-Initial header |hd| and the datagram's source
+// address. |odcid|/|retryScid| are only meaningful if a Retry round trip
+// already happened (Phase 3); pass odcid=hd->dcid and
+// retryScidPresent=false for the plain (no-retry) path.
+static Http3Conn* http3_create_conn(Http3Server* srv, const ngtcp2_pkt_hd* hd,
+                                     const struct sockaddr* remoteAddr, socklen_t remoteAddrLen,
+                                     const ngtcp2_cid* odcid, const ngtcp2_cid* retryScid, bool retryScidPresent) {
+    Http3Conn* conn = (Http3Conn*)malloc(sizeof(Http3Conn));
+    memset(conn, 0, sizeof(Http3Conn));
+    conn->server = srv;
+    conn->controlStreamId = -1;
+    conn->qencStreamId = -1;
+    conn->qdecStreamId = -1;
+    memcpy(&conn->remoteAddr, remoteAddr, remoteAddrLen);
+    conn->remoteAddrLen = remoteAddrLen;
+
+    conn->ssl = SSL_new(srv->sslCtx);
+    conn->connRef.get_conn = http3_crypto_get_conn;
+    conn->connRef.user_data = conn;
+    SSL_set_app_data(conn->ssl, &conn->connRef);
+    SSL_set_accept_state(conn->ssl);
+    if (srv->earlyDataEnabled) {
+        SSL_set_quic_tls_early_data_enabled(conn->ssl, 1);
+    }
+    if (ngtcp2_crypto_ossl_configure_server_session(conn->ssl) != 0) {
+        SSL_free(conn->ssl);
+        free(conn);
+        return NULL;
+    }
+    if (ngtcp2_crypto_ossl_ctx_new(&conn->tlsCtx, conn->ssl) != 0) {
+        SSL_free(conn->ssl);
+        free(conn);
+        return NULL;
+    }
+
+    ngtcp2_settings settings;
+    ngtcp2_settings_default(&settings);
+    settings.initial_ts = http3_now_ns();
+    settings.max_tx_udp_payload_size = HTTP3_MAX_UDP_PAYLOAD;
+    settings.rand_ctx.native_handle = NULL;
+
+    ngtcp2_transport_params params;
+    ngtcp2_transport_params_default(&params);
+    params.initial_max_data = 4 * 1024 * 1024;
+    params.initial_max_stream_data_bidi_local = 1024 * 1024;
+    params.initial_max_stream_data_bidi_remote = 1024 * 1024;
+    params.initial_max_stream_data_uni = 1024 * 1024;
+    params.initial_max_streams_bidi = 128;
+    params.initial_max_streams_uni = 8;
+    params.max_idle_timeout = 30ULL * NGTCP2_SECONDS;
+    params.max_udp_payload_size = HTTP3_MAX_UDP_PAYLOAD;
+    params.active_connection_id_limit = 4;
+    params.original_dcid = *odcid;
+    params.original_dcid_present = 1;
+    if (retryScidPresent) {
+        params.retry_scid = *retryScid;
+        params.retry_scid_present = 1;
+    }
+
+    ngtcp2_callbacks callbacks;
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.recv_client_initial = ngtcp2_crypto_recv_client_initial_cb;
+    callbacks.recv_crypto_data = ngtcp2_crypto_recv_crypto_data_cb;
+    callbacks.handshake_completed = http3_ngtcp2_handshake_completed;
+    callbacks.encrypt = ngtcp2_crypto_encrypt_cb;
+    callbacks.decrypt = ngtcp2_crypto_decrypt_cb;
+    callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
+    callbacks.recv_stream_data = http3_ngtcp2_recv_stream_data;
+    callbacks.acked_stream_data_offset = http3_ngtcp2_acked_stream_data_offset;
+    callbacks.stream_open = http3_ngtcp2_stream_open;
+    callbacks.stream_close2 = http3_ngtcp2_stream_close2;
+    callbacks.rand = http3_ngtcp2_rand;
+    callbacks.get_new_connection_id2 = http3_ngtcp2_get_new_connection_id2;
+    callbacks.remove_connection_id = http3_ngtcp2_remove_connection_id;
+    callbacks.update_key = ngtcp2_crypto_update_key_cb;
+    callbacks.delete_crypto_aead_ctx = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
+    callbacks.delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
+    callbacks.get_path_challenge_data2 = ngtcp2_crypto_get_path_challenge_data2_cb;
+    callbacks.version_negotiation = ngtcp2_crypto_version_negotiation_cb;
+
+    ngtcp2_cid myScid;
+    uint8_t scidBuf[HTTP3_CIDLEN];
+    RAND_bytes(scidBuf, HTTP3_CIDLEN);
+    ngtcp2_cid_init(&myScid, scidBuf, HTTP3_CIDLEN);
+
+    struct sockaddr_in local = srv->localAddr;
+    ngtcp2_path path;
+    path.local.addr = (ngtcp2_sockaddr*)&local;
+    path.local.addrlen = sizeof(local);
+    path.remote.addr = (ngtcp2_sockaddr*)&conn->remoteAddr;
+    path.remote.addrlen = conn->remoteAddrLen;
+    path.user_data = NULL;
+
+    int rv = ngtcp2_conn_server_new(&conn->qconn, &hd->scid, &myScid, &path,
+                                     hd->version, &callbacks, &settings, &params,
+                                     NULL, conn);
+    if (rv != 0) {
+        ngtcp2_crypto_ossl_ctx_del(conn->tlsCtx);
+        SSL_free(conn->ssl);
+        free(conn);
+        return NULL;
+    }
+    ngtcp2_conn_set_tls_native_handle(conn->qconn, conn->tlsCtx);
+
+    nghttp3_callbacks h3callbacks;
+    memset(&h3callbacks, 0, sizeof(h3callbacks));
+    h3callbacks.recv_data = http3_nghttp3_recv_data;
+    h3callbacks.begin_headers = http3_nghttp3_begin_headers;
+    h3callbacks.recv_header = http3_nghttp3_recv_header;
+    h3callbacks.end_stream = http3_nghttp3_end_stream;
+    h3callbacks.stream_close = http3_nghttp3_stream_close;
+
+    nghttp3_settings h3settings;
+    nghttp3_settings_default(&h3settings);
+    h3settings.qpack_max_dtable_capacity = 4096;
+    h3settings.qpack_encoder_max_dtable_capacity = 4096;
+    h3settings.qpack_blocked_streams = 16;
+
+    if (nghttp3_conn_server_new(&conn->h3conn, &h3callbacks, &h3settings, NULL, conn) != 0) {
+        ngtcp2_conn_del(conn->qconn);
+        ngtcp2_crypto_ossl_ctx_del(conn->tlsCtx);
+        SSL_free(conn->ssl);
+        free(conn);
+        return NULL;
+    }
+
+    // Encode our local transport params and hand them to the TLS layer so
+    // they ride in the QUIC transport parameters extension.
+    uint8_t tpBuf[256];
+    ngtcp2_ssize tpLen = ngtcp2_conn_encode_local_transport_params2(conn->qconn, tpBuf, sizeof(tpBuf));
+    if (tpLen < 0 || SSL_set_quic_tls_transport_params(conn->ssl, tpBuf, (size_t)tpLen) != 1) {
+        nghttp3_conn_del(conn->h3conn);
+        ngtcp2_conn_del(conn->qconn);
+        ngtcp2_crypto_ossl_ctx_del(conn->tlsCtx);
+        SSL_free(conn->ssl);
+        free(conn);
+        return NULL;
+    }
+
+    http3_conn_register_cid(srv, &myScid, conn);
+    conn->nextActive = srv->activeConns;
+    srv->activeConns = conn;
+    return conn;
+}
+
+int64_t http3ServerCreate(int64_t port, const char* certPath, const char* keyPath,
+                           int64_t requireRetry, int64_t earlyDataEnabled, int64_t maxEarlyDataSize) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
+
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) { close(fd); return -1; }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+    if (SSL_CTX_use_certificate_chain_file(ctx, certPath) != 1 ||
+        SSL_CTX_use_PrivateKey_file(ctx, keyPath, SSL_FILETYPE_PEM) != 1 ||
+        SSL_CTX_check_private_key(ctx) != 1) {
+        SSL_CTX_free(ctx);
+        close(fd);
+        return -1;
+    }
+    SSL_CTX_set_alpn_select_cb(ctx, http3_alpn_select_cb, NULL);
+    if (earlyDataEnabled) {
+        // KNOWN LIMITATION: actually calling SSL_CTX_set_max_early_data or
+        // its per-connection sibling SSL_set_max_early_data (either one,
+        // isolated via bisection) makes every connection silently stall
+        // right after the TLS 1.3 handshake completes under this
+        // OpenSSL 3.6.3 + ngtcp2_crypto_ossl 1.25.0 combination -- curl
+        // completes the handshake and sends its request, but no response
+        // (not even the ones queued before this stall) ever comes back.
+        // Root cause not isolated further in the time available (no
+        // upstream ngtcp2/nghttp3 example server exists on this system to
+        // diff against). Session-ticket issuance is enabled below (so a
+        // resumed session is at least possible), but max_early_data is
+        // deliberately left unset (OpenSSL's default, 0) -- meaning the
+        // TLS layer will never actually accept 0-RTT application data,
+        // so a client attempting early data transparently falls back to
+        // a normal 1-RTT round trip instead of failing. enableEarlyData()
+        // /wasEarlyData/the 425-for-non-idempotent-early-data policy are
+        // still wired end-to-end and are safe to ship as-is; they will
+        // just never observe wasEarlyData=true until this is fixed.
+        SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_SERVER);
+    }
+
+    Http3Server* srv = (Http3Server*)malloc(sizeof(Http3Server));
+    memset(srv, 0, sizeof(Http3Server));
+    srv->udpFd = fd;
+    srv->localAddr = addr;
+    srv->sslCtx = ctx;
+    srv->requireRetry = requireRetry != 0;
+    srv->earlyDataEnabled = earlyDataEnabled != 0;
+    srv->maxEarlyDataSize = maxEarlyDataSize;
+    RAND_bytes(srv->statelessResetSecret, sizeof(srv->statelessResetSecret));
+    RAND_bytes(srv->retrySecret, sizeof(srv->retrySecret));
+    return (int64_t)(intptr_t)srv;
+}
+
+// Sends a Retry packet for a client Initial that had no (or an invalid)
+// address-validation token, per RFC 9000 SS8.1. No connection state is
+// created -- the client is expected to retry with the returned token.
+static void http3_send_retry(Http3Server* srv, const ngtcp2_pkt_hd* hd,
+                              const struct sockaddr* remoteAddr, socklen_t remoteAddrLen) {
+    ngtcp2_cid retryScid;
+    uint8_t scidBuf[HTTP3_CIDLEN];
+    RAND_bytes(scidBuf, HTTP3_CIDLEN);
+    ngtcp2_cid_init(&retryScid, scidBuf, HTTP3_CIDLEN);
+
+    uint8_t token[256];
+    ngtcp2_ssize tokenLen = ngtcp2_crypto_generate_retry_token2(
+        token, srv->retrySecret, sizeof(srv->retrySecret), hd->version,
+        remoteAddr, remoteAddrLen, &retryScid, &hd->dcid, http3_now_ns());
+    if (tokenLen < 0) return;
+
+    uint8_t pkt[512];
+    ngtcp2_ssize pktLen = ngtcp2_crypto_write_retry(pkt, sizeof(pkt), hd->version,
+                                                     &hd->scid, &retryScid, &hd->dcid,
+                                                     token, (size_t)tokenLen);
+    if (pktLen < 0) return;
+    sendto(srv->udpFd, pkt, (size_t)pktLen, 0, remoteAddr, remoteAddrLen);
+}
+
+// Sends a Stateless Reset for a short-header packet whose DCID doesn't
+// match any known connection (e.g. server restarted, or connection state
+// already torn down) -- re-derives the token from the CID + our secret
+// rather than needing per-connection persisted state (RFC 9000 SS10.3).
+static void http3_send_stateless_reset(Http3Server* srv, const ngtcp2_cid* dcid,
+                                        const struct sockaddr* remoteAddr, socklen_t remoteAddrLen,
+                                        size_t recvPktLen) {
+    if (recvPktLen < 21) return; // avoid replying to obvious noise/tiny packets
+    ngtcp2_stateless_reset_token token;
+    if (ngtcp2_crypto_generate_stateless_reset_token(token.data, srv->statelessResetSecret,
+                                                      sizeof(srv->statelessResetSecret), dcid) != 0) {
+        return;
+    }
+    uint8_t rnd[64];
+    RAND_bytes(rnd, sizeof(rnd));
+    size_t randLen = recvPktLen > sizeof(rnd) ? sizeof(rnd) : recvPktLen - NGTCP2_STATELESS_RESET_TOKENLEN;
+    if (randLen < NGTCP2_MIN_STATELESS_RESET_RANDLEN) randLen = NGTCP2_MIN_STATELESS_RESET_RANDLEN;
+    uint8_t pkt[128];
+    ngtcp2_ssize pktLen = ngtcp2_pkt_write_stateless_reset2(pkt, sizeof(pkt), &token, rnd, randLen);
+    if (pktLen < 0) return;
+    sendto(srv->udpFd, pkt, (size_t)pktLen, 0, remoteAddr, remoteAddrLen);
+}
+
+// Marks a request as rejected under the 0-RTT anti-replay policy (Phase
+// 5): a non-GET/HEAD request that arrived as early data is replayable by
+// a network attacker (no round trip proves the client isn't replaying a
+// captured ClientHello+request), so by default it never reaches Tinox
+// dispatch -- it gets 425 Too Early (RFC 8470) immediately, forcing the
+// client to retry once the 1-RTT handshake completes.
+static void http3_reject_early_data(Http3ReqSlot* slot) {
+    nghttp3_nv nva[1];
+    const char* status = "425";
+    nva[0].name = (const uint8_t*)":status";
+    nva[0].value = (const uint8_t*)status;
+    nva[0].namelen = 7;
+    nva[0].valuelen = 3;
+    nva[0].flags = NGHTTP3_NV_FLAG_NONE;
+    nghttp3_conn_submit_response(slot->conn->h3conn, slot->streamId, nva, 1, NULL);
+    // Same lifecycle rule as http3ReleaseRequest: only unregister from
+    // the enumeration list here. nghttp3 still owns stream_user_data
+    // until it reports the stream closed (stream_close still fires even
+    // for a body-less/dr=NULL response), so the actual free happens
+    // there, not here.
+    http3_req_unregister(slot->conn->server, slot);
+}
+
+// Drives the nghttp3<->ngtcp2 write pump for every active connection --
+// pulls whatever nghttp3 has queued (headers, response body chunks,
+// control/QPACK stream bytes) and pushes it out over the UDP socket.
+// Factored out of http3ServerPumpOnce so http3ServerClose's shutdown
+// drain can call it directly without going through poll() first (poll()
+// waiting on new *inbound* data is pointless when the only thing left to
+// do is flush already-queued *outbound* data, e.g. a final response
+// right before the connection is torn down).
+static void http3_flush_writes(Http3Server* srv) {
+    for (Http3Conn* c = srv->activeConns; c; c = c->nextActive) {
+        if (c->draining) continue;
+
+        while (1) {
+            // One UDP datagram's worth of packet-being-built. Per
+            // ngtcp2_conn_writev_stream's docs, every call that
+            // participates in coalescing ONE packet (i.e. every call
+            // until a non-NGTCP2_ERR_WRITE_MORE result) must pass the
+            // exact same conn/path/pi/dest/destlen/ts -- hence dest/path/
+            // pi are declared ONCE per packet here, outside the
+            // coalescing loop below (a bug during development: an
+            // earlier version re-declared `dest` on every coalescing
+            // iteration, silently corrupting the in-progress packet so
+            // only the first STREAM frame -- e.g. HEADERS -- ever made
+            // it out and the response body was lost).
+            uint8_t dest[HTTP3_MAX_UDP_PAYLOAD];
+            struct sockaddr_in local = c->server->localAddr;
+            ngtcp2_path path;
+            path.local.addr = (ngtcp2_sockaddr*)&local;
+            path.local.addrlen = sizeof(local);
+            path.remote.addr = (ngtcp2_sockaddr*)&c->remoteAddr;
+            path.remote.addrlen = c->remoteAddrLen;
+            path.user_data = NULL;
+            ngtcp2_pkt_info pi = { .ecn = 0 };
+            ngtcp2_ssize nwrite = 0;
+            bool aborted = false;
+
+            while (1) {
+                int64_t streamId = -1;
+                int fin = 0;
+                nghttp3_vec vec[16];
+                nghttp3_ssize vecCount = c->h3conn
+                    ? nghttp3_conn_writev_stream(c->h3conn, &streamId, &fin, vec, 16) : 0;
+                if (vecCount < 0) { c->draining = true; aborted = true; break; }
+
+                uint32_t wflags = NGTCP2_WRITE_STREAM_FLAG_MORE;
+                if (fin) wflags |= NGTCP2_WRITE_STREAM_FLAG_FIN;
+                ngtcp2_ssize wdatalen = -1;
+                nwrite = ngtcp2_conn_writev_stream(
+                    c->qconn, &path, &pi, dest, sizeof(dest), &wdatalen, wflags,
+                    streamId, (ngtcp2_vec*)vec, (size_t)vecCount, http3_now_ns());
+
+                if (nwrite == NGTCP2_ERR_WRITE_MORE) {
+                    if (wdatalen >= 0 && streamId >= 0) {
+                        nghttp3_conn_add_write_offset(c->h3conn, streamId, (size_t)wdatalen);
+                    }
+                    if (vecCount == 0) {
+                        // Nothing queued right now but ngtcp2 is still
+                        // willing to coalesce more -- per the docs, call
+                        // once more with stream_id=-1 to stop coalescing
+                        // and finalize whatever is already in the packet.
+                        nwrite = ngtcp2_conn_writev_stream(
+                            c->qconn, &path, &pi, dest, sizeof(dest), &wdatalen,
+                            NGTCP2_WRITE_STREAM_FLAG_NONE, -1, NULL, 0, http3_now_ns());
+                        break;
+                    }
+                    continue;
+                }
+                if (wdatalen >= 0 && streamId >= 0) {
+                    nghttp3_conn_add_write_offset(c->h3conn, streamId, (size_t)wdatalen);
+                }
+                break;
+            }
+            if (aborted) break;
+            if (nwrite < 0) { c->draining = true; break; }
+            ngtcp2_conn_update_pkt_tx_time(c->qconn, http3_now_ns());
+            if (nwrite == 0) break; // nothing more to send this round
+            ssize_t sr;
+            do {
+                sr = sendto(c->server->udpFd, dest, (size_t)nwrite, 0,
+                            (struct sockaddr*)&c->remoteAddr, c->remoteAddrLen);
+            } while (sr < 0 && errno == EINTR);
+        }
+    }
+}
+
+// One unit of native work: drains ready datagrams, services expired
+// ngtcp2 timers, drives the nghttp3<->ngtcp2 write pump for every
+// connection with pending output, and returns the id of the first fully
+// -arrived HTTP/3 request (end_stream fired), -1 if nothing to dispatch
+// this tick, or -2 on a fatal socket error.
+int64_t http3ServerPumpOnce(int64_t serverHandle) {
+    Http3Server* srv = (Http3Server*)(intptr_t)serverHandle;
+
+    // 1. Compute the poll() timeout from the soonest ngtcp2 timer expiry
+    // across all active connections (capped so an idle server still
+    // wakes periodically), then wait for the UDP socket to be readable.
+    uint64_t now = http3_now_ns();
+    uint64_t soonest = now + 1000ULL * 1000000ULL; // 1000ms cap
+    for (Http3Conn* c = srv->activeConns; c; c = c->nextActive) {
+        ngtcp2_tstamp exp = ngtcp2_conn_get_expiry2(c->qconn);
+        if (exp != UINT64_MAX && exp < soonest) soonest = exp;
+    }
+    int timeoutMs = soonest > now ? (int)((soonest - now) / 1000000ULL) : 0;
+    if (timeoutMs > 1000) timeoutMs = 1000;
+
+    struct pollfd pfd = { .fd = srv->udpFd, .events = POLLIN, .revents = 0 };
+    int pr;
+    do { pr = poll(&pfd, 1, timeoutMs); } while (pr < 0 && errno == EINTR);
+    if (pr < 0) return -2;
+
+    // 2. Drain every ready datagram in this wake.
+    if (pr > 0 && (pfd.revents & POLLIN)) {
+        uint8_t buf[65536];
+        while (1) {
+            struct sockaddr_storage peer;
+            socklen_t peerLen = sizeof(peer);
+            ssize_t n;
+            do { n = recvfrom(srv->udpFd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr*)&peer, &peerLen); }
+            while (n < 0 && errno == EINTR);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                return -2;
+            }
+            if (n == 0) continue;
+
+            ngtcp2_version_cid vc;
+            int vcRv = ngtcp2_pkt_decode_version_cid(&vc, buf, (size_t)n, HTTP3_CIDLEN);
+            if (vcRv != 0) continue; // unparseable / needs version negotiation -- drop (out of scope)
+
+            ngtcp2_cid dcid;
+            ngtcp2_cid_init(&dcid, vc.dcid, vc.dcidlen);
+            Http3Conn* conn = http3_conn_find(srv, &dcid);
+
+            if (!conn) {
+                if (vc.version == 0) {
+                    // Short header, unknown connection -- either a stray
+                    // packet or a client whose state we've lost (e.g. we
+                    // restarted). Reply with a Stateless Reset rather
+                    // than silently dropping (RFC 9000 SS10.3).
+                    http3_send_stateless_reset(srv, &dcid, (struct sockaddr*)&peer, peerLen, (size_t)n);
+                    continue;
+                }
+                ngtcp2_pkt_hd hd;
+                if (ngtcp2_accept(&hd, buf, (size_t)n) != 0) continue; // not an acceptable first packet
+
+                ngtcp2_cid odcid = hd.dcid;
+                ngtcp2_cid retryScid;
+                bool retryScidPresent = false;
+                if (srv->requireRetry) {
+                    if (hd.tokenlen == 0) {
+                        http3_send_retry(srv, &hd, (struct sockaddr*)&peer, peerLen);
+                        continue;
+                    }
+                    if (ngtcp2_crypto_verify_retry_token2(&odcid, hd.token, hd.tokenlen,
+                                                           srv->retrySecret, sizeof(srv->retrySecret),
+                                                           hd.version, (struct sockaddr*)&peer, peerLen,
+                                                           &hd.dcid, HTTP3_RETRY_TIMEOUT_NS, http3_now_ns()) != 0) {
+                        continue; // bad/expired token -- drop
+                    }
+                    retryScid = hd.dcid;
+                    retryScidPresent = true;
+                }
+
+                conn = http3_create_conn(srv, &hd, (struct sockaddr*)&peer, peerLen,
+                                          &odcid, &retryScid, retryScidPresent);
+                if (!conn) continue;
+            } else {
+                // Migration-safety (Phase 4): always refresh the remote
+                // address from the datagram that just arrived rather
+                // than trusting whatever was cached at connection
+                // creation -- a NAT rebind changes the peer's 4-tuple
+                // without any explicit signal.
+                memcpy(&conn->remoteAddr, &peer, peerLen);
+                conn->remoteAddrLen = peerLen;
+            }
+
+            struct sockaddr_in local = srv->localAddr;
+            ngtcp2_path path;
+            path.local.addr = (ngtcp2_sockaddr*)&local;
+            path.local.addrlen = sizeof(local);
+            path.remote.addr = (ngtcp2_sockaddr*)&conn->remoteAddr;
+            path.remote.addrlen = conn->remoteAddrLen;
+            path.user_data = NULL;
+            ngtcp2_pkt_info pi = { .ecn = 0 };
+
+            int rv = ngtcp2_conn_read_pkt(conn->qconn, &path, &pi, buf, (size_t)n, http3_now_ns());
+            if (rv != 0) {
+                conn->draining = true;
+            }
+        }
+    }
+
+    // 3. Service expired ngtcp2 timers (retransmission, idle timeout, ...).
+    now = http3_now_ns();
+    for (Http3Conn* c = srv->activeConns; c; c = c->nextActive) {
+        if (c->draining) continue;
+        if (ngtcp2_conn_get_expiry2(c->qconn) <= now) {
+            if (ngtcp2_conn_handle_expiry(c->qconn, now) != 0) {
+                c->draining = true;
+            }
+        }
+    }
+
+    // 4. Drive the nghttp3<->ngtcp2 write pump for every connection.
+    int64_t readyRequestId = -1;
+    http3_flush_writes(srv);
+
+    // 5. Surface the first fully-arrived request whose response hasn't
+    // been submitted yet. 0-RTT anti-replay policy (Phase 5) is applied
+    // here, before Tinox ever sees the request: a non-GET/HEAD request
+    // that arrived as early data is replayable, so it's rejected with
+    // 425 Too Early right here rather than being handed to a route
+    // handler (no override flag for accepting non-idempotent early data
+    // is implemented yet -- see http3_reject_early_data's comment).
+    for (Http3ReqSlot* s = srv->allReqs; s; s = s->nextReq) {
+        if (!s->endStreamSeen || s->responseSubmitted) continue;
+        bool isSafeMethod = s->method && (strcmp(s->method, "GET") == 0 || strcmp(s->method, "HEAD") == 0);
+        if (s->wasEarlyData && !isSafeMethod) {
+            s->responseSubmitted = true;
+            http3_reject_early_data(s);
+            continue;
+        }
+        readyRequestId = s->id;
+        break;
+    }
+
+    return readyRequestId;
+}
+
+char* http3RequestMethod(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    return slot->method ? strdup(slot->method) : strdup("");
+}
+
+char* http3RequestPath(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    return slot->path ? strdup(slot->path) : strdup("");
+}
+
+void* http3RequestHeaders(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    return slot->headersMap;
+}
+
+char* http3RequestBody(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    return slot->body ? strdup(slot->body) : strdup("");
+}
+
+int64_t http3RequestWasEarlyData(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    return slot->wasEarlyData ? 1 : 0;
+}
+
+void http3SubmitResponse(int64_t requestId, int64_t statusCode, void* headersMap, const char* body) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    if (slot->responseSubmitted) return;
+    slot->responseSubmitted = true;
+
+    char statusBuf[8];
+    int statusLen = snprintf(statusBuf, sizeof(statusBuf), "%lld", (long long)statusCode);
+
+    int64_t* keysHandle = tinox_map_keys(headersMap);
+    TinoxArray* keys = (TinoxArray*)keysHandle;
+    size_t nvCount = (size_t)keys->len + 1;
+    nghttp3_nv* nva = (nghttp3_nv*)malloc(sizeof(nghttp3_nv) * nvCount);
+    nva[0].name = (const uint8_t*)":status";
+    nva[0].namelen = 7;
+    nva[0].value = (const uint8_t*)strdup(statusBuf);
+    nva[0].valuelen = (size_t)statusLen;
+    nva[0].flags = NGHTTP3_NV_FLAG_NONE;
+    for (int64_t i = 0; i < keys->len; i++) {
+        const char* keyStr = (const char*)(intptr_t)keys->data[i];
+        char* lowerKey = strdup(keyStr);
+        for (char* p = lowerKey; *p; p++) *p = (char)tolower((unsigned char)*p);
+        const char* valStr = (const char*)(intptr_t)tinox_map_get(headersMap, keyStr);
+        nva[i + 1].name = (const uint8_t*)lowerKey;
+        nva[i + 1].namelen = strlen(lowerKey);
+        nva[i + 1].value = (const uint8_t*)(valStr ? valStr : "");
+        nva[i + 1].valuelen = valStr ? strlen(valStr) : 0;
+        nva[i + 1].flags = NGHTTP3_NV_FLAG_NONE;
+    }
+
+    size_t bodyLen = body ? strlen(body) : 0;
+    slot->respBody = bodyLen > 0 ? strdup(body) : NULL;
+    slot->respBodyLen = bodyLen;
+    slot->respBodySent = 0;
+
+    nghttp3_data_reader dr;
+    dr.read_data = http3_read_data_cb;
+    nghttp3_conn_submit_response(slot->conn->h3conn, slot->streamId, nva, nvCount, bodyLen > 0 ? &dr : NULL);
+    free(nva);
+}
+
+// Only unregisters the slot from the pump loop's enumeration list -- the
+// response body is still pulled from it later via the read_data
+// callback, so the memory itself must stay alive until nghttp3 reports
+// the stream fully closed (http3_nghttp3_stream_close, which does the
+// actual free).
+void http3ReleaseRequest(int64_t requestId) {
+    Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
+    http3_req_unregister(slot->conn->server, slot);
+}
+
+// Graceful shutdown: notify every active connection (RFC 9114 SS5.2
+// GOAWAY-equivalent -- nghttp3_conn_submit_shutdown_notice) so in-flight
+// requests/responses get a chance to finish instead of being abruptly
+// reset, then flush queued writes a few times before closing the socket.
+// Calls http3_flush_writes directly rather than the full
+// http3ServerPumpOnce -- the latter's poll() would needlessly wait (up to
+// ~1s per call) for new *inbound* data that isn't the point here; a
+// final queued response (e.g. from a handler that just called
+// Http3Server.stop()) needs to go out immediately, not after an
+// unrelated read timeout. A short sleep between flushes gives the peer's
+// ACK a chance to arrive so any still-pending retransmission also gets a
+// shot at going out.
+void http3ServerClose(int64_t serverHandle) {
+    Http3Server* srv = (Http3Server*)(intptr_t)serverHandle;
+    for (Http3Conn* c = srv->activeConns; c; c = c->nextActive) {
+        if (!c->draining && c->h3conn) nghttp3_conn_submit_shutdown_notice(c->h3conn);
+    }
+    for (int i = 0; i < 10; i++) {
+        http3_flush_writes(srv);
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 20 * 1000000L }; // 20ms
+        nanosleep(&ts, NULL);
+    }
+    close(srv->udpFd);
+    SSL_CTX_free(srv->sslCtx);
+}
+#endif // TINOX_HTTP3
 
 // ---- AES-256-GCM (Issue 74) ----
 //

@@ -2982,6 +2982,22 @@ impl Parser {
                 self.bump();
                 Ok(AnnotationArg::Literal(Literal::Bool(val)))
             }
+            // Bracketed list, e.g. @OIDCRolesAllowed(["admin", "api-user"])
+            TokenKind::LBracket => {
+                self.bump(); // consume [
+                let mut items = Vec::new();
+                if !self.check(TokenKind::RBracket) {
+                    items.push(self.parse_annotation_arg()?);
+                    while self.consume(TokenKind::Comma) {
+                        if self.check(TokenKind::RBracket) {
+                            break;
+                        }
+                        items.push(self.parse_annotation_arg()?);
+                    }
+                }
+                self.expect(TokenKind::RBracket)?;
+                Ok(AnnotationArg::Array(items))
+            }
             TokenKind::Keyword(Keyword::True) => {
                 self.bump();
                 Ok(AnnotationArg::Literal(Literal::Bool(true)))
@@ -3003,7 +3019,7 @@ impl Parser {
                 }
                 Err(Error::new(token.span, "expected TypeName.VariantName for enum annotation argument"))
             }
-            _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, bool, or EnumType.Variant)")),
+            _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, bool, EnumType.Variant, or [...])")),
         }
     }
 
@@ -4449,6 +4465,25 @@ mod tests {
         let d = first_decl("@Produces(MediaType.APPLICATION_JSON)\nfn f() -> Nothing {}");
         let DeclKind::Function(f) = d else { panic!() };
         assert!(matches!(&f.annotations[0].args[0], AnnotationArg::EnumValue(t, v) if t == "MediaType" && v == "APPLICATION_JSON"));
+    }
+
+    #[test]
+    fn test_annotation_with_array_arg() {
+        let d = first_decl("@OIDCRolesAllowed([\"admin\", \"api-user\"])\nfn f() -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        assert_eq!(f.annotations[0].name, "OIDCRolesAllowed");
+        let AnnotationArg::Array(items) = &f.annotations[0].args[0] else { panic!() };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(&items[0], AnnotationArg::Literal(Literal::String(s)) if s == "admin"));
+        assert!(matches!(&items[1], AnnotationArg::Literal(Literal::String(s)) if s == "api-user"));
+    }
+
+    #[test]
+    fn test_annotation_with_empty_array_arg() {
+        let d = first_decl("@OIDCRolesAllowed([])\nfn f() -> Nothing {}");
+        let DeclKind::Function(f) = d else { panic!() };
+        let AnnotationArg::Array(items) = &f.annotations[0].args[0] else { panic!() };
+        assert!(items.is_empty());
     }
 
     #[test]

@@ -33,6 +33,10 @@ const KNOWN_BROKEN: &[&str] = &[];
 /// Module ohne Smoke-Fall, mit Begründung.
 const EXCLUDED: &[(&str, &str)] = &[
     ("db", "braucht [database]-Config; von den orm_sqlite_* E2E-Fällen abgedeckt"),
+    (
+        "http3_server",
+        "braucht TINOX_HTTP3=1 (Opt-in, Default AUS -- ngtcp2/nghttp3 sind anders als OpenSSL nicht überall installiert); ein Smoke-Fall ohne dieses Flag würde beim Linken scheitern. Von crates/tinox/tests/http3_server_curl.rs abgedeckt (eigener Prozess, echtes curl --http3-only, skipt sauber statt zu failen wenn ngtcp2/nghttp3/HTTP3-curl auf der Build-Maschine fehlen).",
+    ),
 ];
 
 struct Smoke {

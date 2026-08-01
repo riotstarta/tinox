@@ -1,0 +1,118 @@
+// Example: browser-based "login with Keycloak" -- distinct from
+// HelloController.tnx's @OIDCRolesAllowed, which is a *resource server*
+// pattern (validates a Bearer token some other client already obtained,
+// always answers with 401/403 JSON, never redirects -- see its own
+// comments). Visiting a page here without a session redirects the
+// browser to Keycloak's login screen; after login, Keycloak redirects
+// back to /callback, which exchanges the code, verifies the id_token,
+// and starts a session -- the classic server-rendered web app pattern
+// (Spring Security's "OAuth2 Login", as opposed to its "resource
+// server" mode).
+//
+// All of the redirect/callback/session-cookie plumbing that used to be
+// hand-written here now lives in tinox.core.oidc's OidcWebApp -- a
+// reusable class built on the plain tinox.core.http_server.HttpServer
+// (not the compiler's annotation-driven auto-server: this flow does
+// non-trivial allocation -- PKCE state, JSON, a JWKS fetch -- on every
+// login, and the auto-server has a known crash under allocation-heavy
+// routes, issue #140, that HttpServer does not share). This file only
+// has to do two things an app is actually responsible for: decide what
+// "logged in" gates a route (requireLogin), and read the claims to
+// enforce its own authorization rule (hasRole). See README.md for the
+// full walkthrough.
+
+import tinox.core.http_server;
+import tinox.core.oidc;
+import tinox.core.json;
+import tinox.core.env;
+import tinox.core.process;
+
+fn requiredEnv(name: String) -> String
+{
+    let value: String = Env::getVar(name);
+    if value == ""
+    {
+        println("Missing required environment variable: " + name);
+        Process::exit(1);
+    }
+    return value;
+}
+
+fn hasRole(claims: Map<String, JsonValue>, role: String) -> Bool
+{
+    if !claims.contains("realm_access")
+    {
+        return false;
+    }
+    let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
+    if !realmAccess.contains("roles")
+    {
+        return false;
+    }
+    let roles: List<JsonValue> = realmAccess["roles"].asList();
+    var i: Int64 = 0;
+    while i < roles.len()
+    {
+        if roles[i].getString() == role
+        {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn main() -> Int32
+{
+    let issuer: String = requiredEnv("OIDC_ISSUER");
+    let authorizeUrl: String = requiredEnv("OIDC_AUTHORIZE_URL");
+    let tokenUrl: String = requiredEnv("OIDC_TOKEN_URL");
+    let jwksUri: String = requiredEnv("OIDC_JWKS_URI");
+    let clientId: String = requiredEnv("OIDC_CLIENT_ID");
+    let redirectUri: String = requiredEnv("OIDC_REDIRECT_URI");
+    let requiredRole: String = requiredEnv("OIDC_REQUIRED_ROLE");
+    // Seals the session/pending-login cookies (AES-256-GCM) -- a real
+    // deployment must keep this stable across restarts (or every
+    // existing session/in-flight login breaks) and secret (whoever holds
+    // it can forge sessions).
+    let cookieSecret: String = requiredEnv("OIDC_COOKIE_SECRET");
+    // Public client (no client secret) -- OidcClient still needs a value
+    // to pass through to OAuth2Client, Keycloak just ignores it for a
+    // client whose authentication method is "none".
+    let clientSecret: String = Env::getVar("OIDC_CLIENT_SECRET");
+
+    var port: Int64 = 8096;
+    let portEnv: String = Env::getVar("PORT");
+    if portEnv != ""
+    {
+        port = portEnv.toInt();
+    }
+
+    let client: OidcClient = OidcClient::new(issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri);
+    let app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
+
+    let server: HttpServer = HttpServer::new(port);
+    app.install(server);
+
+    server.get("/", ctx => {
+        if !app.requireLogin(ctx)
+        {
+            return;
+        }
+        let claims: Map<String, JsonValue> = app.currentUser(ctx);
+        if !hasRole(claims, requiredRole)
+        {
+            ctx.response.status(403).html("<p>Logged in as <b>" + claims["sub"].getString() + "</b>, but missing required role \"" + requiredRole + "\". <a href=\"/logout\">Log out</a></p>");
+            return;
+        }
+        ctx.response.html("<p>Welcome, <b>" + claims["sub"].getString() + "</b> -- you have the \"" + requiredRole + "\" role. <a href=\"/logout\">Log out</a></p>");
+    });
+
+    server.get("/logout", ctx => {
+        app.logout(ctx);
+    });
+
+    println("Web login demo listening on http://localhost:" + port.toString());
+    server.listen();
+    return 0;
+}

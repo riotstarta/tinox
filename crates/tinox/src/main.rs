@@ -1470,6 +1470,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         class_name: r.class_name.clone(), method_name: r.method_name.clone(),
         status_code: r.status_code, produces: r.produces.clone(),
         consumes: r.consumes.clone(), auth_type: r.auth_type.clone(),
+        oidc_roles: r.oidc_roles.clone(),
         is_static: r.is_static,
     }).collect();
     let di_components = ann.di_components.iter().map(|c| tinox_codegen::DiComponentInfo {
@@ -1923,6 +1924,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             produces: r.produces.clone(),
             consumes: r.consumes.clone(),
             auth_type: r.auth_type.clone(),
+            oidc_roles: r.oidc_roles.clone(),
             is_static: r.is_static,
         })
         .collect();
@@ -2225,6 +2227,19 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     // TINOX_TLS=0, falls z.B. kein OpenSSL zum Bauen verfügbar ist.
     let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
 
+    // HTTP/3 (QUIC) server: opt-in, default OFF -- unlike TLS (OpenSSL is
+    // near-universally installed), ngtcp2/nghttp3 are far less common on a
+    // typical build machine, so defaulting this on would break `tinox
+    // build` with a compile error on any system lacking them, rather than
+    // the graceful runtime -1 the rest of this file's opt-out flags give.
+    // Also gated on tls_enabled: ngtcp2_crypto_ossl needs OpenSSL underneath,
+    // so TINOX_TLS=0 implies HTTP/3 support is unavailable regardless of
+    // TINOX_HTTP3.
+    let http3_enabled = tls_enabled
+        && std::env::var("TINOX_HTTP3")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
@@ -2235,6 +2250,9 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     }
     if tls_enabled {
         cc_args.push("-DTINOX_TLS");
+    }
+    if http3_enabled {
+        cc_args.push("-DTINOX_HTTP3");
     }
     cc_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let cc_status = Command::new("cc")
@@ -2262,6 +2280,11 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     if tls_enabled {
         link_args.push("-lssl");
         link_args.push("-lcrypto");
+    }
+    if http3_enabled {
+        link_args.push("-lngtcp2");
+        link_args.push("-lngtcp2_crypto_ossl");
+        link_args.push("-lnghttp3");
     }
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     let link_status = Command::new("cc")

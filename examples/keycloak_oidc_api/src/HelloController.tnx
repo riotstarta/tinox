@@ -1,0 +1,33 @@
+// Example: a REST endpoint that only lets requests through whose OIDC
+// access token contains a specific realm role -- verified live against a
+// real IdP (Keycloak, via docker-compose.yml in this directory) rather
+// than trusting a client-supplied claim.
+//
+// @OIDCRolesAllowed(["api-user"]) is entirely declarative: the compiler
+// wires up token verification (RS256 signature via the IdP's JWKS,
+// issuer, audience, exp/nbf -- see tinox.core.rest.server's OidcGuard)
+// and the role check for this route automatically. The IdP connection
+// itself (issuer, JWKS endpoint, expected audience) is configured via the
+// OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE environment variables, so the
+// same compiled binary works against any OIDC provider without a
+// rebuild -- only the required *role* is a compile-time property of the
+// endpoint (like Jakarta EE's @RolesAllowed), not something read from
+// the environment.
+//
+// See README.md for how to start Keycloak, obtain a token, and call this
+// endpoint. No main() needed here -- the compiler auto-generates one for
+// any file with @GET/@POST/etc.-annotated routes (see tinox run/build's
+// TINOX_PORT env var to pick a listen port at build time).
+
+import tinox.core.http_server;
+import tinox.core.rest.server;
+
+class HelloController
+{
+    @GET("/api/hello")
+    @OIDCRolesAllowed(["api-user"])
+    fnc hello(ctx: HttpContext) -> Nothing
+    {
+        ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}");
+    }
+}

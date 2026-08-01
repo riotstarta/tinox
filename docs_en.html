@@ -490,6 +490,7 @@
     <li class="section-label">HTTP &amp; Network</li>
     <li><a href="#mod-http_server">http_server</a></li>
     <li><a href="#mod-http2_server">http2_server</a></li>
+    <li><a href="#mod-http3_server">http3_server</a></li>
     <li><a href="#mod-websocket">websocket</a></li>
     <li><a href="#mod-hpack">hpack</a></li>
     <li><a href="#mod-http">http</a></li>
@@ -1891,6 +1892,99 @@ server.listen();
 </code></pre>
   </div>
 
+  <div class="mod-section" id="mod-http3_server">
+
+  <h2>http3_server</h2>
+  <p class="import-hint"><code>import tinox.core.http3_server;</code></p>
+  <p>
+    HTTP/3 (RFC 9114) over QUIC (RFC 9000). Unlike <code>http_server</code>
+    (protocol parsed entirely in C) and <code>http2_server</code> (framing/
+    HPACK hand-rolled in pure Tinox), this module can't push protocol logic
+    into Tinox: QUIC transport (loss recovery, congestion control, AEAD) and
+    HTTP/3 framing + QPACK are implemented by the
+    <a href="https://github.com/ngtcp2/ngtcp2">ngtcp2</a> and
+    <a href="https://github.com/ngtcp2/nghttp3">nghttp3</a> C libraries,
+    whose callback-table APIs can't invoke back into a Tinox closure
+    mid-callback. All QUIC/HTTP-3/QPACK state therefore lives in
+    <code>runtime.c</code> behind opaque <code>Int64</code> handles (the
+    same pattern as the existing TLS connection handling) — this file only
+    registers routes and pumps the native event loop, reusing the same
+    <code>Route</code>/<code>RouteMatcher</code>/<code>HttpRequest</code>/
+    <code>HttpResponse</code>/<code>HttpContext</code> API as
+    <code>http_server</code>/<code>http2_server</code> unmodified.
+  </p>
+  <p>
+    TLS is mandatory (QUIC has no plaintext mode) — certificate/key go
+    directly to the constructor; unlike <code>HttpServer</code> there is no
+    separate <code>listen()</code>/<code>listenTls()</code> split.
+  </p>
+  <p>
+    <strong>Build flag:</strong> requires the compiler to be run with
+    <code>TINOX_HTTP3=1</code> (opt-in, default OFF — unlike
+    <code>TINOX_TLS</code>, which defaults ON: OpenSSL is nearly universally
+    installed, ngtcp2/nghttp3 far less so; defaulting this on would break
+    <code>tinox build</code> with a compile error on any system lacking
+    them, instead of a clean runtime message). Also requires TLS to be
+    enabled (<code>ngtcp2_crypto_ossl</code> needs OpenSSL underneath).
+  </p>
+  <p>
+    <strong>Known limitation (0-RTT):</strong> <code>enableEarlyData()</code>,
+    <code>HttpRequest.wasEarlyData</code>, and the 425-Too-Early policy for
+    non-idempotent early-data requests are wired end-to-end, but
+    <code>SSL_CTX_set_max_early_data</code> itself is deliberately left unset
+    under this OpenSSL 3.6.3 + <code>ngtcp2_crypto_ossl</code> 1.25.0
+    combination (setting it reproducibly caused a stall right after the TLS
+    handshake completed; root cause not isolated in the time available). As
+    a result the TLS layer never actually accepts 0-RTT data — a client
+    attempting early data transparently falls back to a normal 1-RTT round
+    trip, so <code>wasEarlyData</code> is currently always <code>false</code>.
+    Not a crash, just an inactive feature for now.
+  </p>
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>Http3Server::new</code></td><td><code>fn new(port: Int64, certPath: String, keyPath: String) -&gt; Http3Server</code></td><td>Creates a new HTTP/3 server. TLS certificate/key are mandatory parameters.</td></tr>
+      <tr><td><code>Http3Server::get</code></td><td><code>fn get(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; Http3Server</code></td><td>Registers a GET route handler.</td></tr>
+      <tr><td><code>Http3Server::post</code></td><td><code>fn post(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; Http3Server</code></td><td>Registers a POST route handler.</td></tr>
+      <tr><td><code>Http3Server::put</code></td><td><code>fn put(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; Http3Server</code></td><td>Registers a PUT route handler.</td></tr>
+      <tr><td><code>Http3Server::patch</code></td><td><code>fn patch(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; Http3Server</code></td><td>Registers a PATCH route handler.</td></tr>
+      <tr><td><code>Http3Server::delete</code></td><td><code>fn delete(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; Http3Server</code></td><td>Registers a DELETE route handler.</td></tr>
+      <tr><td><code>Http3Server::use</code></td><td><code>fn use(mware: fnc(HttpContext) -&gt; Bool) -&gt; Http3Server</code></td><td>Adds a middleware function.</td></tr>
+      <tr><td><code>Http3Server::requireAddressValidation</code></td><td><code>fn requireAddressValidation(v: Bool) -&gt; Http3Server</code></td><td>Controls the QUIC Retry mechanism (RFC 9000 §8.1, default <code>true</code>). <code>false</code> saves a round trip in local dev loops.</td></tr>
+      <tr><td><code>Http3Server::enableEarlyData</code></td><td><code>fn enableEarlyData(maxSize: Int64) -&gt; Http3Server</code></td><td>Opts into TLS 1.3 0-RTT (default off). See the known limitation above.</td></tr>
+      <tr><td><code>Http3Server::listen</code></td><td><code>fn listen() -&gt; Nothing</code></td><td>Binds the UDP socket and starts the pump loop (blocking).</td></tr>
+      <tr><td><code>Http3Server::stop</code></td><td><code>fn stop() -&gt; Nothing</code></td><td>Stops the server loop.</td></tr>
+      <tr><td><code>HttpRequest.wasEarlyData</code></td><td><code>var wasEarlyData: Bool</code></td><td>New field on <code>HttpRequest</code> (see <code>http_server</code>): <code>true</code> if the request arrived as TLS 1.3 0-RTT early data. Always <code>false</code> for <code>HttpServer</code>/<code>Http2Server</code>.</td></tr>
+    </tbody>
+  </table>
+  <h3>Example</h3>
+  <pre><code>import tinox.core.http3_server;
+
+let server: Http3Server = Http3Server::new(8443, "cert.pem", "key.pem");
+
+server.get("/hello", ctx => {
+    ctx.response.text("Hello via HTTP/3!");
+});
+
+server.post("/echo", ctx => {
+    ctx.response.text("echo:" + ctx.request.body);
+});
+
+// Start blocking -- QUIC handshake, HTTP/3 framing, and QPACK are
+// handled entirely by ngtcp2/nghttp3.
+server.listen();
+</code></pre>
+  <p>
+    Build/run: <code>TINOX_HTTP3=1 tinox run server.tnx</code>, then e.g.
+    <code>curl --http3-only -k https://localhost:8443/hello</code> (tested
+    against real curl 8.21.0, linked against the same ngtcp2/nghttp3
+    versions).
+  </p>
+  </div>
+
   <div class="mod-section" id="mod-websocket">
 
   <h2>websocket</h2>
@@ -2365,7 +2459,7 @@ encTable.setMaxSize(2048);
     Simple HTTP client for direct network requests. The class
     <code>Http</code> provides static methods for all common HTTP verbs
     (GET, POST, PUT, PATCH, DELETE) and the ability to set and clear global default headers.
-    Responses are returned as <code>HttpResponse</code>, which provides the status code,
+    Responses are returned as <code>HttpClientResponse</code>, which provides the status code,
     body, and individual header values.
     For higher-level abstraction, use the <code>rest</code> module.
   </p>
@@ -2378,7 +2472,7 @@ encTable.setMaxSize(2048);
     intentionally v1-scoped to real, publicly-trusted endpoints only,
     e.g. OAuth2 token endpoints, see the <code>oauth2</code> module).
     When built with <code>TINOX_TLS=0</code>, an <code>https://</code>
-    call returns the same empty <code>HttpResponse</code>
+    call returns the same empty <code>HttpClientResponse</code>
     (<code>statusCode() == 0</code>) as any other connection failure.
   </p>
   <h3>Classes &amp; Methods</h3>
@@ -2387,23 +2481,23 @@ encTable.setMaxSize(2048);
       <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>Http::get</code></td><td><code>fn get(url: String) -&gt; HttpResponse</code></td><td>Executes an HTTP GET request to the specified URL.</td></tr>
-      <tr><td><code>Http::post</code></td><td><code>fn post(url: String, body: String) -&gt; HttpResponse</code></td><td>Executes an HTTP POST request with the specified body.</td></tr>
-      <tr><td><code>Http::put</code></td><td><code>fn put(url: String, body: String) -&gt; HttpResponse</code></td><td>Executes an HTTP PUT request with the specified body.</td></tr>
-      <tr><td><code>Http::delete</code></td><td><code>fn delete(url: String) -&gt; HttpResponse</code></td><td>Executes an HTTP DELETE request.</td></tr>
-      <tr><td><code>Http::patch</code></td><td><code>fn patch(url: String, body: String) -&gt; HttpResponse</code></td><td>Executes an HTTP PATCH request with the specified body.</td></tr>
+      <tr><td><code>Http::get</code></td><td><code>fn get(url: String) -&gt; HttpClientResponse</code></td><td>Executes an HTTP GET request to the specified URL.</td></tr>
+      <tr><td><code>Http::post</code></td><td><code>fn post(url: String, body: String) -&gt; HttpClientResponse</code></td><td>Executes an HTTP POST request with the specified body.</td></tr>
+      <tr><td><code>Http::put</code></td><td><code>fn put(url: String, body: String) -&gt; HttpClientResponse</code></td><td>Executes an HTTP PUT request with the specified body.</td></tr>
+      <tr><td><code>Http::delete</code></td><td><code>fn delete(url: String) -&gt; HttpClientResponse</code></td><td>Executes an HTTP DELETE request.</td></tr>
+      <tr><td><code>Http::patch</code></td><td><code>fn patch(url: String, body: String) -&gt; HttpClientResponse</code></td><td>Executes an HTTP PATCH request with the specified body.</td></tr>
       <tr><td><code>Http::setHeader</code></td><td><code>fn setHeader(name: String, value: String) -&gt; Nothing</code></td><td>Sets a global default header for subsequent requests.</td></tr>
       <tr><td><code>Http::clearHeaders</code></td><td><code>fn clearHeaders() -&gt; Nothing</code></td><td>Clears all previously set global headers.</td></tr>
-      <tr><td><code>HttpResponse::statusCode</code></td><td><code>fn statusCode() -&gt; Int64</code></td><td>Returns the HTTP status code of the response.</td></tr>
-      <tr><td><code>HttpResponse::body</code></td><td><code>fn body() -&gt; String</code></td><td>Returns the response body as a string.</td></tr>
-      <tr><td><code>HttpResponse::header</code></td><td><code>fn header(name: String) -&gt; String</code></td><td>Returns the value of a response header.</td></tr>
+      <tr><td><code>HttpClientResponse::statusCode</code></td><td><code>fn statusCode() -&gt; Int64</code></td><td>Returns the HTTP status code of the response.</td></tr>
+      <tr><td><code>HttpClientResponse::body</code></td><td><code>fn body() -&gt; String</code></td><td>Returns the response body as a string.</td></tr>
+      <tr><td><code>HttpClientResponse::header</code></td><td><code>fn header(name: String) -&gt; String</code></td><td>Returns the value of a response header.</td></tr>
     </tbody>
   </table>
   <h3>Example</h3>
   <pre><code>import tinox.core.http;
 
 // Simple GET request
-let resp: HttpResponse = Http::get("https://api.example.com/status");
+let resp: HttpClientResponse = Http::get("https://api.example.com/status");
 print("Status: " + resp.statusCode().toString());
 print("Body:   " + resp.body());
 
@@ -2411,7 +2505,7 @@ print("Body:   " + resp.body());
 Http::setHeader("Authorization", "Bearer my-token");
 Http::setHeader("Content-Type", "application/json");
 
-let post: HttpResponse = Http::post(
+let post: HttpClientResponse = Http::post(
     "https://api.example.com/users",
     "{\"name\": \"Max\", \"email\": \"max@example.com\"}"
 );
@@ -2425,7 +2519,7 @@ if post.statusCode() == 201 {
 Http::clearHeaders();
 
 // PATCH-Request
-let patch: HttpResponse = Http::patch(
+let patch: HttpClientResponse = Http::patch(
     "https://api.example.com/users/42",
     "{\"name\": \"Maxine\"}"
 );
@@ -2529,11 +2623,55 @@ if resp.isClientError() {
     declarative routing. Controller classes are declared with annotations such as
     <code>@Path</code>, <code>@GET</code>, <code>@POST</code>,
     <code>@Produces</code>, <code>@Consumes</code>, <code>@StatusCode</code>,
-    and <code>@Auth</code>, then registered with <code>RestApi</code>.
-    The framework supports global middleware, CORS,
-    automatic content-type management, and dependency injection annotations
-    (<code>@ApplicationComponent</code>, <code>@Inject</code>, <code>@Startup</code>,
-    <code>@HttpRequestScoped</code>).
+    <code>@Auth</code>, and <code>@OIDCRolesAllowed</code>, then registered
+    with <code>RestApi</code> (or, for purely annotation-based controllers
+    with no explicit <code>RestApi</code> wiring, translated by the compiler
+    directly into route-dispatch code, including an auto-generated
+    <code>main()</code> if none exists). The framework supports global
+    middleware, CORS, automatic content-type management, and dependency
+    injection annotations (<code>@ApplicationComponent</code>,
+    <code>@Inject</code>, <code>@Startup</code>, <code>@HttpRequestScoped</code>).
+  </p>
+  <p>
+    <strong><code>@Auth("bearer")</code>/<code>@Auth("basic")</code> now
+    actually validates the credential</strong> (since issue #141) instead of
+    only checking the <code>Authorization</code> header's scheme prefix
+    (previously any syntactically matching <code>"Bearer ..."</code>/
+    <code>"Basic ..."</code> with an arbitrary value was accepted). For
+    controllers registered via the <code>RestApi</code> class, this was
+    already possible via <code>RestApi::setAuthValidator</code>; for purely
+    annotation-based controllers (compiled routes with no
+    <code>RestApi</code> instance), the compiler now looks for a project-
+    defined class <code>AuthValidator</code> with
+    <code>fnc validate(authType: String, credential: String) -&gt; Bool</code>
+    and calls it if present — without such a class, <strong>every</strong>
+    <code>@Auth</code>-protected request is rejected (safe default instead
+    of silently open, matching <code>RestApi::authValidator</code>'s own
+    default behavior).
+  </p>
+  <p>
+    <strong><code>@OIDCRolesAllowed(["role1", "role2"])</code></strong>
+    (issue #142) requires a verified OIDC access token carrying at least one
+    of the listed realm roles — entirely declarative, with the handler
+    itself never aware any of this happened. Verification (RS256 signature
+    via the IdP's JWKS, <code>iss</code>/<code>aud</code>/<code>exp</code>/
+    <code>nbf</code>, role matching against <code>realm_access.roles</code>)
+    runs automatically via <code>OidcGuard::checkRoles</code>; the IdP
+    connection itself (<code>OIDC_ISSUER</code>/<code>OIDC_JWKS_URI</code>/
+    <code>OIDC_AUDIENCE</code>) comes from environment variables, so the
+    same compiled binary works against any RS256/JWKS-capable IdP without a
+    rebuild — see <code>examples/keycloak_oidc_api</code> for a full example
+    with a real Keycloak via docker-compose.
+    <strong>Known issue (issue #140):</strong> the compiler's auto-generated,
+    epoll-/thread-pool-based server for annotation-driven routes
+    (<code>tinox_HttpServer_listen</code> in <code>runtime.c</code> — a
+    different, multi-threaded server from the single-threaded
+    <code>HttpServer</code> class documented below) can crash inside the
+    Boehm GC after a handful of requests to <strong>any</strong> allocation-
+    heavy route (not specific to <code>@OIDCRolesAllowed</code> —
+    reproduces with a trivial route with no crypto/JSON/network
+    involvement). Light, interactive use works reliably; the
+    <code>HttpServer</code> class itself is unaffected.
   </p>
   <h3>Classes &amp; Methods</h3>
   <table>
@@ -2541,6 +2679,8 @@ if resp.isClientError() {
       <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
     </thead>
     <tbody>
+      <tr><td><code>OIDCRolesAllowed</code></td><td><code>@OIDCRolesAllowed(roles: List&lt;String&gt;)</code></td><td>Method annotation (issue #142): requires a verified OIDC access token carrying at least one of the listed realm roles. Needs <code>OIDC_ISSUER</code>/<code>OIDC_JWKS_URI</code>/<code>OIDC_AUDIENCE</code> as runtime environment variables.</td></tr>
+      <tr><td><code>OidcGuard::checkRoles</code></td><td><code>fnc checkRoles(ctx: HttpContext, rolesCsv: String) -&gt; Bool</code></td><td>Backs <code>@OIDCRolesAllowed</code> — called by the compiler under a well-known symbol name; not meant for direct use from application code. Sets <code>ctx.response</code> itself on failure (401 missing/invalid token, 403 valid token missing the required role).</td></tr>
       <tr><td><code>RestApi::new</code></td><td><code>fn new(port: Int64) -&gt; RestApi</code></td><td>Creates a new REST API application on the specified port.</td></tr>
       <tr><td><code>RestApi::register</code></td><td><code>fn register(controller: RestController) -&gt; RestApi</code></td><td>Registers all routes of a controller (chaining).</td></tr>
       <tr><td><code>RestApi::get</code></td><td><code>fn get(path: String, handler: fnc(HttpContext) -&gt; Nothing) -&gt; RestApi</code></td><td>Registers a GET handler directly (fluent API).</td></tr>
@@ -2928,6 +3068,91 @@ fn main() -> Nothing
         println("Error: " + tokens.errorMessage);
     }
 }</code></pre>
+  <h3>OidcWebApp — browser login "out of the box"</h3>
+  <p>
+    <code>OidcClient</code> above is the low-level building block — the
+    caller has to store <code>state</code>/<code>codeVerifier</code>
+    itself and manage a session. <code>OidcWebApp</code> takes care of
+    exactly that for the classic "visit a page, get bounced to
+    Keycloak/Google/…, come back logged in" case (Spring Security's
+    "OAuth2 Login", Quarkus' <code>application-type=web-app</code>):
+    <code>install(server)</code> registers <code>/login</code> (redirects
+    to the provider) and <code>/callback</code> (exchanges the code,
+    verifies the <code>id_token</code>, starts the session) on a
+    <code>tinox.core.http_server.HttpServer</code> — deliberately NOT on
+    the annotation-driven auto-server, which can crash under
+    allocation-heavy routes (issue #140), which this flow (JSON, a JWKS
+    fetch, AES) is throughout. There is no server-side session store:
+    both the short-lived "pending login" state (PKCE verifier + CSRF
+    state, between <code>/login</code> and <code>/callback</code>) and
+    the session itself (the verified claims) live entirely in httpOnly
+    cookies, AES-256-GCM sealed (<code>Crypto::aesEncrypt</code>/
+    <code>aesDecrypt</code>) with a secret you provide — a tampered
+    cookie or the wrong secret makes <code>aesDecrypt</code> throw, so
+    the cookie is rejected rather than accepted. This also means
+    sessions survive a server restart and work across multiple processes
+    with no shared state.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>OidcWebApp::new</code></td>
+        <td><code>fn new(client: OidcClient, cookieSecret: String) -&gt; OidcWebApp</code></td>
+        <td>Throws if <code>cookieSecret</code> is empty (an empty secret is a well-known, guessable key, not "encryption off").</td>
+      </tr>
+      <tr>
+        <td><code>OidcWebApp::install</code></td>
+        <td><code>fn install(server: HttpServer) -&gt; Nothing</code></td>
+        <td>Registers <code>/login</code> and <code>/callback</code> (paths configurable via <code>loginPath</code>/<code>callbackPath</code>) on <code>server</code>. Call once at startup, before <code>server.listen()</code>.</td>
+      </tr>
+      <tr>
+        <td><code>OidcWebApp::requireLogin</code></td>
+        <td><code>fn requireLogin(ctx: HttpContext) -&gt; Bool</code></td>
+        <td>Session gate for a route: on a missing/tampered/expired session cookie, redirects to <code>loginPath</code> and returns <code>false</code> (caller must <code>return;</code> immediately), otherwise <code>true</code>.</td>
+      </tr>
+      <tr>
+        <td><code>OidcWebApp::currentUser</code></td>
+        <td><code>fn currentUser(ctx: HttpContext) -&gt; Map&lt;String, JsonValue&gt;</code></td>
+        <td>The verified claims of the current session — meaningful right after a successful <code>requireLogin</code> in the same request.</td>
+      </tr>
+      <tr>
+        <td><code>OidcWebApp::logout</code></td>
+        <td><code>fn logout(ctx: HttpContext) -&gt; Nothing</code></td>
+        <td>Clears the session cookie and redirects to <code>loginPath</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+  <h4>Example</h4>
+  <pre><code>import tinox.core.oidc;
+import tinox.core.http_server;
+
+fn main() -> Nothing
+{
+    let client: OidcClient = OidcClient::new(
+        issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri
+    );
+    let app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
+
+    let server: HttpServer = HttpServer::new(8096);
+    app.install(server);
+
+    server.get("/", ctx => {
+        if !app.requireLogin(ctx) { return; }
+        let claims: Map&lt;String, JsonValue&gt; = app.currentUser(ctx);
+        ctx.response.text("Hello, " + claims["sub"].getString());
+    });
+
+    server.get("/logout", ctx => { app.logout(ctx); });
+
+    server.listen();
+}</code></pre>
+  <p>
+    A complete example, verified against a real Keycloak instance, lives
+    at <code>examples/keycloak_oidc_api/src/WebLogin.tnx</code>.
+  </p>
   </div>
 
   <div class="mod-section" id="mod-json">

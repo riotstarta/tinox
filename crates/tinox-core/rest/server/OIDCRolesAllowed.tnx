@@ -1,0 +1,26 @@
+module tinox.core.rest.server;
+
+namespace tinox.core.rest.server
+{
+    /**
+     * Requires a verified OIDC access token carrying at least one of the
+     * listed realm roles. The Authorization: Bearer <token> header is
+     * verified (RS256 signature via the IdP's JWKS, issuer, audience,
+     * exp/nbf) live against the IdP configured via the OIDC_ISSUER/
+     * OIDC_JWKS_URI/OIDC_AUDIENCE environment variables -- no key
+     * material or role list is ever hardcoded.
+     *
+     * @OIDCRolesAllowed(["admin", "api-user"])
+     * fn adminOnly(ctx: HttpContext) -> Nothing { ... }
+     */
+    @annotation
+    class OIDCRolesAllowed
+    {
+        var roles: List<String>;
+
+        fn new(roles: List<String>) -> OIDCRolesAllowed
+        {
+            return OIDCRolesAllowed { roles: roles };
+        }
+    }
+}
