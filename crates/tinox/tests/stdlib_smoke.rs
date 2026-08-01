@@ -309,6 +309,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "oidc",
+        imports: &["tinox.core.oidc"],
+        body: "let c: OidcClient = OidcClient::new(\"https://issuer.example.com\", \"https://example.com/authorize\", \"https://example.com/token\", \"https://example.com/jwks.json\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid email\");\n    if r.url.contains(\"code_challenge=\") { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
         key: "option",
         imports: &["tinox.core.option"],
         body: "let o: Option<Int64> = Option::some(5);\n    println(o.unwrap());",

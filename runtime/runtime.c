@@ -3131,6 +3131,81 @@ int64_t* secureRandomBytesRaw(int64_t n) {
 #endif
 }
 
+#ifdef TINOX_TLS
+#include <openssl/bn.h>
+#include <openssl/core_names.h>
+#include <openssl/param_build.h>
+#endif
+
+// RS256 (RSASSA-PKCS1-v1_5 using SHA-256) signature verification for OIDC
+// ID-token / JWKS support (issue #138). `modulus`/`exponent` are an RSA
+// public key's raw big-endian bytes (JWK "n"/"e" fields, base64url-decoded
+// by the caller) -- constructed into an EVP_PKEY via OSSL3's
+// EVP_PKEY_fromdata (no deprecated legacy RSA_new/RSA_set0_key calls).
+// Returns false (never a garbage/partial "verified") on any failure,
+// including TINOX_TLS=0 -- Jwt::decodeRs256/verifyRs256 treat that the
+// same as any other failed signature check.
+bool rsaVerifySha256(int64_t* msgArr, int64_t* sigArr, int64_t* nArr, int64_t* eArr) {
+#ifdef TINOX_TLS
+    TinoxArray* ma = (TinoxArray*)msgArr;
+    TinoxArray* sa = (TinoxArray*)sigArr;
+    TinoxArray* na = (TinoxArray*)nArr;
+    TinoxArray* ea = (TinoxArray*)eArr;
+
+    unsigned char* msg_buf = (unsigned char*)malloc(ma->len > 0 ? (size_t)ma->len : 1);
+    for (int64_t i = 0; i < ma->len; i++) msg_buf[i] = (unsigned char)(ma->data[i] & 0xff);
+    unsigned char* sig_buf = (unsigned char*)malloc(sa->len > 0 ? (size_t)sa->len : 1);
+    for (int64_t i = 0; i < sa->len; i++) sig_buf[i] = (unsigned char)(sa->data[i] & 0xff);
+    unsigned char* n_buf = (unsigned char*)malloc(na->len > 0 ? (size_t)na->len : 1);
+    for (int64_t i = 0; i < na->len; i++) n_buf[i] = (unsigned char)(na->data[i] & 0xff);
+    unsigned char* e_buf = (unsigned char*)malloc(ea->len > 0 ? (size_t)ea->len : 1);
+    for (int64_t i = 0; i < ea->len; i++) e_buf[i] = (unsigned char)(ea->data[i] & 0xff);
+
+    bool ok = false;
+    BIGNUM* bn_n = BN_bin2bn(n_buf, (int)na->len, NULL);
+    BIGNUM* bn_e = BN_bin2bn(e_buf, (int)ea->len, NULL);
+    OSSL_PARAM_BLD* bld = NULL;
+    OSSL_PARAM* params = NULL;
+    EVP_PKEY_CTX* pctx = NULL;
+    EVP_PKEY* pkey = NULL;
+    EVP_MD_CTX* mctx = NULL;
+
+    if (bn_n && bn_e) {
+        bld = OSSL_PARAM_BLD_new();
+        if (bld
+            && OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_RSA_N, bn_n)
+            && OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_RSA_E, bn_e)) {
+            params = OSSL_PARAM_BLD_to_param(bld);
+        }
+    }
+
+    if (params) {
+        pctx = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL);
+        if (pctx && EVP_PKEY_fromdata_init(pctx) == 1
+            && EVP_PKEY_fromdata(pctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) == 1) {
+            mctx = EVP_MD_CTX_new();
+            if (mctx && EVP_DigestVerifyInit(mctx, NULL, EVP_sha256(), NULL, pkey) == 1) {
+                ok = (EVP_DigestVerify(mctx, sig_buf, (size_t)sa->len, msg_buf, (size_t)ma->len) == 1);
+            }
+        }
+    }
+
+    if (mctx) EVP_MD_CTX_free(mctx);
+    if (pkey) EVP_PKEY_free(pkey);
+    if (pctx) EVP_PKEY_CTX_free(pctx);
+    if (params) OSSL_PARAM_free(params);
+    if (bld) OSSL_PARAM_BLD_free(bld);
+    if (bn_n) BN_free(bn_n);
+    if (bn_e) BN_free(bn_e);
+    free(msg_buf); free(sig_buf); free(n_buf); free(e_buf);
+    return ok;
+#else
+    (void)msgArr; (void)sigArr; (void)nArr; (void)eArr;
+    fprintf(stderr, "rsaVerifySha256: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    return false;
+#endif
+}
+
 // ---- HttpServer route-based API ----
 
 #define TINOX_MAX_ROUTES 64
@@ -4024,6 +4099,31 @@ int64_t* jsonGetArray(int64_t* value) {
         empty[0] = 0; return empty + 1;
     }
     return v->arr_val;
+}
+
+// Index-based JSON_ARRAY accessors (issue #138, OIDC JWKS "keys" array) --
+// NOT a direct JsonValue-array-to-List<JsonValue> conversion, because
+// arr_val's internal layout (length at arr_val[-1], elements directly in
+// the buffer) is a different, single-indirection format from the
+// {len,cap,data} 3-word handle a Tinox List<T> value actually is (see
+// TinoxArray above): returning arr_val itself as a List<JsonValue> would
+// have Tinox read arr_val[0] (a JsonValue pointer) as a length. Tinox-side
+// (JsonValue::asList()) builds a real List<JsonValue> by looping these two.
+int64_t jsonArrayLen(int64_t* value) {
+    TinoxJsonValue* v = (TinoxJsonValue*)value;
+    if (!v || v->type != JSON_ARRAY || !v->arr_val) return 0;
+    return v->arr_val[-1];
+}
+
+int64_t* jsonArrayGet(int64_t* value, int64_t index) {
+    TinoxJsonValue* v = (TinoxJsonValue*)value;
+    int64_t len = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    if (!v || index < 0 || index >= len) {
+        fprintf(stderr, "runtime error: JSON array index out of bounds: %lld (length %lld)\n",
+                (long long)index, (long long)len);
+        exit(1);
+    }
+    return (int64_t*)(uintptr_t)v->arr_val[index];
 }
 
 int64_t jsonIsNull(int64_t* value)   { return (!value || ((TinoxJsonValue*)value)->type == JSON_NULL)  ? 1 : 0; }

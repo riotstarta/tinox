@@ -1,0 +1,27 @@
+module tinox.core.oidc;
+
+import tinox.core.json;
+
+namespace tinox.core.oidc
+{
+    /*
+     * Result of OidcClient::exchangeCode()/refresh() (issue #138). Same
+     * `ok == false` / `errorMessage` contract as OAuth2TokenResponse
+     * (network/HTTP/RFC-6749-§5.2 errors), plus id_token-specific
+     * failures: missing id_token (exchangeCode() only -- refresh() doesn't
+     * require the provider to reissue one), bad/unverifiable signature,
+     * unexpected alg, or a mismatched iss/aud/exp/nbf claim. `claims` is
+     * the verified ID token's payload (empty map if idToken == "").
+     */
+    class OidcTokenResponse
+    {
+        var accessToken: String;
+        var refreshToken: String;
+        var tokenType: String;
+        var expiresIn: Int64;
+        var idToken: String;
+        var claims: Map<String, JsonValue>;
+        var ok: Bool;
+        var errorMessage: String;
+    }
+}

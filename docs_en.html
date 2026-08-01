@@ -554,6 +554,7 @@
     <li><a href="#mod-hash">hash</a></li>
     <li><a href="#mod-jwt">jwt</a></li>
     <li><a href="#mod-oauth2">oauth2</a></li>
+    <li><a href="#mod-oidc">oidc</a></li>
     <li><a href="#mod-validation">validation</a></li>
     <li><a href="#mod-uuid">uuid</a></li>
 
@@ -2673,12 +2674,17 @@ if ok {
   <h2>jwt</h2>
   <p class="import-hint"><code>import tinox.core.jwt;</code></p>
   <p>
-    JSON Web Token (JWT) implementation with HMAC-SHA256 signing (HS256).
-    The module allows creating signed JWTs from a payload map,
-    verifying the signature, decoding the payload, and checking
-    the expiry time based on the <code>exp</code> claim.
-    Signatures are computed with the <code>Crypto</code> module; payloads
-    are Base64- and JSON-encoded.
+    JSON Web Token (JWT) implementation with HMAC-SHA256 (HS256) and,
+    since issue #138, RSASSA-PKCS1-v1_5-SHA256 (RS256, against a provider
+    key fetched via <code>Jwks</code>) signing. The module allows creating
+    signed JWTs from a payload map, verifying the signature, decoding the
+    header/payload, and checking the expiry time based on the
+    <code>exp</code> claim. All three JWS segments are base64url-encoded
+    (RFC 7515 §3) — before issue #137 the signature segment was
+    incorrectly raw hex instead of base64url, so no external JWT client
+    could verify a Tinox-issued token (or vice versa); since then the
+    module interoperates with standard libraries (verified against PyJWT,
+    among others).
   </p>
   <h3>Classes &amp; Methods</h3>
   <table>
@@ -2686,11 +2692,15 @@ if ok {
       <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>Jwt::encode</code></td><td><code>fn encode(payload: Map&lt;String, JsonValue&gt;, secret: String) -&gt; String</code></td><td>Creates a signed JWT string from the payload map and the secret key.</td></tr>
-      <tr><td><code>Jwt::decode</code></td><td><code>fn decode(token: String, secret: String) -&gt; Map&lt;String, JsonValue&gt;</code></td><td>Verifies the signature and returns the decoded payload. Throws on invalid format or wrong signature.</td></tr>
-      <tr><td><code>Jwt::verify</code></td><td><code>fn verify(token: String, secret: String) -&gt; Bool</code></td><td>Checks whether the JWT signature is valid without returning the payload.</td></tr>
+      <tr><td><code>Jwt::encode</code></td><td><code>fn encode(payload: Map&lt;String, JsonValue&gt;, secret: String) -&gt; String</code></td><td>Creates an HS256-signed JWT string from the payload map and the secret key.</td></tr>
+      <tr><td><code>Jwt::decode</code></td><td><code>fn decode(token: String, secret: String) -&gt; Map&lt;String, JsonValue&gt;</code></td><td>Verifies the HS256 signature (header <code>alg</code> must be exactly <code>"HS256"</code>) and returns the decoded payload. Throws on invalid format, wrong <code>alg</code>, or wrong signature.</td></tr>
+      <tr><td><code>Jwt::verify</code></td><td><code>fn verify(token: String, secret: String) -&gt; Bool</code></td><td>Checks whether the HS256 signature is valid without returning the payload.</td></tr>
+      <tr><td><code>Jwt::decodeRs256</code></td><td><code>fn decodeRs256(token: String, n: String, e: String) -&gt; Map&lt;String, JsonValue&gt;</code></td><td>RS256 counterpart of <code>decode</code> — <code>n</code>/<code>e</code> are an RSA public key from a JWK (base64url, e.g. via <code>Jwks::fetchRsaKey</code>). Checks header <code>alg == "RS256"</code> (alg-confusion hardening).</td></tr>
+      <tr><td><code>Jwt::verifyRs256</code></td><td><code>fn verifyRs256(token: String, n: String, e: String) -&gt; Bool</code></td><td>RS256 counterpart of <code>verify</code>.</td></tr>
+      <tr><td><code>Jwt::extractHeader</code></td><td><code>fn extractHeader(token: String) -&gt; Map&lt;String, JsonValue&gt;</code></td><td>Decodes the JWT header (for <code>alg</code>/<code>kid</code>) <em>without</em> signature verification — needed to know which key/algorithm to verify with before verification happens (see <code>OidcClient</code>, module <code>oidc</code>).</td></tr>
       <tr><td><code>Jwt::extractPayload</code></td><td><code>fn extractPayload(token: String) -&gt; Map&lt;String, JsonValue&gt;</code></td><td>Decodes the payload of a token <em>without</em> signature verification (only for trusted sources).</td></tr>
       <tr><td><code>Jwt::isExpired</code></td><td><code>fn isExpired(token: String) -&gt; Bool</code></td><td>Returns <code>true</code> if the <code>exp</code> claim is in the past. Tokens without <code>exp</code> are considered not expired.</td></tr>
+      <tr><td><code>Jwks::fetchRsaKey</code></td><td><code>fn fetchRsaKey(jwksUri: String, kid: String) -&gt; Map&lt;String, String&gt;</code></td><td>Fetches a JWKS document (RFC 7517 §5) over HTTPS and returns <code>{"n", "e"}</code> of the RSA key matching <code>kid</code>. <code>kid == ""</code> is only unambiguous if the JWKS contains exactly one RSA key — otherwise this throws rather than silently using the first match.</td></tr>
     </tbody>
   </table>
   <h3>Example</h3>
@@ -2753,14 +2763,14 @@ let checkJwt: fnc(HttpContext) -> Bool = ctx => {
     real provider endpoints can be reached directly.
   </p>
   <p>
-    <strong>Intentional v1 gaps:</strong> no OIDC ID token verification
-    (would need RS256/JWKS in the <code>jwt</code> module, which
-    currently only supports HS256 and whose signature wire format is
-    itself still an open issue — see #137), only Authorization Code +
-    PKCE (no <code>client_credentials</code>/<code>implicit</code>/
+    <strong>Intentional v1 gaps:</strong> only Authorization Code + PKCE
+    (no <code>client_credentials</code>/<code>implicit</code>/
     <code>device_code</code>), no token storage — as with the rest of
     the <code>rest</code>/<code>http_server</code> framework, that
-    remains the caller's responsibility.
+    remains the caller's responsibility. For "login with X" including a
+    verified OIDC ID token (signature, <code>iss</code>/<code>aud</code>),
+    see the <code>oidc</code> module (<code>OidcClient</code>, issue
+    #138), which builds on this client.
   </p>
   <h3>Classes &amp; Methods</h3>
   <table>
@@ -2795,8 +2805,8 @@ let checkJwt: fnc(HttpContext) -> Bool = ctx => {
       </tr>
       <tr>
         <td><code>OAuth2TokenResponse</code></td>
-        <td><code>{ accessToken, refreshToken, tokenType: String, expiresIn: Int64, ok: Bool, errorMessage: String }</code></td>
-        <td><code>ok == false</code> on any failure (network/TLS, HTTP error status, or an RFC 6749 §5.2 error response from the provider) — <code>errorMessage</code> describes the cause instead of silently passing through an empty/incorrect token.</td>
+        <td><code>{ accessToken, refreshToken, tokenType, idToken: String, expiresIn: Int64, ok: Bool, errorMessage: String }</code></td>
+        <td><code>ok == false</code> on any failure (network/TLS, HTTP error status, or an RFC 6749 §5.2 error response from the provider) — <code>errorMessage</code> describes the cause instead of silently passing through an empty/incorrect token. <code>idToken</code> is the token endpoint's <code>id_token</code> field, if present (<code>""</code> otherwise) — <em>unverified</em>, see the <code>oidc</code> module for verified OIDC claims.</td>
       </tr>
     </tbody>
   </table>
@@ -2832,6 +2842,90 @@ fn main() -> Nothing
     let refreshed: OAuth2TokenResponse = client.refresh(tokens.refreshToken);
     if refreshed.ok {
         println("New access token: " + refreshed.accessToken);
+    }
+}</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-oidc">
+
+  <h2>oidc</h2>
+  <p class="import-hint"><code>import tinox.core.oidc;</code></p>
+  <p>
+    "Login with X" (OpenID Connect) on top of <code>OAuth2Client</code>
+    (module <code>oauth2</code>): <code>OidcClient</code> runs the same
+    Authorization Code + PKCE flow, but also verifies the provider's
+    <code>id_token</code> — RS256 signature against the provider key
+    fetched via <code>Jwks</code> (module <code>jwt</code>), plus
+    <code>iss</code>/<code>aud</code>/<code>exp</code>/<code>nbf</code> —
+    instead of trusting it unverified, and returns the verified claims
+    (<code>sub</code>, <code>email</code>, …) (issue #138).
+  </p>
+  <p>
+    <strong>Intentional v1 gaps:</strong> no JWKS caching (every
+    verification fetches the JWKS document fresh — a caching layer is
+    separate follow-up work if this becomes a real cost), only
+    Authorization Code + PKCE (no <code>client_credentials</code>/
+    <code>implicit</code>/<code>device_code</code>), no token storage —
+    same stance as <code>oauth2</code>.
+  </p>
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>OidcClient::new</code></td>
+        <td><code>fn new(issuer: String, authorizeUrl: String, tokenUrl: String, jwksUri: String, clientId: String, clientSecret: String, redirectUri: String) -&gt; OidcClient</code></td>
+        <td>Like <code>OAuth2Client::new</code>, plus <code>issuer</code> (expected <code>iss</code> claim) and <code>jwksUri</code> (provider JWKS endpoint).</td>
+      </tr>
+      <tr>
+        <td><code>OidcClient::buildAuthorizeUrl</code></td>
+        <td><code>fn buildAuthorizeUrl(scope: String) -&gt; OAuth2AuthorizeRequest</code></td>
+        <td>Like <code>OAuth2Client::buildAuthorizeUrl</code>, but first checks that <code>scope</code> includes <code>"openid"</code> — otherwise the provider won't return an <code>id_token</code> at all, which would otherwise only surface as a confusing error at <code>exchangeCode</code>. Throws immediately if <code>"openid"</code> is missing.</td>
+      </tr>
+      <tr>
+        <td><code>OidcClient::exchangeCode</code></td>
+        <td><code>fn exchangeCode(code: String, codeVerifier: String) -&gt; OidcTokenResponse</code></td>
+        <td>Exchanges the code for a token pair (like <code>OAuth2Client::exchangeCode</code>) and verifies the <code>id_token</code>. If <code>id_token</code> is missing from the response, that is an error here — unlike <code>refresh</code>.</td>
+      </tr>
+      <tr>
+        <td><code>OidcClient::refresh</code></td>
+        <td><code>fn refresh(refreshToken: String) -&gt; OidcTokenResponse</code></td>
+        <td>Refreshes the token pair. If the provider doesn't return a new <code>id_token</code> (optional per spec for this grant), that is <em>not</em> an error — <code>claims</code> is then empty.</td>
+      </tr>
+      <tr>
+        <td><code>OidcTokenResponse</code></td>
+        <td><code>{ accessToken, refreshToken, tokenType, idToken: String, expiresIn: Int64, claims: Map&lt;String, JsonValue&gt;, ok: Bool, errorMessage: String }</code></td>
+        <td><code>ok == false</code> on any OAuth2 failure (see <code>OAuth2TokenResponse</code>) AND on any ID-token verification failure (wrong <code>alg</code>, invalid signature, mismatched <code>iss</code>/<code>aud</code>, expired) — <code>claims</code> is only populated when <code>ok == true</code> and an <code>id_token</code> was present.</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3>Example</h3>
+  <pre><code>import tinox.core.oidc;
+
+fn main() -> Nothing
+{
+    let client: OidcClient = OidcClient::new(
+        "https://accounts.google.com",
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        "https://oauth2.googleapis.com/token",
+        "https://www.googleapis.com/oauth2/v3/certs",
+        "my-client-id",
+        "my-client-secret",
+        "https://my-app.example.com/callback"
+    );
+
+    // 1. Redirect the user to the provider's login page ("openid" is required)
+    let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+    println("Redirecting to: " + authReq.url);
+
+    // 2. In the callback handler: verify state, then exchange the code + verify id_token
+    let tokens: OidcTokenResponse = client.exchangeCode("code-from-callback", authReq.codeVerifier);
+    if tokens.ok {
+        println("Logged in as: " + tokens.claims["sub"].getString());
+    } else {
+        println("Error: " + tokens.errorMessage);
     }
 }</code></pre>
   </div>
@@ -2927,6 +3021,21 @@ fn main() -> Nothing
         <td><code>JsonValue::getField</code></td>
         <td><code>fn getField(key: String) -&gt; JsonValue</code></td>
         <td>Reads a field of the JSON object by its name.</td>
+      </tr>
+      <tr>
+        <td><code>JsonValue::len</code></td>
+        <td><code>fn len() -&gt; Int64</code></td>
+        <td>Number of elements, if the value is a JSON array (<code>0</code> otherwise).</td>
+      </tr>
+      <tr>
+        <td><code>JsonValue::get</code></td>
+        <td><code>fn get(index: Int64) -&gt; JsonValue</code></td>
+        <td>Reads an array element by index (hard error on an out-of-range index).</td>
+      </tr>
+      <tr>
+        <td><code>JsonValue::asList</code></td>
+        <td><code>fn asList() -&gt; List&lt;JsonValue&gt;</code></td>
+        <td>Materializes a JSON array as a <code>List&lt;JsonValue&gt;</code> (issue #138, e.g. for JWKS' <code>keys</code> array in the <code>jwt</code> module).</td>
       </tr>
     </tbody>
   </table>
@@ -3495,6 +3604,11 @@ fn main() -> Nothing
         <td><code>Base64::encodeUrlBytes</code></td>
         <td><code>fn encodeUrlBytes(data: List&lt;Int64&gt;) -&gt; String</code></td>
         <td>Like <code>encodeBytes</code>, but with the URL-/filename-safe alphabet (<code>-</code>/<code>_</code> instead of <code>+</code>/<code>/</code>) and without <code>=</code> padding (RFC 4648 §5) — e.g. for PKCE <code>code_verifier</code>/<code>code_challenge</code> in the <code>oauth2</code> module (issue #131).</td>
+      </tr>
+      <tr>
+        <td><code>Base64::decodeUrlBytes</code></td>
+        <td><code>fn decodeUrlBytes(encoded: String) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Decodes base64url (RFC 4648 §5, no padding expected) as a raw byte list — e.g. for JWT segments (RFC 7515 §3) and JWKS <code>n</code>/<code>e</code> fields (RFC 7517 §9.3) in the <code>jwt</code> module (issue #138).</td>
       </tr>
     </tbody>
   </table>

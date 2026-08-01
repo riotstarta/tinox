@@ -75,5 +75,33 @@ namespace tinox.core.json
         {
             return jsonGetField(this, key);
         }
+
+        // Issue #138: array element access (0 for a non-array value, same
+        // "quietly nothing to iterate" convention as an empty List).
+        fn len() -> Int64
+        {
+            return jsonArrayLen(this);
+        }
+
+        fn get(index: Int64) -> JsonValue
+        {
+            return jsonArrayGet(this, index);
+        }
+
+        // Materializes a JSON array as a real List<JsonValue> -- see
+        // runtime.c's jsonArrayLen/jsonArrayGet comment for why this can't
+        // just be a single extern call returning List<JsonValue> directly.
+        fn asList() -> List<JsonValue>
+        {
+            var result: List<JsonValue> = [];
+            var i: Int64 = 0;
+            let n: Int64 = this.len();
+            while i < n
+            {
+                result.push(this.get(i));
+                i = i + 1;
+            }
+            return result;
+        }
     }
 }

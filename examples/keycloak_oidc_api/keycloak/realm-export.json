@@ -1,0 +1,70 @@
+{
+  "realm": "tinox-demo",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "api-user",
+        "description": "Allowed to call the protected Tinox REST endpoint"
+      }
+    ]
+  },
+  "requiredActions": [
+    { "alias": "CONFIGURE_TOTP", "name": "Configure OTP", "providerId": "CONFIGURE_TOTP", "enabled": true, "defaultAction": false, "priority": 10, "config": {} },
+    { "alias": "TERMS_AND_CONDITIONS", "name": "Terms and Conditions", "providerId": "TERMS_AND_CONDITIONS", "enabled": false, "defaultAction": false, "priority": 20, "config": {} },
+    { "alias": "UPDATE_PASSWORD", "name": "Update Password", "providerId": "UPDATE_PASSWORD", "enabled": true, "defaultAction": false, "priority": 30, "config": {} },
+    { "alias": "UPDATE_PROFILE", "name": "Update Profile", "providerId": "UPDATE_PROFILE", "enabled": true, "defaultAction": false, "priority": 40, "config": {} },
+    { "alias": "VERIFY_EMAIL", "name": "Verify Email", "providerId": "VERIFY_EMAIL", "enabled": true, "defaultAction": false, "priority": 50, "config": {} },
+    { "alias": "delete_account", "name": "Delete Account", "providerId": "delete_account", "enabled": false, "defaultAction": false, "priority": 60, "config": {} },
+    { "alias": "update_user_locale", "name": "Update User Locale", "providerId": "update_user_locale", "enabled": true, "defaultAction": false, "priority": 1000, "config": {} }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.com",
+      "credentials": [
+        { "type": "password", "value": "alice-pw", "temporary": false }
+      ],
+      "realmRoles": ["api-user"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@example.com",
+      "credentials": [
+        { "type": "password", "value": "bob-pw", "temporary": false }
+      ],
+      "realmRoles": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "tinox-api",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "protocolMappers": [
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "tinox-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,15 @@ namespace tinox.core.json
     extern fn jsonIntArrayFromJson(arr: JsonValue) -> List<Int64>;
     extern fn jsonIntArrayToString(arr: List<Int64>) -> String;
     extern fn jsonIntArrayWrap(key: String, arr: List<Int64>) -> String;
+    // Issue #138 (OIDC JWKS "keys" array): index-based accessors instead of
+    // a direct JsonValue-array-to-List<JsonValue> conversion, because a
+    // JSON_ARRAY's internal layout (length at `arr_val[-1]`, elements
+    // directly in the buffer) is NOT the {len,cap,data} 3-word handle
+    // Tinox's own List<T> ABI expects -- see runtime.c's jsonArrayLen/
+    // jsonArrayGet comment. JsonValue::asList() builds a proper
+    // List<JsonValue> from these two.
+    extern fn jsonArrayLen(value: JsonValue) -> Int64;
+    extern fn jsonArrayGet(value: JsonValue, index: Int64) -> JsonValue;
 
     class Json
     {

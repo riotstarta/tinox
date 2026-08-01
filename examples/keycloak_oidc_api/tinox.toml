@@ -1,0 +1,4 @@
+[package]
+name = "keycloak_oidc_api"
+version = "0.1.0"
+description = "REST endpoint protected by a role in an OIDC access token, verified live against a real Keycloak IdP (see docker-compose.yml)"

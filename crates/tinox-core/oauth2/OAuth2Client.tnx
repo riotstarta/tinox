@@ -146,7 +146,7 @@ namespace tinox.core.oauth2
 
             if resp.statusCode() == 0
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, ok: false, errorMessage: "network error contacting token endpoint (connection failed or TLS/certificate error)" };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "network error contacting token endpoint (connection failed or TLS/certificate error)" };
             }
 
             let fields: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
@@ -158,17 +158,17 @@ namespace tinox.core.oauth2
                 {
                     msg = msg + ": " + fields["error_description"].getString();
                 }
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, ok: false, errorMessage: msg };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: msg };
             }
 
             if resp.statusCode() < 200 || resp.statusCode() >= 300
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, ok: false, errorMessage: "token endpoint returned HTTP " + resp.statusCode().toString() };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint returned HTTP " + resp.statusCode().toString() };
             }
 
             if !fields.contains("access_token")
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, ok: false, errorMessage: "token endpoint response has no access_token field" };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint response has no access_token field" };
             }
 
             var refreshTok: String = "";
@@ -186,8 +186,13 @@ namespace tinox.core.oauth2
             {
                 expIn = fields["expires_in"].asInt();
             }
+            var idTok: String = "";
+            if fields.contains("id_token")
+            {
+                idTok = fields["id_token"].getString();
+            }
 
-            return OAuth2TokenResponse { accessToken: fields["access_token"].getString(), refreshToken: refreshTok, tokenType: tokType, expiresIn: expIn, ok: true, errorMessage: "" };
+            return OAuth2TokenResponse { accessToken: fields["access_token"].getString(), refreshToken: refreshTok, tokenType: tokType, expiresIn: expIn, idToken: idTok, ok: true, errorMessage: "" };
         }
     }
 }
