@@ -3,7 +3,7 @@
 //! the compiler's auto-generated `main` (tinox_typecheck's
 //! Http3RestControllerInfo + tinox_codegen's emit_http3_route_code) rather
 //! than the hand-written Http3Server::new()/.get()/... calls in
-//! examples/http3_rest_api/src/main.tnx.
+//! examples/http3_rest_api/src/Main.tnx.
 //!
 //! Same shape as http3_server_curl.rs (spawn the compiled server as a
 //! background process, drive it with the system's real `curl

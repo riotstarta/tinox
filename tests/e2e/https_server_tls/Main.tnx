@@ -1,0 +1,83 @@
+// Issue 73: HTTPS (HttpServer::listenTls) was only verified manually so far
+// (curl -k / openssl s_client). Automates it against a self-signed test cert
+// (tests/fixtures/tls, copied into the workdir by the harness via the
+// `// tls-fixture` directive): positive path (verify=false, matches the
+// self-signed cert) does a real request/response roundtrip through a
+// registered route; negative path (verify=true) must correctly reject the
+// same self-signed cert instead of silently accepting it.
+// expect-contains: ok-status
+// expect-contains: ok-body
+// expect-contains: ok-verify-reject
+// tls-fixture
+
+import tinox.core.http_server;
+import tinox.core.socket;
+
+class Main
+{
+
+    async fnc runServer() -> Int64 {
+        let server: HttpServer = HttpServer::new(47700);
+        server.get("/hello", ctx => {
+            ctx.response.text("Hello over TLS!");
+        });
+        server.listenTls("tls_cert.pem", "tls_key.pem");
+        return 1;
+    }
+
+
+    // listenTls() binds AND enters the accept loop in one blocking call, so the
+    // spawned server thread's bind may not have happened yet when we get here —
+    // retry the initial TCP connect instead of coordinating on a signal.
+    fnc dialRetry(port: Int64) -> Int64 {
+        var attempt: Int64 = 0;
+        while attempt < 50 {
+            let fd: Int64 = socketCreateTcp();
+            if socketConnect(fd, "127.0.0.1", port) {
+                return fd;
+            }
+            sleep_ms(20);
+            attempt = attempt + 1;
+        }
+        return -1;
+    }
+
+
+    fnc main() -> Int32 {
+        spawn runServer();
+
+        // --- Positive path: verify=false accepts the self-signed test cert ---
+        let fd: Int64 = dialRetry(47700);
+        if fd < 0 {
+            println("connect fehlgeschlagen");
+            return 1;
+        }
+        let conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        if conn < 0 {
+            println("tls handshake fehlgeschlagen");
+            return 1;
+        }
+        httpConnSendRaw(conn, "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        let resp: String = httpConnReadRequest(conn);
+        if resp.contains("200") {
+            println("ok-status");
+        }
+        if resp.contains("Hello over TLS!") {
+            println("ok-body");
+        }
+        httpConnClose(conn);
+
+        // --- Negative path: verify=true must reject the self-signed cert ---
+        let fd2: Int64 = dialRetry(47700);
+        if fd2 < 0 {
+            println("connect2 fehlgeschlagen");
+            return 1;
+        }
+        let conn2: Int64 = httpConnFromFdTls(fd2, "localhost", true);
+        if conn2 < 0 {
+            println("ok-verify-reject");
+        }
+
+        return 0;
+    }
+}

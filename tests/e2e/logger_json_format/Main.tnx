@@ -1,0 +1,25 @@
+// Regression test for Bug 109: the @Log annotation's synthetic `log`
+// field must be initialized with a Logger whose `name` is the actual
+// annotated class name (a raw hand-written IR call site was missing the
+// hidden `self` argument every generated class function carries,
+// shifting `name` into the wrong argument slot and leaving it null).
+// Also covers TINOX_LOG_JSON=true switching Logger::log's output to a
+// structured JSON line (Logger.tnx / LogRecord.tnx). The timestamp field
+// is non-deterministic, so we check substrings instead of exact lines.
+// expect-contains: "level":"INFO"
+// expect-contains: "logger":"LoggedService"
+// expect-contains: "message":"service doing work"
+
+import tinox.core.env;
+import LoggedService;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        Env::setVar("TINOX_LOG_JSON", "true");
+        let svc: LoggedService = LoggedService::new();
+        LoggedService::doWork(svc);
+        return 0;
+    }
+}

@@ -1,0 +1,98 @@
+// Regressionstest fuer die in bugs.md (Bug 41, "Bewusst noch offen") zuletzt
+// verbliebene Exception-Semantik-Luecke: defer-Scopes, die INNERHALB eines
+// try-Bodys registriert werden, liefen nicht, wenn der Fehler LOKAL (in
+// derselben Funktion) gefangen wurde -- Bug 41 deckte nur das Entweichen
+// aus dem gesamten Frame ab (throw -> ret), nicht den haeufigeren Fall
+// throw -> catch INNERHALB derselben Funktion (br statt ret). Gefixt:
+// Amqp10Link... nein, codegen.rs emittiert jetzt vor jedem Sprung zu einem
+// lokalen catch_bb die defer-Scopes, die seit dem Betreten des zugehoerigen
+// try-Bodys geoeffnet wurden (emit_unwind_defers_to).
+// expect: A2
+// expect: A1
+// expect: A-caught
+// expect: B-inner-defer
+// expect: B-caught
+// expect: B-after-try
+// expect: B-outer-defer
+// expect: C-nested-defer
+// expect: C-try-defer
+// expect: C-caught
+// expect: D-inner-defer
+// expect: D-finally
+// expect: D-outer-caught
+
+class Main
+{
+    fnc risky() -> Nothing {
+        throw "boom";
+    }
+
+
+    // Fall A: mehrere defers im selben Scope -> LIFO (zuletzt registriert,
+    // zuerst ausgefuehrt), auch wenn der Sprung zum catch lokal bleibt.
+    fnc multiDefer() -> Nothing {
+        try {
+            defer { println("A1"); }
+            defer { println("A2"); }
+            risky();
+        } catch e: String {
+            println("A-caught");
+        }
+    }
+
+
+    // Fall B: ein defer VOR dem try (Funktions-Scope) darf NICHT vorzeitig
+    // laufen -- nur der try-interne defer soll vor dem catch laufen, der
+    // aeussere erst am tatsaechlichen Funktionsende.
+    fnc outerDeferNotEarly() -> Nothing {
+        defer { println("B-outer-defer"); }
+        try {
+            defer { println("B-inner-defer"); }
+            risky();
+        } catch e: String {
+            println("B-caught");
+        }
+        println("B-after-try");
+    }
+
+
+    // Fall C: verschachtelte Blocks innerhalb des try -- beide Scopes muessen
+    // vor dem catch laufen, innerster zuerst.
+    fnc nestedBlocks() -> Nothing {
+        try {
+            defer { println("C-try-defer"); }
+            {
+                defer { println("C-nested-defer"); }
+                risky();
+            }
+        } catch e: String {
+            println("C-caught");
+        }
+    }
+
+
+    // Fall D: ein try ohne eigenen catch (nur finally) innerhalb eines
+    // AEUSSEREN try/catch -- defer laeuft VOR finally, finally VOR dem
+    // Re-throw zum aeusseren catch, kein Doppel-Lauf des inneren defers.
+    fnc nestedTryFinally() -> Nothing {
+        try {
+            try {
+                defer { println("D-inner-defer"); }
+                risky();
+            } finally {
+                println("D-finally");
+            }
+        } catch e: String {
+            println("D-outer-caught");
+        }
+    }
+
+
+    fnc main() -> Int32 {
+        multiDefer();
+        outerDeferNotEarly();
+        nestedBlocks();
+        nestedTryFinally();
+        return 0;
+    }
+}

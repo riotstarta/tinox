@@ -1,8 +1,0 @@
-import tinox.core.amqp10;
-import tinox.core.socket;
-
-fn tinoxAmqp10ReadFrame(conn: Int64) -> Int64
-{
-    let f = Amqp10::readFrame(conn);
-    return f.frameType;
-}

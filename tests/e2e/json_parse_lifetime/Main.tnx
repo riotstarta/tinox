@@ -1,0 +1,65 @@
+// Regressionstest fuer den in bugs.md (Bug-24-Fund, "Wichtiger Fund dabei")
+// dokumentierten JSON-Arena-Lifetime-Bug: Json::parse() lieferte JsonValue-
+// Zeiger in einen `__thread`-lokalen Arena-Puffer, dessen "used"-Zaehler
+// bei JEDEM Json::parse()-Aufruf auf 0 zurueckgesetzt wurde -- ein Wert aus
+// einem FRUEHEREN parse()-Aufruf, dessen Referenz laenger lebte (z. B. ein
+// Payload, der aus mehreren einzelnen parse()-Aufrufen zusammengebaut
+// wird, ein Feld pro Aufruf), wurde beim naechsten parse() auf demselben
+// Thread durch neue Allokationen ueberschrieben -- Silent-Garbage
+// (beobachtet als leerer String). Gefixt: JsonValue-Knoten/Map-/String-
+// Daten leben jetzt individuell auf dem normalen GC-Heap statt in einem
+// rewindbaren Arena-Puffer (runtime.c, json_arena_alloc).
+// expect: exp=9999999999
+// expect: sub=hello-world-value-1234567890
+// expect: ok-not-corrupted-string
+// expect: nested=42
+// expect: ok-not-corrupted-object
+// expect: arr-sum=6
+// expect: ok-not-corrupted-array
+
+import tinox.core.json;
+
+class Main
+{
+    fnc main() -> Int32 {
+        // Fall 1: einfacher String-Wert, dessen getString() erst NACH einem
+        // zweiten, unabhaengigen parse()-Aufruf gelesen wird -- exakt das
+        // "decoded[\"sub\"].getString()"-Muster aus dem Originalbefund.
+        let subVal = Json::parse("\"hello-world-value-1234567890\"");
+        let expVal = Json::parse("9999999999");
+        println("exp=" + expVal.getInt().toString());
+        let subStr = subVal.getString();
+        println("sub=" + subStr);
+        if subStr == "hello-world-value-1234567890" {
+            println("ok-not-corrupted-string");
+        }
+
+        // Fall 2: ein Objekt (Map-Knoten + Keys), dessen verschachtelte Felder
+        // erst nach MEHREREN weiteren parse()-Aufrufen gelesen werden.
+        let objVal = Json::parse("{\"inner\": 42, \"tag\": \"keep-me\"}");
+        Json::parse("1");
+        Json::parse("[1,2,3,4,5]");
+        Json::parse("\"throwaway\"");
+        println("nested=" + objVal.getField("inner").getInt().toString());
+        if objVal.getField("tag").getString() == "keep-me" {
+            println("ok-not-corrupted-object");
+        }
+
+        // Fall 3: ein Int-Array (JSON_INT_ARRAY-Fastpath, ebenfalls
+        // arena-basiert), dessen Werte erst nach einem weiteren
+        // parse()-Aufruf gelesen werden.
+        let arrVal = Json::parse("[1, 2, 3]");
+        Json::parse("{\"a\": 1, \"b\": 2, \"c\": 3}");
+        let arr = Json::intArrayFromJson(arrVal);
+        var sum: Int64 = 0;
+        for i in 0..arr.len() {
+            sum = sum + arr[i];
+        }
+        println("arr-sum=" + sum.toString());
+        if sum == 6 {
+            println("ok-not-corrupted-array");
+        }
+
+        return 0;
+    }
+}

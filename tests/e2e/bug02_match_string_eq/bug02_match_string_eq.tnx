@@ -1,0 +1,4 @@
+enum bug02_match_string_eq {
+    Str(String),
+    Num(Int64),
+}

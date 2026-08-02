@@ -296,78 +296,82 @@ namespace tinox.core.amqp091
             httpConnClose(this.conn);
             await this.dispatcherHandle;
         }
-    }
 
-    /*
-     * Hintergrund-Dispatcher (issue #123): liest jeden Frame direkt vom
-     * Socket und routet ihn per chanId an die passende Channel-Inbox
-     * (registriert von AmqpChannel091::open() über
-     * registerChannelInbox()) statt jeden synchronen Aufruf selbst vom
-     * Socket lesen zu lassen — das war der eigentliche Grund, warum
-     * mehrere Channels mit unabhängigem Traffic vorher nicht sicher
-     * waren (s. Klassen-Kommentar oben). chanId==0 (Connection-Level,
-     * z. B. broker-initiiertes connection.close) geht an
-     * connectionInbox.
-     *
-     * Heartbeat-Frames (frameType 8) werden hier abgefangen und NIE
-     * weitergeleitet — ein Seiteneffekt, der einen vorbestehenden,
-     * nie beobachteten Bug schließt: ohne Dispatcher hätte ein
-     * eingehender Heartbeat fälschlich als Antwort auf eine wartende
-     * synchrone Anfrage missinterpretiert werden können.
-     *
-     * Bei EOF/Verbindungsfehler (frameType -1) weckt der Dispatcher
-     * JEDEN aktuell registrierten Wartenden (connectionInbox + jede
-     * Channel-Inbox) mit demselben synthetischen Fehler-Frame auf,
-     * statt sie für immer blockiert zu lassen — ein hängender Reader
-     * sähe sonst wie ein Deadlock aus, nicht wie eine sauber erkannte
-     * geschlossene Verbindung.
-     */
-    async fn amqp091DispatchLoop(connection: AmqpConnection091) -> Int64
-    {
-        while connection.dispatcherRunning {
-            let f = Amqp091::readFrame(connection.conn);
-            if f.frameType == -1 {
-                connection.dispatcherRunning = false;
-                send connection.connectionInbox -> f;
-                for i in 0..connection.channelInboxes.len() {
-                    send connection.channelInboxes[i] -> f;
-                }
-                break;
-            }
-            if f.frameType == 8 {
-                continue;
-            }
-            if f.chanId == 0 {
-                send connection.connectionInbox -> f;
-            } else {
-                for i in 0..connection.channelIds.len() {
-                    if connection.channelIds[i] == f.chanId {
+        /*
+         * Hintergrund-Dispatcher (issue #123): liest jeden Frame direkt vom
+         * Socket und routet ihn per chanId an die passende Channel-Inbox
+         * (registriert von AmqpChannel091::open() über
+         * registerChannelInbox()) statt jeden synchronen Aufruf selbst vom
+         * Socket lesen zu lassen — das war der eigentliche Grund, warum
+         * mehrere Channels mit unabhängigem Traffic vorher nicht sicher
+         * waren (s. Klassen-Kommentar oben). chanId==0 (Connection-Level,
+         * z. B. broker-initiiertes connection.close) geht an
+         * connectionInbox.
+         *
+         * Heartbeat-Frames (frameType 8) werden hier abgefangen und NIE
+         * weitergeleitet — ein Seiteneffekt, der einen vorbestehenden,
+         * nie beobachteten Bug schließt: ohne Dispatcher hätte ein
+         * eingehender Heartbeat fälschlich als Antwort auf eine wartende
+         * synchrone Anfrage missinterpretiert werden können.
+         *
+         * Bei EOF/Verbindungsfehler (frameType -1) weckt der Dispatcher
+         * JEDEN aktuell registrierten Wartenden (connectionInbox + jede
+         * Channel-Inbox) mit demselben synthetischen Fehler-Frame auf,
+         * statt sie für immer blockiert zu lassen — ein hängender Reader
+         * sähe sonst wie ein Deadlock aus, nicht wie eine sauber erkannte
+         * geschlossene Verbindung.
+         *
+         * STATISCHE Methode statt Instanzmethode (seit Issue #149 stage
+         * 3), weil spawn keinen spawnbaren this-gebundenen Methodenaufruf
+         * kennt, nur eine eigenstaendige Funktion oder statische Methode.
+         */
+        async fnc amqp091DispatchLoop(connection: AmqpConnection091) -> Int64
+        {
+            while connection.dispatcherRunning {
+                let f = Amqp091::readFrame(connection.conn);
+                if f.frameType == -1 {
+                    connection.dispatcherRunning = false;
+                    send connection.connectionInbox -> f;
+                    for i in 0..connection.channelInboxes.len() {
                         send connection.channelInboxes[i] -> f;
                     }
+                    break;
                 }
-                // unbekannte chanId (z. B. Race beim Channel-Aufbau) --
-                // Frame verwerfen statt den Dispatcher zu blockieren.
+                if f.frameType == 8 {
+                    continue;
+                }
+                if f.chanId == 0 {
+                    send connection.connectionInbox -> f;
+                } else {
+                    for i in 0..connection.channelIds.len() {
+                        if connection.channelIds[i] == f.chanId {
+                            send connection.channelInboxes[i] -> f;
+                        }
+                    }
+                    // unbekannte chanId (z. B. Race beim Channel-Aufbau) --
+                    // Frame verwerfen statt den Dispatcher zu blockieren.
+                }
             }
+            return 1;
         }
-        return 1;
-    }
 
-    /*
-     * Hintergrund-Schleife fuer AmqpConnection091::startHeartbeat() — als
-     * freie Funktion statt Instanzmethode, weil spawn eine eigenstaendige
-     * Funktion braucht (kein spawnbarer this-gebundener Methodenaufruf);
-     * `conn` ist dieselbe (Referenz-)Instanz wie beim Aufrufer, Mutationen
-     * an conn.heartbeatRunning sind fuer beide Threads sichtbar (Class-
-     * Instanzen sind Heap-Objekte). Identisch zu amqp10HeartbeatLoop.
-     */
-    async fn amqp091HeartbeatLoop(conn: AmqpConnection091, intervalMs: Int64) -> Int64
-    {
-        while conn.heartbeatRunning {
-            sleep_ms(intervalMs);
-            if conn.heartbeatRunning {
-                conn.sendHeartbeat();
+        /*
+         * Hintergrund-Schleife fuer startHeartbeat() — STATISCHE Methode
+         * statt Instanzmethode, aus demselben Grund wie
+         * amqp091DispatchLoop oben; `conn` ist dieselbe (Referenz-)Instanz
+         * wie beim Aufrufer, Mutationen an conn.heartbeatRunning sind fuer
+         * beide Threads sichtbar (Class-Instanzen sind Heap-Objekte).
+         * Identisch zu Amqp10Connection::amqp10HeartbeatLoop.
+         */
+        async fnc amqp091HeartbeatLoop(conn: AmqpConnection091, intervalMs: Int64) -> Int64
+        {
+            while conn.heartbeatRunning {
+                sleep_ms(intervalMs);
+                if conn.heartbeatRunning {
+                    conn.sendHeartbeat();
+                }
             }
+            return 1;
         }
-        return 1;
     }
 }

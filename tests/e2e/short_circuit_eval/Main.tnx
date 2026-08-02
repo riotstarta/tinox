@@ -1,0 +1,48 @@
+// && und || müssen kurzschließen: die RHS läuft nur, wenn die LHS das Ergebnis
+// nicht schon entscheidet. Zuvor emittierte der Codegen `and i1`/`or i1` auf zwei
+// EAGER ausgewerteten Operanden → die RHS lief immer, was jeden Guard brach
+// (`i < len && arr[i]` las out of bounds; `d != 0 && x/d` teilte durch 0).
+// Aufgedeckt durch den neuen Array-Bounds-Check (das Heap-Modul verließ sich auf
+// den Kurzschluss). Zusätzlich: Array-Index und Division sind jetzt bounds-geprüft
+// (harter Fehler statt Müll) — hier die gültigen Pfade.
+// expect: se-skipped-and
+// expect: se-skipped-or
+// expect: guard-protects-oob
+// expect: guard-protects-div0
+// expect: logic-ok
+// expect: valid: 30 3 2
+
+class Main
+{
+    fnc noisy() -> Bool {
+        println("  RHS-LIEF");   // Seiteneffekt: markiert, dass die RHS ausgewertet wurde
+        return true;
+    }
+
+
+    fnc main() -> Int32 {
+        // false && X : X darf nicht laufen (kein "RHS-LIEF")
+        let a: Bool = false && noisy();
+        if a { println("FAIL-and"); } else { println("se-skipped-and"); }
+        // true || X : X darf nicht laufen
+        let b: Bool = true || noisy();
+        if b { println("se-skipped-or"); }
+
+        // Guard schützt vor out-of-bounds Array-Zugriff
+        let xs: List<Int64> = [10, 20, 30];
+        let i: Int64 = 99;
+        if i < xs.len() && xs[i] > 0 { println("FAIL-oob"); } else { println("guard-protects-oob"); }
+
+        // Guard schützt vor Division durch Null
+        let d: Int64 = 0;
+        if d != 0 && (10 / d) > 0 { println("FAIL-div0"); } else { println("guard-protects-div0"); }
+
+        // Boolesche Logik bleibt korrekt (kaskadiert + gemischt)
+        let x: Int64 = 5;
+        if x > 0 && x < 10 && x != 7 && (x < 0 || x == 5) { println("logic-ok"); }
+
+        // gültige bounds-geprüfte Ops
+        println("valid: " + xs[2].toString() + " " + (17 / 5).toString() + " " + (17 % 5).toString());
+        return 0;
+    }
+}

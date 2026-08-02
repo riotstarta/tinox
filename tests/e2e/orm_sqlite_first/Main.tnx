@@ -1,0 +1,21 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Carol', 35);
+// expect: Carol
+// expect: 35
+
+import tinox.core.db;
+
+import orm_sqlite_first;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let u: orm_sqlite_first = DB.of(orm_sqlite_first)
+            .filter(u => u.name == "Carol")
+            .first();
+        println(u.name);
+        println(u.age);
+        return 0;
+    }
+}

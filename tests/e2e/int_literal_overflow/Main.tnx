@@ -1,0 +1,28 @@
+// Ganzzahl-/Float-Literale, die den Wertebereich überschreiten, waren zuvor
+// silent garbage: der Lexer machte via unwrap_or(0) still eine 0 daraus (Bug 51).
+// Dieser Test prüft die legitime Seite — dass gültige Grenz- und Basis-Literale
+// (i64-max, hex, binär, oktal, Underscores, Float, Suffix, i64::MIN+1) korrekt
+// lexen und rechnen. Die Overflow-Ablehnung selbst wird via Fuzz/Unit geprüft
+// (ein e2e-Test kann keinen erwarteten Compile-Fehler ausdrücken).
+// expect: 9223372036854775807
+// expect: 255
+// expect: 10
+// expect: 493
+// expect: 1000000
+// expect: -9223372036854775807
+// expect: 3.14
+
+class Main
+{
+    fnc main() -> Int32 {
+        println((9223372036854775807).toString());   // i64-max
+        println((0xFF).toString());                    // hex -> 255
+        println((0b1010).toString());                  // binaer -> 10
+        println((0o755).toString());                   // oktal -> 493
+        println((1_000_000).toString());               // underscores
+        println((-9223372036854775807).toString());    // i64::MIN+1
+        let f: Float64 = 3.14f64;                       // float mit Suffix
+        println(f.toString());
+        return 0;
+    }
+}

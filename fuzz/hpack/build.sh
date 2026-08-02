@@ -17,17 +17,17 @@ if [ ! -x "$TINOX_BIN" ]; then
     exit 1
 fi
 
-# hpack_driver.tnx imports the real crates/tinox-core/hpack/*.tnx module
+# HpackDriver.tnx imports the real crates/tinox-core/hpack/*.tnx module
 # (no copy of the parsing logic) and adds a one-line tinoxHpackDecode(List<Int64>)
 # wrapper. `tinox build` always tries to link a full executable and fails
 # here because the driver has no main()/tinox_main — that failure is
 # expected and harmless, we only need the driver_out.ll it leaves behind
 # before the failing final link step.
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
-"$TINOX_BIN" build hpack_driver.tnx -o driver_out >/dev/null 2>&1 || true
+"$TINOX_BIN" build HpackDriver.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then
-    echo "tinox build did not produce driver_out.ll — compile error in hpack_driver.tnx?" >&2
-    "$TINOX_BIN" build hpack_driver.tnx -o driver_out
+    echo "tinox build did not produce driver_out.ll — compile error in HpackDriver.tnx?" >&2
+    "$TINOX_BIN" build HpackDriver.tnx -o driver_out
     exit 1
 fi
 
@@ -43,7 +43,7 @@ clang -c "$RUNTIME_C" -o runtime_fuzz.o \
     -fsanitize=fuzzer-no-link,address -g -O1
 
 clang++ -fsanitize=fuzzer,address hpack_fuzzer.cc driver_instrumented.o runtime_fuzz.o \
-    -o "$OUT" -lm -lpthread
+    -o "$OUT" -lm -lpthread -lz
 
 rm -f driver_out.ll driver_out.o driver_out_runtime.o driver_instrumented.o runtime_fuzz.o
 echo "built fuzz/hpack/$OUT"

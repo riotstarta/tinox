@@ -19,52 +19,56 @@ import tinox.core.http3_server;
 import tinox.core.json;
 import Task;
 
-fn findTaskIndex(tasks: List<Task>, id: Int64) -> Int64
-{
-    var i: Int64 = 0;
-    while i < tasks.len()
-    {
-        if tasks[i].id == id
-        {
-            return i;
-        }
-        i = i + 1;
-    }
-    return -1;
-}
-
-fn nextTaskId(tasks: List<Task>) -> Int64
-{
-    var maxId: Int64 = 0;
-    var i: Int64 = 0;
-    while i < tasks.len()
-    {
-        if tasks[i].id > maxId
-        {
-            maxId = tasks[i].id;
-        }
-        i = i + 1;
-    }
-    return maxId + 1;
-}
-
-fn removeTaskAt(tasks: List<Task>, index: Int64) -> Nothing
-{
-    var i: Int64 = index;
-    while i < tasks.len() - 1
-    {
-        tasks[i] = tasks[i + 1];
-        i = i + 1;
-    }
-    tasks.pop();
-}
-
 @ApplicationComponent
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
     var tasks: List<Task>;
     var initialized: Bool;
+
+    // Issue #149 stage 2: these three were free top-level functions;
+    // now static `fnc` siblings, called bare from the instance methods
+    // below exactly as before (resolved via check_call's same-class
+    // fallback, not `this.` -- they don't need a TaskController receiver).
+    fnc findTaskIndex(tasks: List<Task>, id: Int64) -> Int64
+    {
+        var i: Int64 = 0;
+        while i < tasks.len()
+        {
+            if tasks[i].id == id
+            {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fnc nextTaskId(tasks: List<Task>) -> Int64
+    {
+        var maxId: Int64 = 0;
+        var i: Int64 = 0;
+        while i < tasks.len()
+        {
+            if tasks[i].id > maxId
+            {
+                maxId = tasks[i].id;
+            }
+            i = i + 1;
+        }
+        return maxId + 1;
+    }
+
+    fnc removeTaskAt(tasks: List<Task>, index: Int64) -> Nothing
+    {
+        var i: Int64 = index;
+        while i < tasks.len() - 1
+        {
+            tasks[i] = tasks[i + 1];
+            i = i + 1;
+        }
+        tasks.pop();
+    }
 
     fn ensureInit() -> Nothing
     {

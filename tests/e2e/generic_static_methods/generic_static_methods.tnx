@@ -1,0 +1,5 @@
+@JsonSerializable
+class generic_static_methods {
+    var id: Int64;
+    var name: String;
+}

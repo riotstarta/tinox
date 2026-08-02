@@ -201,21 +201,28 @@ fn generate(shard: usize) -> PathBuf {
     for (name, gen) in PROPERTIES {
         // Pro Property eigener, vom Namen abhängiger Seed-Strom
         let mut rng = Rng(seed() ^ name.bytes().map(u64::from).sum::<u64>().wrapping_mul(0x9E3779B9));
-        let mut body = String::from("fn main() -> Int32 {\n");
+        // Issue #149 stage 3: no top-level `fn` allowed anymore -- wrap in
+        // the fixed `class Main { fnc main() -> Int32 }` entry-point shape.
+        let mut body = String::from("class Main {\n    fnc main() -> Int32 {\n");
         let mut expects = Vec::new();
         for i in 0..INSTANCES_PER_PROPERTY {
             let (stmts, exp) = gen(&mut rng, i);
             body.push_str(&stmts);
             expects.extend(exp);
         }
-        body.push_str("    return 0;\n}\n");
+        body.push_str("    return 0;\n    }\n}\n");
         let mut src = String::new();
         for e in &expects {
             src.push_str(&format!("// expect: {e}\n"));
         }
         src.push('\n');
         src.push_str(&body);
-        fs::write(dir.join(format!("prop_{name}.tnx")), src).expect("write case");
+        // `class Main` requires the file to be named exactly `Main.tnx`
+        // (one-class-per-file) -- each property gets its own subdirectory,
+        // same convention e2e.rs uses for directory cases.
+        let case_dir = dir.join(format!("prop_{name}"));
+        fs::create_dir_all(&case_dir).expect("mkdir case dir");
+        fs::write(case_dir.join("Main.tnx"), src).expect("write case");
     }
     dir
 }
@@ -226,8 +233,8 @@ fn run_shard(shard: usize, num_shards: usize) {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
-        .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        .filter(|p| p.is_dir())
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
     names.sort();
 
@@ -236,7 +243,12 @@ fn run_shard(shard: usize, num_shards: usize) {
         if i % num_shards != shard {
             continue;
         }
-        let case = parse_case(&dir.join(format!("{name}.tnx")));
+        // `parse_case` sets `case.name` from the file stem ("Main") --
+        // override back to the unique per-case name, same reason as
+        // stdlib_smoke.rs/boundary.rs (workdir/output-binary collision
+        // across concurrently-run cases otherwise).
+        let mut case = parse_case(&dir.join(name).join("Main.tnx"));
+        case.name = name.clone();
         if let Err(msg) = run_case(&case) {
             failures.push(format!("== {name} (Seed {}) ==\n{msg}", seed()));
         }

@@ -1,0 +1,11 @@
+@Entity
+@Table("products")
+class orm_sqlite_count
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("price")
+    var price: Int64;
+}

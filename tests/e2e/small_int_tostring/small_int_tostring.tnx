@@ -1,0 +1,1 @@
+class small_int_tostring { var n: Int32; }

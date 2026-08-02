@@ -91,6 +91,32 @@ void tinox_free(void* ptr) {
     GC_free(ptr);
 }
 
+// Bug 140: `malloc`/`calloc`/`realloc`/`free` are macro-redirected to
+// GC_malloc/GC_realloc/GC_free above, so essentially every heap pointer this
+// runtime holds -- including the many `static __thread` buffers reused
+// across requests (recv/response/wrap buffers, the per-thread HttpContext-
+// faking arrays and their TinoxMaps, the thrown-error slot) -- lives on the
+// GC heap. Boehm's conservative collector scans the registered stack of
+// each known thread plus the process's static data/BSS segments as roots,
+// but does NOT automatically scan `__thread` (ELF TLS) storage: a TLS
+// block is allocated by the dynamic linker/pthread machinery in its own
+// region, separate from the regular static data segment GC_INIT()
+// discovers. Any GC pointer reachable ONLY via a `__thread` variable is
+// therefore invisible to the collector's root scan and can be collected
+// out from under a thread that is still actively using it -- confirmed via
+// a minimal repro (an allocation-heavy handler under `tinox_HttpServer_
+// listen`'s epoll worker threads) that crashed inside GC-managed memory
+// after a handful of requests with a stale/reused pointer, and which
+// survived 400+ requests once these TLS roots were registered explicitly.
+// `GC_add_roots()` on a `__thread` variable only covers the CALLING
+// thread's TLS slot, so this must run once per thread (guarded by a
+// per-thread flag) on EVERY thread that can execute Tinox code: the main
+// thread, every `spawn`-created thread, and every HTTP worker thread. The
+// function body is defined further down (after every `__thread` variable
+// it registers has been declared); this forward declaration lets the
+// earlier call sites (tinox_task_spawn, main) reference it.
+static void tinox_gc_register_thread_roots(void);
+
 // Print functions
 void tinox_print_int(int64_t val) {
     printf("%ld", val);
@@ -624,9 +650,29 @@ typedef struct {
     pthread_cond_t  cond;
 } TinoxChannel;
 
+typedef struct {
+    void* (*fn)(void*);
+    void* args;
+} TinoxSpawnTrampolineArgs;
+
+// Registers this new thread's GC TLS roots (Bug 140) before running the
+// actual spawned closure body -- `fn` is compiler-generated code with no
+// opportunity to call tinox_gc_register_thread_roots() itself.
+static void* tinox_spawn_trampoline(void* raw) {
+    TinoxSpawnTrampolineArgs* t = (TinoxSpawnTrampolineArgs*)raw;
+    tinox_gc_register_thread_roots();
+    void* (*fn)(void*) = t->fn;
+    void* args = t->args;
+    free(t);
+    return fn(args);
+}
+
 void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     TinoxTask* task = malloc(sizeof(TinoxTask));
-    pthread_create(&task->thread, NULL, fn, args);
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
+    t->fn = fn;
+    t->args = args;
+    pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
     return task;
 }
 
@@ -4383,6 +4429,7 @@ static TinoxMap* make_static_map(TinoxMap* m, size_t cap) {
 }
 
 static void thread_local_init(void) {
+    tinox_gc_register_thread_roots(); // Bug 140 -- see definition near main()
     if (g_thread_inited) return;
     g_resp_cap = 4096; g_resp_buf = (char*)malloc(g_resp_cap);
     make_static_map(&g_req_headers_map,  16);
@@ -4617,7 +4664,14 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
     struct epoll_event events[64];
 
     while (1) {
-        int n = epoll_wait(epfd, events, 64, 50); // 50ms timeout for stale-connection scan
+        // EINTR-Retry (Bug 68/140 discipline, s. conn_recv/conn_send): a
+        // blocking epoll_wait can be interrupted by the GC's SIGPWR stop-
+        // the-world signal like any other blocking syscall -- without a
+        // retry, a spurious EINTR here was previously indistinguishable
+        // from "no events fired", silently skipping this wakeup instead of
+        // properly retrying it.
+        int n;
+        do { n = epoll_wait(epfd, events, 64, 50); } while (n < 0 && errno == EINTR); // 50ms timeout for stale-connection scan
 
         uint64_t now_ms = epoll_now_ms();
 
@@ -6158,8 +6212,34 @@ extern int64_t tinox_main(void);
 // IR uebereinstimmen (codegen.rs), sonst TLS-Relocation-Mismatch beim Linken.
 extern __thread int64_t __tinox_err;
 
+// Definition of the function forward-declared near tinox_alloc/tinox_free
+// above (Bug 140) -- placed here, after every `__thread` variable it
+// registers has been declared. `GC_add_roots` on a `__thread` variable
+// only adds the CALLING thread's TLS slot, so this must run once per
+// thread (the `registered` guard below is itself `__thread`, so each
+// thread gets its own independent one-shot check).
+static void tinox_gc_register_thread_roots(void) {
+    static __thread int registered = 0;
+    if (registered) return;
+    registered = 1;
+#define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1)
+    TINOX_GC_ROOT(_tinox_http_req_headers);
+    TINOX_GC_ROOT(g_recv_buf);
+    TINOX_GC_ROOT(g_resp_buf);
+    TINOX_GC_ROOT(g_wrap_buf);
+    TINOX_GC_ROOT(g_response);
+    TINOX_GC_ROOT(g_request);
+    TINOX_GC_ROOT(g_ctx);
+    TINOX_GC_ROOT(g_req_headers_map);
+    TINOX_GC_ROOT(g_resp_headers_map);
+    TINOX_GC_ROOT(g_path_params_map);
+    TINOX_GC_ROOT(__tinox_err);
+#undef TINOX_GC_ROOT
+}
+
 int main(int argc, char** argv) {
     GC_INIT();
+    tinox_gc_register_thread_roots();
     // stdout is fully buffered (~4KB) by default when not attached to a
     // TTY (e.g. piped to `docker logs`, `journalctl`, `tee`, a log
     // aggregator). For long-running processes that print periodically

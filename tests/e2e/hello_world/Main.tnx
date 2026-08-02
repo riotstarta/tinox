@@ -1,0 +1,10 @@
+// expect: Hello, World!
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("Hello, World!");
+        return 0;
+    }
+}

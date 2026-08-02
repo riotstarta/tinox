@@ -1,0 +1,195 @@
+// Issue 82: AMQP 1.0 heartbeat (empty frame) / auto-reconnect. Muster wie
+// amqp10_connection_session_link.tnx (simulierter Broker per spawn).
+// expect: ok-idletimeout
+// expect: ok-heartbeat-tolerant-nextmessage
+// expect: ok-client-proposed-idletimeout-and-sent-heartbeats
+// expect: ok-reconnect
+
+import tinox.core.amqp10;
+import tinox.core.socket;
+
+class Main
+{
+
+    async fnc heartbeatBroker(srv: Int64) -> Int64 {
+        let sconn = httpServerAcceptConnHandle(srv);
+
+        // --- SASL ---
+        httpConnReadN(sconn, 8);
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
+        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        Amqp10::writeFrame(sconn, 1, 0, mechBody);
+        Amqp10::readFrame(sconn);
+        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+
+        // --- AMQP header ---
+        httpConnReadN(sconn, 8);
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+
+        // --- open / open-ok: broker advertises idle-time-out=4000ms, checks
+        // the client proposed its fixed 30000ms (Amqp10Connection::connect). ---
+        let fOpen = Amqp10::readFrame(sconn);
+        let pOpen = Amqp10::decodePerformative(fOpen.body);
+        var clientProposedIdle: Int64 = -1;
+        if pOpen.fields.len() > 4 {
+            match pOpen.fields[4] { UIntVal(n) => { clientProposedIdle = n; } _ => {} }
+        }
+        var openFields: List<Amqp10Value> = [
+            Amqp10Value::StrVal("fake-broker"),
+            Amqp10Value::NullVal,
+            Amqp10Value::UIntVal(131072),
+            Amqp10Value::UShortVal(2047),
+            Amqp10Value::UIntVal(4000)
+        ];
+        let openOkBody = Amqp10::encodePerformative(0x10, openFields);
+        Amqp10::writeFrame(sconn, 0, 0, openOkBody);
+
+        // --- begin / begin-ok ---
+        let fBegin = Amqp10::readFrame(sconn);
+        var beginFields: List<Amqp10Value> = [
+            Amqp10Value::UShortVal(fBegin.chanId),
+            Amqp10Value::UIntVal(0),
+            Amqp10Value::UIntVal(2147483647),
+            Amqp10Value::UIntVal(2147483647)
+        ];
+        let beginOkBody = Amqp10::encodePerformative(0x11, beginFields);
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, beginOkBody);
+
+        // --- attach / attach-ok (client attaches as receiver) ---
+        let fAttach = Amqp10::readFrame(sconn);
+        let pAttach = Amqp10::decodePerformative(fAttach.body);
+        let attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields);
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, attachOkBody);
+
+        // --- Scenario A: send TWO heartbeats (empty frames), then a real
+        // transfer — Amqp10Link::nextMessage() must skip the heartbeats
+        // transparently and still return the real message. ---
+        Amqp10::writeFrame(sconn, 0, 0, []);
+        Amqp10::writeFrame(sconn, 0, 0, []);
+        let msgBody = Amqp10::encodeMessageBody([72, 105], "text/plain"); // "Hi"
+        var transferFields: List<Amqp10Value> = [
+            Amqp10Value::UIntVal(0),
+            Amqp10Value::UIntVal(0),
+            Amqp10Value::BinaryVal([0, 0, 0, 1]),
+            Amqp10Value::UIntVal(0),
+            Amqp10Value::BoolVal(true),
+            Amqp10Value::BoolVal(false)
+        ];
+        let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+        var fullFrame: List<Int64> = [];
+        for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
+        for i in 0..msgBody.len() { fullFrame.push(msgBody[i]); }
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, fullFrame);
+
+        // --- Scenario B: the client started a background heartbeat sender
+        // (fast interval) — read frames until we've seen 2 heartbeats coming
+        // FROM the client (nothing else is sent during this window). ---
+        var heartbeatsSeen: Int64 = 0;
+        while heartbeatsSeen < 2 {
+            let f = Amqp10::readFrame(sconn);
+            if f.frameType < 0 {
+                break;
+            }
+            if f.body.len() == 0 {
+                heartbeatsSeen = heartbeatsSeen + 1;
+            }
+        }
+
+        httpConnClose(sconn);
+
+        var result: Int64 = 0;
+        if clientProposedIdle == 30000 {
+            if heartbeatsSeen >= 2 {
+                result = 1;
+            }
+        }
+        return result;
+    }
+
+
+
+    async fnc reconnectBroker(srv: Int64) -> Int64 {
+        let sconn = httpServerAcceptConnHandle(srv);
+        httpConnReadN(sconn, 8);
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
+        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        Amqp10::writeFrame(sconn, 1, 0, mechBody);
+        Amqp10::readFrame(sconn);
+        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+        httpConnReadN(sconn, 8);
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        Amqp10::readFrame(sconn);
+        let openOkBody = Amqp10::encodePerformative(0x10, [Amqp10Value::StrVal("fake-broker-2")]);
+        Amqp10::writeFrame(sconn, 0, 0, openOkBody);
+        Amqp10::readFrame(sconn);
+        let closeOkBody = Amqp10::encodePerformative(0x18, []);
+        Amqp10::writeFrame(sconn, 0, 0, closeOkBody);
+        httpConnClose(sconn);
+        return 1;
+    }
+
+
+    fnc main() -> Int32 {
+        let srv = httpServerCreate(47711);
+        if srv < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle = spawn heartbeatBroker(srv);
+
+        let conn = Amqp10Connection::connect("127.0.0.1", 47711, "guest", "guest");
+        if conn.conn <= 0 {
+            println("connect fehlgeschlagen: " + conn.errorMessage);
+            return 1;
+        }
+        if conn.idleTimeoutMs == 4000 {
+            println("ok-idletimeout");
+        }
+
+        let session = Amqp10Session::begin(conn);
+        let link = Amqp10Link::attach(session, "hb-test-link", true, "test-queue");
+        link.grantCredit(10);
+
+        // Fast interval (50ms) so Scenario B finishes quickly in the test.
+        conn.startHeartbeat(50);
+
+        let msg = link.nextMessage();
+        if msg.ok {
+            if msg.body.len() == 2 {
+                println("ok-heartbeat-tolerant-nextmessage");
+            }
+        } else {
+            println("nextMessage fehlgeschlagen: " + msg.errorMessage);
+        }
+
+        let brokerOk = await handle;
+        conn.stopHeartbeat();
+        if brokerOk == 1 {
+            println("ok-client-proposed-idletimeout-and-sent-heartbeats");
+        }
+
+        conn.close();
+        httpServerClose(srv);
+
+        // --- Reconnect: rebuild using the SAME stored host/port/user/pass
+        // (SO_REUSEADDR lets the fresh listen socket reuse the just-closed
+        // port immediately). ---
+        let srv2 = httpServerCreate(47711);
+        if srv2 < 0 {
+            println("srv2 bind fehlgeschlagen");
+            return 1;
+        }
+        let handle2 = spawn reconnectBroker(srv2);
+        let conn2 = conn.reconnect();
+        await handle2;
+        if conn2.conn > 0 {
+            println("ok-reconnect");
+        }
+        conn2.close();
+        httpServerClose(srv2);
+
+        return 0;
+    }
+}

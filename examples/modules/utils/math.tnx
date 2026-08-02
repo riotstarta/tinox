@@ -1,4 +1,0 @@
-fn square(x: Int64) -> Int64
-{
-    return x * x;
-}

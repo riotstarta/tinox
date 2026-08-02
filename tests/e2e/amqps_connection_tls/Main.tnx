@@ -1,0 +1,104 @@
+// Issue 73: AMQPS (AmqpConnection091::connectTls) was only verified manually
+// (live against RabbitMQ) so far. Automates the TLS layer itself against the
+// shared self-signed test cert (tests/fixtures/tls, copied into the workdir
+// by the harness via `// tls-fixture`) using the same simulated-broker
+// pattern as amqp_connection_negotiation.tnx, just with the accept step
+// swapped from httpServerAcceptConnHandle to httpServerAcceptTls: positive
+// path (verify=false) completes the full connection.start/-ok/tune/-ok/open/
+// -ok handshake over TLS; negative path (verify=true) must correctly reject
+// the same self-signed cert.
+// expect-contains: ok-connect
+// expect-contains: ok-framemax
+// expect-contains: ok-verify-reject
+// tls-fixture
+
+import tinox.core.amqp091;
+import tinox.core.socket;
+
+class Main
+{
+
+    async fnc fakeBrokerTls(srv: Int64) -> Int64 {
+        let sconn = httpServerAcceptTls(srv);
+        if sconn <= 0 {
+            return 0;
+        }
+        httpConnReadN(sconn, 8); // Protokoll-Header, s. amqp10_phase1_handshake.tnx
+
+        let w1 = AmqpWriter091::new();
+        w1.octet(0);
+        w1.octet(9);
+        var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
+        w1.fieldTable(emptyProps);
+        w1.longstr("PLAIN");
+        w1.longstr("en_US");
+        let startPayload = Amqp091::encodeMethodPayload(10, 10, w1.bytes);
+        Amqp091::writeFrame(sconn, 1, 0, startPayload);
+
+        let f1 = Amqp091::readFrame(sconn);
+        Amqp091::decodeMethodPayload(f1.payload); // start-ok, ungeprueft (Positivpfad reicht hier)
+
+        let w2 = AmqpWriter091::new();
+        w2.short(2047);
+        w2.long(131072);
+        w2.short(60);
+        let tunePayload = Amqp091::encodeMethodPayload(10, 30, w2.bytes);
+        Amqp091::writeFrame(sconn, 1, 0, tunePayload);
+
+        Amqp091::readFrame(sconn); // tune-ok
+        Amqp091::readFrame(sconn); // connection.open
+
+        let w3 = AmqpWriter091::new();
+        w3.shortstr("");
+        let openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
+        Amqp091::writeFrame(sconn, 1, 0, openOkPayload);
+
+        httpConnClose(sconn);
+        return 1;
+    }
+
+
+
+    // httpServerAcceptTls() is one-shot (unlike HttpServer::listenTls's own
+    // accept-loop) — the negative-path connection needs its own spawned accept,
+    // otherwise the client's TLS handshake blocks forever waiting for a server
+    // that never calls accept() at all (same lesson as wss_server_tls.tnx).
+    async fnc acceptRejected(srv: Int64) -> Int64 {
+        return httpServerAcceptTls(srv);
+    }
+
+
+    fnc main() -> Int32 {
+        let srv = httpServerCreateTls(47705, "tls_cert.pem", "tls_key.pem");
+        if srv < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle = spawn fakeBrokerTls(srv);
+
+        // --- Positive path: verify=false accepts the self-signed test cert ---
+        let c = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", false);
+        let brokerOk = await handle;
+
+        if c.conn > 0 {
+            println("ok-connect");
+        }
+        if c.frameMax == 131072 {
+            println("ok-framemax");
+        }
+        if brokerOk != 1 {
+            println("broker-fehler: " + c.errorMessage);
+        }
+
+        // --- Negative path: verify=true must reject the self-signed cert ---
+        let handle2 = spawn acceptRejected(srv);
+        let c2 = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", true);
+        if c2.conn <= 0 {
+            println("ok-verify-reject");
+        }
+        await handle2;
+
+        httpServerClose(srv);
+        return 0;
+    }
+}

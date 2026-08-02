@@ -1,0 +1,50 @@
+// WebSocket-Echo-Server über TLS (wss://).
+// OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig:
+//   tinox run examples/wss_echo.tnx
+// (Opt-out per TINOX_TLS=0, falls kein OpenSSL zum Bauen verfügbar ist.)
+// Selbstsigniertes Testzertifikat erzeugen:
+//   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+//     -days 1 -nodes -subj "/CN=localhost"
+// Test: Browser-Konsole (Zertifikat vorher als vertrauenswürdig akzeptieren)
+//         s = new WebSocket("wss://localhost:8791");
+//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hallo");
+// Bedient eine Verbindung nach der anderen (blocking, v1 — wie ws_echo.tnx).
+
+import tinox.core.websocket;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
+        if srv < 0 {
+            println("listenTls fehlgeschlagen (Port belegt, Runtime mit TINOX_TLS=0 gebaut, oder cert.pem/key.pem fehlen/ungueltig)");
+            return 1;
+        }
+        println("wss://localhost:8791 bereit");
+        while true {
+            let conn = WsServer::acceptTls(srv);
+            if conn <= 0 {
+                continue;
+            }
+            println("Client verbunden");
+            while true {
+                let f = Ws::readMessage(conn);
+                if f.opcode == 1 {
+                    let msg = Ws::text(f);
+                    println("empfangen: " + msg);
+                    Ws::sendText(conn, "echo: " + msg);
+                    continue;
+                }
+                if f.opcode == 2 {
+                    Ws::sendBinary(conn, f.payload);
+                    continue;
+                }
+                // Close (8), EOF (-1) oder Protokollfehler (-2): Verbindung beenden
+                break;
+            }
+            Ws::close(conn);
+            println("Client getrennt");
+        }
+        return 0;
+    }
+}

@@ -158,7 +158,7 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         "let_ann" => (String::new(), format!("let v: {t} = {lit};"), "v".into()),
         // var, danach Neuzuweisung aus Funktionsergebnis
         "var_reassign" => (
-            format!("fn make() -> {t} {{\n    return {lit};\n}}\n"),
+            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             format!("var v: {t} = {other};\n    v = make();"),
             "v".into(),
         ),
@@ -171,13 +171,13 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         ),
         // let aus Funktionsrückgabe
         "let_from_fn" => (
-            format!("fn make() -> {t} {{\n    return {lit};\n}}\n"),
+            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             "let v = make();".to_string(),
             "v".into(),
         ),
         // Operation direkt auf dem Call-Ausdruck
         "ret_direct" => (
-            format!("fn make() -> {t} {{\n    return {lit};\n}}\n"),
+            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             String::new(),
             "make()".into(),
         ),
@@ -189,7 +189,7 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         ),
         // Element einer Liste aus Funktionsrückgabe
         "list_elem_fn" => (
-            format!("fn makeList() -> List<{t}> {{\n    return [{lit}];\n}}\n"),
+            format!("fnc makeList() -> List<{t}> {{\n    return [{lit}];\n}}\n"),
             "let xs = makeList();".to_string(),
             "xs[0]".into(),
         ),
@@ -231,13 +231,22 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         // Typen mit eigener Präambel (Klassen) sind ausgenommen — die Klasse
         // kann nicht in beiden Modulen deklariert sein (Cross-Modul-Klassen
         // deckt bug06 ab).
+        // Issue #149 stage 3: mk_X() is now a static method of `class
+        // MatrixMod` (no top-level free `fn` allowed anymore), called
+        // qualified -- still exercises a cross-module call, just through
+        // the only form left instead of the old bare-name one. `MatrixMod`
+        // is imported by its short sibling name because generate_all
+        // copies `MatrixMod.tnx` into every cross_module case's own
+        // directory (imports resolve relative to the importing file's own
+        // directory, no parent-relative import exists to reach a single
+        // shared copy elsewhere -- same reasoning as examples/modules).
         "cross_module" => {
             if !ty.prelude.is_empty() {
                 return None;
             }
             (
-                "import _matrix_mod;\n".to_string(),
-                format!("let v = mk_{}();", ty.key),
+                "import MatrixMod;\n".to_string(),
+                format!("let v = MatrixMod::mk_{}();", ty.key),
                 "v".into(),
             )
         }
@@ -264,8 +273,12 @@ const CONTEXTS: &[&str] = &[
 ];
 
 /// Returns (case name, type prelude class/enum or "", context prelude
-/// class/enum or "", driver script with expects + body).
-fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String)> {
+/// class/enum or "", expect-comment block, class-body text (issue #149
+/// stage 3: always `fnc`-based now, always ends up inside `class Main` --
+/// see `generate_all`, which does the actual wrapping since it also needs
+/// to interleave any function-shaped `prelude`/`ty.prelude` into the same
+/// class body).
+fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String, String)> {
     let (prelude, setup, vexpr) = apply_context(ctx, ty)?;
     let name = format!("matrix_{}_{}", ty.key, ctx);
 
@@ -282,14 +295,14 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
     let body = match ctx {
         // Ops laufen in einer eigenen Funktion mit Typ-Parameter
         "param" => format!(
-            "fn useIt(v: {t}) -> Nothing {{\n{ops}}}\n\nfn main() -> Int32 {{\n    useIt({lit});\n    return 0;\n}}",
+            "fnc useIt(v: {t}) -> Nothing {{\n{ops}}}\n\nfnc main() -> Int32 {{\n    useIt({lit});\n    return 0;\n}}",
             t = ty.tnx,
             ops = op_stmts,
             lit = ty.lit
         ),
         // Ops laufen im Match-Arm
         "match_payload" => format!(
-            "fn main() -> Int32 {{\n    {setup}\n    match b {{\n        Val(v) => {{\n{ops}        }}\n        _ => println(\"none\");\n    }}\n    return 0;\n}}",
+            "fnc main() -> Int32 {{\n    {setup}\n    match b {{\n        Val(v) => {{\n{ops}        }}\n        _ => println(\"none\");\n    }}\n    return 0;\n}}",
             setup = setup,
             ops = op_stmts
                 .lines()
@@ -298,7 +311,7 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
         ),
         // Ops laufen im Schleifenkörper
         "loop_var" => format!(
-            "fn main() -> Int32 {{\n    {setup}\n    for v in xs {{\n{ops}    }}\n    return 0;\n}}",
+            "fnc main() -> Int32 {{\n    {setup}\n    for v in xs {{\n{ops}    }}\n    return 0;\n}}",
             setup = setup,
             ops = op_stmts
                 .lines()
@@ -311,23 +324,20 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
             } else {
                 format!("    {setup}\n")
             };
-            format!("fn main() -> Int32 {{\n{setup_line}{op_stmts}    return 0;\n}}")
+            format!("fnc main() -> Int32 {{\n{setup_line}{op_stmts}    return 0;\n}}")
         }
     };
 
-    let mut driver = String::new();
+    let mut expects_block = String::new();
     for e in &expects {
-        driver.push_str(&format!("// expect: {e}\n"));
+        expects_block.push_str(&format!("// expect: {e}\n"));
     }
-    driver.push('\n');
-    driver.push_str(&body);
-    driver.push('\n');
 
     // ty.prelude / prelude are always exactly one `class`/`enum Name { ... }`
     // declaration (see TYPES/apply_context above) — one-type-per-file means
     // each needs its own `<Name>.tnx` instead of being pasted into the
-    // driver script alongside `fn main`.
-    Some((name, ty.prelude.to_string(), prelude, driver))
+    // driver script alongside `class Main`.
+    Some((name, ty.prelude.to_string(), prelude, expects_block, body))
 }
 
 /// Extracts the declared type name from a generated `class Name { ... }` /
@@ -345,16 +355,20 @@ fn prelude_type_name(prelude: &str) -> Option<&str> {
         .and_then(|rest| rest.split_whitespace().next())
 }
 
+/// Issue #149 stage 3: `mk_X` used to be free top-level functions; now
+/// static methods of a single `class MatrixMod`, called qualified
+/// (`MatrixMod::mk_X()`, see the "cross_module" context above).
 fn helper_module() -> String {
-    let mut s = String::from("module matrixmod;\n\n");
+    let mut s = String::from("class MatrixMod\n{\n");
     for ty in TYPES.iter().filter(|t| t.prelude.is_empty()) {
         s.push_str(&format!(
-            "fn mk_{key}() -> {t} {{\n    return {lit};\n}}\n\n",
+            "    fnc mk_{key}() -> {t} {{\n        return {lit};\n    }}\n\n",
             key = ty.key,
             t = ty.tnx,
             lit = ty.lit
         ));
     }
+    s.push_str("}\n");
     s
 }
 
@@ -364,13 +378,23 @@ fn generate_all(shard: usize) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tinox-matrix-{}-{shard}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir matrix dir");
-    fs::write(dir.join("_matrix_mod.tnx"), helper_module()).expect("write helper");
+    // Issue #149 stage 3: `class MatrixMod` must live in a file named
+    // exactly `MatrixMod.tnx` (one-class-per-file); every case now lives in
+    // its own subdirectory (see below), and imports resolve relative to
+    // the importing file's own directory only (no parent-relative import
+    // exists) — so instead of one shared copy at the shard root (the old
+    // flat `_matrix_mod.tnx` layout), a copy gets written into each
+    // "cross_module" case's own directory as a plain sibling of `Main.tnx`,
+    // same duplication trade-off as examples/modules/*_example/.
+    let matrixmod_src = helper_module();
     for ty in TYPES {
         for ctx in CONTEXTS {
-            if let Some((name, ty_prelude, ctx_prelude, driver)) = emit_case(ctx, ty) {
+            if let Some((name, ty_prelude, ctx_prelude, expects_block, body)) = emit_case(ctx, ty) {
                 // Split preludes into actual types (need their own file) vs.
-                // anything else (a free `fn make()`, `import _matrix_mod;` —
-                // no type-per-file constraint, stays inline in the driver).
+                // anything else (a free `fnc make()`, `import
+                // _matrixmod.MatrixMod;` — no type-per-file constraint,
+                // stays inline as either a header import or a sibling
+                // class-body member, see below).
                 let mut type_preludes: Vec<(&str, &str)> = Vec::new();
                 let mut inline_prelude = String::new();
                 for p in [&ty_prelude, &ctx_prelude] {
@@ -385,44 +409,62 @@ fn generate_all(shard: usize) -> PathBuf {
                         }
                     }
                 }
-
-                if type_preludes.is_empty() {
-                    // No class/enum needed — a plain 0-type script, stays a
-                    // flat file exactly as before.
-                    fs::write(dir.join(format!("{name}.tnx")), inline_prelude + &driver)
-                        .expect("write case");
+                // issue #149 stage 3: every case's `fnc main` (and any
+                // sibling `fnc make()`/`makeList()`/`useIt()`) now lives in
+                // one `class Main` — an `import` line is the only kind of
+                // inline_prelude that must stay OUTSIDE the class (imports
+                // are always top-level); everything else is class-body
+                // material. The two never mix for one case (see
+                // apply_context: "cross_module", the only import-line
+                // producer, always returns early when the type also has
+                // its own prelude), so this split is unambiguous.
+                let (header_import, class_extra) = if inline_prelude.starts_with("import ") {
+                    (inline_prelude.clone(), String::new())
                 } else {
-                    // One-type-per-file: each needed class/enum gets its own
-                    // `<Name>.tnx` in a case-scoped subdirectory (avoids name
-                    // collisions between e.g. every "field" case's `Holder`),
-                    // the driver becomes that subdirectory's `main.tnx` and
-                    // imports whichever type(s) it needs — same convention
-                    // `crates/tinox/tests/e2e.rs` uses for split e2e cases.
-                    let case_dir = dir.join(&name);
-                    fs::create_dir_all(&case_dir).expect("mkdir case dir");
-                    let imports: String =
-                        type_preludes.iter().map(|(t, _)| format!("import {t};\n")).collect();
-                    for (type_name, p) in &type_preludes {
-                        // Every sibling prelude type is imported into every
-                        // other one too (harmless if unused — e.g. `Holder`
-                        // referencing `User`'s field type needs it, `User`
-                        // itself doesn't need `Holder` back).
-                        let others: String = type_preludes
-                            .iter()
-                            .filter(|(t, _)| t != type_name)
-                            .map(|(t, _)| format!("import {t};\n"))
-                            .collect();
-                        let content = if others.is_empty() {
-                            (*p).to_string()
-                        } else {
-                            format!("{others}\n{p}")
-                        };
-                        fs::write(case_dir.join(format!("{type_name}.tnx")), content)
-                            .expect("write case prelude type");
-                    }
-                    fs::write(case_dir.join("main.tnx"), imports + "\n" + &inline_prelude + &driver)
-                        .expect("write case driver");
+                    (String::new(), inline_prelude.clone())
+                };
+
+                // Issue #149 stage 3: `class Main` always requires a file
+                // named exactly `Main.tnx` (one-class-per-file) -- every
+                // case gets its own subdirectory now, whether or not it
+                // also needs sibling type files (previously only the
+                // type-prelude case did; a bare 1-type "Main only" script
+                // used to stay a flat `<name>.tnx`, which is no longer
+                // legal once that script's `fn main` becomes `class Main`).
+                let case_dir = dir.join(&name);
+                fs::create_dir_all(&case_dir).expect("mkdir case dir");
+                let imports: String =
+                    type_preludes.iter().map(|(t, _)| format!("import {t};\n")).collect();
+                for (type_name, p) in &type_preludes {
+                    // Every sibling prelude type is imported into every
+                    // other one too (harmless if unused — e.g. `Holder`
+                    // referencing `User`'s field type needs it, `User`
+                    // itself doesn't need `Holder` back).
+                    let others: String = type_preludes
+                        .iter()
+                        .filter(|(t, _)| t != type_name)
+                        .map(|(t, _)| format!("import {t};\n"))
+                        .collect();
+                    let content = if others.is_empty() {
+                        (*p).to_string()
+                    } else {
+                        format!("{others}\n{p}")
+                    };
+                    fs::write(case_dir.join(format!("{type_name}.tnx")), content)
+                        .expect("write case prelude type");
                 }
+                debug_assert!(
+                    type_preludes.is_empty() || header_import.is_empty(),
+                    "cross_module never co-occurs with a type prelude"
+                );
+                if header_import.starts_with("import MatrixMod;") {
+                    fs::write(case_dir.join("MatrixMod.tnx"), &matrixmod_src)
+                        .expect("write case's MatrixMod.tnx copy");
+                }
+                let content = format!(
+                    "{expects_block}\n{header_import}{imports}\nclass Main\n{{\n{class_extra}{body}\n}}\n"
+                );
+                fs::write(case_dir.join("Main.tnx"), content).expect("write case driver");
             }
         }
     }
@@ -442,7 +484,14 @@ fn run_shard(shard: usize, num_shards: usize) {
         })
         .filter_map(|p| {
             if p.is_dir() {
-                let entry = p.join("main.tnx");
+                // Issue #149 stage 2: mirrors the same `Main.tnx`-first,
+                // `main.tnx`-fallback lookup e2e.rs uses (crates/tinox/tests/e2e.rs)
+                // for directory-based cases. This generator's own templates
+                // (see `generate_all` above) still only ever write
+                // `main.tnx` — that's deferred, unrelated to this read-side
+                // lookup becoming forward-compatible.
+                let entry = p.join("Main.tnx");
+                let entry = if entry.is_file() { entry } else { p.join("main.tnx") };
                 entry.is_file().then(|| {
                     (p.file_name().unwrap().to_string_lossy().to_string(), entry)
                 })

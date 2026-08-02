@@ -204,7 +204,31 @@ fn fmt(args: &[String]) {
 }
 
 /// Returns the entry `.tnx` file for the current project.
-/// If `args` has a file, use that. Otherwise read tinox.toml → src/main.tnx.
+/// Read `entry` from the nearest `tinox.toml`'s `[package]` section, if present.
+fn read_project_entry(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package { continue; }
+        if let Some(rest) = line.strip_prefix("entry") {
+            let rest = rest.trim();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let entry = rest.trim().trim_matches('"').to_string();
+                if !entry.is_empty() {
+                    return Some(entry);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// If `args` has a file, use that. Otherwise read tinox.toml → its
+/// `[package] entry` field (defaulting to `src/main.tnx` if unset).
 fn resolve_entry_file(args: &[String]) -> Option<String> {
     if let Some(f) = args.iter().find(|a| !a.starts_with('-')) {
         return Some(f.clone());
@@ -214,11 +238,13 @@ fn resolve_entry_file(args: &[String]) -> Option<String> {
     loop {
         let toml = dir.join("tinox.toml");
         if toml.exists() {
-            let candidate = dir.join("src").join("main.tnx");
+            let content = fs::read_to_string(&toml).ok()?;
+            let entry = read_project_entry(&content).unwrap_or_else(|| "src/main.tnx".to_string());
+            let candidate = dir.join(&entry);
             if candidate.exists() {
                 return Some(candidate.to_string_lossy().into_owned());
             }
-            eprintln!("error: tinox.toml found but src/main.tnx is missing");
+            eprintln!("error: tinox.toml found but {entry} is missing");
             return None;
         }
         if !dir.pop() { break; }
@@ -843,6 +869,10 @@ fn check(args: &[String]) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = check_no_top_level_fn(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
 
     // Resolve imports
     let base_dir = Path::new(&input_file)
@@ -1430,6 +1460,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let mut parser = tinox_parser::Parser::new(tokens);
     let mut ast = parser.parse().map_err(|e| format!("parse error: {e:?}"))?;
     check_one_type_per_file(&ast.decls, Path::new(path))?;
+    check_no_top_level_fn(&ast.decls, Path::new(path))?;
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
@@ -1451,6 +1482,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let mut parser = tinox_parser::Parser::new(tokens);
     let mut ast = parser.parse().map_err(|e| format!("parse: {e:?}"))?;
     check_one_type_per_file(&ast.decls, Path::new(source))?;
+    check_no_top_level_fn(&ast.decls, Path::new(source))?;
 
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
@@ -1661,6 +1693,51 @@ fn check_one_type_per_file(decls: &[tinox_parser::Decl], path: &Path) -> Result<
     }
 }
 
+/// Collects the names of every top-level free `fn` WITH A BODY in a single
+/// file's own decls (descending into `namespace { ... }` like
+/// `collect_type_decl_names` does). `extern fn` declarations are excluded
+/// (`StmtKind::Empty` is the parser's marker for a body-less
+/// declare-only signature, confirmed in `tinox-codegen`'s `gen_fn`) —
+/// those are FFI bindings to `runtime.c`, not free functions in the
+/// issue #149 sense, and stay legal.
+fn collect_top_level_fn_names(decls: &[tinox_parser::Decl]) -> Vec<&str> {
+    let mut names = Vec::new();
+    for d in decls {
+        match &d.node {
+            DeclKind::Function(f) if !matches!(f.body.node, tinox_parser::StmtKind::Empty) => {
+                names.push(f.name.as_str())
+            }
+            DeclKind::Namespace(ns) => names.extend(collect_top_level_fn_names(&ns.decls)),
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Issue #149 stage 3: hard-enforces "no top-level `fn` with a body" — the
+/// language has no implicit global function namespace anymore, every
+/// function must be a class method (`fn`/`fnc`). Mirrors
+/// `check_one_type_per_file` exactly: must run on a SINGLE file's own
+/// (pre-merge) decls for the same reason (a decl's originating file can't
+/// be recovered after `resolve_imports` merges everything), and is wired
+/// into the identical call sites (`resolve_imports` for every imported
+/// file, `check`/`compile_file`/test-mode entry points for the entry
+/// file).
+fn check_no_top_level_fn(decls: &[tinox_parser::Decl], path: &Path) -> Result<(), String> {
+    let names = collect_top_level_fn_names(decls);
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "'{}' declares {} top-level function{} ({}) — Tinox no longer allows free functions outside a class; move {} into a class as a `fnc` (static) or `fn` (instance) method",
+        path.display(),
+        names.len(),
+        if names.len() == 1 { "" } else { "s" },
+        names.join(", "),
+        if names.len() == 1 { "it" } else { "them" }
+    ))
+}
+
 /// Stamps every `Function`/`Class` method's `file` field with `path`
 /// (issue #114): the parser has no notion of a filename (`Parser::new`
 /// only sees a token stream), so it always leaves `file` at
@@ -1847,6 +1924,7 @@ fn resolve_imports(
                 .parse()
                 .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
             check_one_type_per_file(&imported.decls, &full_path)?;
+            check_no_top_level_fn(&imported.decls, &full_path)?;
             stamp_file_identity(&mut imported.decls, &full_path);
 
             let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -1880,6 +1958,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .parse()
         .map_err(|e| format!("Parse error: {:?}", e))?;
     check_one_type_per_file(&ast.decls, Path::new(input_path))?;
+    check_no_top_level_fn(&ast.decls, Path::new(input_path))?;
     stamp_file_identity(&mut ast.decls, Path::new(input_path));
 
     let base_dir = Path::new(input_path)
@@ -2384,5 +2463,81 @@ mod one_type_per_file_tests {
         let decls = parse_decls("interface Shape { fn area() -> Int64; } enum Color { Red, Blue }");
         let err = check_one_type_per_file(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("Shape") && err.contains("Color"), "error should list both: {err}");
+    }
+}
+
+#[cfg(test)]
+mod read_project_entry_tests {
+    use super::*;
+
+    #[test]
+    fn entry_field_found() {
+        let toml = "[package]\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
+    }
+
+    #[test]
+    fn no_entry_field_returns_none() {
+        let toml = "[package]\nname = \"foo\"\noutput = \"foo\"\n";
+        assert_eq!(read_project_entry(toml), None);
+    }
+
+    #[test]
+    fn entry_outside_package_section_ignored() {
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\nname = \"foo\"\n";
+        assert_eq!(read_project_entry(toml), None);
+    }
+
+    #[test]
+    fn entry_field_whitespace_tolerant() {
+        let toml = "[package]\nentry=\"src/Main.tnx\"\n";
+        assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod no_top_level_fn_tests {
+    use super::*;
+
+    fn parse_decls(src: &str) -> Vec<tinox_parser::Decl> {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("tokenize");
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("parse").decls
+    }
+
+    #[test]
+    fn class_only_ok() {
+        let decls = parse_decls("class Main { fnc main() -> Int32 { return 0; } }");
+        assert!(check_no_top_level_fn(&decls, Path::new("Main.tnx")).is_ok());
+    }
+
+    #[test]
+    fn top_level_fn_err() {
+        let decls = parse_decls("fn main() -> Int32 { return 0; }");
+        let err = check_no_top_level_fn(&decls, Path::new("main.tnx")).unwrap_err();
+        assert!(err.contains("main"), "error should name the function: {err}");
+    }
+
+    #[test]
+    fn multiple_top_level_fns_err() {
+        let decls = parse_decls("fn helper() -> Int64 { return 1; } fn main() -> Int32 { return 0; }");
+        let err = check_no_top_level_fn(&decls, Path::new("x.tnx")).unwrap_err();
+        assert!(err.contains("helper") && err.contains("main"), "error should list both: {err}");
+    }
+
+    #[test]
+    fn extern_fn_stays_legal() {
+        // `extern fn` (StmtKind::Empty body) is an FFI binding, not a free
+        // function in the issue #149 sense -- must not trip the check.
+        let decls = parse_decls("extern fn tinoxSomeRuntimeFn(x: Int64) -> Int64;");
+        assert!(check_no_top_level_fn(&decls, Path::new("x.tnx")).is_ok());
+    }
+
+    #[test]
+    fn namespace_wrapped_fn_err() {
+        let decls = parse_decls("namespace tinox.core.demo { fn helper() -> Int64 { return 1; } }");
+        let err = check_no_top_level_fn(&decls, Path::new("x.tnx")).unwrap_err();
+        assert!(err.contains("helper"), "error should name the function: {err}");
     }
 }

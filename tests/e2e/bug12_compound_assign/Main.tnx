@@ -1,0 +1,34 @@
+// Bug 12: Compound-Assignments (+=, -=, *=, /=, %=) auf Ident/Index/Float/String
+// expect: 7
+// expect: 12
+// expect: 4
+// expect: 1
+// expect: 3.5
+// expect: ab
+// expect: 25
+class Main
+{
+    fnc main() -> Int32 {
+        var x = 0;
+        x += 10;
+        x -= 3;
+        println(x);
+        x = 6;
+        x *= 2;
+        println(x);
+        x /= 3;
+        println(x);
+        x %= 3;
+        println(x);
+        var f: Float64 = 1.5;
+        f += 2.0;
+        println(f.toString());
+        var s = "a";
+        s += "b";
+        println(s);
+        var xs: List<Int64> = [20];
+        xs[0] += 5;
+        println(xs[0]);
+        return 0;
+    }
+}

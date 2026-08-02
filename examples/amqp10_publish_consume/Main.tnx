@@ -1,0 +1,81 @@
+// AMQP-1.0-Publish/Consume-Beispiel (tasklist.md Phase 7.2).
+// Braucht einen laufenden Broker mit nativer AMQP-1.0-Unterstuetzung, z. B.:
+//   docker run -d --name rabbitmq -p 5672:5672 rabbitmq:4-management
+// (RabbitMQ 4.x kann AMQP 1.0 direkt im Core-Broker, kein Plugin noetig.
+// Fuer Queues gilt "AMQP Address v2": /queues/<name>.)
+// Start:  tinox run examples/amqp10_publish_consume.tnx
+//
+// Verbindet sich per SASL PLAIN, oeffnet Session + Sender-Link, published 3
+// Nachrichten kreditbasiert, haengt danach als Receiver-Link an dieselbe
+// Queue, konsumiert sie zurueck und acked jede einzeln.
+
+import tinox.core.amqp10;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+        if conn.conn <= 0 {
+            println("Verbindung fehlgeschlagen: " + conn.errorMessage);
+            return 1;
+        }
+
+        let session = Amqp10Session::begin(conn);
+        if session.errorMessage.len() > 0 {
+            println("begin fehlgeschlagen: " + session.errorMessage);
+            return 1;
+        }
+
+        var sender = Amqp10Link::attach(session, "tinox-demo-sender", false, "/queues/tinox-demo-queue");
+        if sender.errorMessage.len() > 0 {
+            println("attach (Sender) fehlgeschlagen: " + sender.errorMessage);
+            return 1;
+        }
+
+        var i: Int64 = 0;
+        while i < 3 {
+            var body: List<Int64> = [];
+            let text = "Nachricht #" + i.toString();
+            for j in 0..text.len() {
+                body.push(text.charCodeAt(j) & 0xFF);
+            }
+            sender.publish(body, "text/plain");
+            if sender.errorMessage.len() > 0 {
+                println("publish fehlgeschlagen: " + sender.errorMessage);
+                return 1;
+            }
+            println("gesendet: " + text);
+            i = i + 1;
+        }
+        sender.detach();
+
+        var receiver = Amqp10Link::attach(session, "tinox-demo-receiver", true, "/queues/tinox-demo-queue");
+        if receiver.errorMessage.len() > 0 {
+            println("attach (Receiver) fehlgeschlagen: " + receiver.errorMessage);
+            return 1;
+        }
+        receiver.grantCredit(10);
+
+        var received: Int64 = 0;
+        while received < 3 {
+            let m = receiver.nextMessage();
+            if !m.ok {
+                println("Empfang fehlgeschlagen: " + m.errorMessage);
+                return 1;
+            }
+            var text: String = "";
+            for j in 0..m.body.len() {
+                text = text + fromCharCode(m.body[j]);
+            }
+            println("empfangen: " + text + " (Delivery " + m.deliveryId.toString() + ")");
+            receiver.ack(m.deliveryId);
+            received = received + 1;
+        }
+        receiver.detach();
+
+        session.end();
+        conn.close();
+        println("fertig");
+        return 0;
+    }
+}

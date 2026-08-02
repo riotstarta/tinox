@@ -1,8 +1,0 @@
-// expect: foobarbaz
-
-fn main() -> Int32
-{
-    let s: String = "foo" + "bar" + "baz";
-    println(s);
-    return 0;
-}

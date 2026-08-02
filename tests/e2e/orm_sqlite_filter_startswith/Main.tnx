@@ -1,0 +1,21 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Carol', 35), ('Charlie', 22);
+// expect: 2
+// expect: Carol
+
+import tinox.core.db;
+
+import orm_sqlite_filter_startswith;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let cs: List<orm_sqlite_filter_startswith> = DB.of(orm_sqlite_filter_startswith)
+            .filter(u => u.name.startsWith("C"))
+            .list();
+        println(cs.len());
+        println(cs[0].name);
+        return 0;
+    }
+}

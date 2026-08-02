@@ -1,0 +1,24 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Zara', 28), ('Alice', 30), ('Bob', 25), ('Carol', 35);
+// expect: 2
+// expect: Alice
+// expect: Bob
+
+import tinox.core.db;
+
+import orm_sqlite_order_limit;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let top2: List<orm_sqlite_order_limit> = DB.of(orm_sqlite_order_limit)
+            .orderBy(u => u.name)
+            .limit(2)
+            .list();
+        println(top2.len());
+        println(top2[0].name);
+        println(top2[1].name);
+        return 0;
+    }
+}

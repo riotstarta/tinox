@@ -17,17 +17,17 @@ if [ ! -x "$TINOX_BIN" ]; then
     exit 1
 fi
 
-# amqp10_driver.tnx imports the real crates/tinox-core/amqp10/*.tnx module
+# Amqp10Driver.tnx imports the real crates/tinox-core/amqp10/*.tnx module
 # (no copy of the frame-parsing logic) and adds a one-line
 # tinoxAmqp10ReadFrame(conn: Int64) wrapper. `tinox build` always tries to
 # link a full executable and fails here because the driver has no
 # main()/tinox_main — that failure is expected and harmless, we only need
 # the driver_out.ll it leaves behind before the failing final link step.
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
-"$TINOX_BIN" build amqp10_driver.tnx -o driver_out >/dev/null 2>&1 || true
+"$TINOX_BIN" build Amqp10Driver.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then
-    echo "tinox build did not produce driver_out.ll — compile error in amqp10_driver.tnx?" >&2
-    "$TINOX_BIN" build amqp10_driver.tnx -o driver_out
+    echo "tinox build did not produce driver_out.ll — compile error in Amqp10Driver.tnx?" >&2
+    "$TINOX_BIN" build Amqp10Driver.tnx -o driver_out
     exit 1
 fi
 
@@ -39,7 +39,7 @@ clang -c "$RUNTIME_C" -o runtime_fuzz.o \
     -fsanitize=fuzzer-no-link,address -g -O1
 
 clang++ -fsanitize=fuzzer,address amqp10_fuzzer.cc driver_instrumented.o runtime_fuzz.o \
-    -o "$OUT" -lm -lpthread
+    -o "$OUT" -lm -lpthread -lz
 
 rm -f driver_out.ll driver_out.o driver_out_runtime.o driver_instrumented.o runtime_fuzz.o
 echo "built fuzz/amqp10/$OUT"

@@ -1,0 +1,19 @@
+// Bug 1: s.len() auf match-gebundenen Strings gab ASCII-Code zurück
+// expect: 5
+import bug01_match_string_len;
+
+class Main
+{
+    fnc f(v: bug01_match_string_len) -> Int64 {
+        match v {
+            Str(s) => return s.len();
+            _ => return 0;
+        }
+    }
+
+
+    fnc main() -> Int32 {
+        println(f(bug01_match_string_len::Str("hello")));
+        return 0;
+    }
+}

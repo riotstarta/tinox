@@ -1,0 +1,164 @@
+// OAuth2 Authorization Code + PKCE (issue #131): buildAuthorizeUrl()
+// produces a correctly-formed authorize URL (response_type=code, PKCE
+// S256 challenge, percent-encoded params) with a real 32-byte
+// cryptographically-secure state/code_verifier; exchangeCode() correctly
+// POSTs application/x-www-form-urlencoded (not JSON — RFC 6749 §4.1.3)
+// with all the required fields and parses a real token response;
+// refresh() does the equivalent for the refresh_token grant; the error
+// path (RFC 6749 §5.2 `error`/`error_description`) is surfaced instead
+// of a token that looks valid.
+//
+// The token endpoint here is a simulated broker (spawn, same pattern as
+// the AMQP/WS e2e tests) over plain HTTP -- issue #131 separately added
+// TLS support to Http, verified directly against a real HTTPS server
+// with a real CA-trusted cert (not reproducible in an offline e2e test);
+// this test focuses on the request/response contract itself, which is
+// identical regardless of scheme.
+// expect: ok-authorize-url
+// expect: ok-state-length
+// expect: ok-exchange-response
+// expect: ok-refresh-response
+// expect: ok-error-surfaced
+// expect: ok-broker-saw-correct-fields
+
+import tinox.core.oauth2;
+import tinox.core.socket;
+
+class Main
+{
+
+    async fnc fakeTokenEndpoint(srv: Int64) -> Int64 {
+        // --- exchangeCode() request ---
+        let sconn1 = httpServerAcceptConnHandle(srv);
+        let req1 = httpConnReadRequest(sconn1);
+        var exchangeOk: Int64 = 0;
+        if req1.contains("POST /token") {
+            if req1.contains("Content-Type: application/x-www-form-urlencoded") {
+                if req1.contains("grant_type=authorization_code") {
+                    if req1.contains("code=abc123") {
+                        if req1.contains("redirect_uri=https%3A%2F%2Fmyapp.example.com%2Fcallback") {
+                            if req1.contains("client_id=my-client-id") {
+                                if req1.contains("client_secret=my-client-secret") {
+                                    if req1.contains("code_verifier=") {
+                                        exchangeOk = 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let body1 = "{\"access_token\":\"at-12345\",\"refresh_token\":\"rt-67890\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
+        let resp1 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body1.len().toString() + "\r\nConnection: close\r\n\r\n" + body1;
+        httpConnSendRaw(sconn1, resp1);
+        httpConnClose(sconn1);
+
+        // --- refresh() request ---
+        let sconn2 = httpServerAcceptConnHandle(srv);
+        let req2 = httpConnReadRequest(sconn2);
+        var refreshOk: Int64 = 0;
+        if req2.contains("POST /token") {
+            if req2.contains("grant_type=refresh_token") {
+                if req2.contains("refresh_token=rt-67890") {
+                    if req2.contains("client_id=my-client-id") {
+                        refreshOk = 1;
+                    }
+                }
+            }
+        }
+        let body2 = "{\"access_token\":\"at-new-99999\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
+        let resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body2.len().toString() + "\r\nConnection: close\r\n\r\n" + body2;
+        httpConnSendRaw(sconn2, resp2);
+        httpConnClose(sconn2);
+
+        // --- error response (RFC 6749 §5.2) for the error-path assertion ---
+        let sconn3 = httpServerAcceptConnHandle(srv);
+        httpConnReadRequest(sconn3);
+        let body3 = "{\"error\":\"invalid_grant\",\"error_description\":\"code expired\"}";
+        let resp3 = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + body3.len().toString() + "\r\nConnection: close\r\n\r\n" + body3;
+        httpConnSendRaw(sconn3, resp3);
+        httpConnClose(sconn3);
+
+        var allOk: Int64 = 0;
+        if exchangeOk == 1 {
+            if refreshOk == 1 {
+                allOk = 1;
+            }
+        }
+        return allOk;
+    }
+
+
+    fnc main() -> Int32 {
+        let srv = httpServerCreate(47643);
+        if srv < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle = spawn fakeTokenEndpoint(srv);
+
+        let client = OAuth2Client::new(
+            "https://example.com/authorize",
+            "http://127.0.0.1:47643/token",
+            "my-client-id",
+            "my-client-secret",
+            "https://myapp.example.com/callback"
+        );
+
+        let authReq = client.buildAuthorizeUrl("openid email");
+        if authReq.url.contains("response_type=code") {
+            if authReq.url.contains("code_challenge=") {
+                if authReq.url.contains("code_challenge_method=S256") {
+                    if authReq.url.contains("client_id=my-client-id") {
+                        if authReq.url.contains("scope=openid%20email") {
+                            println("ok-authorize-url");
+                        }
+                    }
+                }
+            }
+        }
+        if authReq.state.len() == 43 {
+            if authReq.codeVerifier.len() == 43 {
+                println("ok-state-length");
+            }
+        }
+
+        let tokens1 = client.exchangeCode("abc123", authReq.codeVerifier);
+        if tokens1.ok {
+            if tokens1.accessToken == "at-12345" {
+                if tokens1.refreshToken == "rt-67890" {
+                    if tokens1.tokenType == "Bearer" {
+                        if tokens1.expiresIn == 3600 {
+                            println("ok-exchange-response");
+                        }
+                    }
+                }
+            }
+        }
+
+        let tokens2 = client.refresh(tokens1.refreshToken);
+        if tokens2.ok {
+            if tokens2.accessToken == "at-new-99999" {
+                println("ok-refresh-response");
+            }
+        }
+
+        let tokens3 = client.exchangeCode("expired-code", authReq.codeVerifier);
+        if !tokens3.ok {
+            if tokens3.errorMessage.contains("invalid_grant") {
+                if tokens3.errorMessage.contains("code expired") {
+                    println("ok-error-surfaced");
+                }
+            }
+        }
+
+        let brokerOk = await handle;
+        if brokerOk == 1 {
+            println("ok-broker-saw-correct-fields");
+        }
+
+        httpServerClose(srv);
+        return 0;
+    }
+}

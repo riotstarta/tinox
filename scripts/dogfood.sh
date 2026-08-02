@@ -62,30 +62,30 @@ run_smoke_job() { # id file expected
 }
 
 GOOD_EXAMPLES=(
-    examples/examples.tnx
+    examples/examples/Main.tnx
     examples/GreetCommand.tnx
-    examples/simple_test.tnx
-    examples/vtable_dispatch.tnx
+    examples/simple_test/Main.tnx
+    examples/vtable_dispatch/Main.tnx
     examples/rest_minimal/UserController.tnx
     examples/UserController.tnx
-    examples/modules/main.tnx
-    examples/modules/multi_import.tnx
-    examples/interface_extends.tnx
+    examples/modules/main_example/Main.tnx
+    examples/modules/multi_import_example/Main.tnx
+    examples/interface_extends/Main.tnx
     examples/rest_with_mini/UserController.tnx
 )
 for f in "${GOOD_EXAMPLES[@]}"; do
     run_job "$(job_id "build_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "build_$f")"
 done
 
-run_smoke_job "$(job_id smoke_simple)" examples/simple_test.tnx ""
-run_smoke_job "$(job_id smoke_vtable)" examples/vtable_dispatch.tnx "$(printf '5\n10\n42')"
-run_smoke_job "$(job_id smoke_modules)" examples/modules/main.tnx "$(printf '7\n12')"
-run_smoke_job "$(job_id smoke_multiimport)" examples/modules/multi_import.tnx "$(printf '25\n30')"
-run_smoke_job "$(job_id smoke_ifaceext)" examples/interface_extends.tnx "42"
+run_smoke_job "$(job_id smoke_simple)" examples/simple_test/Main.tnx ""
+run_smoke_job "$(job_id smoke_vtable)" examples/vtable_dispatch/Main.tnx "$(printf '5\n10\n42')"
+run_smoke_job "$(job_id smoke_modules)" examples/modules/main_example/Main.tnx "$(printf '7\n12')"
+run_smoke_job "$(job_id smoke_multiimport)" examples/modules/multi_import_example/Main.tnx "$(printf '25\n30')"
+run_smoke_job "$(job_id smoke_ifaceext)" examples/interface_extends/Main.tnx "42"
 
 run_job "$(job_id mini_http_check)" "$TINOX" check examples/mini_http/HttpServer.tnx
 
-for f in benchmarks/*.tnx; do
+for f in benchmarks/*/Main.tnx; do
     run_job "$(job_id "bench_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "bench_$f")"
 done
 
@@ -118,17 +118,17 @@ for f in "${GOOD_EXAMPLES[@]}"; do
 done
 
 echo "== Dogfood: examples Smoke-Runs =="
-report examples/simple_test.tnx "$(job_id smoke_simple)"
-report examples/vtable_dispatch.tnx "$(job_id smoke_vtable)"
-report examples/modules/main.tnx "$(job_id smoke_modules)"
-report examples/modules/multi_import.tnx "$(job_id smoke_multiimport)"
-report examples/interface_extends.tnx "$(job_id smoke_ifaceext)"
+report examples/simple_test/Main.tnx "$(job_id smoke_simple)"
+report examples/vtable_dispatch/Main.tnx "$(job_id smoke_vtable)"
+report examples/modules/main_example/Main.tnx "$(job_id smoke_modules)"
+report examples/modules/multi_import_example/Main.tnx "$(job_id smoke_multiimport)"
+report examples/interface_extends/Main.tnx "$(job_id smoke_ifaceext)"
 
 echo "== Dogfood: Library-Beispiele typechecken =="
 report "examples/mini_http/HttpServer.tnx (check)" "$(job_id mini_http_check)"
 
 echo "== Dogfood: benchmarks kompilieren =="
-for f in benchmarks/*.tnx; do
+for f in benchmarks/*/Main.tnx; do
     report "$f" "$(job_id "bench_$f")"
 done
 

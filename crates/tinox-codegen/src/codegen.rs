@@ -724,6 +724,55 @@ impl CodeGen {
         marker.strip_prefix("Map:").map(|m| m.to_string())
     }
 
+    /// Coerce a Map key to the `i8*` the runtime's hash map actually stores
+    /// and compares (Bug 129 — `tinox_map_set`/`get`/`contains`/`remove`
+    /// treat the key as a NUL-terminated C string; reinterpreting a scalar's
+    /// raw bit pattern as a pointer via `inttoptr` segfaults the instant the
+    /// hash function dereferences it). Scalars get stringified the same way
+    /// `.toString()` does (decimal for ints, "true"/"false" for Bool);
+    /// already-`i8*` keys (String) pass through unchanged. Pointer-typed
+    /// keys (class-object references) keep the old `inttoptr` reinterpret —
+    /// using object identity/a user-defined string form as a map key is a
+    /// separate, harder design question left open by the issue, not fixed
+    /// here.
+    fn emit_map_key(&mut self, key: &str, key_ty: &str) -> String {
+        match key_ty {
+            "i8*" => key.to_string(),
+            "i1" => {
+                let s = self.temp();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", s, key).unwrap();
+                s
+            }
+            "double" | "float" => {
+                let s = self.temp();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_float_to_string(double {})", s, key).unwrap();
+                s
+            }
+            "i8" | "i16" | "i32" => {
+                let ext = self.temp();
+                writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, key_ty, key).unwrap();
+                let s = self.temp();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", s, ext).unwrap();
+                s
+            }
+            "i64" => {
+                let s = self.temp();
+                writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", s, key).unwrap();
+                s
+            }
+            _ if key_ty.ends_with('*') || key_ty == "ptr" => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = bitcast {} {} to i8*", c, key_ty, key).unwrap();
+                c
+            }
+            _ => {
+                let c = self.temp();
+                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
+                c
+            }
+        }
+    }
+
     fn fnv1a(name: &str) -> u64 {
         let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
         for b in name.bytes() {
@@ -1464,6 +1513,35 @@ impl CodeGen {
                 if c.annotations.iter().any(|a| a.name == "Log") {
                     fields.push("log".to_string());
                 }
+                // Bug 139: struct_layouts (and the sibling per-class tables
+                // below) are keyed by bare class name only, with no
+                // namespace/module qualification. Import resolution dedups
+                // by file path and one-class-per-file forces class name ==
+                // file name, so the only way the SAME bare name reaches this
+                // insert twice is two genuinely different classes in
+                // different modules sharing a name -- whichever is
+                // processed last used to silently clobber the other's
+                // layout, producing a baffling "field not in layout of
+                // typed class" codegen-internal error with no hint about
+                // the real cause. A full fix (namespace-qualified table
+                // keys) touches ~30 call sites and risks the B1 named-
+                // struct-type optimization; this turns the silent
+                // corruption into a clear, actionable compile error instead
+                // (matches this project's "no silent garbage" rule) without
+                // attempting the bigger rearchitecture.
+                if self.struct_layouts.contains_key(&c.name) {
+                    let mut bag = ErrorBag::new();
+                    bag.push(Error::new(
+                        c.span,
+                        format!(
+                            "class name '{}' is defined by two different classes in imported modules -- \
+                             the compiler cannot distinguish same-named classes across modules (issue #139). \
+                             Rename one of them, or avoid importing both modules in the same program.",
+                            c.name
+                        ),
+                    ));
+                    return Err(bag);
+                }
                 self.struct_layouts.insert(c.name.clone(), fields);
                 let mut fct = Self::collect_field_class_types(&c.name, &class_ast_map);
                 if c.annotations.iter().any(|a| a.name == "Log") {
@@ -1664,6 +1742,12 @@ impl CodeGen {
                 _ => {}
             }
         }
+
+        // Alternative entry point `class Main { fnc main() -> Int32 }`
+        // (Issue #149 stage 1) — checked before all the inferred
+        // (HTTP/CLI/websocket/AMQP/test) fallbacks below, since an explicit
+        // class Main should take priority over an implicit one.
+        self.emit_class_main_entry_point(source)?;
 
         // Emit vtable globals for classes that implement interfaces
         self.emit_vtable_globals(source);
@@ -2237,7 +2321,7 @@ impl CodeGen {
     /// a listen/accept/readMessage loop that calls the class's `@OnOpen`/`@OnMessage`/
     /// `@OnClose` methods directly by their mangled `{Class}_{method}` symbol —
     /// this is a compiler-generated transliteration of the explicit v1 loop
-    /// (`examples/ws_echo.tnx`), calling the already-compiled `Ws`/`WsServer`
+    /// (`examples/ws_echo/Main.tnx`), calling the already-compiled `Ws`/`WsServer`
     /// static methods from `tinox.core.websocket` (which the file must import).
     ///
     /// Only fires when there is exactly one endpoint and no user `main` (mirrors
@@ -4445,6 +4529,98 @@ impl CodeGen {
         self.has_main = true;
     }
 
+    /// Alternative entry point `class Main { fnc main() -> Int32 { ... } }`
+    /// (Issue #149 stage 1: mandatory class-qualified functions). Nothing
+    /// class-specific needs to happen at typecheck time — a static `fnc
+    /// main` on a class named `Main` already typechecks and compiles as an
+    /// ordinary static method (`@Main_main`, no synthetic `self` param,
+    /// registered like any other `fnc`). What's missing is purely the
+    /// entry-point wiring: this synthesizes a `@tinox_main` that forwards
+    /// into `@Main_main`, mirroring the int-width handling `gen_fn` already
+    /// uses for a top-level `fn main() -> Int32` (both return the same LLVM
+    /// `i32`, matching `type_to_llvm(Type::Int32)`).
+    ///
+    /// A near-miss shape (an instance `fn main` instead of `fnc`, wrong
+    /// param count, or wrong return type) is a hard compile error rather
+    /// than a silent fallthrough to a confusing "undefined reference to
+    /// `tinox_main`" link failure — this project's "no silent garbage"
+    /// convention. Likewise, defining both a top-level `fn main()` and a
+    /// matching `class Main { fnc main() }` is an ambiguous-entry-point
+    /// error rather than silently preferring one.
+    fn emit_class_main_entry_point(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
+        let mut classes: Vec<&tinox_parser::Class> = Vec::new();
+        for decl in &source.decls {
+            match &decl.node {
+                DeclKind::Class(c) => classes.push(c),
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node {
+                            classes.push(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(main_class) = classes.into_iter().find(|c| c.name == "Main") else {
+            return Ok(());
+        };
+        let Some(method) = main_class.methods.iter().find(|m| m.name == "main") else {
+            return Ok(());
+        };
+
+        let shape_ok =
+            method.static_ && method.params.is_empty() && matches!(method.ret_type, Type::Int32);
+        if !shape_ok {
+            let mut problems = Vec::new();
+            if !method.static_ {
+                problems.push("must be declared `fnc` (static), not `fn`".to_string());
+            }
+            if !method.params.is_empty() {
+                problems.push(format!(
+                    "must take no parameters, found {}",
+                    method.params.len()
+                ));
+            }
+            if !matches!(method.ret_type, Type::Int32) {
+                problems.push(format!(
+                    "must return Int32, found {}",
+                    Self::type_to_llvm(&method.ret_type)
+                ));
+            }
+            let mut bag = ErrorBag::new();
+            bag.push(Error::new(
+                method.span,
+                format!(
+                    "class Main {{ fnc main() -> Int32 }} is reserved as a program entry point, but Main.main() {}",
+                    problems.join("; ")
+                ),
+            ));
+            return Err(bag);
+        }
+
+        if self.has_main {
+            let mut bag = ErrorBag::new();
+            bag.push(Error::new(
+                method.span,
+                "ambiguous entry point: both a top-level `fn main()` and `class Main { fnc main() }` are defined -- remove one".to_string(),
+            ));
+            return Err(bag);
+        }
+
+        let mut b = String::new();
+        writeln!(&mut b, "define i32 @tinox_main() {{").unwrap();
+        writeln!(&mut b, "  %r = call i32 @Main_main()").unwrap();
+        writeln!(&mut b, "  ret i32 %r").unwrap();
+        writeln!(&mut b, "}}").unwrap();
+        writeln!(&mut b).unwrap();
+        self.lambda_ir.push_str(&b);
+        self.has_main = true;
+
+        Ok(())
+    }
+
     /// B1 phase 1: emit `%class.<name> = type { … }` for plain classes.
     ///
     /// The field types come from `struct_field_llvm_types` in `struct_layouts`
@@ -4944,6 +5120,16 @@ impl CodeGen {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, v).unwrap(); c
                         } else if val_ty == "double" && actual_ty == "i64" {
                             let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap(); c
+                        } else if let (Some(vw), Some(aw)) = (Self::int_bit_width(&val_ty), Self::int_bit_width(&actual_ty)) {
+                            // General int-width mismatch (e.g. a binary-op result
+                            // widened to i64 stored into a narrower Int32 local) —
+                            // truncate/extend to the slot's declared width.
+                            if vw > aw {
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = trunc {} {} to {}", c, val_ty, v, actual_ty).unwrap(); c
+                            } else if vw < aw {
+                                let instr = if val_ty == "i1" { "zext" } else { "sext" };
+                                let c = self.temp(); writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, val_ty, v, actual_ty).unwrap(); c
+                            } else { v.clone() }
                         } else { v.clone() };
                         writeln!(&mut self.ir, "store {} {}, {}* %{}", actual_ty, store_val, actual_ty, slot_name).unwrap();
                     }
@@ -5158,6 +5344,16 @@ impl CodeGen {
                         let c = self.temp();
                         writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, v).unwrap();
                         c
+                    } else if let (Some(vw), Some(aw)) = (Self::int_bit_width(&val_ty), Self::int_bit_width(&actual_ty)) {
+                        // General int-width mismatch (e.g. a binary-op result
+                        // widened to i64 stored into a narrower Int32 local) —
+                        // truncate/extend to the slot's declared width.
+                        if vw > aw {
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = trunc {} {} to {}", c, val_ty, v, actual_ty).unwrap(); c
+                        } else if vw < aw {
+                            let instr = if val_ty == "i1" { "zext" } else { "sext" };
+                            let c = self.temp(); writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, val_ty, v, actual_ty).unwrap(); c
+                        } else { v.clone() }
                     } else {
                         v.clone()
                     };
@@ -5705,8 +5901,12 @@ impl CodeGen {
     /// `expr_may_throw` without the recursive `|| args.iter().any(...)` part.
     fn expr_directly_may_throw(node: &ExprKind, tf: &HashSet<String>, tm: &HashSet<String>) -> bool {
         match node {
+            // Also checks `tm` (bare method basenames), not just `tf`: see
+            // the identical fix/comment on `expr_may_throw` above (issue
+            // #149 stage 2's same-class bare `fnc` calls are indistinguishable
+            // from a free call at this AST shape).
             ExprKind::Call { func, .. } => match &func.node {
-                ExprKind::Ident(name) => tf.contains(name.as_str()),
+                ExprKind::Ident(name) => tf.contains(name.as_str()) || tm.contains(name.as_str()),
                 _ => true, // dynamic/lambda call — cannot prove non-throwing
             },
             ExprKind::MethodCall { method, .. } => tm.contains(method.as_str()),
@@ -6128,6 +6328,34 @@ impl CodeGen {
                 Ok((result, ty))
             }
             ExprKind::Call { func, args } => {
+                // Same-class bare `fnc` call (issue #149 stage 2): a
+                // sibling STATIC method of the class this method body
+                // belongs to, called without a `ClassName::` qualifier.
+                // Must run BEFORE the generic arg pre-evaluation just
+                // below, since `emit_static_dispatch_call` evaluates its
+                // own args (shared with the `ClassName::method()` path,
+                // codegen.rs:8290) — evaluating twice would duplicate any
+                // side-effecting argument expressions and double-emit
+                // their IR. Priority mirrors typecheck's `check_call`: a
+                // genuine top-level free function of the same bare name
+                // (still supported during the migration) wins over the
+                // same-class fallback, so this only fires when no such
+                // free function exists. Static-only, matching the
+                // typecheck-side restriction (an instance method needs an
+                // implicit `this` receiver, a different, not-yet-built
+                // feature).
+                if let ExprKind::Ident(name) = &func.node {
+                    if !self.fn_sigs.contains_key(name.as_str()) {
+                        if let Some(class_name) = ctx.current_struct.clone() {
+                            let static_key = format!("{}_{}", class_name, name);
+                            if self.static_method_keys.contains(&static_key) {
+                                if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
+                                    return self.emit_static_dispatch_call(&static_key, &ret_ty, args, ctx);
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut args_str = String::new();
                 let mut arg_types = Vec::new();
                 let mut arg_vals = Vec::new();
@@ -7151,11 +7379,7 @@ impl CodeGen {
                     match method.as_str() {
                         "get" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
-                            let key_i8 = if key_ty == "i8*" { key.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
-                                c
-                            };
+                            let key_i8 = self.emit_map_key(&key, &key_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_obj_ptr, key_i8).unwrap();
                             // Type the value by the map's value marker
@@ -7163,11 +7387,7 @@ impl CodeGen {
                         }
                         "insert" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
-                            let key_i8 = if key_ty == "i8*" { key.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
-                                c
-                            };
+                            let key_i8 = self.emit_map_key(&key, &key_ty);
                             let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
                             let val_i64 = if val_ty == "i64" || val_ty.is_empty() {
                                 val.clone()
@@ -7190,11 +7410,7 @@ impl CodeGen {
                         }
                         "contains" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
-                            let key_str = if key_ty == "i8*" { key.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
-                                c
-                            };
+                            let key_str = self.emit_map_key(&key, &key_ty);
                             let raw = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_contains(i8* {}, i8* {})", raw, map_obj_ptr, key_str).unwrap();
                             let result = self.temp();
@@ -7203,11 +7419,7 @@ impl CodeGen {
                         }
                         "remove" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
-                            let key_str = if key_ty == "i8*" { key.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, key).unwrap();
-                                c
-                            };
+                            let key_str = self.emit_map_key(&key, &key_ty);
                             writeln!(&mut self.ir, "call void @tinox_map_remove(i8* {}, i8* {})", map_obj_ptr, key_str).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
@@ -7743,11 +7955,7 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
                         c
                     };
-                    let key_i8 = if idx_ty == "i8*" { idx_val.clone() } else {
-                        let c = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
-                        c
-                    };
+                    let key_i8 = self.emit_map_key(&idx_val, &idx_ty);
                     let result = self.temp();
                     writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_i8, key_i8).unwrap();
                     Ok(self.coerce_map_value(result, declared_elem_type.as_deref()))
@@ -9173,7 +9381,31 @@ impl CodeGen {
                 let (fn_name, args) = match &inner.node {
                     ExprKind::Call { func, args } => {
                         let name = match &func.node {
-                            ExprKind::Ident(n) => n.clone(),
+                            ExprKind::Ident(n) => {
+                                // Issue #149 stage 3: a bare spawn target is
+                                // either a genuine top-level free function
+                                // (still legal for FFI-style bindings that
+                                // need a stable exported symbol, e.g. the
+                                // fuzz drivers) or -- now that ordinary
+                                // top-level `fn` is gone -- a same-class
+                                // static `fnc` sibling, resolved the exact
+                                // same way check_call's same-class fallback
+                                // already does (stage 2). `fn_sigs` (free
+                                // functions) wins on a name collision,
+                                // matching that same priority.
+                                if self.fn_sigs.contains_key(n.as_str()) {
+                                    n.clone()
+                                } else if let Some(class_name) = ctx.current_struct.clone() {
+                                    let key = format!("{}_{}", class_name, n);
+                                    if self.static_method_keys.contains(&key) {
+                                        key
+                                    } else {
+                                        n.clone()
+                                    }
+                                } else {
+                                    n.clone()
+                                }
+                            }
                             _ => {
                                 let mut bag = ErrorBag::new();
                                 bag.push(Error::new(inner.span, "spawn requires a direct function call".to_string()));
@@ -9181,6 +9413,15 @@ impl CodeGen {
                             }
                         };
                         (name, args.clone())
+                    }
+                    // `spawn ClassName::method(...)` parses directly as
+                    // EnumValue (its args are bundled into the node itself,
+                    // not wrapped in a separate Call{func: EnumValue, ..}}
+                    // the way a bare-Ident call is) — same mangled key
+                    // `ClassName::method()` call codegen uses
+                    // (emit_static_dispatch_call's `static_key`).
+                    ExprKind::EnumValue { enum_name, variant, args, .. } => {
+                        (format!("{}_{}", enum_name, variant), args.clone())
                     }
                     _ => {
                         let mut bag = ErrorBag::new();
@@ -9200,10 +9441,25 @@ impl CodeGen {
                 self.spawn_counter += 1;
                 let wrapper_name = format!("__spawn_wrapper_{}", wrapper_id);
 
-                let (ret_ty, param_tys) = self.fn_sigs.get(&fn_name).cloned().unwrap_or_else(|| {
-                    let ptys = arg_vals.iter().map(|(_, t)| t.clone()).collect();
-                    ("i64".to_string(), ptys)
-                });
+                let (ret_ty, param_tys) = self.fn_sigs.get(&fn_name).cloned()
+                    .or_else(|| {
+                        // Static `fnc` spawn target: same lookup shape as a
+                        // free function (ret type string + LLVM param type
+                        // strings), just sourced from the class-method
+                        // tables instead of fn_sigs.
+                        self.method_ret_types.get(&fn_name).cloned().map(|rt| {
+                            let ptys = self
+                                .method_param_types
+                                .get(&fn_name)
+                                .map(|v| v.iter().map(Self::type_to_llvm).collect())
+                                .unwrap_or_default();
+                            (rt, ptys)
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        let ptys = arg_vals.iter().map(|(_, t)| t.clone()).collect();
+                        ("i64".to_string(), ptys)
+                    });
 
                 // Allocate args array [n_slots x i64]
                 let raw_ptr = self.temp();
@@ -9459,11 +9715,7 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, base_ptr).unwrap();
                 c
             };
-            let key_i8 = if idx_ty == "i8*" { idx_val.to_string() } else {
-                let c = self.temp();
-                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, idx_val).unwrap();
-                c
-            };
+            let key_i8 = self.emit_map_key(idx_val, idx_ty);
             let store_val = if val_ty == "i64" || val_ty.is_empty() {
                 val.to_string()
             } else if val_ty == "i1" {
@@ -10132,7 +10384,15 @@ impl CodeGen {
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
-            current_struct: None,
+            // Issue #149 stage 2: inherit the enclosing method's class, not
+            // `None` -- a lambda literal lexically nested inside a class
+            // method still needs same-class bare `fnc` calls to resolve
+            // (confirmed broken without this: a bare call inside a lambda
+            // body emitted an unmangled `call @helper(...)` instead of
+            // `@ClassName_helper`, an undefined-symbol link failure). The
+            // lambda isn't itself a method, but bare-name resolution should
+            // still see "am I lexically inside class X".
+            current_struct: ctx.current_struct.clone(),
             local_types: HashMap::new(),
             break_target: None,
             continue_target: None,
@@ -10346,6 +10606,20 @@ impl CodeGen {
 
     fn is_float(ty: &str) -> bool {
         ty == "float" || ty == "double"
+    }
+
+    /// Bit width of an LLVM integer type name, for coercing between
+    /// differently-sized ints (e.g. a binary-op result widened to i64
+    /// stored into a narrower `Int32`-declared local).
+    fn int_bit_width(ty: &str) -> Option<u32> {
+        match ty {
+            "i1" => Some(1),
+            "i8" => Some(8),
+            "i16" => Some(16),
+            "i32" => Some(32),
+            "i64" => Some(64),
+            _ => None,
+        }
     }
 
     /// Assemble the argument list for an indirect closure call: the user args
@@ -10587,8 +10861,12 @@ impl CodeGen {
     }
 
     /// Companion of `stmt_may_throw` for expressions. Call resolution:
-    ///   - free call `name(...)`   → throws iff `name` ∈ tf (builtins/non-throwing
-    ///     user fns absent → no throw).
+    ///   - free call `name(...)`   → throws iff `name` ∈ tf OR `name` ∈ tm
+    ///     (the latter covers issue #149 stage 2's same-class bare `fnc`
+    ///     calls, e.g. `helper()` resolving to `Main::helper()` — same AST
+    ///     shape as a free call, so both sets must be checked; `tm` is
+    ///     already class-agnostic bare basenames, so this stays a safe
+    ///     over-approximation for names that resolve to neither).
     ///   - `obj.m(...)` / `Class::m(...)` / `super.m(...)` → throws iff `m` ∈ tm.
     ///   - dynamic call (callee not an Ident), `New`, `await`/`recv`/`spawn` → true
     ///     (conservative; cannot prove non-throwing).
@@ -10597,7 +10875,22 @@ impl CodeGen {
             ExprKind::Throw(_) => true,
             ExprKind::Call { func, args } => {
                 if let ExprKind::Ident(name) = &func.node {
+                    // Also check `tm` (bare method basenames), not just `tf`
+                    // (free functions): issue #149 stage 2's same-class bare
+                    // `fnc` calls (`helper()` resolving to `Main::helper()`)
+                    // are STILL `ExprKind::Call{func: Ident, ..}` at the AST
+                    // level, indistinguishable here from a free-function
+                    // call — without this, a bare call that actually
+                    // resolves to a throwing same-class method was silently
+                    // treated as non-throwing, skipping the post-call
+                    // unwind check (Bug 40) and letting execution continue
+                    // past a throw instead of propagating it. `tm` is
+                    // already class-agnostic (bare basenames, see
+                    // `analyze_throw_effects`), so this is a safe
+                    // over-approximation even for bare names that turn out
+                    // to be something else entirely (lambda var, etc.).
                     tf.contains(name.as_str())
+                        || tm.contains(name.as_str())
                         || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
                 } else {
                     true // dynamic/lambda call — cannot prove non-throwing
@@ -12463,6 +12756,227 @@ mod tests {
         let mut cg = CodeGen::new();
         cg.gen(&ast).expect("codegen failed");
         cg.into_ir()
+    }
+
+    fn compile_expect_err(src: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("lex failed");
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        let bag = cg.gen(&ast).expect_err("expected codegen to fail");
+        bag.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")
+    }
+
+    // --- class Main entry point (issue #149 stage 1) ---
+
+    #[test]
+    fn test_class_main_entry_point_emits_tinox_main_wrapper() {
+        let src = "class Main {\n  fnc main() -> Int32 {\n    return 0;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("define i32 @Main_main()"), "{ir}");
+        assert!(ir.contains("define i32 @tinox_main()"), "{ir}");
+        assert!(ir.contains("call i32 @Main_main()"), "{ir}");
+    }
+
+    #[test]
+    fn test_class_main_wrong_shape_instance_fn_errors() {
+        // `fn main` (instance) instead of `fnc main` (static) must hard
+        // error, not silently fall through to a linker "undefined
+        // reference to tinox_main".
+        let src = "class Main {\n  fn main() -> Int32 {\n    return 0;\n  }\n}";
+        let msg = compile_expect_err(src);
+        assert!(msg.contains("must be declared `fnc` (static), not `fn`"), "{msg}");
+    }
+
+    #[test]
+    fn test_class_main_wrong_param_count_errors() {
+        let src = "class Main {\n  fnc main(x: Int64) -> Int32 {\n    return 0;\n  }\n}";
+        let msg = compile_expect_err(src);
+        assert!(msg.contains("must take no parameters, found 1"), "{msg}");
+    }
+
+    #[test]
+    fn test_class_main_wrong_return_type_errors() {
+        let src = "class Main {\n  fnc main() -> Int64 {\n    return 0;\n  }\n}";
+        let msg = compile_expect_err(src);
+        assert!(msg.contains("must return Int32, found i64"), "{msg}");
+    }
+
+    #[test]
+    fn test_class_main_ambiguous_entry_point_errors() {
+        // Both a top-level `fn main()` and a matching `class Main { fnc
+        // main() }` -- neither may silently win.
+        let src = "class Main {\n  fnc main() -> Int32 {\n    return 0;\n  }\n}\nfn main() -> Int32 {\n  return 0;\n}";
+        let msg = compile_expect_err(src);
+        assert!(msg.contains("ambiguous entry point"), "{msg}");
+    }
+
+    #[test]
+    fn test_class_named_main_without_main_method_is_unaffected() {
+        // A class literally named `Main` that never declares a `main`
+        // method at all is just an ordinary class -- must not be treated
+        // as an entry-point candidate and must not error.
+        let src = "class Main {\n  fnc helper() -> Int32 {\n    return 0;\n  }\n}\nfn main() -> Int32 {\n  return 0;\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("define i32 @tinox_main()"), "{ir}");
+        assert!(!ir.contains("@Main_main"), "{ir}");
+    }
+
+    // --- same-class bare `fnc` calls (issue #149 stage 2) ---
+
+    #[test]
+    fn test_same_class_bare_call_routes_through_static_dispatch() {
+        let src = "class C {\n  fnc helper(x: Int64) -> Int64 {\n    return x * 2;\n  }\n  fnc main() -> Int64 {\n    return helper(3);\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("define i64 @C_helper(i64 %x)"), "{ir}");
+        assert!(ir.contains("call i64 @C_helper(i64"), "{ir}");
+        // Must NOT emit a bare, unmangled `call i64 @helper(...)` — that
+        // would be the old broken fallthrough this feature replaces.
+        assert!(!ir.contains("@helper("), "{ir}");
+    }
+
+    #[test]
+    fn test_same_class_bare_call_from_within_lambda_body() {
+        // A lambda literal lexically nested inside a class method body gets
+        // its OWN GenCtx (gen_lambda) -- must inherit `current_struct` from
+        // the enclosing method, not default to None, or a bare same-class
+        // call made from inside the lambda emits an unmangled `call
+        // @helper(...)` (undefined symbol) instead of `@C_helper`.
+        let src = "class C {\n  fnc helper(x: Int64) -> Int64 {\n    return x * 2;\n  }\n  fnc main() -> Int64 {\n    let f = x => helper(x);\n    return f(3);\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("call i64 @C_helper"), "{ir}");
+        assert!(!ir.contains("call i64 @helper("), "{ir}");
+    }
+
+    // --- spawn targeting a class method (issue #149 stage 3) ---
+
+    #[test]
+    fn test_spawn_bare_same_class_static_target() {
+        // A bare `spawn worker(...)` inside another method of the same
+        // class must resolve `worker` to the mangled `C_worker` symbol
+        // (same-class fallback, mirroring check_call's), not emit a bare
+        // `ptrtoint ... @worker` that would leave no such symbol defined.
+        let src = "class C {\n  async fnc worker(x: Int64) -> Int64 {\n    return x;\n  }\n  fnc main() -> Int64 {\n    let h = spawn worker(1);\n    return h;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("@C_worker"), "{ir}");
+        assert!(!ir.contains("@worker to"), "{ir}");
+    }
+
+    #[test]
+    fn test_spawn_qualified_class_method_target() {
+        // `spawn ClassName::method(...)` parses as a bare EnumValue (args
+        // bundled into the node itself, no wrapping Call{func: EnumValue})
+        // -- a separate match arm from the bare-Ident case above; must
+        // resolve to the same mangled key as an ordinary `Class::method()`
+        // call.
+        let src = "class Worker {\n  async fnc run(x: Int64) -> Int64 {\n    return x;\n  }\n}\nclass C {\n  fnc main() -> Int64 {\n    let h = spawn Worker::run(1);\n    return h;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("@Worker_run"), "{ir}");
+    }
+
+    #[test]
+    fn test_spawn_top_level_free_function_still_wins() {
+        // Priority: a genuine top-level free function of the same bare
+        // name must still win over a same-class static method (matches
+        // check_call's priority, tested for ordinary calls at
+        // test_top_level_free_function_still_wins_in_codegen below).
+        let src = "async fn worker(x: Int64) -> Int64 {\n  return x;\n}\nclass C {\n  async fnc worker(x: Int64) -> Int64 {\n    return 0;\n  }\n  fnc main() -> Int64 {\n    let h = spawn worker(1);\n    return h;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("@worker to"), "{ir}");
+        assert!(!ir.contains("@C_worker to"), "{ir}");
+    }
+
+    #[test]
+    fn test_top_level_free_function_still_wins_in_codegen() {
+        // Same priority guarantee as the typecheck-side test: a genuine
+        // top-level free function must still be called directly (bare
+        // mangled name), not rerouted through the same-class static
+        // dispatch path just because a same-named class method exists.
+        let src = "fn helper() -> Int64 {\n  return 99;\n}\nclass C {\n  fnc helper() -> Int64 {\n    return 1;\n  }\n  fnc main() -> Int64 {\n    return helper();\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("call i64 @helper()"), "{ir}");
+        assert!(!ir.contains("call i64 @C_helper()"), "{ir}");
+    }
+
+    // --- Cross-module class-name collision (Bug 139) ---
+    //
+    // struct_layouts (and sibling per-class tables) are keyed by bare class
+    // name only. Two different classes sharing a bare name (as can happen
+    // once their declarations are merged from different imported modules)
+    // used to silently clobber each other's layout, producing a confusing
+    // "field not in layout of typed class" error with no hint about the
+    // real cause. Now caught explicitly at registration time.
+
+    #[test]
+    fn test_duplicate_class_name_across_modules_errors_clearly() {
+        // Two distinct classes named "Thing" -- from CodeGen::gen's point of
+        // view this is indistinguishable from two imported modules each
+        // declaring their own "Thing" (the real-world trigger), since gen()
+        // only ever sees the already-merged decl list either way.
+        let src = "class Thing {\n  var a: Int64;\n  var b: Int64;\n}\nclass Thing {\n  var x: String;\n}\nclass C {\n  fnc main() -> Int64 {\n    return 0;\n  }\n}";
+        let msg = compile_expect_err(src);
+        assert!(msg.contains("Thing"), "{msg}");
+        assert!(msg.contains("two different classes"), "{msg}");
+    }
+
+    #[test]
+    fn test_no_false_positive_for_single_class_definition() {
+        // Regression guard: an ordinary single-definition class must not
+        // trip the new collision check.
+        let src = "class Thing {\n  var a: Int64;\n}\nclass C {\n  fnc main() -> Int64 {\n    let t = Thing { a: 1 };\n    return t.a;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("%class.Thing"), "{ir}");
+    }
+
+    // --- Map non-String keys (Bug 129) ---
+    //
+    // The runtime's map (`tinox_map_set`/`get`/`contains`/`remove`,
+    // runtime.c) always hashes/compares its key as a NUL-terminated C
+    // string. `inttoptr`-ing a scalar's raw bit pattern into an `i8*` (the
+    // old behavior for any non-String key) segfaults the instant the hash
+    // function dereferences it. `emit_map_key` stringifies scalar keys the
+    // same way `.toString()` does before they ever reach the runtime.
+
+    #[test]
+    fn test_map_int_key_insert_stringifies_key() {
+        let src = "class C {\n  fnc main() -> Int64 {\n    var m: Map<Int64, Int64> = Map::new();\n    m.insert(1, 100);\n    return 0;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("call i8* @tinox_int_to_string(i64"), "{ir}");
+        // The stringified key, not the raw i64 bit pattern, must feed tinox_map_set.
+        assert!(!ir.contains("inttoptr i64 1 to i8*"), "{ir}");
+    }
+
+    #[test]
+    fn test_map_bool_key_get_uses_bool_to_string() {
+        let src = "class C {\n  fnc main() -> Int64 {\n    var m: Map<Bool, Int64> = Map::new();\n    let v = m.get(true);\n    return v;\n  }\n}";
+        let ir = compile_to_ir(src);
+        assert!(ir.contains("call i8* @tinox_bool_to_string(i1"), "{ir}");
+    }
+
+    #[test]
+    fn test_map_string_key_insert_unchanged() {
+        // Regression guard: the pre-existing String-key path must still
+        // pass the key straight through as i8*, no stringify/inttoptr call.
+        let src = "class C {\n  fnc main() -> Int64 {\n    var m: Map<String, Int64> = Map::new();\n    m.insert(\"a\", 1);\n    return 0;\n  }\n}";
+        let ir = compile_to_ir(src);
+        // Every runtime function is always `declare`d regardless of use --
+        // check no CALL to the stringify helpers was emitted, not just
+        // absence of the substring (which the declare line alone satisfies).
+        assert!(!ir.contains("call i8* @tinox_int_to_string"), "{ir}");
+        assert!(!ir.contains("call i8* @tinox_bool_to_string"), "{ir}");
+    }
+
+    #[test]
+    fn test_map_int_key_index_operators_stringify_key() {
+        // `m[k]` / `m[k] = v` go through a separate codegen path
+        // (gen_index_target/gen_index_store, ExprKind::Index) from the
+        // `.get()`/`.insert()` method calls above -- same underlying bug,
+        // same fix (emit_map_key), verified independently here.
+        let src = "class C {\n  fnc main() -> Int64 {\n    var m: Map<Int64, Int64> = Map::new();\n    m[1] = 100;\n    return m[1];\n  }\n}";
+        let ir = compile_to_ir(src);
+        let count = ir.matches("call i8* @tinox_int_to_string(i64").count();
+        assert!(count >= 2, "expected both the [1]= write and the [1] read to stringify the key: {ir}");
     }
 
     // --- DWARF debug info (issue #114) ---

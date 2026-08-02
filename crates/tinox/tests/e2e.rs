@@ -40,7 +40,15 @@ fn collect_cases() -> Vec<Case> {
         })
         .filter_map(|p| {
             if p.is_dir() {
-                let entry = p.join("main.tnx");
+                // Issue #149 stage 2: a single-class case whose whole
+                // program IS `class Main { fnc main() -> Int32 }` must be
+                // named `Main.tnx` (one-class-per-file rule — the file name
+                // must match the class name exactly), unlike the older
+                // multi-class convention below where `main.tnx` is a bare
+                // driver script `import`ing sibling type files. Try the
+                // newer convention first, fall back to the legacy one.
+                let entry = p.join("Main.tnx");
+                let entry = if entry.is_file() { entry } else { p.join("main.tnx") };
                 if !entry.is_file() {
                     return None;
                 }

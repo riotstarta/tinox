@@ -15,8 +15,8 @@
 // httpConnReadN() already treats `conn_recv() <= 0` (EOF or error) as "no
 // more data" instead of blocking (runtime.c:2654, `if (got <= 0) break;`)
 // — confirmed by reading the source before relying on it here, not
-// assumed. amqp091_driver.tnx imports the real crates/tinox-core/amqp091
-// module unmodified and adds a one-line wrapper (tinoxAmqp091ReadFrame)
+// assumed. Amqp091Driver.tnx imports the real crates/tinox-core/amqp091
+// module unmodified and adds a one-line wrapper (Amqp091Driver_tinoxAmqp091ReadFrame)
 // that takes the already-wrapped conn handle and returns just the
 // frameType, so this harness doesn't need to know AmqpFrame091's struct
 // layout. build.sh compiles the driver via the real `tinox build` down to
@@ -30,12 +30,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-extern "C" int64_t tinoxAmqp091ReadFrame(int64_t conn);
+extern "C" int64_t Amqp091Driver_tinoxAmqp091ReadFrame(int64_t conn);
 extern "C" int64_t httpConnFromFd(int64_t fd);
 
 // runtime.c's main() (renamed at compile time, see build.sh) calls into
 // tinox_main() — a symbol codegen normally supplies for a real Tinox
-// program with a `fn main()`; amqp091_driver.tnx has none, so stub it
+// program with a `fn main()`; Amqp091Driver.tnx has none, so stub it
 // here. The renamed main is unreachable (libFuzzer's own main drives this
 // binary) but its body still references tinox_main, so the symbol must
 // resolve at link time regardless — same as fuzz/hpack/hpack_fuzzer.cc.
@@ -67,7 +67,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     int64_t conn = httpConnFromFd(static_cast<int64_t>(fds[1]));
     if (conn > 0) {
-        tinoxAmqp091ReadFrame(conn);
+        Amqp091Driver_tinoxAmqp091ReadFrame(conn);
     }
     // File descriptors are a much scarcer resource than the heap memory
     // this harness otherwise leaks on purpose (-DTINOX_NO_GC, see

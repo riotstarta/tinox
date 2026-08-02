@@ -21,8 +21,8 @@ against clang 22.1.8.
 |---|---|---|---|
 | JSON parser | `json/` | `jsonParse(const char*)` directly | none — `jsonParse` already takes a raw buffer |
 | ZIP reader | `zip/` | `zipEntryCount(const char*)` → `tinox_zip_parse()` | writes each input to an anonymous `O_TMPFILE`, passes `/proc/self/fd/<n>` as the path (the zip\*() functions are path-based, not buffer-based) |
-| HPACK decoder | `hpack/` | `Hpack::decode(List<Int64>, HpackDynTable)` (`crates/tinox-core/hpack/Hpack.tnx`) | `hpack_driver.tnx` imports the real module and adds a one-line `tinoxHpackDecode` wrapper; `build.sh` compiles it via the real `tinox build` to LLVM IR, then recompiles that IR with ASan/coverage instrumentation — see "HPACK: calling compiled Tinox code" below |
-| AMQP-0-9-1 frame reader | `amqp091/` | `Amqp091::readFrame(Int64)` (`crates/tinox-core/amqp091/Amqp091.tnx`) | `amqp091_driver.tnx` wraps it same as HPACK; the fuzz bytes arrive via a pre-filled, write-shutdown `socketpair()` instead of a plain buffer — see "AMQP frame readers: calling compiled Tinox code that reads from a socket" below |
+| HPACK decoder | `hpack/` | `Hpack::decode(List<Int64>, HpackDynTable)` (`crates/tinox-core/hpack/Hpack.tnx`) | `HpackDriver.tnx` imports the real module and adds a one-line `tinoxHpackDecode` wrapper method on `class HpackDriver`; `build.sh` compiles it via the real `tinox build` to LLVM IR, then recompiles that IR with ASan/coverage instrumentation — see "HPACK: calling compiled Tinox code" below |
+| AMQP-0-9-1 frame reader | `amqp091/` | `Amqp091::readFrame(Int64)` (`crates/tinox-core/amqp091/Amqp091.tnx`) | `Amqp091Driver.tnx` wraps it same as HPACK; the fuzz bytes arrive via a pre-filled, write-shutdown `socketpair()` instead of a plain buffer — see "AMQP frame readers: calling compiled Tinox code that reads from a socket" below |
 | AMQP-1.0 frame reader | `amqp10/` | `Amqp10::readFrame(Int64)` (`crates/tinox-core/amqp10/Amqp10.tnx`) | same socketpair bridging as `amqp091/` |
 
 JSON and ZIP call straight into the real `runtime/runtime.c`; HPACK,
@@ -41,22 +41,24 @@ function in `runtime.c` to call directly the way JSON/ZIP do. HPACK's
 dependency, unlike AMQP/HTTP2 frame parsing (see "Extending to other
 parsers" below).
 
-To fuzz it: `fuzz/hpack/hpack_driver.tnx` imports `tinox.core.hpack` and
-adds one wrapper function, `tinoxHpackDecode(bytes: List<Int64>) -> Int64`.
-`tinox build` compiles this down to plain LLVM IR with a predictable
-exported symbol (`@tinoxHpackDecode`, `i64* -> i64` — Tinox top-level
-functions keep their literal name, and a `List<Int64>` value is just an
-`i64*` pointer to the `{len, cap, data}` handle `runtime.c`'s `TinoxArray`
-uses). `tinox build` always tries to link a full executable and fails at
-that final step (`hpack_driver.tnx` has no `main()`, so there's no
-`tinox_main` for `runtime.c`'s `main()` to call) — that failure is expected
-and harmless; `build.sh` only needs the `.ll` it leaves behind before the
-failing link. `build.sh` then recompiles that IR with
+To fuzz it: `fuzz/hpack/HpackDriver.tnx` imports `tinox.core.hpack` and
+adds one wrapper method, `class HpackDriver { fnc tinoxHpackDecode(bytes:
+List<Int64>) -> Int64 { ... } }`. `tinox build` compiles this down to
+plain LLVM IR with a predictable exported symbol — since issue #149
+(mandatory class-qualified functions, no top-level `fn`), that's the
+mangled `@HpackDriver_tinoxHpackDecode` (`{ClassName}_{methodName}`, `tinox`'s
+static-method mangling convention), `i64* -> i64` (a `List<Int64>` value is
+just an `i64*` pointer to the `{len, cap, data}` handle `runtime.c`'s
+`TinoxArray` uses). `tinox build` always tries to link a full executable
+and fails at that final step (`HpackDriver.tnx` has no `class Main`, so
+there's no `tinox_main` for `runtime.c`'s `main()` to call) — that failure
+is expected and harmless; `build.sh` only needs the `.ll` it leaves behind
+before the failing link. `build.sh` then recompiles that IR with
 `-fsanitize=fuzzer-no-link,address` (`tinox build`'s own clang/opt/llc
 pipeline adds neither ASan nor coverage instrumentation) and links it with
 an ASan-instrumented `runtime.c` (renamed `main`, same as JSON/ZIP) plus
 `hpack_fuzzer.cc`, which builds the input `TinoxArray` directly and calls
-`tinoxHpackDecode`.
+`HpackDriver_tinoxHpackDecode`.
 
 This generalizes to any other buffer-in/buffer-out Tinox stdlib function,
 not just HPACK — the driver-module + recompiled-IR pattern doesn't care
@@ -72,9 +74,10 @@ README: they don't take a buffer, they read directly off a `conn` handle
 which loops on `conn_recv()` until it gets N bytes or hits EOF (checked
 in the source, not assumed, before relying on it here). So the driver
 can't be a plain `(List<Int64>) -> X` wrapper like `tinoxHpackDecode` —
-`amqp091_driver.tnx`/`amqp10_driver.tnx` instead wrap
-`fn tinoxAmqpXXXReadFrame(conn: Int64) -> Int64`, taking an
-already-open conn handle and returning just the `frameType`.
+`Amqp091Driver.tnx`/`Amqp10Driver.tnx` instead wrap
+`fnc tinoxAmqpXXXReadFrame(conn: Int64) -> Int64` as a static method of
+`class Amqp091Driver`/`class Amqp10Driver`, taking an already-open conn
+handle and returning just the `frameType`.
 
 The fuzzer harness (`amqp091_fuzzer.cc`/`amqp10_fuzzer.cc`) builds that
 conn handle from a `socketpair(AF_UNIX, SOCK_STREAM, ...)`: write the

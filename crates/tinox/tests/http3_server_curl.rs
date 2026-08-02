@@ -1,6 +1,6 @@
 //! tinox.core.http3_server.Http3Server (HTTP/3 over QUIC, RFC 9114).
 //!
-//! Compiles examples/http3_hello.tnx (an infinite listen() loop — never
+//! Compiles examples/http3_hello/Main.tnx (an infinite listen() loop — never
 //! returns, like the WebSocket example), runs it as a background process,
 //! then drives it with the SYSTEM'S OWN curl over a real QUIC connection
 //! (--http3-only) rather than a hand-rolled client, per this project's
@@ -64,7 +64,7 @@ fn http3_get_post_and_concurrent_requests() {
 
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let src = root.join("examples/http3_hello.tnx");
+    let src = root.join("examples/http3_hello/Main.tnx");
     let workdir = std::env::temp_dir().join(format!(
         "tinox-http3-server-curl-{}",
         std::process::id()
@@ -108,7 +108,7 @@ fn http3_get_post_and_concurrent_requests() {
         .expect("spawn server");
     let _guard = KillOnDrop(child);
 
-    // Port from examples/http3_hello.tnx's Http3Server::new(8493, ...).
+    // Port from examples/http3_hello/Main.tnx's Http3Server::new(8493, ...).
     let port = 8493;
     std::thread::sleep(Duration::from_millis(500));
 

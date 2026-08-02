@@ -1,0 +1,27 @@
+// Method-Ketten-Typisierung ist linear, nicht exponentiell (Bug 50): eine tiefe
+// Kette `c.n().n()…` verursachte O(2^n) Typecheck-Zeit, weil der Empfänger pro
+// Ebene doppelt inferiert wurde (direkt + via check_call). infer_type memoisiert
+// jetzt über die Node-Id. Eine 60-fache Kette hing zuvor praktisch (Minuten);
+// jetzt kompiliert sie sofort. Der Test verifiziert die Korrektheit des
+// Ergebnisses — die Kette liefert unverändert den erwarteten Wert.
+// expect: 42
+
+import method_chain_linear;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let c: method_chain_linear = method_chain_linear::make(42);
+        // 60-fache Method-Kette — früher exponentiell im Typecheck
+        let r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().self_().self_().self_().self_()
+                        .self_().self_().self_().self_().get();
+        println(r.toString());
+        return 0;
+    }
+}

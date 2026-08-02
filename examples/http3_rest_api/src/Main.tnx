@@ -1,0 +1,159 @@
+// A small in-memory JSON REST API (tasks: list/get/create/update/toggle
+// done/delete) served entirely over HTTP/3 -- tinox.core.http3_server's
+// Http3Server has the exact same fluent get/post/put/patch/delete/use
+// API as tinox.core.http_server.HttpServer, so this reads like any other
+// Tinox REST example; the only difference is the transport underneath
+// (QUIC instead of TCP) and that TLS is mandatory (QUIC has no plaintext
+// mode).
+//
+// `tasks` is captured by every route closure below. List<T> is a
+// reference-semantic handle (push/pop/index-assignment mutate the SAME
+// underlying buffer every closure's captured copy of the handle points
+// to), so mutating it in one request handler is visible to all the
+// others -- this is what makes a shared in-memory "database" safe here
+// without any locking (Http3Server's event loop is single-threaded).
+// A plain Int64 counter would NOT work the same way (each closure
+// captures its own independent copy of a scalar at registration time,
+// see issue #144's fix), which is why nextTaskId() below derives the
+// next id from `tasks` itself instead of a separately captured counter.
+import tinox.core.http3_server;
+import tinox.core.http_server;
+import tinox.core.json;
+import Task;
+
+class Main
+{
+    // Issue #149 stage 2: these four were free top-level functions; now
+    // static `fnc` siblings of `main`, called bare from inside main's
+    // route-closure lambdas exactly as before (resolved via check_call's
+    // same-class fallback; the lambdas inherit `current_struct` from
+    // `main`, see `gen_lambda`).
+    fnc findTaskIndex(tasks: List<Task>, id: Int64) -> Int64
+    {
+        var i: Int64 = 0;
+        while i < tasks.len()
+        {
+            if tasks[i].id == id
+            {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fnc nextTaskId(tasks: List<Task>) -> Int64
+    {
+        var maxId: Int64 = 0;
+        var i: Int64 = 0;
+        while i < tasks.len()
+        {
+            if tasks[i].id > maxId
+            {
+                maxId = tasks[i].id;
+            }
+            i = i + 1;
+        }
+        return maxId + 1;
+    }
+
+    // Removes the element at `index` in place (shift-down + pop) rather
+    // than reassigning `tasks` to a filtered copy -- reassigning the local
+    // variable inside one closure would not be visible to the other
+    // closures sharing the same original handle, only in-place mutation is.
+    fnc removeTaskAt(tasks: List<Task>, index: Int64) -> Nothing
+    {
+        var i: Int64 = index;
+        while i < tasks.len() - 1
+        {
+            tasks[i] = tasks[i + 1];
+            i = i + 1;
+        }
+        tasks.pop();
+    }
+
+    fnc notFound(ctx: HttpContext) -> Nothing
+    {
+        ctx.response.status(404).json("{\"error\":\"task not found\"}");
+    }
+
+    fnc main() -> Int32
+    {
+        let tasks: List<Task> = [
+            Task { id: 1, title: "Try tinox.core.http3_server", done: false },
+            Task { id: 2, title: "curl --http3-only this API", done: false }
+        ];
+
+        let server: Http3Server = Http3Server::new(8843, "cert.pem", "key.pem");
+
+        server.use(ctx => {
+            print(ctx.request.method + " " + ctx.request.path);
+            return true;
+        });
+
+        server.get("/tasks", ctx => {
+            ctx.response.json(Json::serialize(tasks));
+        });
+
+        server.get("/tasks/:id", ctx => {
+            let id: Int64 = ctx.request.getParam("id").toInt();
+            let idx: Int64 = findTaskIndex(tasks, id);
+            if idx < 0
+            {
+                notFound(ctx);
+                return;
+            }
+            ctx.response.json(Json::serialize(tasks[idx]));
+        });
+
+        server.post("/tasks", ctx => {
+            let incoming: Task = Json::deserialize<Task>(ctx.request.body);
+            incoming.id = nextTaskId(tasks);
+            tasks.push(incoming);
+            ctx.response.status(201).json(Json::serialize(incoming));
+        });
+
+        server.put("/tasks/:id", ctx => {
+            let id: Int64 = ctx.request.getParam("id").toInt();
+            let idx: Int64 = findTaskIndex(tasks, id);
+            if idx < 0
+            {
+                notFound(ctx);
+                return;
+            }
+            let updated: Task = Json::deserialize<Task>(ctx.request.body);
+            updated.id = id;
+            tasks[idx] = updated;
+            ctx.response.json(Json::serialize(updated));
+        });
+
+        server.patch("/tasks/:id/done", ctx => {
+            let id: Int64 = ctx.request.getParam("id").toInt();
+            let idx: Int64 = findTaskIndex(tasks, id);
+            if idx < 0
+            {
+                notFound(ctx);
+                return;
+            }
+            tasks[idx].done = !tasks[idx].done;
+            ctx.response.json(Json::serialize(tasks[idx]));
+        });
+
+        server.delete("/tasks/:id", ctx => {
+            let id: Int64 = ctx.request.getParam("id").toInt();
+            let idx: Int64 = findTaskIndex(tasks, id);
+            if idx < 0
+            {
+                notFound(ctx);
+                return;
+            }
+            removeTaskAt(tasks, idx);
+            ctx.response.status(204).text("");
+        });
+
+        print("HTTP/3 tasks API listening on https://localhost:8843 (try: curl --http3-only -k https://localhost:8843/tasks)");
+        server.listen();
+
+        return 0;
+    }
+}

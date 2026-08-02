@@ -3,9 +3,9 @@
 // technique as fuzz/amqp091/amqp091_fuzzer.cc (see its comment for the
 // full rationale) — a socketpair with all fuzz bytes pre-written and the
 // write end shut down, so httpConnReadN's `conn_recv() <= 0` EOF check
-// terminates each read loop without a feeder thread. amqp10_driver.tnx
+// terminates each read loop without a feeder thread. Amqp10Driver.tnx
 // imports the real crates/tinox-core/amqp10 module unmodified and adds a
-// one-line wrapper (tinoxAmqp10ReadFrame) returning just the frameType,
+// one-line wrapper (Amqp10Driver_tinoxAmqp10ReadFrame) returning just the frameType,
 // same shape as the HPACK/amqp091 drivers.
 
 #include <cstddef>
@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-extern "C" int64_t tinoxAmqp10ReadFrame(int64_t conn);
+extern "C" int64_t Amqp10Driver_tinoxAmqp10ReadFrame(int64_t conn);
 extern "C" int64_t httpConnFromFd(int64_t fd);
 
 extern "C" int64_t tinox_main(void) { return 0; }
@@ -40,7 +40,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     int64_t conn = httpConnFromFd(static_cast<int64_t>(fds[1]));
     if (conn > 0) {
-        tinoxAmqp10ReadFrame(conn);
+        Amqp10Driver_tinoxAmqp10ReadFrame(conn);
     }
     // See amqp091_fuzzer.cc's comment: fds must be closed every iteration
     // (unlike the heap, which this -DTINOX_NO_GC harness leaks on

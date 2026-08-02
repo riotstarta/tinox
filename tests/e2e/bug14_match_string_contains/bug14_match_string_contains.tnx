@@ -1,0 +1,4 @@
+enum bug14_match_string_contains {
+    Str(String),
+    Num(Int64),
+}

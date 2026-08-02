@@ -805,7 +805,7 @@ Measured pause times scale with live heap size, not total heap size:
 roughly 90 µs at 10k live objects (0.6 MB) up to ~31 ms at 5M live
 objects (~300 MB) on the dev machine — see
 [`benchmarks/gc_pause_results.md`](benchmarks/gc_pause_results.md) for
-full numbers and methodology (`benchmarks/bench_gc_pause.tnx`). No
+full numbers and methodology (`benchmarks/bench_gc_pause/Main.tnx`). No
 tuning knobs are currently exposed beyond
 `tinox.core.debug.Debug::gcCollect()`/`::memoryUsage()`; if a workload's
 live set is large enough for this to matter, that's the number to watch.

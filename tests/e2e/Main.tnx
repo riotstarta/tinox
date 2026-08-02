@@ -1,0 +1,35 @@
+// expect: 21
+// expect: 9
+// expect: entry point ok
+
+// Issue #149 stage 1: `class Main { fnc main() -> Int32 }` as an
+// alternative program entry point, additive alongside top-level `fn main()`
+// (which most other e2e cases still use). No top-level `fn main` exists in
+// this file — the static method below is the only entry point, wired
+// through codegen's `emit_class_main_entry_point`.
+//
+// Issue #149 stage 2: `addOne`/`helper` are also called bare (no `Main::`
+// qualifier) from `main`, and `addOne` itself calls `helper` bare too --
+// same-class static-to-static calls, resolved via check_call's
+// current_class fallback (typecheck) / emit_static_dispatch_call routed
+// through ctx.current_struct (codegen), not the flat free-function table.
+class Main
+{
+    fnc helper(x: Int64) -> Int64
+    {
+        return x * 2;
+    }
+
+    fnc addOne(x: Int64) -> Int64
+    {
+        return helper(x) + 1;
+    }
+
+    fnc main() -> Int32
+    {
+        println(Main::helper(10) + 1);
+        println(addOne(4));
+        println("entry point ok");
+        return 0;
+    }
+}

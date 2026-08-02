@@ -1,0 +1,18 @@
+// Bug 6: Enum-Felder in Structs über Modulgrenzen waren korrupt
+// expect: 42
+// expect: hi
+import _bug06_mod;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let r = Wrapped::makeWrapped();
+        println(r.tag);
+        match r.value {
+            SVal(s) => println(s);
+            NullVal => println("null");
+            _ => println("-");
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,30 @@
+// Bug 63: Integer-Division/Modulo durch Null war nur im Binary-Op-Pfad für i64
+// gecheckt (Bug 56). Kleine Int-Breiten (i32/i16/i8) und ALLE CompoundAssign-Pfade
+// (`/=`, `%=`, auch für i64) nutzten weiter rohes sdiv/srem → LLVM-UB (Müll). Ein
+// gemeinsamer Helper emit_checked_idiv deckt jetzt jede Kombination ab: i64 direkt
+// checked, kleine Ints per widen→check→narrow. Hier die gültigen Pfade (die
+// Div-durch-Null-Aborts sind via Fuzz verifiziert — ein e2e-Test kann keinen
+// erwarteten Abort ausdrücken).
+// expect: 14
+// expect: 2
+// expect: 12,2
+// expect: 5
+
+class Main
+{
+    fnc main() -> Int32 {
+        // Binary-Op, i32
+        let a: Int32 = 100;
+        println((a / 7).toString());        // 14
+        println((a % 7).toString());        // 2
+
+        // Binary-Op, i64
+        println((100 / 8).toString() + "," + (100 % 7).toString());  // 12,2
+
+        // CompoundAssign, i64 + i32
+        var x: Int64 = 17;
+        x /= 3;                              // 5
+        println(x.toString());               // 5
+        return 0;
+    }
+}

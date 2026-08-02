@@ -1,0 +1,22 @@
+// Bug 64: ein no-arg Lambda (fnc() -> T) MIT Capture erzeugte `(, i64*)` als
+// Signatur (führendes Komma bei 0 deklarierten Params + Capture-Env-Param) →
+// ungültiges IR / ICE. Der Capture-Param bekommt das Komma jetzt nur bei nicht-
+// leerer Param-Liste.
+// expect: 1
+// expect: 30
+class Main
+{
+    fnc main() -> Int32 {
+        // no-arg capture (by-value): erfasst den Wert zum Definitionszeitpunkt
+        var counter: Int64 = 1;
+        let getCounter: fnc() -> Int64 = fnc() -> Int64 { return counter; };
+        counter = 99;
+        println(getCounter().toString());   // 1 (by-value capture)
+        // no-arg mit mehreren Captures
+        let a: Int64 = 10;
+        let b: Int64 = 20;
+        let sum: fnc() -> Int64 = fnc() -> Int64 { return a + b; };
+        println(sum().toString());           // 30
+        return 0;
+    }
+}

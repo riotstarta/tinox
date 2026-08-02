@@ -544,8 +544,11 @@ fn emit_case(s: &Smoke) -> (String, String) {
     for imp in s.imports {
         src.push_str(&format!("import {imp};\n"));
     }
+    // Issue #149 stage 3: no top-level `fn` allowed anymore -- wrap in the
+    // fixed `class Main { fnc main() -> Int32 }` entry-point shape
+    // codegen's `emit_class_main_entry_point` requires.
     src.push_str(&format!(
-        "\nfn main() -> Int32 {{\n    {}\n    return 0;\n}}\n",
+        "\nclass Main {{\n    fnc main() -> Int32 {{\n    {}\n    return 0;\n    }}\n}}\n",
         s.body
     ));
     (name, src)
@@ -638,7 +641,13 @@ fn generate_all(shard: usize) -> PathBuf {
     fs::create_dir_all(&dir).expect("mkdir smoke dir");
     for s in SMOKES {
         let (name, src) = emit_case(s);
-        fs::write(dir.join(format!("{name}.tnx")), src).expect("write case");
+        // Issue #149 stage 3: `class Main` (see emit_case) requires the
+        // file to be named exactly `Main.tnx` (one-class-per-file rule) --
+        // each case gets its own subdirectory, same convention e2e.rs uses
+        // for directory-based cases.
+        let case_dir = dir.join(&name);
+        fs::create_dir_all(&case_dir).expect("mkdir case dir");
+        fs::write(case_dir.join("Main.tnx"), src).expect("write case");
     }
     dir
 }
@@ -652,7 +661,14 @@ fn run_shard(shard: usize, num_shards: usize) {
             continue;
         }
         let name = format!("stdlib_smoke_{}", s.key);
-        let case = parse_case(&dir.join(format!("{name}.tnx")));
+        // `parse_case` sets `case.name` from the file stem ("Main") --
+        // override back to the unique per-case name, since `run_case`
+        // (crates/tinox/tests/common/mod.rs) derives the isolated workdir
+        // path AND the output binary name from `case.name`; leaving it as
+        // "Main" for every case would collide across the concurrently-run
+        // cases sharing one process id.
+        let mut case = parse_case(&dir.join(&name).join("Main.tnx"));
+        case.name = name.clone();
         let known_bad = KNOWN_BROKEN.contains(&s.key);
         match run_case(&case) {
             Ok(()) if known_bad => stale_entries.push(s.key.to_string()),

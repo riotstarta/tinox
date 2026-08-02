@@ -1,0 +1,33 @@
+// Bug 5: match-gebundene List/Map-Referenzen waren korrupt
+// expect: 3
+// expect: 60
+// expect: 1
+// expect: 7
+import bug05_match_list_map;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let a = bug05_match_list_map::Arr([10, 20, 30]);
+        match a {
+            Arr(xs) => {
+                println(xs.len());
+                var s = 0;
+                for x in xs { s += x; }
+                println(s);
+            }
+            _ => println("-");
+        }
+        var m: Map<String, Int64> = Map::new();
+        m.insert("k", 7);
+        let o = bug05_match_list_map::Obj(m);
+        match o {
+            Obj(mm) => {
+                println(mm.len());
+                println(mm.get("k"));
+            }
+            _ => println("-");
+        }
+        return 0;
+    }
+}

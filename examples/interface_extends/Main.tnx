@@ -1,0 +1,15 @@
+import IShape;
+import IDrawable;
+import Circle;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let c = Circle {};
+        let d: IDrawable = c;
+        d.draw();
+        println(d.area());
+        return 0;
+    }
+}

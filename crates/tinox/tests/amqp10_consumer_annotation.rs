@@ -38,7 +38,9 @@ const FAKE_BROKER_SRC: &str = r#"
 import tinox.core.amqp10;
 import tinox.core.socket;
 
-fn main() -> Int32 {
+class Main
+{
+fnc main() -> Int32 {
     let srv = httpServerCreate(5873);
     if srv < 0 {
         println("bind fehlgeschlagen");
@@ -105,6 +107,7 @@ fn main() -> Int32 {
     httpConnClose(sconn);
     httpServerClose(srv);
     return 0;
+}
 }
 "#;
 
@@ -205,7 +208,11 @@ fn amqp10_consumer_annotation_receives_and_acks() {
     let _ = std::fs::remove_dir_all(&workdir);
     std::fs::create_dir_all(&workdir).expect("mkdir workdir");
 
-    let broker_src_path = workdir.join("fake_broker.tnx");
+    // Issue #149 stage 3: `class Main` (see FAKE_BROKER_SRC above) must
+    // live in a file named exactly `Main.tnx` (one-class-per-file).
+    let broker_src_dir = workdir.join("fake_broker_src");
+    std::fs::create_dir_all(&broker_src_dir).expect("mkdir fake_broker src dir");
+    let broker_src_path = broker_src_dir.join("Main.tnx");
     std::fs::write(&broker_src_path, FAKE_BROKER_SRC).expect("write fake broker source");
 
     let broker_exe = build(tinox, &broker_src_path, &workdir, "fake_broker");

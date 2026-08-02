@@ -1,0 +1,96 @@
+// Regression test for a bug found by fuzz/amqp091 (issue #111): a peer
+// sending an AMQP-0-9-1 frame header that DECLARES a large payload size
+// but never actually delivers it (or closes the connection early) used to
+// make Amqp091::readFrame's underlying httpConnReadN pre-allocate a
+// buffer sized to the DECLARED size upfront, before any of those bytes
+// were confirmed to exist on the wire — a 7-byte header claiming ~1MB
+// triggered an ~8MB allocation regardless of how little data actually
+// arrived (worse at the 16MB cap: ~128MB from 7 bytes on the wire). Fixed
+// in runtime.c's httpConnReadN by capping the initial allocation to the
+// read loop's own chunk size (4096) and letting the existing amortized
+// push-based growth handle the rest, bounding the allocation by bytes
+// actually received instead of by the peer's bare claim.
+//
+// This test only asserts the functional contract still holds (a
+// short/never-delivered declared payload is still correctly reported as
+// a bad frame, promptly, not a hang) — the allocation-bound fix itself is
+// only observable under ASan/fuzzing (see fuzz/amqp091/), not from Tinox
+// source. Two separate connections/ports (not two frames on one
+// connection) to avoid any accept-ordering ambiguity between the spawned
+// feeders and the main thread's connects.
+// expect: ok-short-declared-frame
+// expect: ok-huge-declared-size-rejected
+
+import tinox.core.amqp091;
+import tinox.core.socket;
+
+class Main
+{
+
+    async fnc feederShort(srv: Int64) -> Int64 {
+        let sconn = httpServerAcceptConnHandle(srv);
+        // Header declares a 1MB payload, but the connection is closed right
+        // after sending just the 7-byte header — no payload bytes follow.
+        let w = AmqpWriter091::new();
+        w.octet(1);       // frameType
+        w.short(0);       // chanId
+        w.long(1000000);  // declared size: 1MB, never actually sent
+        httpConnWriteBytes(sconn, w.bytes);
+        httpConnClose(sconn);
+        return 0;
+    }
+
+
+
+    async fnc feederHuge(srv: Int64) -> Int64 {
+        let sconn = httpServerAcceptConnHandle(srv);
+        let w = AmqpWriter091::new();
+        w.octet(1);
+        w.short(0);
+        w.long(16777217); // 1 byte over readFrame's own 16MB cap
+        httpConnWriteBytes(sconn, w.bytes);
+        httpConnClose(sconn);
+        return 0;
+    }
+
+
+    fnc main() -> Int32 {
+        let srv1 = httpServerCreate(47637);
+        if srv1 < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle1 = spawn feederShort(srv1);
+
+        let cfd1 = socketCreateTcp();
+        socketConnect(cfd1, "127.0.0.1", 47637);
+        let cconn1 = httpConnFromFd(cfd1);
+        let f1 = Amqp091::readFrame(cconn1);
+        if f1.frameType == -1 {
+            println("ok-short-declared-frame");
+        }
+        httpConnClose(cconn1);
+        await handle1;
+        httpServerClose(srv1);
+
+        let srv2 = httpServerCreate(47638);
+        if srv2 < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle2 = spawn feederHuge(srv2);
+
+        let cfd2 = socketCreateTcp();
+        socketConnect(cfd2, "127.0.0.1", 47638);
+        let cconn2 = httpConnFromFd(cfd2);
+        let f2 = Amqp091::readFrame(cconn2);
+        if f2.frameType == -2 {
+            println("ok-huge-declared-size-rejected");
+        }
+        httpConnClose(cconn2);
+        await handle2;
+        httpServerClose(srv2);
+
+        return 0;
+    }
+}

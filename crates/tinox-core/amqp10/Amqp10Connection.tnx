@@ -229,24 +229,25 @@ namespace tinox.core.amqp10
         {
             return Amqp10Connection::connect(this.host, this.port, this.user, this.pass);
         }
-    }
 
-    /*
-     * Hintergrund-Schleife fuer Amqp10Connection::startHeartbeat() — als
-     * freie Funktion statt Instanzmethode, weil spawn eine eigenstaendige
-     * Funktion braucht (kein spawnbarer this-gebundener Methodenaufruf);
-     * `conn` ist dieselbe (Referenz-)Instanz wie beim Aufrufer, Mutationen
-     * an conn.heartbeatRunning sind fuer beide Threads sichtbar (Class-
-     * Instanzen sind Heap-Objekte).
-     */
-    async fn amqp10HeartbeatLoop(conn: Amqp10Connection, intervalMs: Int64) -> Int64
-    {
-        while conn.heartbeatRunning {
-            sleep_ms(intervalMs);
-            if conn.heartbeatRunning {
-                conn.sendHeartbeat();
+        /*
+         * Hintergrund-Schleife fuer startHeartbeat() — als STATISCHE
+         * Methode statt Instanzmethode, weil spawn keinen spawnbaren
+         * this-gebundenen Methodenaufruf kennt (nur eine eigenstaendige
+         * Funktion oder — seit Issue #149 stage 3 — eine statische
+         * Methode); `conn` ist dieselbe (Referenz-)Instanz wie beim
+         * Aufrufer, Mutationen an conn.heartbeatRunning sind fuer beide
+         * Threads sichtbar (Class-Instanzen sind Heap-Objekte).
+         */
+        async fnc amqp10HeartbeatLoop(conn: Amqp10Connection, intervalMs: Int64) -> Int64
+        {
+            while conn.heartbeatRunning {
+                sleep_ms(intervalMs);
+                if conn.heartbeatRunning {
+                    conn.sendHeartbeat();
+                }
             }
+            return 1;
         }
-        return 1;
     }
 }

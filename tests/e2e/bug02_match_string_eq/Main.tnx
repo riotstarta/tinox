@@ -1,0 +1,27 @@
+// Bug 2: == auf match-gebundenen Strings gab immer false
+// expect: eq
+// expect: neq
+import bug02_match_string_eq;
+
+class Main
+{
+    fnc same(a: bug02_match_string_eq, b: bug02_match_string_eq) -> Bool {
+        match a {
+            Str(sv) => {
+                match b {
+                    Str(bs) => return sv == bs;
+                    _ => return false;
+                }
+            }
+            _ => return false;
+        }
+    }
+
+
+    fnc main() -> Int32 {
+        let x = "he" + "llo";
+        if same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str(x)) { println("eq"); } else { println("-"); }
+        if same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str("world")) { println("-"); } else { println("neq"); }
+        return 0;
+    }
+}

@@ -1,18 +1,24 @@
 // libFuzzer harness for the HPACK decoder (crates/tinox-core/hpack).
 // Unlike JSON/ZIP, HPACK decoding is written in Tinox itself, not
 // runtime.c, so there is no plain C parse(bytes) entry point to call
-// directly. hpack_driver.tnx imports the real Hpack.tnx module unmodified
-// and adds a one-line wrapper (tinoxHpackDecode); build.sh compiles that
-// driver down to LLVM IR via the real `tinox build`, then recompiles the
-// emitted IR with ASan + libFuzzer coverage instrumentation (tinox build's
-// own clang/opt/llc pipeline adds neither) and links it with runtime.c
-// here. No copy of the HPACK parsing logic to keep in sync.
+// directly. HpackDriver.tnx imports the real Hpack.tnx module unmodified
+// and adds a one-line wrapper method (tinoxHpackDecode); build.sh compiles
+// that driver down to LLVM IR via the real `tinox build`, then recompiles
+// the emitted IR with ASan + libFuzzer coverage instrumentation (tinox
+// build's own clang/opt/llc pipeline adds neither) and links it with
+// runtime.c here. No copy of the HPACK parsing logic to keep in sync.
+//
+// Issue #149 stage 3: tinoxHpackDecode is now a static method of `class
+// HpackDriver` (Tinox no longer allows top-level free functions), which
+// mangles its compiled LLVM symbol to `HpackDriver_tinoxHpackDecode` --
+// this extern declaration/call must track that mangled name exactly, since
+// the link is a plain symbol reference with no indirection.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 
-extern "C" int64_t tinoxHpackDecode(int64_t *bytes);
+extern "C" int64_t HpackDriver_tinoxHpackDecode(int64_t *bytes);
 
 // Same layout as runtime.c's TinoxArray ({len, cap, data}) — a Tinox
 // List<Int64> value IS a pointer to this struct (see fuzz/README.md /
@@ -25,7 +31,7 @@ struct TinoxArray {
 
 // runtime.c's main() (renamed at compile time, see build.sh) calls into
 // tinox_main() — a symbol codegen normally supplies for a real Tinox
-// program with a `fn main()`; hpack_driver.tnx has none, so stub it here.
+// program with a `fn main()`; HpackDriver.tnx has none, so stub it here.
 // The renamed main is unreachable (libFuzzer's own main drives this
 // binary) but its body still references tinox_main, so the symbol must
 // resolve at link time regardless — same as fuzz/json/json_fuzzer.cc.
@@ -52,7 +58,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     arr->cap = (int64_t)size;
     arr->data = elems;
 
-    tinoxHpackDecode((int64_t *)arr);
+    HpackDriver_tinoxHpackDecode((int64_t *)arr);
 
     free(elems);
     free(arr);

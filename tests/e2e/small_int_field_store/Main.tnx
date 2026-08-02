@@ -1,0 +1,21 @@
+// Bug 62: ein i32/i16/i8-Wert (z.B. ein Int32-Parameter), in ein Feld oder Array
+// gespeichert, erzeugte `store i64 %v` mit einem i32-Wert → type-mismatched IR
+// (ICE). coerce_to_i64 ließ kleine Int-Breiten unverändert durch (else → val);
+// jetzt werden sie per sext auf i64 (den 8-Byte-Slot) erweitert.
+// Aufgedeckt beim Testen von Bug 61.
+// expect: 1000
+// expect: 42
+// expect: 1001
+
+import small_int_field_store;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let c: small_int_field_store = small_int_field_store::make(1000, 42);   // i32/i16-Parameter im Feld-Store
+        println(c.n.toString());         // 1000
+        println(c.m.toString());         // 42
+        println((c.n + 1).toString());   // 1001
+        return 0;
+    }
+}

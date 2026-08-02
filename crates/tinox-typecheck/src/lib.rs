@@ -463,6 +463,11 @@ pub struct TypeChecker {
     /// Typargument-Inferenz am Call-Site (`Box::make(42)` → T=Int) braucht es
     /// die volle Form als Bindungsquelle.
     generic_method_param_types: HashMap<String, (Vec<ValueType>, Vec<String>)>,
+    /// class_name -> its own+inherited declared field names, in declaration
+    /// order. Used by the `StructLiteral` check (Bug 130) to catch a
+    /// literal that omits a required field at compile time instead of
+    /// leaving the corresponding heap slot as uninitialized garbage.
+    class_fields: HashMap<String, Vec<String>>,
 }
 
 impl TypeChecker {
@@ -1153,6 +1158,7 @@ impl TypeChecker {
             method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
             generic_method_param_types: HashMap::new(),
+            class_fields: HashMap::new(),
         }
     }
 
@@ -1344,6 +1350,10 @@ impl TypeChecker {
                         self.symbols.variables.insert(key.clone(), (ty, true));
                         self.field_visibility.insert(key, field.visibility.clone());
                     }
+                    self.class_fields.insert(
+                        c.name.clone(),
+                        c.fields.iter().map(|f| f.name.clone()).collect(),
+                    );
                     if c.annotations.iter().any(|a| a.name == "Log") {
                         let key = format!("{}.log", c.name);
                         self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string(), vec![]), false));
@@ -1798,6 +1808,10 @@ impl TypeChecker {
                                 self.field_visibility
                                     .entry(child_key)
                                     .or_insert_with(|| field.visibility.clone());
+                                let child_fields = self.class_fields.entry(name.clone()).or_default();
+                                if !child_fields.contains(&field.name) {
+                                    child_fields.push(field.name.clone());
+                                }
                             }
 
                             for method in &pc.methods {
@@ -2652,6 +2666,43 @@ impl TypeChecker {
                     }
                     _ => vec![],
                 };
+                // Bug 130: a struct literal that omits a declared field left the
+                // corresponding heap slot as uninitialized garbage at runtime
+                // (codegen only stores the fields actually present in the
+                // literal) — catch it here instead. Generic classes stay
+                // permissive (no registered field declarations to check
+                // against, same rationale as the FieldAccess check above).
+                if !self.generic_class_names.contains(name) {
+                    if let Some(all_fields) = self.class_fields.get(name).cloned() {
+                        let given: HashSet<&str> =
+                            fields.iter().map(|(n, _)| n.as_str()).collect();
+                        let missing: Vec<&str> = all_fields
+                            .iter()
+                            .map(|s| s.as_str())
+                            .filter(|f| !given.contains(f))
+                            .collect();
+                        if !missing.is_empty() {
+                            self.errors.push(Error::new(
+                                expr.span,
+                                format!(
+                                    "struct literal for '{}' is missing field(s): {}",
+                                    name,
+                                    missing.join(", ")
+                                ),
+                            ));
+                        }
+                        let declared: HashSet<&str> =
+                            all_fields.iter().map(|s| s.as_str()).collect();
+                        for (fname, _) in fields {
+                            if !declared.contains(fname.as_str()) {
+                                self.errors.push(
+                                    TypeError::FieldNotFound(name.clone(), fname.clone(), expr.span)
+                                        .to_error(),
+                                );
+                            }
+                        }
+                    }
+                }
                 ValueType::Named(name.clone(), targs)
             }
             ExprKind::Block(stmts) => {
@@ -2883,82 +2934,8 @@ impl TypeChecker {
                 // enum-variant fallback (which misread every zero-arg instance method
                 // called via `::` as a bare enum-variant construction returning
                 // Named(ClassName): "expected Int64, found Debug").
-                let static_key = format!("{}_{}", enum_name, variant);
-                if let Some(sig) = self.symbols.functions.get(&static_key).cloned() {
-                    for arg in args { self.infer_type(arg); }
-                    // Argument-count check (Bug 46/47). Instance methods (`fn`) carry
-                    // a leading synthetic "self" param and are called via one of two
-                    // Bug-38 styles. The receiver-as-self vs receiver-as-explicit-
-                    // param distinction is NOT statically decidable in general — a
-                    // method that ignores its receiver (`fn label() { return "x"; }`,
-                    // called `C::label(obj)`) and a pure namespace helper
-                    // (`Hex::encode(data)`, called with no object) both lack `this`
-                    // yet need different counts. So stay permissive there. But a
-                    // method that USES `this` provably needs the receiver → the count
-                    // is exactly declared+1 (Bug 47: catches `C::m()` forgetting the
-                    // object, which would deref a null self at runtime).
-                    // Static methods (`fnc`) have no self: exactly declared.
-                    let is_instance = sig.params.first().map(|(n, _)| n == "self").unwrap_or(false);
-                    let declared = if is_instance { sig.params.len().saturating_sub(1) } else { sig.params.len() };
-                    let uses_this = is_instance && self.method_uses_this.contains(&static_key);
-                    let count_ok = if !is_instance {
-                        args.len() == declared
-                    } else if uses_this {
-                        args.len() == declared + 1
-                    } else {
-                        args.len() == declared || args.len() == declared + 1
-                    };
-                    if !count_ok {
-                        let expected = if uses_this { declared + 1 } else { declared };
-                        self.errors.push(
-                            TypeError::InvalidArgumentCount {
-                                expected,
-                                found: args.len(),
-                                span: expr.span,
-                            }
-                            .to_error(),
-                        );
-                    }
-                    // B2 Schritt 2 — Typargument-Inferenz für nicht-annotierte
-                    // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
-                    // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
-                    // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
-                    // Nur aktiv, wenn der Rückgabetyp Typ-Params enthält UND
-                    // die Unifikation ALLE auflöst; sonst exakt das bisherige
-                    // Verhalten (sig.return_type).
-                    if let Some((param_tys, tparams)) =
-                        self.generic_method_param_types.get(&static_key).cloned()
-                    {
-                        if Self::contains_type_param(&sig.return_type, &tparams) {
-                            let arg_tys: Vec<ValueType> =
-                                args.iter().map(|a| self.infer_type(a)).collect();
-                            // Empfänger-Ausrichtung (Bug 38, zwei Call-Stile):
-                            // args deckungsgleich mit params (Empfänger dabei)
-                            // oder um den self-Param verschoben (namespace-Stil).
-                            let aligned: Option<&[ValueType]> =
-                                if arg_tys.len() == param_tys.len() {
-                                    Some(&param_tys[..])
-                                } else if arg_tys.len() + 1 == param_tys.len() {
-                                    Some(&param_tys[1..])
-                                } else {
-                                    None
-                                };
-                            if let Some(ps) = aligned {
-                                let mut bindings: HashMap<String, ValueType> = HashMap::new();
-                                for (p, a) in ps.iter().zip(arg_tys.iter()) {
-                                    Self::unify_param(p, a, &tparams, &mut bindings);
-                                }
-                                let resolved =
-                                    Self::substitute_bindings(&sig.return_type, &bindings);
-                                if !Self::contains_type_param(&resolved, &tparams)
-                                    && !self.contains_scoped_type_param(&resolved)
-                                {
-                                    return resolved;
-                                }
-                            }
-                        }
-                    }
-                    return sig.return_type.clone();
+                if let Some(ty) = self.check_class_method_call(enum_name, variant, args, expr.span) {
+                    return ty;
                 }
                 // Type check all arguments
                 for arg in args {
@@ -3054,6 +3031,100 @@ impl TypeChecker {
         }
     }
 
+    /// Resolves a call against the static/instance method registered under
+    /// `"{class_name}_{method_name}"` in `symbols.functions` — the same
+    /// mangled key both `fnc`/`fn` class methods register under (see
+    /// `check_class`) and `ClassName::method(...)` calls look up. Shared by
+    /// the `ExprKind::EnumValue` (`::`) call path and `check_call`'s
+    /// same-class bare-name fallback (issue #149 stage 2) so both apply the
+    /// identical self-vs-static argument-count rules (Bug 46/47/38) instead
+    /// of two copies of this logic drifting apart. Returns `None` when no
+    /// such method is registered, letting the caller fall through to
+    /// whatever it does next (enum-variant construction, "undefined
+    /// function", etc.) — this function does not itself report "not
+    /// found".
+    fn check_class_method_call(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Option<ValueType> {
+        let static_key = format!("{}_{}", class_name, method_name);
+        let sig = self.symbols.functions.get(&static_key).cloned()?;
+        for arg in args {
+            self.infer_type(arg);
+        }
+        // Argument-count check (Bug 46/47). Instance methods (`fn`) carry
+        // a leading synthetic "self" param and are called via one of two
+        // Bug-38 styles. The receiver-as-self vs receiver-as-explicit-
+        // param distinction is NOT statically decidable in general — a
+        // method that ignores its receiver (`fn label() { return "x"; }`,
+        // called `C::label(obj)`) and a pure namespace helper
+        // (`Hex::encode(data)`, called with no object) both lack `this`
+        // yet need different counts. So stay permissive there. But a
+        // method that USES `this` provably needs the receiver → the count
+        // is exactly declared+1 (Bug 47: catches `C::m()` forgetting the
+        // object, which would deref a null self at runtime).
+        // Static methods (`fnc`) have no self: exactly declared.
+        let is_instance = sig.params.first().map(|(n, _)| n == "self").unwrap_or(false);
+        let declared = if is_instance { sig.params.len().saturating_sub(1) } else { sig.params.len() };
+        let uses_this = is_instance && self.method_uses_this.contains(&static_key);
+        let count_ok = if !is_instance {
+            args.len() == declared
+        } else if uses_this {
+            args.len() == declared + 1
+        } else {
+            args.len() == declared || args.len() == declared + 1
+        };
+        if !count_ok {
+            let expected = if uses_this { declared + 1 } else { declared };
+            self.errors.push(
+                TypeError::InvalidArgumentCount {
+                    expected,
+                    found: args.len(),
+                    span,
+                }
+                .to_error(),
+            );
+        }
+        // B2 Schritt 2 — Typargument-Inferenz für nicht-annotierte
+        // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
+        // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
+        // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
+        // Nur aktiv, wenn der Rückgabetyp Typ-Params enthält UND
+        // die Unifikation ALLE auflöst; sonst exakt das bisherige
+        // Verhalten (sig.return_type).
+        if let Some((param_tys, tparams)) = self.generic_method_param_types.get(&static_key).cloned() {
+            if Self::contains_type_param(&sig.return_type, &tparams) {
+                let arg_tys: Vec<ValueType> = args.iter().map(|a| self.infer_type(a)).collect();
+                // Empfänger-Ausrichtung (Bug 38, zwei Call-Stile):
+                // args deckungsgleich mit params (Empfänger dabei)
+                // oder um den self-Param verschoben (namespace-Stil).
+                let aligned: Option<&[ValueType]> = if arg_tys.len() == param_tys.len() {
+                    Some(&param_tys[..])
+                } else if arg_tys.len() + 1 == param_tys.len() {
+                    Some(&param_tys[1..])
+                } else {
+                    None
+                };
+                if let Some(ps) = aligned {
+                    let mut bindings: HashMap<String, ValueType> = HashMap::new();
+                    for (p, a) in ps.iter().zip(arg_tys.iter()) {
+                        Self::unify_param(p, a, &tparams, &mut bindings);
+                    }
+                    let resolved = Self::substitute_bindings(&sig.return_type, &bindings);
+                    if !Self::contains_type_param(&resolved, &tparams)
+                        && !self.contains_scoped_type_param(&resolved)
+                    {
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+        Some(sig.return_type.clone())
+    }
+
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> ValueType {
         // Check if it's a simple identifier - could be function or lambda variable
         if let ExprKind::Ident(name) = &func.node {
@@ -3118,6 +3189,33 @@ impl TypeChecker {
                         self.infer_type(arg);
                     }
                     return ValueType::Any; // We don't have detailed lambda type info
+                }
+            }
+
+            // Same-class bare `fnc` call (issue #149 stage 2): a sibling
+            // STATIC method of the class currently being type-checked,
+            // called without a `ClassName::` qualifier — e.g. `helper()`
+            // instead of `Main::helper()` from inside another method of
+            // `Main`. Deliberately scoped to `self.current_class` only, not
+            // a global search across all classes: a bare name must never
+            // silently resolve to some OTHER class's method just because
+            // it happens to share a name. Deliberately static-only, not
+            // instance methods: an instance method called bare would need
+            // an implicit `this` receiver threaded through (Java-style),
+            // a different, not-yet-built feature — instance methods still
+            // require an explicit `this.method()` receiver as before.
+            if let Some(class_name) = self.current_class.clone() {
+                let static_key = format!("{}_{}", class_name, name);
+                let is_static = self
+                    .symbols
+                    .functions
+                    .get(&static_key)
+                    .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
+                    .unwrap_or(false);
+                if is_static {
+                    if let Some(ty) = self.check_class_method_call(&class_name, name, args, span) {
+                        return ty;
+                    }
                 }
             }
 
@@ -3678,6 +3776,51 @@ mod tests {
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
+    }
+
+    // --- same-class bare `fnc` calls (issue #149 stage 2) ---
+
+    #[test]
+    fn test_same_class_bare_static_call_ok() {
+        ok("class C { fnc helper(x: Int64) -> Int64 { return x * 2; } fnc main() -> Int64 { return helper(3); } }");
+    }
+
+    #[test]
+    fn test_same_class_bare_static_call_wrong_arg_count_errors() {
+        err_contains(
+            "class C { fnc helper(x: Int64) -> Int64 { return x; } fnc main() -> Int64 { return helper(); } }",
+            "argument",
+        );
+    }
+
+    #[test]
+    fn test_bare_call_does_not_resolve_to_other_class_method() {
+        // A bare call must never silently resolve to a DIFFERENT class's
+        // method just because it shares a name -- only the current class
+        // (and the flat free-function table) are consulted.
+        err_contains(
+            "class Other { fnc helper() -> Int64 { return 1; } } class C { fnc main() -> Int64 { return helper(); } }",
+            "undefined function",
+        );
+    }
+
+    #[test]
+    fn test_bare_call_does_not_resolve_to_instance_method() {
+        // Same-class bare resolution is static-only; an instance `fn`
+        // sibling still requires an explicit `this.` receiver.
+        err_contains(
+            "class C { fn helper() -> Int64 { return 1; } fnc main() -> Int64 { return helper(); } }",
+            "undefined function",
+        );
+    }
+
+    #[test]
+    fn test_top_level_free_function_wins_over_same_class_method() {
+        // Priority: a genuine top-level free function of the same bare
+        // name (still supported during the #149 migration) must win over
+        // a same-class static method of that name, matching codegen's
+        // priority (fn_sigs checked before the same-class fallback).
+        ok("fn helper() -> Int64 { return 99; } class C { fnc helper() -> Int64 { return 1; } fnc main() -> Int64 { return helper(); } }");
     }
 
     #[test]
@@ -5757,5 +5900,43 @@ class Jogger implements Runner {
     #[test]
     fn test_bitwise_ops_on_bool_err() {
         err_contains("fn f() { let x = true & false; }", "cannot be applied");
+    }
+
+    // ================================================================
+    // Struct literal missing/unknown field (Bug 130)
+    // ================================================================
+
+    #[test]
+    fn test_struct_literal_missing_field_errors() {
+        err_contains(
+            "class Point { var x: Int64; var y: Int64; var label: String; } fn f() { let p = Point { x: 1, y: 2 }; }",
+            "missing field(s): label",
+        );
+    }
+
+    #[test]
+    fn test_struct_literal_all_fields_present_ok() {
+        ok("class Point { var x: Int64; var y: Int64; var label: String; } fn f() { let p = Point { x: 1, y: 2, label: \"a\" }; }");
+    }
+
+    #[test]
+    fn test_struct_literal_unknown_field_errors() {
+        err_contains(
+            "class Point { var x: Int64; var y: Int64; } fn f() { let p = Point { x: 1, y: 2, z: 3 }; }",
+            "has no field 'z'",
+        );
+    }
+
+    #[test]
+    fn test_struct_literal_missing_inherited_field_errors() {
+        err_contains(
+            "class Animal { var name: String; } class Dog extends Animal { var breed: String; } fn f() { let d = Dog { breed: \"Lab\" }; }",
+            "missing field(s): name",
+        );
+    }
+
+    #[test]
+    fn test_struct_literal_generic_class_stays_permissive() {
+        ok("class Box<T> { var value: T; } fn f() { let b = Box { value: 42 }; }");
     }
 }

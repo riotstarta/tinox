@@ -1,0 +1,34 @@
+// Regression fuer Bug 66 (bugs.md): fromCharCode(seiteneffektbehafteter
+// Ausdruck) wertete das Argument zweimal aus (Codegen generiert alle
+// Call-Argumente generisch vor, der fromCharCode-Zweig rief gen_expr auf
+// args[0] zusaetzlich nochmal auf). Bei einem Methodenaufruf, der internen
+// State mutiert, ruckte der State doppelt vor und der erste gelesene Wert
+// ging verloren.
+// expect: A
+// expect: 1
+// expect: AB
+// expect: 2
+
+import fromcharcode_side_effect;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let c1 = fromcharcode_side_effect::new([65, 66]);
+        let ch = fromCharCode(c1.next());
+        println(ch);
+        println(c1.pos.toString());
+
+        // Schleife: zwei Zeichen lesen und zusammensetzen — deckt den
+        // urspruenglichen Fundort (String-Konkatenation in einer Schleife) ab.
+        let c2 = fromcharcode_side_effect::new([65, 66]);
+        var s: String = "";
+        for i in 0..2 {
+            s = s + fromCharCode(c2.next());
+        }
+        println(s);
+        println(c2.pos.toString());
+
+        return 0;
+    }
+}

@@ -1,0 +1,19 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Carol', 35);
+// expect: 3
+// expect: Alice
+
+import tinox.core.db;
+
+import orm_sqlite_list;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let users: List<orm_sqlite_list> = DB.of(orm_sqlite_list).list();
+        println(users.len());
+        println(users[0].name);
+        return 0;
+    }
+}

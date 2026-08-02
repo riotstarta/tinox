@@ -23,7 +23,10 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     let lengths = [0usize, 1, 7, 8, 15, 16, 17, 31, 32];
     let mut body = String::new();
     let mut expects: Vec<String> = Vec::new();
-    body.push_str("fn ident(s: String) -> String {\n    return s;\n}\n\nfn main() -> Int32 {\n");
+    // Issue #149 stage 3: no top-level `fn` allowed anymore -- `ident`
+    // becomes a sibling `fnc` in the same `class Main` as `main`, called
+    // bare exactly as before (same-class fallback).
+    body.push_str("class Main {\n    fnc ident(s: String) -> String {\n        return s;\n    }\n\n    fnc main() -> Int32 {\n");
     for (i, l) in lengths.iter().enumerate() {
         let s: String = "abcdefghijklmnopqrstuvwxyzABCDEF"[..*l].to_string();
         body.push_str(&format!("    let s{i}: String = \"{s}\";\n"));
@@ -43,11 +46,12 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
         body.push_str(&format!("    println((s{i} + \"!\").len());\n"));
         expects.push((l + 1).to_string());
     }
-    body.push_str("    return 0;\n}\n");
+    body.push_str("    return 0;\n    }\n}\n");
     out.push(("boundary_string_lengths".to_string(), body, expects));
 
     // ── Sonderzeichen ────────────────────────────────────────────────
-    let src = r##"fn main() -> Int32 {
+    let src = r##"class Main {
+    fnc main() -> Int32 {
     let hash = "# kein Raw-String";
     println(hash.len());
     println(hash);
@@ -66,6 +70,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     let tab = "a\tb";
     println(tab.len());
     return 0;
+    }
 }
 "##;
     let expects = vec![
@@ -79,7 +84,8 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     out.push(("boundary_string_special".to_string(), src.to_string(), expects));
 
     // ── Leere und 1-elementige Container ─────────────────────────────
-    let src = r#"fn main() -> Int32 {
+    let src = r#"class Main {
+    fnc main() -> Int32 {
     var e: List<Int64> = [];
     println(e.len());
     var n = 0;
@@ -102,6 +108,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     println(m.keys().len());
     if m.contains("x") { println("y"); } else { println("n"); }
     return 0;
+    }
 }
 "#;
     let expects = vec![
@@ -112,7 +119,8 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     out.push(("boundary_container_empty_one".to_string(), src.to_string(), expects));
 
     // ── Verschachtelung: 3 Ebenen Listen ─────────────────────────────
-    let src = r#"fn main() -> Int32 {
+    let src = r#"class Main {
+    fnc main() -> Int32 {
     let deep: List<List<List<Int64>>> = [[[1, 2], [3]], [[4]]];
     println(deep.len());
     println(deep[0].len());
@@ -128,6 +136,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     }
     println(total);
     return 0;
+    }
 }
 "#;
     let expects = vec![
@@ -136,7 +145,8 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     out.push(("boundary_list_nested3".to_string(), src.to_string(), expects));
 
     // ── Liste von Maps ───────────────────────────────────────────────
-    let src = r#"fn main() -> Int32 {
+    let src = r#"class Main {
+    fnc main() -> Int32 {
     var m1: Map<String, Int64> = Map::new();
     m1.insert("a", 1);
     var m2: Map<String, Int64> = Map::new();
@@ -149,13 +159,15 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     println(ms[0].get("a"));
     println(ms[1].get("c"));
     return 0;
+    }
 }
 "#;
     let expects = vec!["2".into(), "1".into(), "2".into(), "1".into(), "3".into()];
     out.push(("boundary_list_of_maps".to_string(), src.to_string(), expects));
 
     // ── Map mit Listen-Values ────────────────────────────────────────
-    let src = r#"fn main() -> Int32 {
+    let src = r#"class Main {
+    fnc main() -> Int32 {
     var m: Map<String, List<Int64>> = Map::new();
     m.insert("xs", [10, 20]);
     let xs: List<Int64> = m.get("xs");
@@ -165,6 +177,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     for x in xs { s += x; }
     println(s);
     return 0;
+    }
 }
 "#;
     let expects = vec!["2".into(), "20".into(), "30".into()];
@@ -186,7 +199,12 @@ fn generate_all(shard: usize) -> PathBuf {
         }
         src.push('\n');
         src.push_str(&body);
-        fs::write(dir.join(format!("{name}.tnx")), src).expect("write case");
+        // Issue #149 stage 3: `class Main` (see cases() above) requires the
+        // file to be named exactly `Main.tnx` -- each case gets its own
+        // subdirectory, same convention e2e.rs uses for directory cases.
+        let case_dir = dir.join(&name);
+        fs::create_dir_all(&case_dir).expect("mkdir case dir");
+        fs::write(case_dir.join("Main.tnx"), src).expect("write case");
     }
     dir
 }
@@ -197,8 +215,8 @@ fn run_shard(shard: usize, num_shards: usize) {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
-        .map(|p| p.file_stem().unwrap().to_string_lossy().to_string())
+        .filter(|p| p.is_dir())
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
     names.sort();
 
@@ -208,7 +226,12 @@ fn run_shard(shard: usize, num_shards: usize) {
         if i % num_shards != shard {
             continue;
         }
-        let case = parse_case(&dir.join(format!("{name}.tnx")));
+        // `parse_case` sets `case.name` from the file stem ("Main") --
+        // override back to the unique per-case name, same reason as
+        // stdlib_smoke.rs (workdir/output-binary collision across
+        // concurrently-run cases otherwise).
+        let mut case = parse_case(&dir.join(name).join("Main.tnx"));
+        case.name = name.clone();
         let known_bad = KNOWN_FAILURES.contains(&name.as_str());
         match run_case(&case) {
             Ok(()) if known_bad => stale.push(name.clone()),
