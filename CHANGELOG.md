@@ -2,6 +2,58 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [2.0.0] - 2026-08-02
+
+### Breaking
+
+- **Mandatory class-qualified function calls** ([#149](https://github.com/subnix-work/tinox/issues/149)).
+  A top-level `fn`/`fnc` declaration with a body is now a hard compile
+  error (`extern fn` FFI declarations stay legal). Every program needs an
+  entry point shaped exactly `class Main { fnc main() -> Int32 }`, living
+  in a file named `Main.tnx` (per the existing one-class-per-file rule).
+  A same-class bare call (`helper()` from another method of the same
+  class) is resolved automatically; a call into a *different* class still
+  needs the `ClassName::method()` form. Existing programs using top-level
+  `fn` need migrating — wrap the entry point and any free helper
+  functions in a class.
+
+### Fixed
+
+- **Memory safety**: `tinox_HttpServer_listen`'s epoll worker threads
+  could crash inside GC-managed memory under allocation-heavy
+  annotation-driven (`@GET`/`@POST`/…) routes
+  ([#140](https://github.com/subnix-work/tinox/issues/140)). Root cause:
+  several `static __thread` runtime buffers hold pointers to GC-managed
+  memory, but Boehm GC does not automatically scan thread-local storage
+  as roots — now explicitly registered via `GC_add_roots()` on every
+  thread that can run Tinox code.
+- `Map<K, V>` with a non-`String` key (`Int64`, `Bool`, …) segfaulted
+  immediately on `insert`/`get`/`contains`/`remove` and on `m[key]`
+  indexing — the key's raw bit pattern was reinterpreted as a pointer
+  instead of being stringified
+  ([#129](https://github.com/subnix-work/tinox/issues/129)).
+- A struct literal omitting a declared field (or naming an unknown one)
+  silently left the field as uninitialized garbage instead of failing to
+  compile
+  ([#130](https://github.com/subnix-work/tinox/issues/130)).
+- Two classes sharing a bare name across different imported modules
+  silently corrupted each other's codegen field layout, surfacing as a
+  confusing "field not in layout of typed class" internal error; now a
+  clear compile-time diagnostic
+  ([#139](https://github.com/subnix-work/tinox/issues/139)).
+- An `Int32`-returning call result used in a binary expression and
+  stored into an `Int32` local generated invalid LLVM IR (an `i64`/`i32`
+  type mismatch)
+  ([#150](https://github.com/subnix-work/tinox/issues/150)).
+- `resolve_entry_file` ignored `tinox.toml`'s `[package] entry` field,
+  always falling back to the hardcoded `src/main.tnx`
+  ([#152](https://github.com/subnix-work/tinox/issues/152)).
+- `fuzz/{hpack,amqp091,amqp10}/build.sh` failed to link, missing `-lz`
+  ([#151](https://github.com/subnix-work/tinox/issues/151)).
+- Verified the `@Auth` annotation's credential-validation fix (default-
+  deny without a registered `AuthValidator`) actually holds
+  ([#141](https://github.com/subnix-work/tinox/issues/141)).
+
 ## [1.0.2] - 2026-07-28
 
 Security and robustness hardening. 23 issues found by an automated
