@@ -114,6 +114,17 @@ struct IndexTarget {
     base_ty: String,
 }
 
+/// An already-evaluated instance-method receiver + extra args, ready to
+/// splice into a `call` instruction — bundled so
+/// `gen_generic_instance_method_call` takes it plus `mangled_class`/
+/// `fn_name`/`raw_args`/`ctx` instead of an 8-argument signature
+/// (clippy::too_many_arguments).
+struct EvaluatedReceiver<'a> {
+    obj_ty: &'a str,
+    obj_ptr: &'a str,
+    extra_args: &'a [(String, String)],
+}
+
 /// Bündelt die Annotation-Metadaten aus dem Typecheck für set_annotation_info —
 /// vermeidet eine 12-Parameter-Signatur (clippy::too_many_arguments).
 #[derive(Default)]
@@ -275,6 +286,20 @@ pub struct CodeGen {
     /// Generische Methoden nicht-generischer Klassen, Key "Class_method" —
     /// werden am Call-Site monomorphisiert (Json::deserialize<User>).
     generic_methods: HashMap<String, tinox_parser::Method>,
+    /// Own-type-param instance methods of a GENERIC class (`fn map<U>(...)`
+    /// on `Option<T>`), Key "MangledClass_method" (same key shape as
+    /// `generic_methods`, but this one keeps what's needed to monomorphize
+    /// BOTH the class's T and the method's own U in a single combined
+    /// substitution pass: the pristine (unsubstituted) method straight
+    /// from `generic_classes`, the original unmangled class name, and the
+    /// class-level T bindings. Deliberately NOT reusing the once-already-
+    /// T-substituted `Method` stored in `generic_methods` — that copy's
+    /// body has already had bare self-references (`Option::none()` inside
+    /// `Option<T>`'s own methods) renamed to the mangled T-specialization,
+    /// which is wrong for a node like `Option<U>::none()` where U differs
+    /// from T (see #153). Working from the pristine method and combining
+    /// T+U into one subst avoids that double-rename.
+    generic_instance_methods: HashMap<String, (String, HashMap<String, String>, tinox_parser::Method)>,
     /// Aktive Typparameter-Bindungen während der Emission einer
     /// Spezialisierung: "T" -> "User" (löst T::fromJson auf).
     type_param_aliases: HashMap<String, String>,
@@ -400,6 +425,7 @@ impl CodeGen {
             spawn_counter: 0,
             generic_fns: HashMap::new(),
             generic_methods: HashMap::new(),
+            generic_instance_methods: HashMap::new(),
             type_param_aliases: HashMap::new(),
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
@@ -7893,6 +7919,18 @@ impl CodeGen {
                     // Discard return value (lambdas return i64 but field type may say void)
                     writeln!(&mut self.ir, "{} = call i64 {}({})", result, fp, args_str).unwrap();
                     Ok((result, "i64".to_string()))
+                } else if let Some(gm_key) = declared_type
+                    .as_deref()
+                    .map(|c| format!("{}_{}", c, method))
+                    .filter(|k| self.generic_instance_methods.contains_key(k))
+                {
+                    // #153: own-type-param instance method of a generic class
+                    // (Option<T>.map<U>, .andThen<U>, or a user-defined
+                    // equivalent) — not emitted during class specialization,
+                    // monomorphize now from the actual call-site argument(s).
+                    let mangled_class = declared_type.clone().unwrap();
+                    let recv = EvaluatedReceiver { obj_ty: &obj_ty, obj_ptr: &obj_ptr, extra_args: &extra_args };
+                    self.gen_generic_instance_method_call(&mangled_class, &gm_key, args, recv, ctx)
                 } else {
                     // Direct (static) dispatch — resolve through inheritance chain.
                     let logical_name = if let Some(class) = declared_type {
@@ -11484,6 +11522,255 @@ impl CodeGen {
         }
     }
 
+    /// Structural unification: does `pattern` contain the bare type param `tp`
+    /// at some position, and if so what does `concrete`'s value at that same
+    /// position bind it to? E.g. `unify_type_param(Named("U"), String, "U")`
+    /// → `Some(String)`; `unify_type_param(Generic{"Option",[Named("U")]},
+    /// Generic{"Option",[String]}, "U")` → `Some(String)` (handles `andThen`'s
+    /// `fnc(T) -> Option<U>` shape, not just `map`'s direct `fnc(T) -> U`).
+    fn unify_type_param(
+        pattern: &tinox_parser::Type,
+        concrete: &tinox_parser::Type,
+        tp: &str,
+    ) -> Option<tinox_parser::Type> {
+        use tinox_parser::Type;
+        match pattern {
+            Type::Named(n) if n == tp => Some(concrete.clone()),
+            Type::Generic { name: pn, args: pargs } => {
+                if let Type::Generic { name: cn, args: cargs } = concrete {
+                    if pn == cn {
+                        for (pa, ca) in pargs.iter().zip(cargs.iter()) {
+                            if let Some(t) = Self::unify_type_param(pa, ca, tp) {
+                                return Some(t);
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Type::Array(pinner) => match concrete {
+                Type::Array(cinner) => Self::unify_type_param(pinner, cinner, tp),
+                _ => None,
+            },
+            Type::Fn { params: pparams, ret: pret } => match concrete {
+                Type::Fn { params: cparams, ret: cret } => {
+                    for (pp, cp) in pparams.iter().zip(cparams.iter()) {
+                        if let Some(t) = Self::unify_type_param(pp, cp, tp) {
+                            return Some(t);
+                        }
+                    }
+                    Self::unify_type_param(pret, cret, tp)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Infer concrete bindings for a method's OWN type params (e.g. `U` in
+    /// `fn map<U>(transform: fnc(T) -> U)`) from the actual call-site
+    /// arguments — needed for #153's instance-call monomorphization since,
+    /// unlike explicit `Class::method<U>(...)` static calls, instance-call
+    /// syntax (`option.map(...)`) has no syntactic slot for an explicit type
+    /// argument at all.
+    ///
+    /// For a lambda argument, unifies the param's declared `fnc(...)->R`
+    /// shape against the lambda's own annotated param/return types (Tinox
+    /// lambdas require explicit annotations, so this is always concrete, not
+    /// itself an inference problem). For a non-lambda argument, falls back to
+    /// the existing marker-based struct-type inference. Unresolved params
+    /// default to `Int64`, matching the same fallback `gen_generic_method_call`
+    /// already uses for the static-call path.
+    fn infer_own_type_params(
+        &self,
+        method: &tinox_parser::Method,
+        raw_args: &[tinox_parser::Expr],
+        ctx: &GenCtx,
+    ) -> HashMap<String, tinox_parser::Type> {
+        use tinox_parser::{ExprKind, Type};
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        for tp in &method.type_params {
+            let mut inferred: Option<Type> = None;
+            for (pi, param) in method.params.iter().enumerate() {
+                let Some(arg) = raw_args.get(pi) else { continue };
+                match &param.param_type {
+                    Type::Named(n) if n == tp => {
+                        let marker = if let ExprKind::Ident(name) = &arg.node {
+                            ctx.local_types.get(name.as_str()).cloned()
+                        } else {
+                            None
+                        }
+                        .or_else(|| self.infer_struct_type(arg, ctx));
+                        if let Some(m) = marker {
+                            inferred = Some(Self::marker_to_type(&m));
+                        }
+                    }
+                    Type::Fn { params: fn_params, ret } => {
+                        if let ExprKind::Lambda { params: lam_params, ret_type: lam_ret, .. } = &arg.node {
+                            if let Some(lr) = lam_ret {
+                                inferred = Self::unify_type_param(ret, lr, tp);
+                            }
+                            if inferred.is_none() {
+                                for (fp, lp) in fn_params.iter().zip(lam_params.iter()) {
+                                    if let Some(t) = Self::unify_type_param(fp, &lp.param_type, tp) {
+                                        inferred = Some(t);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    other => {
+                        if let Some(marker) = self.infer_struct_type(arg, ctx) {
+                            inferred = Self::unify_type_param(other, &Self::marker_to_type(&marker), tp);
+                        }
+                    }
+                }
+                if inferred.is_some() {
+                    break;
+                }
+            }
+            subst.insert(tp.clone(), inferred.unwrap_or(Type::Int64));
+        }
+        subst
+    }
+
+    /// #153: monomorphize + call an own-type-param instance method of a
+    /// generic class (`Option<T>.map<U>`, `.andThen<U>`, or any user-defined
+    /// equivalent) from ordinary instance-call syntax (`option.map(...)`).
+    ///
+    /// Combines the class's existing T binding with a freshly-inferred U
+    /// binding into ONE substitution pass over the PRISTINE (unspecialized)
+    /// method — see `generic_instance_methods`'s doc comment for why it must
+    /// be the pristine copy, and a no-op self-rename, not the class's own
+    /// `(name, mangled_name)` pair `substitute_class` uses — this method
+    /// legitimately constructs the SAME class at a DIFFERENT type argument
+    /// (`Option<U>::some(...)` inside `Option<T>.map<U>`), which the
+    /// class-level rename would otherwise incorrectly collapse onto T's
+    /// specialization instead of U's.
+    fn gen_generic_instance_method_call(
+        &mut self,
+        mangled_class: &str,
+        fn_name: &str,
+        raw_args: &[tinox_parser::Expr],
+        recv: EvaluatedReceiver,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let EvaluatedReceiver { obj_ty, obj_ptr, extra_args } = recv;
+        use tinox_parser::Type;
+        let (orig_class, class_bindings, pristine) = self
+            .generic_instance_methods
+            .get(fn_name)
+            .cloned()
+            .expect("gen_generic_instance_method_call called for an unregistered fn_name");
+
+        let own_subst = self.infer_own_type_params(&pristine, raw_args, ctx);
+        let mut subst: HashMap<String, Type> = class_bindings
+            .iter()
+            .map(|(tp, llvm)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm)))
+            .collect();
+        subst.extend(own_subst);
+
+        let suffix: Vec<String> = pristine
+            .type_params
+            .iter()
+            .map(|tp| Self::type_suffix(subst.get(tp).unwrap()))
+            .collect();
+        let mangled_method_name = format!("{}__{}", pristine.name, suffix.join("__"));
+        let target_fn = format!("{}_{}", mangled_class, mangled_method_name);
+        let concrete_ret = Self::substitute_type(&pristine.ret_type, &subst);
+
+        if !self.generated_specializations.contains(&target_fn) {
+            self.generated_specializations.insert(target_fn.clone());
+            let no_op_rename = (orig_class.as_str(), orig_class.as_str());
+            let specialized = tinox_parser::Method {
+                name: mangled_method_name.clone(),
+                type_params: vec![],
+                params: pristine
+                    .params
+                    .iter()
+                    .map(|p| tinox_parser::Param {
+                        name: p.name.clone(),
+                        param_type: Self::substitute_type(&p.param_type, &subst),
+                        span: p.span,
+                    })
+                    .collect(),
+                ret_type: concrete_ret.clone(),
+                body: Self::substitute_stmt(&pristine.body, &subst, no_op_rename),
+                static_: pristine.static_,
+                visibility: pristine.visibility.clone(),
+                span: pristine.span,
+                is_async: pristine.is_async,
+                doc: None,
+                annotations: vec![],
+                file: pristine.file.clone(),
+            };
+            let saved_ir = std::mem::take(&mut self.ir);
+            let saved_temp = self.temp_count;
+            self.temp_count = 0;
+            self.gen_class_method(mangled_class, &specialized)?;
+            let spec_ir = std::mem::take(&mut self.ir);
+            self.ir = saved_ir;
+            self.temp_count = saved_temp;
+            self.lambda_ir.push_str(&spec_ir);
+        }
+
+        // Register the return marker under the UNSUFFIXED "{class}_{method}"
+        // key (== fn_name, not target_fn) — `infer_struct_type`'s MethodCall
+        // arm always looks up `"{obj_class}_{method}"` with no knowledge of
+        // U, so this is the key a follow-on chained call
+        // (`option.map(f).map(g)`, no intermediate `let` annotation)
+        // actually queries. Same known imprecision as the rest of the
+        // marker-inference system already has for any generic method called
+        // at two different instantiations from two different call sites —
+        // not a new limitation, just not made worse.
+        match &concrete_ret {
+            Type::Named(cls) if self.defined_classes.contains(cls.as_str()) => {
+                self.method_ret_class.insert(fn_name.to_string(), cls.clone());
+            }
+            Type::Generic { name, args } if self.generic_classes.contains_key(name.as_str()) => {
+                // Ensure the returned specialization actually exists (struct
+                // layout + its own methods) — not just its mangled name —
+                // so a chained call finding this marker can look up methods
+                // on it immediately.
+                let ret_bindings: HashMap<String, String> = self
+                    .generic_classes
+                    .get(name.as_str())
+                    .cloned()
+                    .map(|rgc| {
+                        rgc.type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Ok(mangled_ret) = self.ensure_generic_class_specialization_with_bindings(name, &ret_bindings) {
+                    self.method_ret_class.insert(fn_name.to_string(), mangled_ret);
+                }
+            }
+            other => {
+                if let Some(m) = Self::container_marker(other) {
+                    self.method_ret_class.insert(fn_name.to_string(), m);
+                }
+            }
+        }
+
+        let ret_ty = self.method_ret_types.get(&target_fn).cloned().unwrap_or_else(|| "i64".to_string());
+        let mut full_args_str = format!("{} {}", obj_ty, obj_ptr);
+        for (val, ty) in extra_args {
+            full_args_str.push_str(&format!(", {} {}", ty, val));
+        }
+        let result = self.temp();
+        if ret_ty == "void" {
+            writeln!(&mut self.ir, "call void @{}({})", target_fn, full_args_str).unwrap();
+            Ok(("0".to_string(), "void".to_string()))
+        } else {
+            writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_ty, target_fn, full_args_str).unwrap();
+            Ok((result, ret_ty))
+        }
+    }
+
     /// The bridge between the two type systems: translate a checker `ValueType`
     /// into the codegen's marker language, resolving a generic instance to its
     /// mangled specialization name (`Named("Box",[Int])` → `"Box__i64"`). This is
@@ -12047,7 +12334,17 @@ impl CodeGen {
             for method in &specialized.methods {
                 let fn_name = format!("{}_{}", mangled, method.name);
                 if !method.type_params.is_empty() {
-                    self.generic_methods.insert(fn_name, method.clone());
+                    self.generic_methods.insert(fn_name.clone(), method.clone());
+                    // #153: instance-call monomorphization needs the PRISTINE
+                    // (pre-T-substitution) method — see generic_instance_methods'
+                    // doc comment for why the copy above (post-T-substitution,
+                    // self-renamed) isn't safe to reuse for this.
+                    if let Some(pristine) = gc.methods.iter().find(|m| m.name == method.name) {
+                        self.generic_instance_methods.insert(
+                            fn_name,
+                            (class.to_string(), bindings.clone(), pristine.clone()),
+                        );
+                    }
                     continue;
                 }
                 // Methoden mit `fnc`-Parametern (`newWithFactory(f: fnc()->T)`)
