@@ -122,9 +122,6 @@ fn new_project(args: &[String]) {
     let toml = format!(
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\n"
     );
-    let yaml = format!(
-        "package:\n  name: \"{name}\"\n  version: \"0.1.0\"\n  description: \"\"\n\ndependencies: []\n"
-    );
     let main_tnx = format!(
         "fn main() -> Int64\n{{\n    println(\"Hello from {name}!\");\n    return 0;\n}}\n"
     );
@@ -134,14 +131,12 @@ fn new_project(args: &[String]) {
     let gitignore = ".tinox/\n";
 
     if !write_file(&root.join("tinox.toml"), &toml) { return; }
-    if !write_file(&root.join("tinox.yaml"), &yaml) { return; }
     if !write_file(&root.join(".gitignore"), gitignore) { return; }
     if !write_file(&src_dir.join("main.tnx"), &main_tnx) { return; }
     if !write_file(&tests_dir.join("main_test.tnx"), &test_tnx) { return; }
 
     println!("Created project '{name}'");
     println!("  {name}/tinox.toml");
-    println!("  {name}/tinox.yaml");
     println!("  {name}/src/main.tnx");
     println!("  {name}/tests/main_test.tnx");
     println!();

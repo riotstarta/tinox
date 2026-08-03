@@ -51,7 +51,7 @@ tinox check program.tnx                      # Type-check only, no compilation
 tinox fmt program.tnx                        # Format (writes to stdout)
 tinox fmt --write program.tnx                # Format and overwrite the file
 tinox repl                                   # Start the interactive REPL
-tinox install                                # Download and install all dependencies (tinox.yaml)
+tinox install                                # Download and install all dependencies (tinox.toml)
 tinox add <group> <artifact> <version> <url> # Add + install a dependency
 tinox package                                # Pack src/ into <name>-<version>.tar.gz
 ```
@@ -82,23 +82,24 @@ tinox test --watch      # re-run on file changes
 ### Package Manager
 
 `tinox install`/`tinox add` resolve dependencies declared in a project's
-`tinox.yaml`:
+`tinox.toml`, as one `[[dependencies]]` table per dependency:
 
-```yaml
-package:
-  name: my-project
-  version: "0.1.0"
-dependencies:
-  - group: someorg
-    artifactId: somelib
-    version: "1.0.0"
-    url: "https://example.com/somelib.tnx"
+```toml
+[package]
+name = "my-project"
+version = "0.1.0"
+
+[[dependencies]]
+group = "someorg"
+artifactId = "somelib"
+version = "1.0.0"
+url = "https://example.com/somelib.tnx"
 ```
 
 Each dependency is a plain URL download into `.tinox/deps/<group>/<artifactId>/<version>/`
 (no central registry/index — you point at wherever the source lives).
-`tinox add <group> <artifact> <version> <url>` appends an entry to
-`tinox.yaml` and installs it in one step.
+`tinox add <group> <artifact> <version> <url>` appends a `[[dependencies]]`
+table to `tinox.toml` and installs it in one step.
 
 ## Hello World
 

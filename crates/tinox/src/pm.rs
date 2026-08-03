@@ -4,33 +4,33 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// `[package]`'s `name`/`version`/`description` — parsed/written by
+/// `parse_manifest`/`write_manifest` (hand-rolled, see there for why).
+#[derive(Debug, Clone)]
 pub struct Package {
     pub name: String,
     pub version: String,
-    #[serde(default)]
     pub description: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// One `[[dependencies]]` table — parsed/written by
+/// `parse_manifest`/`write_manifest` (hand-rolled, see there for why).
+#[derive(Debug, Clone)]
 pub struct Dependency {
     pub group: String,
-    #[serde(rename = "artifactId")]
     pub artifact_id: String,
     pub version: String,
     pub url: String,
     /// Expected SHA-256 of the downloaded artifact, lowercase hex. Optional
-    /// for backward compatibility with existing tinox.yaml files, but
-    /// strongly recommended: without it, `tinox install` only pins against
-    /// whatever tinox.lock happens to have recorded (see verify_checksum).
-    #[serde(default)]
+    /// for backward compatibility with existing manifests, but strongly
+    /// recommended: without it, `tinox install` only pins against whatever
+    /// tinox.lock happens to have recorded (see verify_checksum).
     pub sha256: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default)]
 pub struct TinoxManifest {
     pub package: Option<Package>,
-    #[serde(default)]
     pub dependencies: Vec<Dependency>,
 }
 
@@ -89,7 +89,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub fn find_project_root() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
-        if dir.join("tinox.yaml").exists() || dir.join("tinox.toml").exists() {
+        if dir.join("tinox.toml").exists() {
             return Some(dir);
         }
         if !dir.pop() {
@@ -99,21 +99,191 @@ pub fn find_project_root() -> Option<PathBuf> {
     None
 }
 
-pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
-    let yaml_path = root.join("tinox.yaml");
-    if !yaml_path.exists() {
-        return Ok(TinoxManifest::default());
-    }
-    let content = fs::read_to_string(&yaml_path)
-        .map_err(|e| format!("Cannot read tinox.yaml: {}", e))?;
-    serde_yaml::from_str(&content).map_err(|e| format!("Invalid tinox.yaml: {}", e))
+#[derive(PartialEq, Clone, Copy)]
+enum ManifestSection {
+    None,
+    Package,
+    Dependency,
+    Other,
 }
 
+fn manifest_section_for(header_line: &str) -> ManifestSection {
+    if header_line == "[[dependencies]]" {
+        ManifestSection::Dependency
+    } else if header_line == "[package]" {
+        ManifestSection::Package
+    } else {
+        ManifestSection::Other
+    }
+}
+
+/// `key = "value"` (or bare `key = value`) → `(key, unquoted value)`, the
+/// same convention every other tinox.toml reader in this codebase already
+/// uses (see `read_project_entry`/`read_metrics_section` in `main.rs`).
+fn parse_toml_kv(line: &str) -> Option<(&str, String)> {
+    let (key, value) = line.split_once('=')?;
+    Some((key.trim(), value.trim().trim_matches('"').to_string()))
+}
+
+/// Parses `[package]` (name/version/description) and every `[[dependencies]]`
+/// table from `tinox.toml`'s content — hand-rolled rather than a TOML crate
+/// dependency, matching every other tinox.toml reader in this codebase.
+/// Unknown keys (`[package] entry`/`output`, `[build]`, `[metrics]`, …) are
+/// simply skipped here, not lost — `write_manifest` below only ever
+/// rewrites the keys THIS function understands, leaving the rest of the
+/// file untouched (see #154 — a prior version of this used a completely
+/// separate `tinox.yaml` file/format that the rest of the CLI never read).
+fn parse_manifest(content: &str) -> TinoxManifest {
+    let mut section = ManifestSection::None;
+    let mut pkg_name = String::new();
+    let mut pkg_version = String::new();
+    let mut pkg_description = String::new();
+    let mut have_package = false;
+
+    let mut dependencies: Vec<Dependency> = Vec::new();
+    let mut cur = Dependency { group: String::new(), artifact_id: String::new(), version: String::new(), url: String::new(), sha256: None };
+    let mut have_cur = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            if have_cur {
+                dependencies.push(std::mem::replace(&mut cur, Dependency { group: String::new(), artifact_id: String::new(), version: String::new(), url: String::new(), sha256: None }));
+                have_cur = false;
+            }
+            section = manifest_section_for(line);
+            if section == ManifestSection::Dependency {
+                have_cur = true;
+            } else if section == ManifestSection::Package {
+                have_package = true;
+            }
+            continue;
+        }
+        let Some((key, value)) = parse_toml_kv(line) else { continue };
+        match section {
+            ManifestSection::Package => match key {
+                "name" => pkg_name = value,
+                "version" => pkg_version = value,
+                "description" => pkg_description = value,
+                _ => {}
+            },
+            ManifestSection::Dependency => match key {
+                "group" => cur.group = value,
+                "artifactId" => cur.artifact_id = value,
+                "version" => cur.version = value,
+                "url" => cur.url = value,
+                "sha256" if !value.is_empty() => cur.sha256 = Some(value),
+                _ => {}
+            },
+            ManifestSection::None | ManifestSection::Other => {}
+        }
+    }
+    if have_cur {
+        dependencies.push(cur);
+    }
+
+    let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description });
+    TinoxManifest { package, dependencies }
+}
+
+pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
+    let toml_path = root.join("tinox.toml");
+    if !toml_path.exists() {
+        return Ok(TinoxManifest::default());
+    }
+    let content = fs::read_to_string(&toml_path)
+        .map_err(|e| format!("Cannot read tinox.toml: {}", e))?;
+    Ok(parse_manifest(&content))
+}
+
+fn format_dependency(dep: &Dependency) -> String {
+    let mut s = format!(
+        "[[dependencies]]\ngroup = \"{}\"\nartifactId = \"{}\"\nversion = \"{}\"\nurl = \"{}\"\n",
+        dep.group, dep.artifact_id, dep.version, dep.url
+    );
+    if let Some(sha256) = &dep.sha256 {
+        s.push_str(&format!("sha256 = \"{}\"\n", sha256));
+    }
+    s
+}
+
+/// Surgically rewrites `tinox.toml`'s `name`/`version`/`description` keys
+/// (inside `[package]`) and every `[[dependencies]]` table, leaving every
+/// OTHER line untouched — `entry`/`output` inside `[package]`, `[build]`,
+/// `[metrics]`, `[database]`, comments, … all round-trip byte-for-byte.
+/// A blind whole-file rewrite from just the `TinoxManifest` struct (which
+/// doesn't model those other keys/sections at all) would silently drop
+/// them — exactly the failure mode #154 was filed over, just moved one
+/// layer deeper if done carelessly.
 pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), String> {
-    let yaml_path = root.join("tinox.yaml");
-    let content =
-        serde_yaml::to_string(manifest).map_err(|e| format!("Cannot serialize manifest: {}", e))?;
-    fs::write(&yaml_path, content).map_err(|e| format!("Cannot write tinox.yaml: {}", e))
+    let toml_path = root.join("tinox.toml");
+    let existing = if toml_path.exists() {
+        fs::read_to_string(&toml_path).map_err(|e| format!("Cannot read tinox.toml: {}", e))?
+    } else {
+        String::new()
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    let mut section = ManifestSection::None;
+    let mut saw_package_header = false;
+
+    for raw_line in existing.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') {
+            section = manifest_section_for(line);
+            if section == ManifestSection::Dependency {
+                continue; // dropped — every [[dependencies]] table is rebuilt below
+            }
+            out.push(raw_line.to_string());
+            if section == ManifestSection::Package {
+                saw_package_header = true;
+                // Fresh name/version/description right after the header;
+                // any OLD copies of these three keys further down this
+                // section are skipped below, everything else (entry,
+                // output, …) round-trips untouched.
+                if let Some(pkg) = &manifest.package {
+                    out.push(format!("name = \"{}\"", pkg.name));
+                    out.push(format!("version = \"{}\"", pkg.version));
+                    out.push(format!("description = \"{}\"", pkg.description));
+                }
+            }
+            continue;
+        }
+        match section {
+            ManifestSection::Dependency => {} // dropped — rebuilt below
+            ManifestSection::Package => {
+                let key = parse_toml_kv(line).map(|(k, _)| k);
+                if !matches!(key, Some("name" | "version" | "description")) {
+                    out.push(raw_line.to_string());
+                }
+            }
+            ManifestSection::None | ManifestSection::Other => out.push(raw_line.to_string()),
+        }
+    }
+
+    let mut content = out.join("\n");
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    if !saw_package_header {
+        if let Some(pkg) = &manifest.package {
+            content.push_str(&format!(
+                "[package]\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\n",
+                pkg.name, pkg.version, pkg.description
+            ));
+        }
+    }
+    if !manifest.dependencies.is_empty() {
+        content.push('\n');
+        for dep in &manifest.dependencies {
+            content.push_str(&format_dependency(dep));
+            content.push('\n');
+        }
+        // Drop the one trailing blank line left after the last dependency block.
+        content.pop();
+    }
+
+    fs::write(&toml_path, content).map_err(|e| format!("Cannot write tinox.toml: {}", e))
 }
 
 /// Rejects anything that isn't a single, plain path segment: empty, ".", "..",
@@ -178,7 +348,7 @@ fn verify_checksum(dep: &Dependency, lock: &TinoxLock, update: bool, actual_sha2
     if let Some(expected) = expected_checksum(dep, lock, update) {
         if !expected.eq_ignore_ascii_case(actual_sha256) {
             return Err(format!(
-                "checksum mismatch for {}:{} {} ({}): expected sha256 {}, got {} — refusing to install a dependency whose content doesn't match what was pinned (tinox.yaml/tinox.lock). Pass --update to re-pin if this URL's content legitimately changed.",
+                "checksum mismatch for {}:{} {} ({}): expected sha256 {}, got {} — refusing to install a dependency whose content doesn't match what was pinned (tinox.toml/tinox.lock). Pass --update to re-pin if this URL's content legitimately changed.",
                 dep.group, dep.artifact_id, dep.version, dep.url, expected, actual_sha256
             ));
         }
@@ -187,7 +357,7 @@ fn verify_checksum(dep: &Dependency, lock: &TinoxLock, update: bool, actual_sha2
 }
 
 /// Installs one dependency, verifying the downloaded bytes against an
-/// expected SHA-256 when one is available (`dep.sha256` from tinox.yaml
+/// expected SHA-256 when one is available (`dep.sha256` from tinox.toml
 /// takes priority; otherwise a matching `tinox.lock` entry for the same
 /// group/artifactId/version/url pins it). A mismatch is a hard error —
 /// no silent fallback to "install anyway" — the same "no silent garbage"
@@ -281,7 +451,7 @@ pub fn cmd_install(args: &[String]) {
     let root = match find_project_root() {
         Some(r) => r,
         None => {
-            eprintln!("error: no tinox.yaml found");
+            eprintln!("error: no tinox.toml found");
             return;
         }
     };
@@ -350,7 +520,7 @@ pub fn cmd_package() {
     let root = match find_project_root() {
         Some(r) => r,
         None => {
-            eprintln!("error: no tinox.yaml found");
+            eprintln!("error: no tinox.toml found");
             return;
         }
     };
@@ -365,7 +535,7 @@ pub fn cmd_package() {
     let pkg = match &manifest.package {
         Some(p) => p.clone(),
         None => {
-            eprintln!("error: tinox.yaml is missing [package] section");
+            eprintln!("error: tinox.toml is missing [package] section");
             return;
         }
     };
@@ -449,7 +619,7 @@ pub fn cmd_add(args: &[String]) {
     let root = match find_project_root() {
         Some(r) => r,
         None => {
-            eprintln!("error: no tinox.yaml found");
+            eprintln!("error: no tinox.toml found");
             return;
         }
     };
@@ -469,7 +639,7 @@ pub fn cmd_add(args: &[String]) {
         return;
     }
     println!(
-        "Added {}:{} {} to tinox.yaml",
+        "Added {}:{} {} to tinox.toml",
         dep.group, dep.artifact_id, dep.version
     );
     // A fresh `add` has nothing pinned yet to verify against — this is the
@@ -637,6 +807,88 @@ mod tests {
         upsert_lock_entry(&mut lock, lock_entry(&d, "bbbb"));
         assert_eq!(lock.dependencies.len(), 1);
         assert_eq!(lock.dependencies[0].sha256, "bbbb");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_manifest_reads_package_and_dependencies() {
+        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"x\"\nentry = \"src/main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"mylib\"\nversion = \"1.0.0\"\nurl = \"https://example.com/mylib.tar.gz\"\nsha256 = \"abc123\"\n";
+        let m = parse_manifest(content);
+        let pkg = m.package.expect("package");
+        assert_eq!(pkg.name, "demo");
+        assert_eq!(pkg.version, "0.1.0");
+        assert_eq!(pkg.description, "x");
+        assert_eq!(m.dependencies.len(), 1);
+        assert_eq!(m.dependencies[0].group, "com.example");
+        assert_eq!(m.dependencies[0].artifact_id, "mylib");
+        assert_eq!(m.dependencies[0].sha256.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn parse_manifest_missing_file_content_has_no_package() {
+        let m = parse_manifest("");
+        assert!(m.package.is_none());
+        assert!(m.dependencies.is_empty());
+    }
+
+    #[test]
+    fn write_manifest_preserves_unrelated_toml_sections_and_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "write_manifest_preserves"
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("tinox.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/main.tnx\"\n\n[build]\noutput = \"demo_bin\"\n\n[metrics]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let mut manifest = read_manifest(&dir).unwrap();
+        manifest.dependencies.push(dep("com.example", "mylib", "1.0.0"));
+        write_manifest(&dir, &manifest).unwrap();
+
+        let rewritten = fs::read_to_string(dir.join("tinox.toml")).unwrap();
+        assert!(rewritten.contains("entry = \"src/main.tnx\""), "{rewritten}");
+        assert!(rewritten.contains("[build]"), "{rewritten}");
+        assert!(rewritten.contains("output = \"demo_bin\""), "{rewritten}");
+        assert!(rewritten.contains("[metrics]"), "{rewritten}");
+        assert!(rewritten.contains("enabled = true"), "{rewritten}");
+        assert!(rewritten.contains("[[dependencies]]"), "{rewritten}");
+        assert!(rewritten.contains("artifactId = \"mylib\""), "{rewritten}");
+
+        // Round-trips cleanly through read_manifest again, and the
+        // preserved [package] section still parses correctly.
+        let reread = read_manifest(&dir).unwrap();
+        assert_eq!(reread.package.unwrap().name, "demo");
+        assert_eq!(reread.dependencies.len(), 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_manifest_dedup_replaces_existing_coordinate() {
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "write_manifest_dedup"
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut manifest = TinoxManifest {
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new() }),
+            dependencies: vec![dep("com.example", "mylib", "1.0.0")],
+        };
+        write_manifest(&dir, &manifest).unwrap();
+
+        manifest.dependencies.retain(|d| d.artifact_id != "mylib");
+        manifest.dependencies.push(dep("com.example", "mylib", "2.0.0"));
+        write_manifest(&dir, &manifest).unwrap();
+
+        let reread = read_manifest(&dir).unwrap();
+        assert_eq!(reread.dependencies.len(), 1);
+        assert_eq!(reread.dependencies[0].version, "2.0.0");
 
         fs::remove_dir_all(&dir).ok();
     }
