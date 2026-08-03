@@ -78,6 +78,33 @@ fn print_help() {
     println!("  tinox help                 Show this help message");
 }
 
+/// The scaffolded project's file contents — `(tinox.toml, src/Main.tnx,
+/// test class name, tests/{test class name}.tnx)`. Pure/pathless so it's
+/// unit-testable without touching the filesystem or CWD (`new_project`
+/// below writes these to disk relative to CWD, which isn't safely
+/// testable in a parallel test binary).
+///
+/// Both `src/Main.tnx` (`class Main { fnc main() -> Int32 { ... } }`) and
+/// the entry point (`class Main` in a file literally named `Main.tnx`)
+/// follow the one-class-per-file rule and the mandatory class-qualified
+/// entry point (#149) — a bare top-level `fn main()` (this scaffold's
+/// pre-v2.0.0 shape) is now a hard compile error (#155). The test
+/// scaffold's file name likewise has to match its `class {name}Tests`
+/// declaration (#159).
+fn new_project_files(name: &str) -> (String, String, String, String) {
+    let toml = format!(
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n"
+    );
+    let main_tnx = format!(
+        "class Main\n{{\n    fnc main() -> Int32\n    {{\n        println(\"Hello from {name}!\");\n        return 0;\n    }}\n}}\n"
+    );
+    let test_class = format!("{name}Tests");
+    let test_tnx = format!(
+        "class {test_class}\n{{\n    @Test(\"example test\")\n    fn testExample() -> Bool\n    {{\n        return 1 + 1 == 2;\n    }}\n}}\n"
+    );
+    (toml, main_tnx, test_class, test_tnx)
+}
+
 fn new_project(args: &[String]) {
     let name = match args.first() {
         Some(n) => n.clone(),
@@ -119,26 +146,18 @@ fn new_project(args: &[String]) {
 
     if !create(&src_dir) || !create(&tests_dir) { return; }
 
-    let toml = format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\n"
-    );
-    let main_tnx = format!(
-        "fn main() -> Int64\n{{\n    println(\"Hello from {name}!\");\n    return 0;\n}}\n"
-    );
-    let test_tnx = format!(
-        "class {name}Tests\n{{\n    @Test(\"example test\")\n    fn testExample() -> Bool\n    {{\n        return 1 + 1 == 2;\n    }}\n}}\n"
-    );
+    let (toml, main_tnx, test_class, test_tnx) = new_project_files(&name);
     let gitignore = ".tinox/\n";
 
     if !write_file(&root.join("tinox.toml"), &toml) { return; }
     if !write_file(&root.join(".gitignore"), gitignore) { return; }
-    if !write_file(&src_dir.join("main.tnx"), &main_tnx) { return; }
-    if !write_file(&tests_dir.join("main_test.tnx"), &test_tnx) { return; }
+    if !write_file(&src_dir.join("Main.tnx"), &main_tnx) { return; }
+    if !write_file(&tests_dir.join(format!("{test_class}.tnx")), &test_tnx) { return; }
 
     println!("Created project '{name}'");
     println!("  {name}/tinox.toml");
-    println!("  {name}/src/main.tnx");
-    println!("  {name}/tests/main_test.tnx");
+    println!("  {name}/src/Main.tnx");
+    println!("  {name}/tests/{test_class}.tnx");
     println!();
     println!("Get started:");
     println!("  cd {name}");
@@ -2458,6 +2477,40 @@ mod one_type_per_file_tests {
         let decls = parse_decls("interface Shape { fn area() -> Int64; } enum Color { Red, Blue }");
         let err = check_one_type_per_file(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("Shape") && err.contains("Color"), "error should list both: {err}");
+    }
+}
+
+#[cfg(test)]
+mod new_project_files_tests {
+    use super::*;
+
+    // #155/#159: the scaffold must produce a project that compiles and
+    // tests cleanly under the one-class-per-file + mandatory
+    // class-qualified-entry-point rules (#149) — not the pre-v2.0.0 bare
+    // `fn main()` shape this used to generate.
+
+    #[test]
+    fn main_tnx_is_class_qualified_not_bare_fn() {
+        let (_, main_tnx, _, _) = new_project_files("demo");
+        assert!(main_tnx.contains("class Main"), "{main_tnx}");
+        assert!(main_tnx.contains("fnc main() -> Int32"), "{main_tnx}");
+        assert!(!main_tnx.trim_start().starts_with("fn main"), "{main_tnx}");
+    }
+
+    #[test]
+    fn toml_declares_entry_matching_the_scaffolded_file_name() {
+        let (toml, _, _, _) = new_project_files("demo");
+        assert_eq!(read_project_entry(&toml), Some("src/Main.tnx".to_string()));
+    }
+
+    #[test]
+    fn test_class_name_matches_its_own_scaffolded_file_name() {
+        let (_, _, test_class, test_tnx) = new_project_files("demo");
+        assert_eq!(test_class, "demoTests");
+        assert!(test_tnx.contains(&format!("class {test_class}")), "{test_tnx}");
+        // The file this content is written to (new_project) is named
+        // "{test_class}.tnx" — the whole point being that the class name
+        // inside the content and the file name it's written under match.
     }
 }
 
