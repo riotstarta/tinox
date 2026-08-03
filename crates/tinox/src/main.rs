@@ -1824,6 +1824,59 @@ fn resolve_module_paths(
     Ok(None)
 }
 
+/// Best-effort `group:artifactId:version` label for an installed
+/// dependency directory (`.tinox/deps/<group>/<artifactId>/<version>/`,
+/// see `pm::dep_install_dir`), for the ambiguous-import diagnostic below.
+/// Falls back to the raw path if it doesn't have that shape (defensive
+/// only — every entry `installed_dep_dirs` produces does).
+fn dep_dir_coordinate(dep_dir: &Path) -> String {
+    let parts: Vec<&str> = dep_dir
+        .components()
+        .rev()
+        .take(3)
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    if parts.len() == 3 {
+        format!("{}:{}:{}", parts[2], parts[1], parts[0])
+    } else {
+        dep_dir.display().to_string()
+    }
+}
+
+/// Resolves `rel_file`/`rel_dir` against every installed dependency
+/// directory, requiring **at most one** to match. Two dependencies
+/// shipping a module at the same relative path used to resolve via
+/// `.find_map` — first (manifest-declaration-order) match silently wins,
+/// the other is shadowed with no diagnostic of any kind. That's exactly
+/// the shape of bug this project's own "no silent garbage" principle
+/// (CLAUDE.md) exists to prevent, so an ambiguity is now a hard error
+/// instead (#156) — a per-dependency resolution error (e.g. an empty
+/// module directory) still doesn't count as a match and doesn't block
+/// resolution via a different dependency, unchanged from before.
+fn resolve_in_dep_dirs(
+    dep_dirs: &[PathBuf],
+    rel_file: &Path,
+    rel_dir: &Path,
+) -> Result<Option<Vec<PathBuf>>, String> {
+    let matches: Vec<(&PathBuf, Vec<PathBuf>)> = dep_dirs
+        .iter()
+        .filter_map(|d| resolve_module_paths(d, rel_file, rel_dir).ok().flatten().map(|p| (d, p)))
+        .collect();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches.into_iter().next().unwrap().1)),
+        _ => {
+            let coords: Vec<String> = matches.iter().map(|(d, _)| dep_dir_coordinate(d)).collect();
+            Err(format!(
+                "Ambiguous import '{}': resolves in more than one installed dependency ({}). \
+                 Remove or rename one of them so their module paths don't collide.",
+                rel_file.display(),
+                coords.join(", "),
+            ))
+        }
+    }
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
@@ -1883,10 +1936,7 @@ fn resolve_imports(
         //    last segment, unchanged from before this nesting support)
         let full_paths: Vec<PathBuf> = if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
             p
-        } else if let Some(p) = dep_dirs
-            .iter()
-            .find_map(|d| resolve_module_paths(d, &rel_file, &rel_dir).ok().flatten())
-        {
+        } else if let Some(p) = resolve_in_dep_dirs(dep_dirs, &rel_file, &rel_dir)? {
             p
         } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
             let tail: Vec<&String> = if import.path.len() >= 3 && import.path[1] == "core" {
