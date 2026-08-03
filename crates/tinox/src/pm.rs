@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -441,6 +442,82 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
         .map_err(|e| format!("Cannot extract zip: {}", e))
 }
 
+/// Installs `dep`, then — if its own install directory contains a
+/// `tinox.toml` declaring further dependencies — recursively installs
+/// those too (#157). Flat resolution: transitive dependencies land in
+/// the SAME project-level `.tinox/deps/` tree as direct ones, not nested
+/// per-dependency, matching the flat namespace `resolve_imports`/
+/// `resolve_in_dep_dirs` already assumes. `visited` is shared across the
+/// whole call tree for one `install`/`add` run: it guards against a
+/// dependency cycle (A depends on B depends on A) and against re-walking
+/// a coordinate reached twice (a diamond — two dependencies both
+/// depending on the same third one at the same version).
+///
+/// Diamond dependencies at DIFFERENT versions of the same
+/// group:artifactId are deliberately not specially handled here — they
+/// install into two different version-suffixed directories without
+/// conflict, and if that ever results in an import genuinely resolving
+/// against both, #156's ambiguous-import hard error already catches it;
+/// no separate version-conflict detection is needed on top of that.
+///
+/// Returns `(installed_ok, failed)`, aggregated over `dep` and everything
+/// transitively reached from it.
+fn install_dep_transitively(
+    root: &Path,
+    dep: &Dependency,
+    lock: &mut TinoxLock,
+    update: bool,
+    visited: &mut HashSet<(String, String, String)>,
+    lock_changed: &mut bool,
+) -> (usize, usize) {
+    let coord = (dep.group.clone(), dep.artifact_id.clone(), dep.version.clone());
+    if !visited.insert(coord) {
+        return (0, 0);
+    }
+
+    let mut ok = 0usize;
+    let mut fail = 0usize;
+    match install_dep(root, dep, lock, update) {
+        Ok(Some(sha256)) => {
+            upsert_lock_entry(
+                lock,
+                LockEntry {
+                    group: dep.group.clone(),
+                    artifact_id: dep.artifact_id.clone(),
+                    version: dep.version.clone(),
+                    url: dep.url.clone(),
+                    sha256,
+                },
+            );
+            *lock_changed = true;
+            ok += 1;
+        }
+        Ok(None) => ok += 1, // already installed, nothing new to pin
+        Err(e) => {
+            eprintln!("  error: {}", e);
+            // A dependency we couldn't install has no readable manifest of
+            // its own to walk — nothing transitive to attempt.
+            return (ok, fail + 1);
+        }
+    }
+
+    if let Ok(install_dir) = dep_install_dir(root, dep) {
+        // read_manifest returns an empty manifest (not an error) when the
+        // dependency doesn't ship its own tinox.toml — the common case,
+        // handled the same as "no transitive dependencies" below.
+        if let Ok(sub_manifest) = read_manifest(&install_dir) {
+            for sub_dep in &sub_manifest.dependencies {
+                let (sub_ok, sub_fail) =
+                    install_dep_transitively(root, sub_dep, lock, update, visited, lock_changed);
+                ok += sub_ok;
+                fail += sub_fail;
+            }
+        }
+    }
+
+    (ok, fail)
+}
+
 /// `tinox install [--update]`. Without `--update`, a dependency already
 /// pinned in tinox.lock must download to the exact same sha256 or the
 /// install fails (catches a dependency URL's content silently changing
@@ -485,28 +562,12 @@ pub fn cmd_install(args: &[String]) {
     let mut ok = 0usize;
     let mut fail = 0usize;
     let mut lock_changed = false;
+    let mut visited: HashSet<(String, String, String)> = HashSet::new();
     for dep in &manifest.dependencies {
-        match install_dep(&root, dep, &lock, update) {
-            Ok(Some(sha256)) => {
-                upsert_lock_entry(
-                    &mut lock,
-                    LockEntry {
-                        group: dep.group.clone(),
-                        artifact_id: dep.artifact_id.clone(),
-                        version: dep.version.clone(),
-                        url: dep.url.clone(),
-                        sha256,
-                    },
-                );
-                lock_changed = true;
-                ok += 1;
-            }
-            Ok(None) => ok += 1, // already installed, nothing new to pin
-            Err(e) => {
-                eprintln!("  error: {}", e);
-                fail += 1;
-            }
-        }
+        let (dep_ok, dep_fail) =
+            install_dep_transitively(&root, dep, &mut lock, update, &mut visited, &mut lock_changed);
+        ok += dep_ok;
+        fail += dep_fail;
     }
     if lock_changed {
         if let Err(e) = write_lock(&root, &lock) {
@@ -642,35 +703,25 @@ pub fn cmd_add(args: &[String]) {
         "Added {}:{} {} to tinox.toml",
         dep.group, dep.artifact_id, dep.version
     );
-    // A fresh `add` has nothing pinned yet to verify against — this is the
-    // first resolution of this coordinate, so an empty lock is correct
-    // here (there is by definition no prior hash to compare against).
-    let lock = TinoxLock::default();
-    match install_dep(&root, &dep, &lock, false) {
-        Ok(Some(sha256)) => {
-            let mut lock = match read_lock(&root) {
-                Ok(l) => l,
-                Err(e) => {
-                    eprintln!("warning: failed to update tinox.lock: {}", e);
-                    return;
-                }
-            };
-            upsert_lock_entry(
-                &mut lock,
-                LockEntry {
-                    group: dep.group.clone(),
-                    artifact_id: dep.artifact_id.clone(),
-                    version: dep.version.clone(),
-                    url: dep.url.clone(),
-                    sha256,
-                },
-            );
-            if let Err(e) = write_lock(&root, &lock) {
-                eprintln!("warning: failed to update tinox.lock: {}", e);
-            }
+    // The real on-disk lock, not a fresh empty one: `dep` itself has
+    // nothing pinned yet either way (a brand-new coordinate can't be in
+    // it), but any TRANSITIVE dependency reached from it (#157) might
+    // already be pinned from an earlier `install`/`add`, and should still
+    // be checksum-verified against that, not treated as unpinned.
+    let mut lock = match read_lock(&root) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("warning: failed to read tinox.lock: {}", e);
+            TinoxLock::default()
         }
-        Ok(None) => {}
-        Err(e) => eprintln!("warning: install failed: {}", e),
+    };
+    let mut lock_changed = false;
+    let mut visited: HashSet<(String, String, String)> = HashSet::new();
+    install_dep_transitively(&root, &dep, &mut lock, false, &mut visited, &mut lock_changed);
+    if lock_changed {
+        if let Err(e) = write_lock(&root, &lock) {
+            eprintln!("warning: failed to update tinox.lock: {}", e);
+        }
     }
 }
 
