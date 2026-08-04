@@ -2499,7 +2499,7 @@ impl TypeChecker {
                     .functions
                     .get(&method_name)
                     .cloned()
-                    .and_then(|sig| self.unify_generic_return(&method_name, &sig.return_type, &call_args))
+                    .and_then(|sig| self.unify_generic_return(&method_name, &sig.return_type, &call_args, &[]))
                     .unwrap_or(generic_ret);
                 // Receiver-abhängige Ergebnistypen, die statische Signaturen
                 // nicht ausdrücken können: erst check_call (validiert die
@@ -2974,7 +2974,7 @@ impl TypeChecker {
             ExprKind::EnumValue {
                 enum_name,
                 variant,
-                type_args: _,
+                type_args,
                 args,
             } => {
                 // Check if this is actually a static method call: ClassName::method(args).
@@ -2985,7 +2985,7 @@ impl TypeChecker {
                 // enum-variant fallback (which misread every zero-arg instance method
                 // called via `::` as a bare enum-variant construction returning
                 // Named(ClassName): "expected Int64, found Debug").
-                if let Some(ty) = self.check_class_method_call(enum_name, variant, args, expr.span) {
+                if let Some(ty) = self.check_class_method_call(enum_name, variant, args, type_args, expr.span) {
                     return ty;
                 }
                 // Type check all arguments
@@ -3099,6 +3099,7 @@ impl TypeChecker {
         class_name: &str,
         method_name: &str,
         args: &[Expr],
+        type_args: &[Type],
         span: Span,
     ) -> Option<ValueType> {
         let static_key = format!("{}_{}", class_name, method_name);
@@ -3143,7 +3144,7 @@ impl TypeChecker {
         // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
         // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
         // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
-        if let Some(resolved) = self.unify_generic_return(&static_key, &sig.return_type, args) {
+        if let Some(resolved) = self.unify_generic_return(&static_key, &sig.return_type, args, type_args) {
             return Some(resolved);
         }
         Some(sig.return_type.clone())
@@ -3165,6 +3166,7 @@ impl TypeChecker {
         static_key: &str,
         sig_return_type: &ValueType,
         args: &[Expr],
+        explicit_type_args: &[Type],
     ) -> Option<ValueType> {
         let (param_tys, tparams) = self.generic_method_param_types.get(static_key).cloned()?;
         if !Self::contains_type_param(sig_return_type, &tparams) {
@@ -3181,10 +3183,23 @@ impl TypeChecker {
         } else {
             None
         };
-        let ps = aligned?;
         let mut bindings: HashMap<String, ValueType> = HashMap::new();
-        for (p, a) in ps.iter().zip(arg_tys.iter()) {
-            Self::unify_param(p, a, &tparams, &mut bindings);
+        // Bug 166: explicit `Class<T>::method(...)` type args take
+        // priority over value-argument-driven inference below -- seeded
+        // first (positionally against the method's own type params), so
+        // a method whose params never mention T at all (e.g.
+        // `Result::err(message: String) -> Result<T>`, T appears only in
+        // the return type) can still resolve instead of falling through
+        // unresolved. `unify_param` below uses `entry().or_insert_with`,
+        // so it can only fill gaps this leaves, never overwrite an
+        // explicit binding with an inferred one.
+        for (name, ty) in tparams.iter().zip(explicit_type_args.iter()) {
+            bindings.insert(name.clone(), Self::type_to_value(ty));
+        }
+        if let Some(ps) = aligned {
+            for (p, a) in ps.iter().zip(arg_tys.iter()) {
+                Self::unify_param(p, a, &tparams, &mut bindings);
+            }
         }
         let resolved = Self::substitute_bindings(sig_return_type, &bindings);
         if !Self::contains_type_param(&resolved, &tparams) && !self.contains_scoped_type_param(&resolved) {
@@ -3314,7 +3329,7 @@ impl TypeChecker {
                     .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
                     .unwrap_or(false);
                 if is_static {
-                    if let Some(ty) = self.check_class_method_call(&class_name, name, args, span) {
+                    if let Some(ty) = self.check_class_method_call(&class_name, name, args, &[], span) {
                         return ty;
                     }
                 }

@@ -1788,6 +1788,19 @@ impl Parser {
         // codegen) traverse. Cap the chain length to keep that AST bounded and
         // avoid a stack overflow on pathological input like `a.a.a.…` (×50000).
         let mut chain = 0usize;
+        // Bug 166: `Class<T>::method(...)` (type args written BEFORE `::`)
+        // is parsed by the `is_generic_type_static_call()` branch below,
+        // which used to just skip past the `<...>` tokens and let the
+        // next loop iteration's `ColonColon` branch build the EnumValue
+        // node -- but that branch only ever reads type args from the
+        // `Class::method<T>(...)` position (after the method name), so
+        // whatever the user wrote before `::` was silently discarded
+        // (`type_args: vec![]` regardless of what was actually written).
+        // Stashed here across the loop iteration boundary: set when the
+        // `is_generic_type_static_call()` branch parses (not skips) the
+        // `<...>`, consumed by the very next `ColonColon` branch that
+        // follows it.
+        let mut pending_type_args: Option<Vec<Type>> = None;
         loop {
             chain += 1;
             if chain > MAX_RECURSION_DEPTH {
@@ -1913,9 +1926,13 @@ impl Parser {
                     self.bump(); // consume ::
                     let variant = self.parse_method_name()?;
                     let span = expr.span;
+                    // Bug 166: type args written BEFORE `::` (`Class<T>::method(...)`)
+                    // take priority over the (necessarily absent, since the
+                    // two positions are mutually exclusive in valid syntax)
+                    // `Class::method<T>(...)` position below.
+                    let mut type_args = pending_type_args.take().unwrap_or_default();
                     // Explizite generische Typargumente: `Class::method<T>(args)`
-                    let mut type_args = Vec::new();
-                    if self.is_generic_method_call() {
+                    if type_args.is_empty() && self.is_generic_method_call() {
                         self.bump(); // consume `<`
                         type_args.push(self.parse_type()?);
                         while self.consume(TokenKind::Comma) {
@@ -1949,18 +1966,20 @@ impl Parser {
                     return Err(self.error("expected enum name before ::"));
                 }
             } else if self.is_generic_type_static_call() {
-                // Generic type static call: Stack<T>::new() — skip type args, let next
-                // iteration handle `::` with the base Ident expression intact
+                // Generic type static call: Stack<T>::new() / Result<Int64>::err(...)
+                // — parse (not skip, bug 166) the type args into
+                // `pending_type_args` for the `ColonColon` branch that the
+                // next loop iteration hits to consume, then leave the base
+                // Ident expression intact so that branch can still build
+                // its EnumValue node the same way it always has.
                 self.bump(); // consume `<`
-                let mut depth = 1i32;
-                while depth > 0 && !self.is_at_end() {
-                    match self.peek().kind {
-                        TokenKind::Less => { self.bump(); depth += 1; }
-                        TokenKind::Greater => { self.bump(); depth -= 1; }
-                        TokenKind::GreaterGreater => { self.bump(); depth -= 2; }
-                        _ => { self.bump(); }
-                    }
+                let mut args = Vec::new();
+                args.push(self.parse_type()?);
+                while self.consume(TokenKind::Comma) {
+                    args.push(self.parse_type()?);
                 }
+                self.expect_generic_close()?;
+                pending_type_args = Some(args);
                 // `::` is now current token; continue loop to hit the `::` branch
             } else if self.check(TokenKind::LBracket) {
                 self.bump();
