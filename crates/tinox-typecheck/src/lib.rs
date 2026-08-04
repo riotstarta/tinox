@@ -1386,7 +1386,7 @@ impl TypeChecker {
                         );
                         let sig = FunctionSignature {
                             params,
-                            return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
+                            return_type: Self::erase_method_return_type(&method.ret_type, &method.type_params, &erase_params),
                         };
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
@@ -1550,7 +1550,7 @@ impl TypeChecker {
                                 );
                                 let sig = FunctionSignature {
                                     params,
-                                    return_type: Self::type_to_value_erasing(&method.ret_type, &erase_params),
+                                    return_type: Self::erase_method_return_type(&method.ret_type, &method.type_params, &erase_params),
                                 };
                                 let key = format!("{}_{}", c.name, method.name);
                                 if !method.static_ && Self::stmt_uses_this(&method.body) {
@@ -2421,7 +2421,7 @@ impl TypeChecker {
                     self.check_member_visibility(&class_name, method, &vis, expr.span);
                 }
 
-                let func_expr = Spanned::new(ExprKind::Ident(method_name), expr.span);
+                let func_expr = Spanned::new(ExprKind::Ident(method_name.clone()), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().cloned());
                 // map/filter/forEach/reduce mit Lambda-Argument: den Lambda-
@@ -2450,6 +2450,23 @@ impl TypeChecker {
                     }
                 }
                 let generic_ret = self.check_call(&func_expr, &call_args, expr.span);
+                // #158: check_call has no call-site generic-return
+                // unification of its own (unlike check_class_method_call
+                // for the static `Class::method(...)` form) — try it here
+                // so an own-type-param instance method (`option.map(f)`)
+                // resolves its concrete return type (`Option<String>`)
+                // from the actual argument, instead of staying the
+                // registered signature's unresolved-`U` type for every
+                // call regardless of instantiation. No-op (keeps
+                // check_call's own result) for anything that isn't a
+                // generic method with unresolved params in its return type.
+                let generic_ret = self
+                    .symbols
+                    .functions
+                    .get(&method_name)
+                    .cloned()
+                    .and_then(|sig| self.unify_generic_return(&method_name, &sig.return_type, &call_args))
+                    .unwrap_or(generic_ret);
                 // Receiver-abhängige Ergebnistypen, die statische Signaturen
                 // nicht ausdrücken können: erst check_call (validiert die
                 // Argumente), dann nur das Ergebnis verfeinern.
@@ -3088,41 +3105,59 @@ impl TypeChecker {
                 .to_error(),
             );
         }
-        // B2 Schritt 2 — Typargument-Inferenz für nicht-annotierte
+        // B2 Schritt 2 / #158 — Typargument-Inferenz für nicht-annotierte
         // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
         // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
         // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
-        // Nur aktiv, wenn der Rückgabetyp Typ-Params enthält UND
-        // die Unifikation ALLE auflöst; sonst exakt das bisherige
-        // Verhalten (sig.return_type).
-        if let Some((param_tys, tparams)) = self.generic_method_param_types.get(&static_key).cloned() {
-            if Self::contains_type_param(&sig.return_type, &tparams) {
-                let arg_tys: Vec<ValueType> = args.iter().map(|a| self.infer_type(a)).collect();
-                // Empfänger-Ausrichtung (Bug 38, zwei Call-Stile):
-                // args deckungsgleich mit params (Empfänger dabei)
-                // oder um den self-Param verschoben (namespace-Stil).
-                let aligned: Option<&[ValueType]> = if arg_tys.len() == param_tys.len() {
-                    Some(&param_tys[..])
-                } else if arg_tys.len() + 1 == param_tys.len() {
-                    Some(&param_tys[1..])
-                } else {
-                    None
-                };
-                if let Some(ps) = aligned {
-                    let mut bindings: HashMap<String, ValueType> = HashMap::new();
-                    for (p, a) in ps.iter().zip(arg_tys.iter()) {
-                        Self::unify_param(p, a, &tparams, &mut bindings);
-                    }
-                    let resolved = Self::substitute_bindings(&sig.return_type, &bindings);
-                    if !Self::contains_type_param(&resolved, &tparams)
-                        && !self.contains_scoped_type_param(&resolved)
-                    {
-                        return Some(resolved);
-                    }
-                }
-            }
+        if let Some(resolved) = self.unify_generic_return(&static_key, &sig.return_type, args) {
+            return Some(resolved);
         }
         Some(sig.return_type.clone())
+    }
+
+    /// Call-site generic-return unification, shared by
+    /// `check_class_method_call` (the static `Class::method(...)` form)
+    /// and the instance-call `ExprKind::MethodCall` arm below (#158) — the
+    /// latter used to have NO equivalent at all, so an own-type-param
+    /// instance method's return type (`Option<T>.map<U>(...) ->
+    /// Option<U>`) stayed the registered, unresolved-`U` signature type
+    /// for every instance call, regardless of the actual argument. Only
+    /// active when the registered return type actually contains one of
+    /// `static_key`'s type params AND unification resolves ALL of them;
+    /// otherwise `None`, and the caller keeps its prior behavior
+    /// (`sig.return_type` unchanged).
+    fn unify_generic_return(
+        &mut self,
+        static_key: &str,
+        sig_return_type: &ValueType,
+        args: &[Expr],
+    ) -> Option<ValueType> {
+        let (param_tys, tparams) = self.generic_method_param_types.get(static_key).cloned()?;
+        if !Self::contains_type_param(sig_return_type, &tparams) {
+            return None;
+        }
+        let arg_tys: Vec<ValueType> = args.iter().map(|a| self.infer_type(a)).collect();
+        // Receiver alignment (Bug 38, two call styles): args line up 1:1
+        // with params (receiver included) or are shifted by the implicit
+        // self param (namespace style).
+        let aligned: Option<&[ValueType]> = if arg_tys.len() == param_tys.len() {
+            Some(&param_tys[..])
+        } else if arg_tys.len() + 1 == param_tys.len() {
+            Some(&param_tys[1..])
+        } else {
+            None
+        };
+        let ps = aligned?;
+        let mut bindings: HashMap<String, ValueType> = HashMap::new();
+        for (p, a) in ps.iter().zip(arg_tys.iter()) {
+            Self::unify_param(p, a, &tparams, &mut bindings);
+        }
+        let resolved = Self::substitute_bindings(sig_return_type, &bindings);
+        if !Self::contains_type_param(&resolved, &tparams) && !self.contains_scoped_type_param(&resolved) {
+            Some(resolved)
+        } else {
+            None
+        }
     }
 
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> ValueType {
@@ -3609,6 +3644,69 @@ impl TypeChecker {
             }
             _ => Self::type_to_value(ty),
         }
+    }
+
+    /// Does `ty` reference any of `type_params` anywhere in its structure
+    /// (not just at the top level)? Used by `erase_method_return_type`
+    /// below — see #158.
+    fn type_references_param(ty: &Type, type_params: &[String]) -> bool {
+        match ty {
+            Type::Named(n) => type_params.contains(n),
+            Type::Generic { name, args } => {
+                type_params.contains(name) || args.iter().any(|a| Self::type_references_param(a, type_params))
+            }
+            Type::Array(inner) | Type::Ref(inner) | Type::Mutable(inner) | Type::Nullable(inner) => {
+                Self::type_references_param(inner, type_params)
+            }
+            Type::Map(k, v) => {
+                Self::type_references_param(k, type_params) || Self::type_references_param(v, type_params)
+            }
+            Type::Fn { params, ret } => {
+                params.iter().any(|p| Self::type_references_param(p, type_params))
+                    || Self::type_references_param(ret, type_params)
+            }
+            Type::Tuple(ts) => ts.iter().any(|t| Self::type_references_param(t, type_params)),
+            _ => false,
+        }
+    }
+
+    /// Return-type-specific extension of `type_to_value_erasing`, used
+    /// ONLY for a method's registered return type (#158): a user-defined
+    /// generic class's own type argument (`Option<U>`, `Box<U>`, …) that
+    /// mentions a type param owned by the METHOD ITSELF — not the
+    /// enclosing class — erases to `Any` wholesale, on top of
+    /// `type_to_value_erasing`'s existing behavior.
+    ///
+    /// Deliberately narrower than erasing on ANY type-param match found
+    /// anywhere: the enclosing CLASS's own type param (`Option<T>`'s `T`
+    /// in `fn some(value: T) -> Option<T>`) must stay structurally intact
+    /// (`Named("Option", [Named("T")])`) here, because
+    /// `check_class_method_call`'s call-site unification
+    /// (`unify_generic_return`) needs that literal `Named("T")` PRESENT
+    /// to even attempt resolving it from the receiver's actual type —
+    /// erasing it to `Any` breaks that already-working resolution
+    /// (confirmed empirically: erasing on ANY match regressed
+    /// `Option<Int64>::some(1).unwrap()`, a plain non-chained call with
+    /// no own-type-param method involved at all, into the exact same ICE
+    /// this fix exists to remove).
+    ///
+    /// A method-own type param mentioned this way (typically nested
+    /// inside an `fnc(T) -> U`-shaped parameter, e.g. `map`/`andThen`)
+    /// has no such existing resolution path to protect — `ValueType::Fn`
+    /// carries no parameter/return substructure for `unify_param` to
+    /// unify against in the first place, so erasing to `Any` costs
+    /// nothing there and instead makes `valuetype_to_marker`
+    /// (tinox-codegen) correctly return `None` for the call-site node,
+    /// falling back to codegen's own per-call-node marker inference
+    /// (`infer_own_type_params` / `methodcall_result_markers`, #153).
+    fn erase_method_return_type(ret_type: &Type, method_own_params: &[String], erase_params: &[String]) -> ValueType {
+        if !method_own_params.is_empty()
+            && matches!(ret_type, Type::Generic { .. })
+            && Self::type_references_param(ret_type, method_own_params)
+        {
+            return ValueType::Any;
+        }
+        Self::type_to_value_erasing(ret_type, erase_params)
     }
 
     fn is_subclass_or_equal(&self, candidate: &str, base: &str) -> bool {

@@ -300,6 +300,18 @@ pub struct CodeGen {
     /// from T (see #153). Working from the pristine method and combining
     /// T+U into one subst avoids that double-rename.
     generic_instance_methods: HashMap<String, (String, HashMap<String, String>, tinox_parser::Method)>,
+    /// #158: a specific own-type-param instance-method CALL NODE's result
+    /// class marker (`Box<Int64>.transform(f)` → e.g. "Box__string"),
+    /// keyed by that call expression's own `expr.id` — NOT by
+    /// "{class}_{method}" like `method_ret_class`. Two calls to the same
+    /// method on the same class with a DIFFERENT own type-param
+    /// instantiation (`o.map(intToInt).map(intToString)`, both keyed
+    /// "Option__i64_map" in `method_ret_class`) would otherwise clobber
+    /// each other there — whichever call is emitted last wins, so an
+    /// EARLIER call's chained follow-on reads the WRONG class. Per-node
+    /// keying can't collide this way since every call expression has its
+    /// own id.
+    methodcall_result_markers: HashMap<u32, String>,
     /// Aktive Typparameter-Bindungen während der Emission einer
     /// Spezialisierung: "T" -> "User" (löst T::fromJson auf).
     type_param_aliases: HashMap<String, String>,
@@ -426,6 +438,7 @@ impl CodeGen {
             generic_fns: HashMap::new(),
             generic_methods: HashMap::new(),
             generic_instance_methods: HashMap::new(),
+            methodcall_result_markers: HashMap::new(),
             type_param_aliases: HashMap::new(),
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
@@ -1063,6 +1076,15 @@ impl CodeGen {
                 self.method_ret_class.get(&key).cloned()
             }
             ExprKind::MethodCall { obj: mc_obj, method: mc_method, .. } => {
+                // #158: an own-type-param instance method call's result
+                // class, keyed by THIS call node's own id — checked before
+                // the "{obj_class}_{method}" heuristic below, which two
+                // differently-instantiated calls to the same method on the
+                // same class (`o.map(f1).map(f2)`) would otherwise collide
+                // on (see `methodcall_result_markers`'s doc comment).
+                if let Some(m) = self.methodcall_result_markers.get(&expr.id) {
+                    return Some(m.clone());
+                }
                 let obj_class = self.infer_struct_type(mc_obj, ctx)?;
                 // m.get(k) on a typed map yields the map's value marker
                 if mc_method == "get" {
@@ -7930,7 +7952,7 @@ impl CodeGen {
                     // monomorphize now from the actual call-site argument(s).
                     let mangled_class = declared_type.clone().unwrap();
                     let recv = EvaluatedReceiver { obj_ty: &obj_ty, obj_ptr: &obj_ptr, extra_args: &extra_args };
-                    self.gen_generic_instance_method_call(&mangled_class, &gm_key, args, recv, ctx)
+                    self.gen_generic_instance_method_call(&mangled_class, &gm_key, args, recv, expr.id, ctx)
                 } else {
                     // Direct (static) dispatch — resolve through inheritance chain.
                     let logical_name = if let Some(class) = declared_type {
@@ -11654,6 +11676,7 @@ impl CodeGen {
         fn_name: &str,
         raw_args: &[tinox_parser::Expr],
         recv: EvaluatedReceiver,
+        call_node_id: u32,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         let EvaluatedReceiver { obj_ty, obj_ptr, extra_args } = recv;
@@ -11715,19 +11738,25 @@ impl CodeGen {
             self.lambda_ir.push_str(&spec_ir);
         }
 
-        // Register the return marker under the UNSUFFIXED "{class}_{method}"
-        // key (== fn_name, not target_fn) — `infer_struct_type`'s MethodCall
-        // arm always looks up `"{obj_class}_{method}"` with no knowledge of
-        // U, so this is the key a follow-on chained call
-        // (`option.map(f).map(g)`, no intermediate `let` annotation)
-        // actually queries. Same known imprecision as the rest of the
-        // marker-inference system already has for any generic method called
-        // at two different instantiations from two different call sites —
-        // not a new limitation, just not made worse.
-        match &concrete_ret {
-            Type::Named(cls) if self.defined_classes.contains(cls.as_str()) => {
-                self.method_ret_class.insert(fn_name.to_string(), cls.clone());
-            }
+        // Compute the return marker, then register it under TWO keys:
+        //
+        // 1. The UNSUFFIXED "{class}_{method}" key (== fn_name, not
+        //    target_fn) in `method_ret_class` — `infer_struct_type_local`'s
+        //    MethodCall arm falls back to querying exactly this shape with
+        //    no knowledge of U. Kept for any caller that reaches it (e.g. a
+        //    receiver whose OWN declared type — not this call's — is being
+        //    looked up some other way).
+        // 2. This exact call expression's `call_node_id`, in
+        //    `methodcall_result_markers` — #158: two calls to the SAME
+        //    method on the SAME class with a DIFFERENT own-type-param
+        //    instantiation (`o.map(intToInt).map(intToString)`, both keyed
+        //    "Option__i64_map" in (1)) clobber each other there, whichever
+        //    is emitted last winning — so an EARLIER call's chained
+        //    follow-on would read the WRONG class. Per-node keying can't
+        //    collide this way and is what `infer_struct_type_local` now
+        //    checks FIRST (see there).
+        let marker: Option<String> = match &concrete_ret {
+            Type::Named(cls) if self.defined_classes.contains(cls.as_str()) => Some(cls.clone()),
             Type::Generic { name, args } if self.generic_classes.contains_key(name.as_str()) => {
                 // Ensure the returned specialization actually exists (struct
                 // layout + its own methods) — not just its mangled name —
@@ -11745,15 +11774,13 @@ impl CodeGen {
                             .collect()
                     })
                     .unwrap_or_default();
-                if let Ok(mangled_ret) = self.ensure_generic_class_specialization_with_bindings(name, &ret_bindings) {
-                    self.method_ret_class.insert(fn_name.to_string(), mangled_ret);
-                }
+                self.ensure_generic_class_specialization_with_bindings(name, &ret_bindings).ok()
             }
-            other => {
-                if let Some(m) = Self::container_marker(other) {
-                    self.method_ret_class.insert(fn_name.to_string(), m);
-                }
-            }
+            other => Self::container_marker(other),
+        };
+        if let Some(marker) = marker {
+            self.method_ret_class.insert(fn_name.to_string(), marker.clone());
+            self.methodcall_result_markers.insert(call_node_id, marker);
         }
 
         let ret_ty = self.method_ret_types.get(&target_fn).cloned().unwrap_or_else(|| "i64".to_string());

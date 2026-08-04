@@ -1,0 +1,36 @@
+// Unannotated fluent chaining of own-type-param instance methods
+// (Option<T>.map<U>/.andThen<U>) — regression test for issue #158: the
+// typechecker registered these methods' return type with a literal,
+// unresolved type param leaking through (e.g. `Option<U>` staying
+// `Named("Option", [Named("U")])` for every call regardless of the
+// actual U), and the instance-call type-check path had no call-site
+// unification to resolve it — so `expr_value_types` recorded the wrong
+// type for a chained call's intermediate result, which codegen's
+// rich-marker-preferring inference then trusted over its own (correct)
+// fallback, producing a mangled garbage class name and an ICE. An
+// intermediate `let` annotation sidestepped it entirely (see #153's own
+// coverage), which is why this specifically needs NO intermediate lets.
+// expect: 20
+// expect: val=10!
+import tinox.core.option;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let o: Option<Int64> = Option<Int64>::some(1);
+        let r1: Int64 = o.map(fnc(x: Int64) -> Int64 { return x + 1; })
+            .map(fnc(x: Int64) -> Int64 { return x * 10; })
+            .unwrap();
+        println(r1);
+
+        let o2: Option<Int64> = Option<Int64>::some(5);
+        let r2: String = o2.map(fnc(x: Int64) -> Int64 { return x * 2; })
+            .andThen(fnc(x: Int64) -> Option<String> {
+                return Option<String>::some("val=" + x.toString());
+            })
+            .map(fnc(s: String) -> String { return s + "!"; })
+            .unwrap();
+        println(r2);
+        return 0;
+    }
+}
