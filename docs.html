@@ -503,6 +503,7 @@
     <li><a href="#mod-amqp091">amqp091</a></li>
     <li><a href="#mod-amqp10">amqp10</a></li>
     <li><a href="#mod-smtp">smtp</a></li>
+    <li><a href="#mod-redis">redis</a></li>
 
     <li class="section-label">Datenformate</li>
     <li><a href="#mod-json">json</a></li>
@@ -2603,6 +2604,106 @@ if client.conn &lt;= 0 { throw client.errorMessage; }
 if !client.startTls() { throw "STARTTLS fehlgeschlagen"; }
 if !client.authPlain("user", "pass") { throw "Auth fehlgeschlagen"; }
 client.send("me@example.org", ["you@example.org"], "Hi", "Hallo!");
+client.close();
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-redis">
+
+  <h2>redis</h2>
+  <p class="import-hint"><code>import tinox.core.redis;</code></p>
+  <p>
+    Client für einen externen Cache-/Session-Store (RESP2, Single-Node,
+    Request/Response-Kommandos) — <code>tinox.core.cache</code>s
+    In-Process-<code>Cache</code>/<code>LruCache</code> können keinen
+    Zustand über mehrere HTTP-Worker-Prozesse/-Instanzen hinweg teilen oder
+    Sessions außerhalb eines einzelnen Prozessspeichers ablegen. Wire-
+    kompatibel sowohl mit Redis als auch Valkey.
+  </p>
+  <p>
+    v1-Umfang: kein Connection-Pooling (<code>tinox.core.pool</code> ist der
+    generische Baustein dafür, wird hier nicht neu erfunden), kein Redis
+    Cluster/Sentinel, kein Pub/Sub (<code>SUBSCRIBE</code>/<code>PUBLISH</code>)
+    — nur Single-Node-Request/Response-Kommandos. Kein Memcached-Client in
+    diesem Durchgang (anderes Wire-Protokoll, ein expliziter, separat
+    abgegrenzter Folgeschritt bei Bedarf).
+  </p>
+
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>RedisClient::connect</code></td>
+        <td><code>fn connect(host: String, port: Int64) -&gt; RedisClient</code></td>
+        <td>Verbindet und sendet <code>PING</code>, um bei falschem
+        Host/Port sofort zu scheitern. Bei Fehlschlag
+        <code>conn &lt;= 0</code>/<code>errorMessage</code> prüfen.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::get</code></td>
+        <td><code>fn get(key: String) -&gt; String</code></td>
+        <td>Liefert <code>""</code> sowohl bei echtem Cache-Miss als auch bei
+        Protokollfehler — <code>lastGetFound()</code> unterscheidet die
+        beiden, da ein leerer String selbst ein gültiger gespeicherter Wert
+        sein kann.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::lastGetFound</code></td>
+        <td><code>fn lastGetFound() -&gt; Bool</code></td>
+        <td>Ob der letzte <code>get()</code>-Aufruf einen Wert gefunden hat.
+        Direkt nach <code>get()</code> prüfen.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::set</code></td>
+        <td><code>fn set(key: String, value: String) -&gt; Bool</code></td>
+        <td>Setzt einen Key bedingungslos.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::setEx</code></td>
+        <td><code>fn setEx(key: String, value: String, ttlSeconds: Int64) -&gt; Bool</code></td>
+        <td>Setzt einen Key mit Ablaufzeit.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::del</code></td>
+        <td><code>fn del(key: String) -&gt; Bool</code></td>
+        <td>Löscht einen Key; <code>true</code>, falls er existierte.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::expire</code></td>
+        <td><code>fn expire(key: String, ttlSeconds: Int64) -&gt; Bool</code></td>
+        <td>Setzt eine TTL auf einen bestehenden Key.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::incr</code></td>
+        <td><code>fn incr(key: String) -&gt; Int64</code></td>
+        <td>Erhöht einen Key atomar und liefert den neuen Wert.
+        <code>lastIncrOk()</code> unterscheidet ein echtes Ergebnis 0 von
+        einem Protokoll-/Wertfehler.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::lastIncrOk</code></td>
+        <td><code>fn lastIncrOk() -&gt; Bool</code></td>
+        <td>Ob der letzte <code>incr()</code>-Aufruf erfolgreich war.</td>
+      </tr>
+      <tr>
+        <td><code>RedisClient::close</code></td>
+        <td><code>fn close() -&gt; Nothing</code></td>
+        <td>Schließt die Verbindung.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.redis;
+
+let client: RedisClient = RedisClient::connect("localhost", 6379);
+if client.conn &lt;= 0 { throw client.errorMessage; }
+client.setEx("session:abc", "user-42", 3600);
+let value: String = client.get("session:abc");
+if !client.lastGetFound() { throw "Cache-Miss"; }
 client.close();
 </code></pre>
   </div>

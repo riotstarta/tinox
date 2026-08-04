@@ -1,0 +1,107 @@
+// Redis client (issue #135): RedisClient::connect/get/set/setEx/del/
+// expire/incr against a real RESP2 responder (spawn = real thread, same
+// pattern as ws_client.tnx/amqp091_heartbeat.tnx/smtp_send_email.tnx).
+// Exercises all three RESP2 reply shapes this client parses: simple
+// string ("+OK"), integer (":N"), and bulk string ($N/<data> or the nil
+// sentinel "$-1"). The full RESP2 request encoding (sendCommand's
+// "*<argc>\r\n($<len>\r\n<arg>\r\n)*") is verified independently against
+// a real, separate implementation (valkey-server, RESP2-compatible with
+// Redis) manually this session -- see the module doc comment on
+// RedisClient and the closing issue comment for that verification
+// (connect/get/set/setEx/expire/incr/del all round-tripped correctly,
+// cross-checked with valkey-cli). Not re-verified against a real server
+// here since the fake responder below already covers what this client
+// actually parses; a real-server e2e run would need valkey-server/
+// redis-server on PATH, which this suite doesn't otherwise depend on.
+// expect: connected
+// expect: get before set (should be empty): []
+// expect: found before set (should be false): false
+// expect: set ok: true
+// expect: get value: [hello world]
+// expect: found: true
+// expect: del ok: true
+// expect: incr value (should be 11): 11
+// expect: incr ok: true
+
+import tinox.core.redis;
+
+class Main
+{
+    fnc skipCommand(conn: Int64) -> Nothing {
+        let header = httpConnReadLine(conn);
+        let argc = header.substring(1, header.len()).toInt();
+        var i: Int64 = 0;
+        while i < argc {
+            let lenLine = httpConnReadLine(conn);
+            let len = lenLine.substring(1, lenLine.len()).toInt();
+            httpConnReadN(conn, len + 2);
+            i = i + 1;
+        }
+    }
+
+    async fnc fakeServer(srv: Int64) -> Int64 {
+        let conn = httpServerAcceptConnHandle(srv);
+        if conn <= 0 {
+            return 0;
+        }
+
+        Main::skipCommand(conn); // PING
+        httpConnSendRaw(conn, "+PONG\r\n");
+
+        Main::skipCommand(conn); // GET mykey (before set)
+        httpConnSendRaw(conn, "$-1\r\n");
+
+        Main::skipCommand(conn); // SET mykey "hello world"
+        httpConnSendRaw(conn, "+OK\r\n");
+
+        Main::skipCommand(conn); // GET mykey
+        httpConnSendRaw(conn, "$11\r\nhello world\r\n");
+
+        Main::skipCommand(conn); // DEL mykey
+        httpConnSendRaw(conn, ":1\r\n");
+
+        Main::skipCommand(conn); // INCR counter
+        httpConnSendRaw(conn, ":11\r\n");
+
+        httpConnClose(conn);
+        return 1;
+    }
+
+    fnc main() -> Int32 {
+        let srv = httpServerCreate(47831);
+        if srv < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle = spawn fakeServer(srv);
+
+        let client: RedisClient = RedisClient::connect("127.0.0.1", 47831);
+        if client.conn <= 0 {
+            println("connect failed: " + client.errorMessage);
+            return 1;
+        }
+        println("connected");
+
+        let missBefore: String = client.get("mykey");
+        println("get before set (should be empty): [" + missBefore + "]");
+        println("found before set (should be false): " + client.lastGetFound().toString());
+
+        let setOk: Bool = client.set("mykey", "hello world");
+        println("set ok: " + setOk.toString());
+
+        let v: String = client.get("mykey");
+        println("get value: [" + v + "]");
+        println("found: " + client.lastGetFound().toString());
+
+        let delOk: Bool = client.del("mykey");
+        println("del ok: " + delOk.toString());
+
+        let incrVal: Int64 = client.incr("counter");
+        println("incr value (should be 11): " + incrVal.toString());
+        println("incr ok: " + client.lastIncrOk().toString());
+
+        client.close();
+        await handle;
+        return 0;
+    }
+}

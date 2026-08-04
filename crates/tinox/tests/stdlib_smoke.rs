@@ -371,6 +371,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "redis",
+        imports: &["tinox.core.redis"],
+        body: "let client: RedisClient = RedisClient::connect(\"127.0.0.1\", 1);\n    println(client.conn <= 0);",
+        expects: &["true"],
+        contains: &[],
+    },
+    Smoke {
         key: "regex",
         imports: &["tinox.core.regex"],
         body: r#"if Regex::isMatch("ab+", "abb") { println("yes"); } else { println("no"); }"#,
