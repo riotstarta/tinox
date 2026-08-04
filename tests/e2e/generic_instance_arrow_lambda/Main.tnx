@@ -1,0 +1,52 @@
+// Regression coverage for #165: an arrow-sugar lambda (`n => ...`, no
+// annotated param/return types at all) passed to an own-type-param generic
+// instance method (`Option<T>.andThen<U>`/`.map<U>`) used to silently
+// mis-specialize U to Int64 (the codegen-side unresolved-type-param
+// fallback) instead of the real type, because tinox-typecheck never gave
+// the lambda's own param a concrete type to check its body against (arrow
+// params default to Any) and the codegen-side inference had no annotation
+// to unify against either. Fixed by pre-binding the lambda param(s) to the
+// receiver's concrete type argument before typecheck's `check_call`
+// (mirroring the existing Array::map/filter/forEach mechanism), plus a
+// codegen-side fallback onto tinox-typecheck's own inferred return type
+// for a block-bodied arrow lambda's `return` statement.
+// expect: 5
+// expect: 5
+// expect: 5
+// expect: -1
+import tinox.core.option;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let u: Option<String> = Option<String>::some("Alice");
+
+        // Arrow-sugar, block body with an explicit `return`.
+        let viaAndThen: Option<Int64> = u.andThen(n => {
+            return Option::some(n.len());
+        });
+        println(viaAndThen.unwrapOr(0));
+
+        // Explicit fully-typed lambda — the pre-#165 workaround, must keep
+        // working unchanged.
+        let viaExplicit: Option<Int64> = u.andThen(fnc(n: String) -> Option<Int64> {
+            return Option::some(n.len());
+        });
+        println(viaExplicit.unwrapOr(0));
+
+        // Arrow-sugar, bare expression body (no braces/return).
+        let viaMap: Option<Int64> = u.map(n => n.len());
+        println(viaMap.unwrapOr(0));
+
+        // None receiver: confirms the fix isn't special-cased to the `some`
+        // path only.
+        let none: Option<String> = Option<String>::none();
+        let viaNone: Option<Int64> = none.andThen(n => {
+            return Option::some(n.len());
+        });
+        println(viaNone.unwrapOr(-1));
+
+        return 0;
+    }
+}

@@ -8,12 +8,12 @@ namespace tinox.core.iter
     {
         fn range(start: Int64, end: Int64) -> Iterator
         {
-            return Iterator { current: start, end: end, step: 1 };
+            return Iterator { current: start, end: end, step: 1, data: [], cycled: false };
         }
 
         fn rangeStep(start: Int64, end: Int64, step: Int64) -> Iterator
         {
-            return Iterator { current: start, end: end, step: step };
+            return Iterator { current: start, end: end, step: step, data: [], cycled: false };
         }
 
         fn repeat<T>(value: T, count: Int64) -> List<T>

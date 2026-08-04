@@ -1,0 +1,7 @@
+namespace ns
+{
+    interface IGreeter
+    {
+        fn greetNum() -> Int64;
+    }
+}

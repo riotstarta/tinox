@@ -3,7 +3,7 @@ pub mod annotations;
 use std::collections::{HashMap, HashSet};
 use tinox_common::{Error, ErrorBag, Span, Spanned};
 use tinox_parser::{
-    BinaryOp, Class, DeclKind, Expr, ExprKind, Function, Literal, Pattern, SourceFile, Stmt,
+    BinaryOp, Class, Decl, DeclKind, Expr, ExprKind, Function, Literal, Pattern, SourceFile, Stmt,
     StmtKind, Type, UnaryOp, Visibility,
 };
 
@@ -468,6 +468,20 @@ pub struct TypeChecker {
     /// literal that omits a required field at compile time instead of
     /// leaving the corresponding heap slot as uninitialized garbage.
     class_fields: HashMap<String, Vec<String>>,
+    /// Issue #165: `ClassName_method` -> for each Fn-typed param at that
+    /// (0-based, self excluded) arg position, the UNERASED `ValueType`s of
+    /// the lambda's OWN params (e.g. `andThen(transform: fnc(T) -> Option<U>)`
+    /// registers `[(0, [Named("T", [])])]`). Mirrors `generic_method_param_types`
+    /// but reaches one level deeper (into the `Fn` param's own param types,
+    /// which `type_to_value` otherwise collapses to the opaque `ValueType::Fn`
+    /// marker) — needed so an arrow-sugar lambda argument (`n => ...`, whose
+    /// own param has no annotation at all, unlike Tinox's other lambda forms)
+    /// can be given the same call-site `infer_lambda_with_param_hints`
+    /// contextual-typing treatment the built-in `Array::map/filter/forEach`
+    /// path already gets, instead of type-checking with every param as `Any`
+    /// (which is what silently mis-specialized `U` to `Int64` downstream in
+    /// codegen — see `infer_own_type_params`'s doc comment in codegen.rs).
+    generic_instance_fn_arg_hints: HashMap<String, Vec<(usize, Vec<ValueType>)>>,
 }
 
 impl TypeChecker {
@@ -1159,6 +1173,7 @@ impl TypeChecker {
             expr_types: HashMap::new(),
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
+            generic_instance_fn_arg_hints: HashMap::new(),
         }
     }
 
@@ -1315,8 +1330,36 @@ impl TypeChecker {
         }
     }
 
-    fn register_declarations(&mut self, source: &SourceFile) {
+    /// Flattens one level of namespace wrapping (`namespace ns { ... }`)
+    /// into the surrounding decl list, preserving declaration order —
+    /// every registration/collection pass over `source.decls` needs to
+    /// treat a namespace-wrapped decl exactly like a top-level one, a
+    /// proven bug magnet when duplicated by hand instead of shared: #161
+    /// (`generic_method_param_types` missing for namespace-wrapped
+    /// classes), #165's registration gap for the equivalent
+    /// `generic_instance_fn_arg_hints` table (every stdlib generic class,
+    /// `Option<T>` included, is namespace-wrapped), and — found while
+    /// consolidating those two into this single helper — namespace-wrapped
+    /// classes never registering into `interface_implementations`, and
+    /// namespace-wrapped `interface`/`trait` decls never registering into
+    /// `self.interfaces` at all, even though the parser explicitly allows
+    /// both inside a `namespace { }` block. Nested `namespace { namespace
+    /// { ... } }` stays unsupported, matching prior behavior exactly (not
+    /// new scope).
+    fn flatten_decls(source: &SourceFile) -> Vec<&Decl> {
+        let mut out = Vec::new();
         for decl in &source.decls {
+            if let DeclKind::Namespace(ns) = &decl.node {
+                out.extend(ns.decls.iter());
+            } else {
+                out.push(decl);
+            }
+        }
+        out
+    }
+
+    fn register_declarations(&mut self, source: &SourceFile) {
+        for decl in Self::flatten_decls(source) {
             match &decl.node {
                 DeclKind::Function(f) => {
                     let sig = FunctionSignature {
@@ -1413,6 +1456,27 @@ impl TypeChecker {
                             );
                             self.generic_method_param_types
                                 .insert(key.clone(), (unerased, erase_params.clone()));
+
+                            // Issue #165: for each Fn-typed param, also keep the
+                            // lambda's OWN param types unerased (`type_to_value`
+                            // on the outer `Type::Fn` alone collapses straight to
+                            // `ValueType::Fn`, losing exactly the `T` reference a
+                            // call-site hint needs) — see
+                            // `generic_instance_fn_arg_hints`'s doc comment.
+                            let fn_hints: Vec<(usize, Vec<ValueType>)> = method
+                                .params
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, p)| match &p.param_type {
+                                    Type::Fn { params: fp, .. } if !fp.is_empty() => {
+                                        Some((i, fp.iter().map(Self::type_to_value).collect()))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            if !fn_hints.is_empty() {
+                                self.generic_instance_fn_arg_hints.insert(key.clone(), fn_hints);
+                            }
                         }
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
@@ -1510,156 +1574,11 @@ impl TypeChecker {
                     self.symbols.functions.insert(key.clone(), sig);
                     self.method_visibility.insert(key, Visibility::Public);
                 }
-                DeclKind::Namespace(ns) => {
-                    for inner in &ns.decls {
-                        match &inner.node {
-                        DeclKind::Class(c) => {
-                            if let Some(parent) = &c.extends {
-                                self.class_parents.insert(c.name.clone(), parent.clone());
-                            }
-                            for field in &c.fields {
-                                let ty = Self::type_to_value(&field.field_type);
-                                let key = format!("{}.{}", c.name, field.name);
-                                self.symbols.variables.insert(key.clone(), (ty, true));
-                                self.field_visibility.insert(key, field.visibility.clone());
-                            }
-                            if c.annotations.iter().any(|a| a.name == "Log") {
-                                let key = format!("{}.log", c.name);
-                                self.symbols.variables.insert(key.clone(), (ValueType::Named("Logger".to_string(), vec![]), false));
-                                self.field_visibility.insert(key, Visibility::Public);
-                            }
-                            for method in &c.methods {
-                                let mut params = if method.static_ {
-                                    vec![]
-                                } else {
-                                    vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))]
-                                };
-                                // Erase class-level AND method-level type params
-                                // (see the top-level DeclKind::Class arm above —
-                                // Stack<T>::push(value: T) lives in a namespace,
-                                // same "expected T, found Int64" bug).
-                                let erase_params: Vec<String> = c
-                                    .type_params
-                                    .iter()
-                                    .chain(method.type_params.iter())
-                                    .cloned()
-                                    .collect();
-                                params.extend(
-                                    method.params.iter()
-                                        .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &erase_params))),
-                                );
-                                let sig = FunctionSignature {
-                                    params,
-                                    return_type: Self::erase_method_return_type(&method.ret_type, &method.type_params, &erase_params),
-                                };
-                                let key = format!("{}_{}", c.name, method.name);
-                                if !method.static_ && Self::stmt_uses_this(&method.body) {
-                                    self.method_uses_this.insert(key.clone());
-                                }
-                                // #161: same "B2 Schritt 2" registration as the
-                                // top-level DeclKind::Class arm above — this
-                                // block (a namespace-wrapped class, e.g. every
-                                // stdlib generic class including `Option<T>`)
-                                // was missing it entirely, so
-                                // `unify_generic_return` always bailed early
-                                // (`generic_method_param_types.get(key)` found
-                                // nothing) for EVERY method of EVERY
-                                // namespaced generic class — not just
-                                // own-type-param methods (#158's subject), but
-                                // any generic-return method at all, including
-                                // plain factories like `Option::some`. Left the
-                                // registered return type as the literal,
-                                // unresolved `Named("T", [])` for any call
-                                // site with no `let` annotation to fall back
-                                // on, which is what #161's ICE was rooted in.
-                                if !erase_params.is_empty() {
-                                    let mut unerased: Vec<ValueType> = if method.static_ {
-                                        vec![]
-                                    } else {
-                                        vec![ValueType::Named(
-                                            c.name.clone(),
-                                            c.type_params
-                                                .iter()
-                                                .map(|tp| ValueType::Named(tp.clone(), vec![]))
-                                                .collect(),
-                                        )]
-                                    };
-                                    unerased.extend(
-                                        method.params.iter().map(|p| Self::type_to_value(&p.param_type)),
-                                    );
-                                    self.generic_method_param_types
-                                        .insert(key.clone(), (unerased, erase_params.clone()));
-                                }
-                                self.symbols.functions.insert(key.clone(), sig);
-                                self.method_visibility.insert(key, method.visibility.clone());
-                            }
-                            if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
-                                self.symbols.functions.insert(
-                                    format!("{}_toJson", c.name),
-                                    FunctionSignature {
-                                        params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
-                                        return_type: ValueType::String,
-                                    },
-                                );
-                                self.symbols.functions.insert(
-                                    format!("{}_fromJson", c.name),
-                                    FunctionSignature {
-                                        params: vec![("json_val".to_string(), ValueType::Named("JsonValue".to_string(), vec![]))],
-                                        return_type: ValueType::Named(c.name.clone(), vec![]),
-                                    },
-                                );
-                            }
-                        }
-                        DeclKind::Immutable(u) => {
-                            for field in &u.fields {
-                                let ty = Self::type_to_value(&field.param_type);
-                                let key = format!("{}.{}", u.name, field.name);
-                                self.symbols.variables.insert(key.clone(), (ty, true));
-                                self.field_visibility.insert(key, Visibility::Public);
-                            }
-                            let params: Vec<(String, ValueType)> = u.fields.iter()
-                                .map(|f| (f.name.clone(), Self::type_to_value(&f.param_type)))
-                                .collect();
-                            let sig = FunctionSignature {
-                                params,
-                                return_type: ValueType::Named(u.name.clone(), vec![]),
-                            };
-                            let key = format!("{}_new", u.name);
-                            self.symbols.functions.insert(key.clone(), sig);
-                            self.method_visibility.insert(key, Visibility::Public);
-                        }
-                        DeclKind::Function(f) => {
-                            let sig = FunctionSignature {
-                                params: f.params.iter()
-                                    .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &f.type_params)))
-                                    .collect(),
-                                return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
-                            };
-                            self.symbols.functions.insert(f.name.clone(), sig);
-                        }
-                        // Enums inside a namespace were never registered (only the
-                        // top-level arm did) — so `Enum::Variant` from a namespaced
-                        // enum fell through to the silent Named() fallback. Mirror
-                        // the top-level DeclKind::Enum registration here.
-                        DeclKind::Enum(e) => {
-                            let variant_names: Vec<String> =
-                                e.variants.iter().map(|v| v.name.clone()).collect();
-                            Self::register_enum_variants(&mut self.enums, &e.name, &variant_names);
-                            for variant in &e.variants {
-                                self.enum_variant_payloads.insert(
-                                    format!("{}::{}", e.name, variant.name),
-                                    variant.args.iter().map(Self::type_to_value).collect(),
-                                );
-                                let ty = ValueType::Named(format!("{}.{}", e.name, variant.name), vec![]);
-                                self.symbols
-                                    .variables
-                                    .insert(format!("{}.{}", e.name, variant.name), (ty, true));
-                            }
-                        }
-                        _ => {}
-                        }
-                    }
-                }
+                // Namespace-wrapped decls are already flattened into this
+                // loop by `flatten_decls` above (matched by their own kind,
+                // same as a top-level decl) — nested `namespace { namespace
+                // { ... } }` stays unsupported, same as before.
+                DeclKind::Namespace(_) => {}
                 _ => {}
             }
         }
@@ -1771,23 +1690,11 @@ impl TypeChecker {
         // Third pass: expand class inheritance (fields and methods from parent classes).
         {
             use std::collections::HashSet;
-            let class_map: HashMap<String, tinox_parser::Class> = source
-                .decls
-                .iter()
-                .flat_map(|d| {
-                    let mut v: Vec<tinox_parser::Class> = Vec::new();
-                    match &d.node {
-                        DeclKind::Class(c) => v.push(c.clone()),
-                        DeclKind::Namespace(ns) => {
-                            for inner in &ns.decls {
-                                if let DeclKind::Class(c) = &inner.node {
-                                    v.push(c.clone());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    v
+            let class_map: HashMap<String, tinox_parser::Class> = Self::flatten_decls(source)
+                .into_iter()
+                .filter_map(|d| match &d.node {
+                    DeclKind::Class(c) => Some(c.clone()),
+                    _ => None,
                 })
                 .map(|c| (c.name.clone(), c))
                 .collect();
@@ -1900,22 +1807,13 @@ impl TypeChecker {
     fn check_source_file(&mut self, source: &SourceFile) {
         self.register_declarations(source);
 
-        for decl in &source.decls {
+        for decl in Self::flatten_decls(source) {
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.check_function(f);
                 }
                 DeclKind::Class(c) => {
                     self.check_class(c);
-                }
-                DeclKind::Namespace(ns) => {
-                    for inner in &ns.decls {
-                        match &inner.node {
-                            DeclKind::Class(c) => self.check_class(c),
-                            DeclKind::Function(f) => self.check_function(f),
-                            _ => {}
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -2481,6 +2379,35 @@ impl TypeChecker {
                             vec![(**elem).clone()]
                         };
                         array_lambda_ret = self.infer_lambda_with_param_hints(lam, &hints);
+                    }
+                }
+                // Issue #165: same pre-binding as the Array map/filter/forEach/
+                // reduce case above, generalized to any generic class's own
+                // instance method with a Fn-typed param (`Option<T>.andThen`,
+                // `.map`, `.orElse`, or a user-defined equivalent) — without
+                // this, an arrow-sugar lambda argument's param(s) type-check as
+                // `Any` (arrow-sugar has no annotation at all to fall back to),
+                // so anything derived from them inside the lambda body — e.g.
+                // `Option::some(n.len())`'s own call-site generic-return
+                // unification — has no concrete type to unify against either,
+                // and the codegen-side inference this feeds ends up with
+                // nothing better than its `Int64` default (see
+                // `infer_own_type_params` in codegen.rs).
+                if let ValueType::Named(cn, targs) = &obj_ty {
+                    if let Some(hint_entries) = self.generic_instance_fn_arg_hints.get(&method_name).cloned() {
+                        let cn = cn.clone();
+                        let targs = targs.clone();
+                        for (arg_idx, raw_hints) in hint_entries {
+                            if let Some(lam) = args.get(arg_idx) {
+                                if matches!(&lam.node, ExprKind::Lambda { .. }) {
+                                    let hints: Vec<ValueType> = raw_hints
+                                        .iter()
+                                        .map(|vt| self.substitute_type_params(vt, &cn, &targs))
+                                        .collect();
+                                    self.infer_lambda_with_param_hints(lam, &hints);
+                                }
+                            }
+                        }
                     }
                 }
                 let generic_ret = self.check_call(&func_expr, &call_args, expr.span);

@@ -6,7 +6,7 @@ namespace tinox.core.yaml
     {
         fn parse(content: String) -> YamlValue
         {
-            return YamlValue { kind: "map", mapValue: Map::new() };
+            return YamlValue { kind: "map", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() };
         }
     }
 }

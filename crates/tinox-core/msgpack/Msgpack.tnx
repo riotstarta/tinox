@@ -7,7 +7,7 @@
  * same self-describing dynamic-value model as JSON (object/array/
  * string/int/float/bool/null).
  *
- *   let payload: MsgpackValue = MsgpackValue { kind: "object", objectValue: fields };
+ *   let payload: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
  *   let bytes: List<Int64> = Msgpack::encode(payload);
  *   let decoded: MsgpackValue = Msgpack::decode(bytes);
  *
@@ -215,16 +215,16 @@ namespace tinox.core.msgpack
             let tag: Int64 = reader.readByte();
             if reader.failed
             {
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
 
             if tag <= 0x7f
             {
-                return MsgpackValue { kind: "int", intValue: tag };
+                return MsgpackValue { kind: "int", stringValue: "", intValue: tag, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag >= 0xe0
             {
-                return MsgpackValue { kind: "int", intValue: tag - 256 };
+                return MsgpackValue { kind: "int", stringValue: "", intValue: tag - 256, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag >= 0x80 && tag <= 0x8f
             {
@@ -240,27 +240,27 @@ namespace tinox.core.msgpack
             }
             if tag == 0xc0
             {
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag == 0xc2
             {
-                return MsgpackValue { kind: "bool", boolValue: false };
+                return MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag == 0xc3
             {
-                return MsgpackValue { kind: "bool", boolValue: true };
+                return MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: true, arrayValue: [], objectValue: Map::new() };
             }
             if tag == 0xca
             {
                 let bits: Int64 = reader.readBE(4);
-                if reader.failed { return MsgpackValue { kind: "null" }; }
-                return MsgpackValue { kind: "float", floatValue: msgpackBitsToFloat32(bits) };
+                if reader.failed { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
+                return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat32(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag == 0xcb
             {
                 let bits: Int64 = reader.readBE(8);
-                if reader.failed { return MsgpackValue { kind: "null" }; }
-                return MsgpackValue { kind: "float", floatValue: msgpackBitsToFloat64(bits) };
+                if reader.failed { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
+                return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat64(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if tag == 0xcc { return Msgpack::intResult(reader, reader.readBE(1)); }
             if tag == 0xcd { return Msgpack::intResult(reader, reader.readBE(2)); }
@@ -283,16 +283,16 @@ namespace tinox.core.msgpack
             // v1 -- fail the decode rather than silently misreading the
             // following bytes as something else.
             reader.failed = true;
-            return MsgpackValue { kind: "null" };
+            return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
         }
 
         fn intResult(reader: MsgpackReader, v: Int64) -> MsgpackValue
         {
             if reader.failed
             {
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            return MsgpackValue { kind: "int", intValue: v };
+            return MsgpackValue { kind: "int", stringValue: "", intValue: v, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
         }
 
         fn signExtend(v: Int64, byteWidth: Int64) -> Int64
@@ -311,7 +311,7 @@ namespace tinox.core.msgpack
             if reader.failed || len < 0 || len > reader.remaining()
             {
                 reader.failed = true;
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             // Collects bytes into a List<Int64> first, then converts in
             // one pass (tinoxBytesToString) -- NOT `s = s + fromCharCode(...)`
@@ -326,7 +326,7 @@ namespace tinox.core.msgpack
                 bytes.push(reader.readByte());
                 i = i + 1;
             }
-            return MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bytes) };
+            return MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bytes), intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
         }
 
         fn decodeArray(reader: MsgpackReader, len: Int64) -> MsgpackValue
@@ -334,7 +334,7 @@ namespace tinox.core.msgpack
             if reader.failed || len < 0 || len > reader.remaining()
             {
                 reader.failed = true;
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             var items: List<MsgpackValue> = [];
             var i: Int64 = 0;
@@ -342,12 +342,12 @@ namespace tinox.core.msgpack
             {
                 if reader.failed
                 {
-                    return MsgpackValue { kind: "null" };
+                    return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
                 items.push(Msgpack::decodeValue(reader));
                 i = i + 1;
             }
-            return MsgpackValue { kind: "array", arrayValue: items };
+            return MsgpackValue { kind: "array", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: items, objectValue: Map::new() };
         }
 
         fn decodeMap(reader: MsgpackReader, len: Int64) -> MsgpackValue
@@ -355,7 +355,7 @@ namespace tinox.core.msgpack
             if reader.failed || len < 0 || len > reader.remaining()
             {
                 reader.failed = true;
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             var m: Map<String, MsgpackValue> = Map::new();
             var i: Int64 = 0;
@@ -363,19 +363,19 @@ namespace tinox.core.msgpack
             {
                 if reader.failed
                 {
-                    return MsgpackValue { kind: "null" };
+                    return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
                 let keyValue: MsgpackValue = Msgpack::decodeValue(reader);
                 let value: MsgpackValue = Msgpack::decodeValue(reader);
                 if !keyValue.isString()
                 {
                     reader.failed = true;
-                    return MsgpackValue { kind: "null" };
+                    return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
                 m[keyValue.getString()] = value;
                 i = i + 1;
             }
-            return MsgpackValue { kind: "object", objectValue: m };
+            return MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: m };
         }
     }
 }

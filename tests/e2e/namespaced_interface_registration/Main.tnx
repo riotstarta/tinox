@@ -1,0 +1,24 @@
+// Regression coverage for a gap found while consolidating tinox-typecheck's
+// duplicated top-level-vs-namespace-wrapped declaration registration (the
+// same underlying cause as #161 and #165's registration gap): a
+// namespace-wrapped `interface`/`trait` decl was never registered into
+// tinox-typecheck's `interfaces` table at all, and a namespace-wrapped
+// class's `implements` clause was never registered into
+// `interface_implementations` either — even though the parser explicitly
+// allows both `interface`/`trait` decls and `implements` inside a
+// `namespace { }` block. A call through an interface-typed variable whose
+// interface/implementing class both live in a namespace used to fail with
+// "undefined function: IGreeter_greetNum" instead of dispatching correctly.
+// expect: 42
+import IGreeter;
+import Greeter;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let g: IGreeter = Greeter{};
+        println(g.greetNum());
+        return 0;
+    }
+}

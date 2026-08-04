@@ -315,7 +315,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "msgpack",
         imports: &["tinox.core.msgpack"],
-        body: "let v: MsgpackValue = MsgpackValue { kind: \"int\", intValue: 42 };\n    let bytes: List<Int64> = Msgpack::encode(v);\n    println(Msgpack::decode(bytes).getInt());",
+        body: "let v: MsgpackValue = MsgpackValue { kind: \"int\", stringValue: \"\", intValue: 42, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };\n    let bytes: List<Int64> = Msgpack::encode(v);\n    println(Msgpack::decode(bytes).getInt());",
         expects: &["42"],
         contains: &[],
     },
@@ -528,7 +528,7 @@ const SMOKES: &[Smoke] = &[
         imports: &["tinox.core.websocket"],
         // Reine Codec-Logik ohne Socket (die volle Strecke inkl. Handshake
         // deckt tests/e2e/ws_handshake_frames.tnx ab).
-        body: "let f: WsFrame = WsFrame { fin: true, opcode: 1, payload: Ws::textToBytes(\"hi\") };\n    println(Ws::text(f));",
+        body: "let f: WsFrame = WsFrame { fin: true, opcode: 1, payload: Ws::textToBytes(\"hi\"), rsv1: false };\n    println(Ws::text(f));",
         expects: &["hi"],
         contains: &[],
     },

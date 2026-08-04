@@ -26,7 +26,7 @@ namespace tinox.core.toml
                     if endSection != -1
                     {
                         currentSection = line.substring(1, endSection);
-                        root[currentSection] = TomlValue { kind: "table", tableValue: Map::new() };
+                        root[currentSection] = TomlValue { kind: "table", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, tableValue: Map::new(), arrayValue: [] };
                     }
                 }
                 else
@@ -42,28 +42,28 @@ namespace tinox.core.toml
                 }
                 i = i + 1;
             }
-            return TomlValue { kind: "table", tableValue: root };
+            return TomlValue { kind: "table", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, tableValue: root, arrayValue: [] };
         }
 
         fn parseValue(value: String) -> TomlValue
         {
             if value.startsWith("\"")
             {
-                return TomlValue { kind: "string", stringValue: value.replace("\"", "") };
+                return TomlValue { kind: "string", stringValue: value.replace("\"", ""), intValue: 0, floatValue: 0.0, boolValue: false, tableValue: Map::new(), arrayValue: [] };
             }
             if value == "true"
             {
-                return TomlValue { kind: "bool", boolValue: true };
+                return TomlValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: true, tableValue: Map::new(), arrayValue: [] };
             }
             if value == "false"
             {
-                return TomlValue { kind: "bool", boolValue: false };
+                return TomlValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, tableValue: Map::new(), arrayValue: [] };
             }
             if value.indexOf(".") != -1
             {
-                return TomlValue { kind: "float", floatValue: (Float64)value };
+                return TomlValue { kind: "float", stringValue: "", intValue: 0, floatValue: (Float64)value, boolValue: false, tableValue: Map::new(), arrayValue: [] };
             }
-            return TomlValue { kind: "int", intValue: (Int64)value };
+            return TomlValue { kind: "int", stringValue: "", intValue: (Int64)value, floatValue: 0.0, boolValue: false, tableValue: Map::new(), arrayValue: [] };
         }
     }
 }

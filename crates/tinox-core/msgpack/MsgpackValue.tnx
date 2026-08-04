@@ -11,8 +11,13 @@ namespace tinox.core.msgpack
      * format instead of text. Unlike JsonValue (a C-backed opaque
      * handle), this is a plain Tinox tagged union: construct one
      * directly via a struct literal for encoding (e.g.
-     * `MsgpackValue { kind: "string", stringValue: "hi" }`), the same
-     * convention tinox.core.toml's TomlValue already uses.
+     * `MsgpackValue { kind: "string", stringValue: "hi", intValue: 0,
+     * floatValue: 0.0, boolValue: false, arrayValue: [], objectValue:
+     * Map::new() }`), the same convention tinox.core.toml's TomlValue
+     * already uses. EVERY field must be given (Bug 130: an omitted field
+     * left the corresponding heap slot as uninitialized garbage) -- only
+     * `kind` and the one field it selects are ever actually read, the
+     * rest are inert placeholders.
      *
      * Map keys are always String (matching JsonValue's object model) --
      * MessagePack itself allows any value as a map key, but a decoded
@@ -48,7 +53,7 @@ namespace tinox.core.msgpack
         {
             if this.kind != "object" || !this.objectValue.contains(key)
             {
-                return MsgpackValue { kind: "null" };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             return this.objectValue[key];
         }

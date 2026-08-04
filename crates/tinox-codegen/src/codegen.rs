@@ -319,6 +319,24 @@ pub struct CodeGen {
     generic_classes: HashMap<String, tinox_parser::Class>,
     /// Already-generated specializations (mangled_name already emitted)
     generated_specializations: HashSet<String>,
+    /// `extern fn` name -> the exact `declare ...` line already emitted for
+    /// it. The SAME external symbol legitimately gets its own `extern fn`
+    /// declaration repeated in every `.tnx` file that calls it (there's no
+    /// shared header, and it's an established pattern in this codebase —
+    /// e.g. `tinoxDeflateRaw`/`httpConnReadLine` were already declared in
+    /// two different stdlib modules each before issue #167 added
+    /// `tinoxBytesToString` to many more). Emitting `declare` unconditionally
+    /// for every such node only worked by luck (no single compiled program
+    /// had imported two of the modules sharing a name) until #167 made the
+    /// collision common enough to actually hit: LLVM hard-errors on a
+    /// literal repeated `declare` ("invalid redefinition of function") once
+    /// two imported modules both declaring `tinoxBytesToString` end up
+    /// merged into one program (`amqp10_consumer_annotation` test). Skip a
+    /// second `declare` for a name already emitted with an IDENTICAL
+    /// signature; a DIFFERENT signature under the same name is a genuine
+    /// conflict, not a duplicate, and stays a hard compile error rather than
+    /// silently keeping whichever one happened to be emitted first.
+    declared_externs: HashMap<String, String>,
     /// Set of all enum variant names (for bare-name match patterns)
     known_enum_variants: HashSet<String>,
     /// variant name → payload kind per argument ("String" | "Map" | "List" | "Other"),
@@ -442,6 +460,7 @@ impl CodeGen {
             type_param_aliases: HashMap::new(),
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
+            declared_externs: HashMap::new(),
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
@@ -2994,7 +3013,27 @@ impl CodeGen {
                 .map(|p| self.type_to_llvm_inst(&p.param_type))
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(&mut self.ir, "declare {} @{}({})", ret_type, f.name, params_str).unwrap();
+            let declare_line = format!("declare {} @{}({})", ret_type, f.name, params_str);
+            // The same external symbol is legitimately `extern fn`-declared
+            // in more than one imported .tnx file (see `declared_externs`'s
+            // doc comment) — LLVM hard-errors on a literal repeated
+            // `declare`, so only emit it once per program.
+            if let Some(prev) = self.declared_externs.get(&f.name) {
+                if *prev != declare_line {
+                    let mut bag = ErrorBag::new();
+                    bag.push(Error::new(
+                        f.span,
+                        format!(
+                            "conflicting `extern fn {}` declarations: previously declared as `{}`, now as `{}`",
+                            f.name, prev, declare_line
+                        ),
+                    ));
+                    return Err(bag);
+                }
+                return Ok(());
+            }
+            self.declared_externs.insert(f.name.clone(), declare_line.clone());
+            writeln!(&mut self.ir, "{}", declare_line).unwrap();
             return Ok(());
         }
         let ret_type = self.type_to_llvm_inst(&f.ret_type);
@@ -11545,6 +11584,64 @@ impl CodeGen {
         }
     }
 
+    /// Issue #165: finds the expression whose tinox-typecheck-inferred value
+    /// carries an arrow-sugar lambda body's effective return type, so
+    /// `infer_own_type_params` can consult `expr_value_types` for it (arrow
+    /// lambdas have no annotated return type for it to read directly).
+    ///
+    /// - Non-block body (`n => expr`): the body IS the return value; typecheck
+    ///   already cached its type at `body.id` (see `infer_type`'s Lambda arm).
+    /// - Block body (`n => { ...; return expr; }`): the block's OWN cached
+    ///   type is useless here (`ExprKind::Block`'s typecheck only uses a
+    ///   trailing `StmtKind::Expr`, never `StmtKind::Return`), so walk the
+    ///   block for the first `return expr;` and use ITS id instead. Only
+    ///   recurses into nested `Block`/`If` statements (the common shapes for
+    ///   a single, structurally findable return value) — a return buried in
+    ///   a loop body falls through to the existing `Int64` default, same as
+    ///   before this fix, not a regression.
+    fn lambda_body_value_expr(body: &tinox_parser::Expr) -> Option<&tinox_parser::Expr> {
+        use tinox_parser::{ExprKind, StmtKind};
+        fn find_in_stmt(stmt: &tinox_parser::Stmt) -> Option<&tinox_parser::Expr> {
+            match &stmt.node {
+                StmtKind::Return(Some(e)) => Some(e),
+                StmtKind::Block(stmts) => stmts.iter().find_map(find_in_stmt),
+                StmtKind::If { then_branch, else_branch, .. } => {
+                    find_in_stmt(then_branch).or_else(|| else_branch.as_deref().and_then(find_in_stmt))
+                }
+                _ => None,
+            }
+        }
+        match &body.node {
+            ExprKind::Block(stmts) => stmts.iter().find_map(|s| find_in_stmt(s)),
+            _ => Some(body),
+        }
+    }
+
+    /// Issue #165 counterpart to `marker_to_type`: converts a
+    /// tinox-typecheck-inferred `ValueType` (from `expr_value_types`) into the
+    /// parser `Type` shape `unify_type_param` operates on. Only covers the
+    /// cases that can plausibly appear as a lambda's inferred return type;
+    /// anything else (Tuple, Range, Nullable, ...) isn't needed here and
+    /// falls through to the existing `Int64` fallback, unchanged from before
+    /// this fix.
+    fn value_type_to_parser_type(vt: &tinox_typecheck::ValueType) -> Option<tinox_parser::Type> {
+        use tinox_parser::Type;
+        use tinox_typecheck::ValueType as VT;
+        match vt {
+            VT::Int => Some(Type::Int64),
+            VT::Float => Some(Type::Float64),
+            VT::Bool => Some(Type::Bool),
+            VT::String => Some(Type::String),
+            VT::Named(name, args) if args.is_empty() => Some(Type::Named(name.clone())),
+            VT::Named(name, args) => {
+                let arg_types: Option<Vec<Type>> = args.iter().map(Self::value_type_to_parser_type).collect();
+                arg_types.map(|a| Type::Generic { name: name.clone(), args: a })
+            }
+            VT::Array(inner) => Self::value_type_to_parser_type(inner).map(|t| Type::Array(Box::new(t))),
+            _ => None,
+        }
+    }
+
     /// Structural unification: does `pattern` contain the bare type param `tp`
     /// at some position, and if so what does `concrete`'s value at that same
     /// position bind it to? E.g. `unify_type_param(Named("U"), String, "U")`
@@ -11598,12 +11695,16 @@ impl CodeGen {
     /// argument at all.
     ///
     /// For a lambda argument, unifies the param's declared `fnc(...)->R`
-    /// shape against the lambda's own annotated param/return types (Tinox
-    /// lambdas require explicit annotations, so this is always concrete, not
-    /// itself an inference problem). For a non-lambda argument, falls back to
-    /// the existing marker-based struct-type inference. Unresolved params
-    /// default to `Int64`, matching the same fallback `gen_generic_method_call`
-    /// already uses for the static-call path.
+    /// shape against the lambda's own annotated param/return types where the
+    /// lambda has them (Tinox's explicit `fnc(...)->R {...}` form always
+    /// does). Arrow-sugar lambdas (`n => ...`, issue #165) have none of that
+    /// to unify against, so as a fallback consults tinox-typecheck's own
+    /// already-inferred type for the lambda's return value via
+    /// `lambda_body_value_expr`/`expr_value_types`. For a non-lambda
+    /// argument, falls back to the existing marker-based struct-type
+    /// inference. Unresolved params default to `Int64`, matching the same
+    /// fallback `gen_generic_method_call` already uses for the static-call
+    /// path.
     fn infer_own_type_params(
         &self,
         method: &tinox_parser::Method,
@@ -11629,7 +11730,7 @@ impl CodeGen {
                         }
                     }
                     Type::Fn { params: fn_params, ret } => {
-                        if let ExprKind::Lambda { params: lam_params, ret_type: lam_ret, .. } = &arg.node {
+                        if let ExprKind::Lambda { params: lam_params, ret_type: lam_ret, body } = &arg.node {
                             if let Some(lr) = lam_ret {
                                 inferred = Self::unify_type_param(ret, lr, tp);
                             }
@@ -11638,6 +11739,25 @@ impl CodeGen {
                                     if let Some(t) = Self::unify_type_param(fp, &lp.param_type, tp) {
                                         inferred = Some(t);
                                         break;
+                                    }
+                                }
+                            }
+                            // Issue #165: arrow-sugar lambdas (`n => ...`) have no
+                            // annotated param/return types at all (parser gives
+                            // them `Type::Infer`/`ret_type: None`), so both
+                            // attempts above find nothing and this used to fall
+                            // straight through to the `unwrap_or(Type::Int64)`
+                            // default below, silently mis-specializing `tp`
+                            // whenever the real type wasn't Int64. Recover the
+                            // return type tinox-typecheck already inferred for
+                            // the lambda body (keyed by node id in
+                            // expr_value_types) and unify that against `ret`.
+                            if inferred.is_none() {
+                                if let Some(ret_expr) = Self::lambda_body_value_expr(body) {
+                                    if let Some(vt) = self.expr_value_types.get(&ret_expr.id) {
+                                        if let Some(t) = Self::value_type_to_parser_type(vt) {
+                                            inferred = Self::unify_type_param(ret, &t, tp);
+                                        }
                                     }
                                 }
                             }
