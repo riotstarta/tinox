@@ -1556,6 +1556,40 @@ impl TypeChecker {
                                 if !method.static_ && Self::stmt_uses_this(&method.body) {
                                     self.method_uses_this.insert(key.clone());
                                 }
+                                // #161: same "B2 Schritt 2" registration as the
+                                // top-level DeclKind::Class arm above — this
+                                // block (a namespace-wrapped class, e.g. every
+                                // stdlib generic class including `Option<T>`)
+                                // was missing it entirely, so
+                                // `unify_generic_return` always bailed early
+                                // (`generic_method_param_types.get(key)` found
+                                // nothing) for EVERY method of EVERY
+                                // namespaced generic class — not just
+                                // own-type-param methods (#158's subject), but
+                                // any generic-return method at all, including
+                                // plain factories like `Option::some`. Left the
+                                // registered return type as the literal,
+                                // unresolved `Named("T", [])` for any call
+                                // site with no `let` annotation to fall back
+                                // on, which is what #161's ICE was rooted in.
+                                if !erase_params.is_empty() {
+                                    let mut unerased: Vec<ValueType> = if method.static_ {
+                                        vec![]
+                                    } else {
+                                        vec![ValueType::Named(
+                                            c.name.clone(),
+                                            c.type_params
+                                                .iter()
+                                                .map(|tp| ValueType::Named(tp.clone(), vec![]))
+                                                .collect(),
+                                        )]
+                                    };
+                                    unerased.extend(
+                                        method.params.iter().map(|p| Self::type_to_value(&p.param_type)),
+                                    );
+                                    self.generic_method_param_types
+                                        .insert(key.clone(), (unerased, erase_params.clone()));
+                                }
                                 self.symbols.functions.insert(key.clone(), sig);
                                 self.method_visibility.insert(key, method.visibility.clone());
                             }
@@ -4711,6 +4745,29 @@ namespace geometry {
         fn area() -> Float64 { return this.radius; }
     }
 }
+"#);
+    }
+
+    // #161: namespace-wrapped generic classes (every stdlib generic
+    // class lives in a `namespace` block, e.g. Option<T>) never got
+    // registered for call-site type-argument unification at all — only
+    // top-level (non-namespaced) generic classes did. A static factory's
+    // return type (`SomeBox<T>`) must resolve to the CONCRETE type
+    // (`SomeBox<Int64>`) from the constructor argument, not stay the
+    // literal unresolved `T` — checked here by round-tripping the result
+    // through a chained call whose own return type is declared
+    // concretely, which only type-checks if unification actually ran.
+    #[test]
+    fn test_namespaced_generic_class_static_factory_return_type_unifies_ok() {
+        ok(r#"
+namespace boxns {
+    class SomeBox<T> {
+        value: T;
+        fnc wrap(v: T) -> SomeBox<T> { return SomeBox<T> { value: v }; }
+        fn unwrap() -> T { return this.value; }
+    }
+}
+fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
 "#);
     }
 

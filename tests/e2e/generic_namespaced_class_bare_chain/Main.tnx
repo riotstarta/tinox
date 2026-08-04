@@ -1,0 +1,26 @@
+// Regression coverage for #161: a static-factory receiver
+// (Class<T>::variant(args), where T is inferable from a value argument)
+// chained directly into a method call with no intermediate `let`
+// annotation used to resolve to the wrong/unresolved specialization and
+// ICE — for ANY method, not just own-type-param ones (isSome/unwrap here
+// are plain, non-generic-returning methods; #158 covers the
+// chained-own-type-param-method case separately). Root cause was
+// namespace-wrapped generic classes (every stdlib generic class,
+// including Option<T>, lives in a `namespace` block) never getting
+// registered in tinox-typecheck's call-site type-argument-unification
+// table at all — only top-level (non-namespaced) generic classes were.
+// (Option<Int64>::none() — a zero-arg factory where T isn't inferable
+// from any argument at all — is a DIFFERENT, still-open limitation,
+// #166, not covered by this fix or this test.)
+// expect: true
+// expect: 1
+import tinox.core.option;
+
+class Main
+{
+    fnc main() -> Int32 {
+        println(Option<Int64>::some(1).isSome());
+        println(Option<Int64>::some(1).unwrap());
+        return 0;
+    }
+}
