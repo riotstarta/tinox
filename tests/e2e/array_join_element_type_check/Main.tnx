@@ -1,0 +1,19 @@
+// Regression coverage for #164: List<Int64>.join() used to segfault at
+// runtime (tinox_string_join has no element-type check — it treats
+// every array element as a string pointer, so a raw Int64 like `1`
+// gets dereferenced as the pointer 0x1). Now a compile-time error
+// instead (see tinox-typecheck's own unit tests for that half); this
+// e2e test is the positive path — join() on its only actually-supported
+// element type, List<String>, in both call spellings, still works.
+// expect: a, b, c
+// expect: a-b-c
+class Main
+{
+    fnc main() -> Int32
+    {
+        let xs: List<String> = ["a", "b", "c"];
+        println(xs.join(", "));
+        println(join(xs, "-"));
+        return 0;
+    }
+}

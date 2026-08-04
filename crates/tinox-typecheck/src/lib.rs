@@ -3165,6 +3165,38 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function
             if let Some(sig) = self.symbols.functions.get(name).cloned() {
+                // #164: `.join()` assumes every array element is a string
+                // pointer at the runtime level (`tinox_string_join`) —
+                // calling it on a `List<T>` where T != String reinterprets
+                // raw element values (e.g. Int64s) as pointers and
+                // segfaults. Reject at compile time instead of letting it
+                // crash. Covers BOTH call spellings in one place: instance
+                // syntax (`arr.join(sep)`) rewrites to `Ident("Array_join")`
+                // with the receiver prepended to `args` before reaching
+                // here (see the `MethodCall` arm above), and the bare
+                // free-function spelling (`join(arr, sep)`/
+                // `Array_join(arr, sep)`) arrives here directly — so
+                // `args[0]` is the array in both cases. Stays permissive
+                // for `List<Any>` (element type genuinely unknown), same
+                // convention as the array-method refinements in the
+                // `MethodCall` arm above. The registered signature itself
+                // (`arr: any_array()`) is deliberately permissive for
+                // element type, so this can't be caught by the generic
+                // arg-type-compatibility loop below.
+                if (name == "join" || name == "Array_join") && !args.is_empty() {
+                    if let ValueType::Array(elem) = self.infer_type(&args[0]) {
+                        if *elem != ValueType::String && *elem != ValueType::Any {
+                            self.errors.push(
+                                TypeError::TypeMismatch {
+                                    expected: "List<String>".to_string(),
+                                    found: format!("List<{}>", elem.display()),
+                                    span: args[0].span,
+                                }
+                                .to_error(),
+                            );
+                        }
+                    }
+                }
                 // Skip arg-count check for variadic builtins and all native runtime functions
                 let is_variadic = matches!(name.as_str(), "print" | "println" | "open")
                     || name.starts_with("http") || name.starts_with("Http")
@@ -5887,6 +5919,43 @@ class Jogger implements Runner {
     #[test]
     fn test_string_plus_int_err() {
         err_contains("fn f() -> String { return \"x\" + 1; }", "cannot be applied");
+    }
+
+    // #164: List<Int64>.join() used to segfault at runtime (no
+    // element-type check) instead of failing to compile — covers both
+    // call spellings (instance and free-function), and confirms
+    // List<String> (the only element type the runtime helper actually
+    // supports) and List<Any> (element type genuinely unknown, stays
+    // permissive) are unaffected.
+    #[test]
+    fn test_join_on_int_array_method_call_err() {
+        err_contains(
+            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]; return xs.join(\", \"); }",
+            "List<String>",
+        );
+    }
+
+    #[test]
+    fn test_join_on_int_array_free_call_err() {
+        err_contains(
+            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]; return join(xs, \", \"); }",
+            "List<String>",
+        );
+    }
+
+    #[test]
+    fn test_join_on_string_array_method_call_ok() {
+        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]; return xs.join(\", \"); }");
+    }
+
+    #[test]
+    fn test_join_on_string_array_free_call_ok() {
+        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]; return join(xs, \", \"); }");
+    }
+
+    #[test]
+    fn test_join_on_any_array_stays_permissive() {
+        ok("fn f(xs: List<Any>) -> String { return xs.join(\", \"); }");
     }
 
     // ================================================================
