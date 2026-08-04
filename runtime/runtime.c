@@ -3141,6 +3141,64 @@ void httpConnClose(int64_t conn) {
     conn_close((TinoxConn*)(intptr_t)conn);
 }
 
+// Reads a single '\n'-terminated line from a conn (issue #134, SMTP
+// client: RFC 5321 is a line-based, \r\n-terminated command/response
+// protocol -- unlike HTTP's blank-line-terminated request blocks
+// (conn_read_request) or HTTP/2's declared-length frames
+// (httpConnReadN), neither existing conn-read primitive fits). Reads one
+// byte at a time (SMTP replies are short, at most a few hundred bytes
+// per RFC 5321 §4.5.3.1.6, so per-byte recv overhead here is negligible)
+// until '\n' or EOF; strips a trailing '\r' if present. Once the
+// accumulated line hits an 8192-byte cap, further bytes are still read
+// and discarded (not stored) rather than stopping outright -- a peer
+// sending an oversized line gets truncated instead of desyncing every
+// subsequent readLine() call on this conn with the undrained remainder.
+#define TINOX_SMTP_MAX_LINE 8192
+char* httpConnReadLine(int64_t conn) {
+    if (conn <= 0) return GC_strdup("");
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    size_t cap = 256;
+    char* buf = (char*)GC_malloc(cap);
+    size_t len = 0;
+    for (;;) {
+        char ch;
+        ssize_t got = conn_recv(c, &ch, 1);
+        if (got <= 0) break;
+        if (ch == '\n') break;
+        if (len >= TINOX_SMTP_MAX_LINE) continue;
+        if (len + 1 >= cap) {
+            size_t ncap = cap * 2;
+            char* nbuf = (char*)GC_malloc(ncap);
+            memcpy(nbuf, buf, len);
+            buf = nbuf;
+            cap = ncap;
+        }
+        buf[len++] = ch;
+    }
+    if (len > 0 && buf[len - 1] == '\r') len--;
+    buf[len] = '\0';
+    return buf;
+}
+
+// STARTTLS support (issue #134): releases a PLAINTEXT conn's C-level
+// wrapper struct and hands back its underlying fd WITHOUT closing it --
+// the caller passes that fd straight to httpConnFromFdTls to get a new
+// TLS-wrapped conn for the SAME socket (RFC 3207 upgrades an
+// already-connected plaintext session in place, unlike implicit TLS's
+// connectTls()/httpConnFromFdTls-on-a-fresh-fd). Only valid on a still-
+// plaintext conn (ssl == NULL) -- calling it on an already-TLS conn
+// would silently discard the SSL* without shutting it down, so that case
+// is refused (-1) rather than risking that.
+int64_t httpConnTakeFd(int64_t conn) {
+    if (conn <= 0) return -1;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    if (c->ssl) return -1;
+    int fd = c->fd;
+    pthread_mutex_destroy(&c->writeLock);
+    free(c);
+    return (int64_t)fd;
+}
+
 void httpServerClose(int64_t server_fd) {
     close((int)server_fd);
 }

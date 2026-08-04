@@ -502,6 +502,7 @@
     <li class="section-label">Messaging</li>
     <li><a href="#mod-amqp091">amqp091</a></li>
     <li><a href="#mod-amqp10">amqp10</a></li>
+    <li><a href="#mod-smtp">smtp</a></li>
 
     <li class="section-label">Datenformate</li>
     <li><a href="#mod-json">json</a></li>
@@ -2530,6 +2531,80 @@ conn.close();
     <code>max-frame-size</code>, Empfangen erkennt <code>more=true</code> nur
     und meldet einen Fehler statt zusammenzusetzen).
   </p>
+  </div>
+
+  <div class="mod-section" id="mod-smtp">
+
+  <h2>smtp</h2>
+  <p class="import-hint"><code>import tinox.core.smtp;</code></p>
+  <p>
+    SMTP-Client (RFC 5321) zum Versenden von E-Mails — der übliche Bedarf für
+    "Passwort-Reset-Mail" / "Registrierungsbestätigung senden". Unterstützt
+    Klartext-Connect, RFC 3207 <code>STARTTLS</code> (hebt eine bereits
+    verbundene Klartext-Session in-place an, Port 587), implizites TLS (Port
+    465) sowie SASL <code>AUTH PLAIN</code> (RFC 4954/4616).
+    <code>connect()</code>/<code>connectTls()</code> lesen das Greeting und
+    senden automatisch <code>EHLO</code>; <code>startTls()</code> sendet nach
+    dem Upgrade erneut <code>EHLO</code>, wie von RFC 3207 verlangt.
+  </p>
+  <p>
+    v1 versendet nur Klartext-Bodies — kein Multipart/HTML/Attachments. Kein
+    DKIM-Signing (Aufgabe des versendenden Mailservers, wenn über einen
+    echten Relay wie SES/SendGrid geroutet wird, nicht dieser Client-Library).
+  </p>
+
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>SmtpClient::connect</code></td>
+        <td><code>fn connect(host: String, port: Int64) -&gt; SmtpClient</code></td>
+        <td>Klartext-Connect, liest das Greeting, sendet EHLO. Bei Fehlschlag
+        <code>conn &lt;= 0</code>/<code>errorMessage</code> prüfen.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::connectTls</code></td>
+        <td><code>fn connectTls(host: String, port: Int64, verify: Bool) -&gt; SmtpClient</code></td>
+        <td>Implizite-TLS-Variante von <code>connect</code> (Port 465).</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::startTls</code></td>
+        <td><code>fn startTls() -&gt; Bool</code></td>
+        <td>RFC 3207: hebt die Verbindung in-place auf TLS an (Port-587-Flow),
+        sendet danach erneut EHLO. Zertifikatsprüfung ist immer aktiv.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::authPlain</code></td>
+        <td><code>fn authPlain(user: String, pass: String) -&gt; Bool</code></td>
+        <td>SASL <code>AUTH PLAIN</code>.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::send</code></td>
+        <td><code>fn send(from: String, to: List&lt;String&gt;, subject: String, body: String) -&gt; Bool</code></td>
+        <td>Sendet eine Klartext-E-Mail (<code>MAIL FROM</code>/<code>RCPT TO</code>/<code>DATA</code>,
+        RFC-5321-§4.5.2-Dot-Stuffing wird automatisch gehandhabt).</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::close</code></td>
+        <td><code>fn close() -&gt; Nothing</code></td>
+        <td>Schließt die Verbindung.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.smtp;
+
+let client: SmtpClient = SmtpClient::connect("smtp.example.org", 587);
+if client.conn &lt;= 0 { throw client.errorMessage; }
+if !client.startTls() { throw "STARTTLS fehlgeschlagen"; }
+if !client.authPlain("user", "pass") { throw "Auth fehlgeschlagen"; }
+client.send("me@example.org", ["you@example.org"], "Hi", "Hallo!");
+client.close();
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-hpack">

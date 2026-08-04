@@ -413,6 +413,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "smtp",
+        imports: &["tinox.core.smtp"],
+        body: "let client: SmtpClient = SmtpClient::connect(\"127.0.0.1\", 1);\n    println(client.conn <= 0);",
+        expects: &["true"],
+        contains: &[],
+    },
+    Smoke {
         key: "socket",
         imports: &["tinox.core.socket"],
         body: "let s: Socket = Socket::createTcp();\n    println(\"ok\");",

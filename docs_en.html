@@ -502,6 +502,7 @@
     <li class="section-label">Messaging</li>
     <li><a href="#mod-amqp091">amqp091</a></li>
     <li><a href="#mod-amqp10">amqp10</a></li>
+    <li><a href="#mod-smtp">smtp</a></li>
 
     <li class="section-label">Data Formats</li>
     <li><a href="#mod-json">json</a></li>
@@ -2522,6 +2523,80 @@ conn.close();
     exceeded; receiving only detects <code>more=true</code> and reports an
     error instead of reassembling).
   </p>
+  </div>
+
+  <div class="mod-section" id="mod-smtp">
+
+  <h2>smtp</h2>
+  <p class="import-hint"><code>import tinox.core.smtp;</code></p>
+  <p>
+    SMTP client (RFC 5321) for sending email — the common "send a password
+    reset email / signup confirmation" need. Supports plaintext connect, RFC
+    3207 <code>STARTTLS</code> (upgrades an already-connected plaintext
+    session in place, port 587), implicit TLS (port 465), and SASL
+    <code>AUTH PLAIN</code> (RFC 4954/4616). <code>connect()</code>/
+    <code>connectTls()</code> read the greeting and send <code>EHLO</code>
+    automatically; <code>startTls()</code> re-issues <code>EHLO</code> after
+    the upgrade, as RFC 3207 requires.
+  </p>
+  <p>
+    v1 sends a plain-text body only — no multipart/HTML/attachments. No DKIM
+    signing (the sending mail server's job when routing through a real relay
+    like SES/SendGrid, not this client library's).
+  </p>
+
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>SmtpClient::connect</code></td>
+        <td><code>fn connect(host: String, port: Int64) -&gt; SmtpClient</code></td>
+        <td>Plaintext connect, reads the greeting, sends EHLO. Check
+        <code>conn &lt;= 0</code>/<code>errorMessage</code> for failure.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::connectTls</code></td>
+        <td><code>fn connectTls(host: String, port: Int64, verify: Bool) -&gt; SmtpClient</code></td>
+        <td>Implicit-TLS variant of <code>connect</code> (port 465).</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::startTls</code></td>
+        <td><code>fn startTls() -&gt; Bool</code></td>
+        <td>RFC 3207: upgrades the connection to TLS in place (port 587
+        flow), then re-sends EHLO. Certificate verification is always on.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::authPlain</code></td>
+        <td><code>fn authPlain(user: String, pass: String) -&gt; Bool</code></td>
+        <td>SASL <code>AUTH PLAIN</code>.</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::send</code></td>
+        <td><code>fn send(from: String, to: List&lt;String&gt;, subject: String, body: String) -&gt; Bool</code></td>
+        <td>Sends a plain-text email (<code>MAIL FROM</code>/<code>RCPT TO</code>/<code>DATA</code>,
+        with RFC 5321 §4.5.2 dot-stuffing handled automatically).</td>
+      </tr>
+      <tr>
+        <td><code>SmtpClient::close</code></td>
+        <td><code>fn close() -&gt; Nothing</code></td>
+        <td>Closes the connection.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Example</h3>
+  <pre><code>import tinox.core.smtp;
+
+let client: SmtpClient = SmtpClient::connect("smtp.example.org", 587);
+if client.conn &lt;= 0 { throw client.errorMessage; }
+if !client.startTls() { throw "STARTTLS failed"; }
+if !client.authPlain("user", "pass") { throw "auth failed"; }
+client.send("me@example.org", ["you@example.org"], "Hi", "Hello!");
+client.close();
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-hpack">
