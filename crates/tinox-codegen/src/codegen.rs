@@ -251,6 +251,19 @@ pub struct CodeGen {
     classes_with_vtable: HashSet<String>,
     /// set of known interface names (for dispatch decisions)
     known_interfaces: HashSet<String>,
+    /// interface_name -> method_name -> declared return type. Vtable-dispatch
+    /// call sites used to hardcode `i64` as the return type unconditionally
+    /// ("vtable methods return i64 (uniform representation)") — correct for
+    /// an Int64-returning interface method (whose implementation genuinely
+    /// returns `i64`), but WRONG for e.g. a String-returning one (whose
+    /// implementation returns `i8*`): the call site would then tag the
+    /// result as `i64` even though the callee actually returns a pointer,
+    /// so a caller deciding how to use the result (e.g. `println` picking
+    /// int-print vs string-print) picks the wrong path — the pointer's raw
+    /// address prints as a garbage integer instead of the string content.
+    /// Populated once in `gen()` from the interface declarations themselves
+    /// (not from `vtable_layouts`, which only has method names/order).
+    interface_method_ret_types: HashMap<String, HashMap<String, tinox_parser::Type>>,
     /// child_class_name -> parent_class_name (for super calls)
     class_parents: HashMap<String, String>,
     /// class_name -> number of entries in its vtable global (computed during emit_vtable_globals)
@@ -444,6 +457,7 @@ impl CodeGen {
             class_implements: HashMap::new(),
             classes_with_vtable: HashSet::new(),
             known_interfaces: HashSet::new(),
+            interface_method_ret_types: HashMap::new(),
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
             method_impl: HashMap::new(),
@@ -1170,6 +1184,12 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
+        // Must run before ANY method body codegen — interface-dispatch call
+        // sites inside those bodies consult this table (the "second pass:
+        // generate code" loop below, generating e.g. Main's own body, is
+        // itself early enough to need this already populated).
+        self.collect_interface_method_ret_types(source);
+
         writeln!(&mut self.ir, "; Module ID = \"tinox\"").unwrap();
         writeln!(&mut self.ir, "source_filename = \"tinox\"").unwrap();
         writeln!(
@@ -4787,6 +4807,30 @@ impl CodeGen {
             })
     }
 
+    /// Populates `interface_method_ret_types` from the interface declarations
+    /// themselves (`vtable_layouts`, sourced from typecheck's `interface_info()`,
+    /// only carries method names/order, not types). Mirrors the
+    /// namespace-recursion shape `analyze_throw_effects`'s `collect` already
+    /// uses for the same "walk every Interface decl, including
+    /// namespace-wrapped ones" traversal.
+    fn collect_interface_method_ret_types(&mut self, source: &SourceFile) {
+        fn walk(decls: &[tinox_parser::Decl], out: &mut HashMap<String, HashMap<String, tinox_parser::Type>>) {
+            for d in decls {
+                match &d.node {
+                    DeclKind::Interface(i) => {
+                        let m = out.entry(i.name.clone()).or_default();
+                        for method in &i.methods {
+                            m.insert(method.name.clone(), method.ret_type.clone());
+                        }
+                    }
+                    DeclKind::Namespace(ns) => walk(&ns.decls, out),
+                    _ => {}
+                }
+            }
+        }
+        walk(&source.decls, &mut self.interface_method_ret_types);
+    }
+
     /// Emit a vtable global for each class that implements at least one interface.
     fn emit_vtable_globals(&mut self, source: &SourceFile) {
         let class_names: Vec<(String, Vec<String>)> = source
@@ -7902,8 +7946,19 @@ impl CodeGen {
                     )
                     .unwrap();
 
-                    // Build the function type string based on args.
-                    let ret_ty = "i64".to_string(); // vtable methods return i64 (uniform representation)
+                    // Build the function type string based on args. The
+                    // callee's REAL LLVM return type (e.g. `i8*` for a
+                    // String-returning interface method), not a hardcoded
+                    // `i64` -- see `interface_method_ret_types`'s doc
+                    // comment for why that used to silently corrupt any
+                    // non-Int64-shaped return value (issue found alongside
+                    // #169).
+                    let ret_ty = self
+                        .interface_method_ret_types
+                        .get(iface_name)
+                        .and_then(|m| m.get(method))
+                        .map(|t| self.type_to_llvm_inst(t))
+                        .unwrap_or_else(|| "i64".to_string());
                     let mut param_types = vec!["i64*".to_string()]; // self
                     for (_, ty) in &extra_args {
                         param_types.push(ty.clone());
@@ -7919,14 +7974,23 @@ impl CodeGen {
                     )
                     .unwrap();
 
-                    let result = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = call {} {}({})",
-                        result, ret_ty, casted_fn, full_args_str
-                    )
-                    .unwrap();
-                    Ok((result, ret_ty))
+                    // A void-returning interface method (Nothing) must NOT
+                    // assign the call's result to a name -- LLVM rejects
+                    // `%x = call void ...` ("instructions returning void
+                    // cannot have a name"), unlike every other ret_ty here.
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void {}({})", casted_fn, full_args_str).unwrap();
+                        Ok(("0".to_string(), "void".to_string()))
+                    } else {
+                        let result = self.temp();
+                        writeln!(
+                            &mut self.ir,
+                            "{} = call {} {}({})",
+                            result, ret_ty, casted_fn, full_args_str
+                        )
+                        .unwrap();
+                        Ok((result, ret_ty))
+                    }
                 } else if let Some(_fn_sig) = declared_type.as_deref()
                     .and_then(|dt| self.fn_field_sigs.get(dt))
                     .and_then(|m| m.get(method.as_str()))

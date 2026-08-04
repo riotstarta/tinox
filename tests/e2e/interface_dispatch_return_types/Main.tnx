@@ -1,0 +1,40 @@
+// Regression coverage: vtable-dispatch call sites for interface-typed
+// receivers used to hardcode the LLVM return type as `i64` for every
+// interface method regardless of its real declared return type ("vtable
+// methods return i64 (uniform representation)"). Correct by coincidence
+// for an Int64-returning method (whose implementation genuinely returns
+// `i64`), but silently wrong for anything else: a String-returning method
+// actually returns `i8*` at the LLVM level, so the caller (e.g. println,
+// deciding how to print based on the type tag it's given) treated the
+// pointer's raw address as an integer and printed a garbage number
+// instead of the string content. Bool has the same class of mismatch
+// (`i1` vs `i64`). A Nothing (void)-returning method exposed a second,
+// related bug once the return type was made accurate: LLVM rejects
+// assigning a result name to a `void` call ("instructions returning void
+// cannot have a name") -- the void case needs its own non-assigning call
+// form, same as the plain (non-interface) static-dispatch path already
+// had.
+// expect: checker-label
+// expect: true
+// expect: 7
+// expect: 1
+import IChecker;
+import CheckerImpl;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let impl: CheckerImpl = CheckerImpl { touched: false };
+        let c: IChecker = impl;
+
+        println(c.label());
+        println(c.isOk());
+        println(c.count());
+
+        c.touch();
+        println(impl.touched);
+
+        return 0;
+    }
+}
