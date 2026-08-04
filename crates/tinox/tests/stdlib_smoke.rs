@@ -427,6 +427,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "sse",
+        imports: &["tinox.core.sse"],
+        body: "let srv: Int64 = SseServer::listen(0);\n    println(srv > 0);",
+        expects: &["true"],
+        contains: &[],
+    },
+    Smoke {
         key: "string",
         imports: &["tinox.core.string"],
         body: r#"println(Strings::toUpperCase("ab"));"#,

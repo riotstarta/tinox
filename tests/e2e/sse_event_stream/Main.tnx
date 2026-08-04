@@ -1,0 +1,76 @@
+// Server-Sent Events (issue #133): SseServer::accept sends the
+// text/event-stream handshake response, Sse::sendEvent/sendComment push
+// events over the raw conn afterward. Verified against a real raw TCP
+// client (tinox.core.socket) reading the exact wire bytes -- spawn = real
+// thread, not a simulated peer (same pattern as ws_client.tnx).
+// expect: ok-accept
+// expect: ok-headers
+// expect: ok-event1
+// expect: ok-multiline-event
+// expect: ok-comment
+
+import tinox.core.sse;
+import tinox.core.socket;
+import tinox.core.time;
+
+class Main
+{
+    async fnc fakeServer(srv: Int64) -> Int64 {
+        let conn = SseServer::accept(srv);
+        if conn <= 0 {
+            return 0;
+        }
+        Sse::sendEvent(conn, "message", "hello");
+        Sse::sendEvent(conn, "update", "line1\nline2\nline3");
+        Sse::sendComment(conn);
+        Sse::close(conn);
+        return 1;
+    }
+
+    fnc main() -> Int32 {
+        let srv = SseServer::listen(47821);
+        if srv < 0 {
+            println("bind fehlgeschlagen");
+            return 1;
+        }
+        let handle = spawn fakeServer(srv);
+
+        let fd = Socket::createTcp();
+        let connected = Socket::connect(fd, "127.0.0.1", 47821);
+        if connected {
+            println("ok-accept");
+        }
+        Socket::send(fd, "GET /events HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n");
+
+        var received: String = "";
+        var attempts: Int64 = 0;
+        while attempts < 50 {
+            let chunk = Socket::receive(fd, 4096);
+            if chunk.len() > 0 {
+                received = received + chunk;
+            }
+            if received.contains(": keepalive") {
+                break;
+            }
+            Time::sleep(20);
+            attempts = attempts + 1;
+        }
+        Socket::close(fd);
+
+        if received.contains("HTTP/1.1 200 OK") && received.contains("Content-Type: text/event-stream") && received.contains("Connection: keep-alive") {
+            println("ok-headers");
+        }
+        if received.contains("event: message\ndata: hello\n\n") {
+            println("ok-event1");
+        }
+        if received.contains("event: update\ndata: line1\ndata: line2\ndata: line3\n\n") {
+            println("ok-multiline-event");
+        }
+        if received.contains(": keepalive\n\n") {
+            println("ok-comment");
+        }
+
+        let result = await handle;
+        return 0;
+    }
+}

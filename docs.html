@@ -492,6 +492,7 @@
     <li><a href="#mod-http2_server">http2_server</a></li>
     <li><a href="#mod-http3_server">http3_server</a></li>
     <li><a href="#mod-websocket">websocket</a></li>
+    <li><a href="#mod-sse">sse</a></li>
     <li><a href="#mod-hpack">hpack</a></li>
     <li><a href="#mod-http">http</a></li>
     <li><a href="#mod-rest-client">rest.client</a></li>
@@ -2205,6 +2206,94 @@ println(WsClient::text(f));
 
 WsClient::sendClose(conn, <span class="num">1000</span>);
 WsClient::close(conn);
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-sse">
+
+  <h2>sse</h2>
+  <p class="import-hint"><code>import tinox.core.sse;</code></p>
+  <p>
+    Server-Sent Events (<code>text/event-stream</code>, das W3C-EventSource-Protokoll)
+    — leichtgewichtiger, einseitiger Server-Push über normales HTTP für den üblichen
+    Fall (Live-Dashboards, Fortschritts-/Benachrichtigungs-Streams), bei dem ein
+    vollständiger WebSocket-Handshake mit binärem Framing (<code>websocket</code>)
+    mehr ist als nötig. Folgt derselben Conn-Handle-Hijack-Struktur wie
+    <code>WsServer</code>/<code>Ws</code>: <code>SseServer::accept</code> sendet die
+    initiale <code>200</code>-Antwort mit <code>Content-Type: text/event-stream</code>
+    und gibt dann ein rohes Conn-Handle zurück, über das der Aufrufer mit
+    <code>Sse::sendEvent</code> direkt Events pusht — statt über <code>HttpServer</code>s
+    Einmal-Request/Response-Modell mit gepuffertem Body (das keine schrittweise
+    Schreib-API besitzt, um eine Verbindung offenzuhalten und über die Zeit
+    hineinzuschreiben).
+  </p>
+  <p>
+    v1-Umfang: kein <code>Last-Event-ID</code>/Reconnect-Resume, kein
+    <code>retry:</code>-Feld (Hinweis auf das Reconnect-Intervall) — jeder Reconnect
+    beginnt aus Sicht des Aufrufers einen neuen Stream.
+  </p>
+
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>SseServer::listen</code></td>
+        <td><code>fn listen(port: Int64) -&gt; Int64</code></td>
+        <td>Öffnet einen TCP-Listener auf dem angegebenen Port.</td>
+      </tr>
+      <tr>
+        <td><code>SseServer::accept</code></td>
+        <td><code>fn accept(srv: Int64) -&gt; Int64</code></td>
+        <td>Akzeptiert die nächste Verbindung und sendet die SSE-Handshake-Antwort
+        (<code>200</code>, <code>Content-Type: text/event-stream</code>, kein
+        Framing). Gibt das Conn-Handle zurück, oder <code>-1</code> falls der
+        Request nicht lesbar/leer war (Verbindung ist dann bereits geschlossen).</td>
+      </tr>
+      <tr>
+        <td><code>SseServer::listenTls</code></td>
+        <td><code>fn listenTls(port: Int64, certPath: String, keyPath: String) -&gt; Int64</code></td>
+        <td><code>https://</code>-Variante von <code>listen</code>.</td>
+      </tr>
+      <tr>
+        <td><code>SseServer::acceptTls</code></td>
+        <td><code>fn acceptTls(srv: Int64) -&gt; Int64</code></td>
+        <td>TLS-Variante von <code>accept</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Sse::sendEvent</code></td>
+        <td><code>fn sendEvent(conn: Int64, event: String, data: String) -&gt; Nothing</code></td>
+        <td>Sendet ein SSE-Event. Ein mehrzeiliges <code>data</code> bekommt pro
+        Zeile ein eigenes <code>data:</code>-Feld, gemäß EventSource-Spezifikation.</td>
+      </tr>
+      <tr>
+        <td><code>Sse::sendComment</code></td>
+        <td><code>fn sendComment(conn: Int64) -&gt; Nothing</code></td>
+        <td>Sendet eine SSE-Kommentarzeile (<code>: keepalive</code>) — von
+        EventSource-Clients ignoriert, aber nützlich, damit Proxies/Load-Balancer
+        eine sonst untätige Verbindung nicht als Timeout werten.</td>
+      </tr>
+      <tr>
+        <td><code>Sse::close</code></td>
+        <td><code>fn close(conn: Int64) -&gt; Nothing</code></td>
+        <td>Schließt die Verbindung.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.sse;
+
+let srv: Int64 = SseServer::listen(8080);
+let conn: Int64 = SseServer::accept(srv);
+if conn > 0
+{
+    Sse::sendEvent(conn, "message", "hello");
+    Sse::sendComment(conn); // keepalive
+    Sse::close(conn);
+}
 </code></pre>
   </div>
 
