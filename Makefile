@@ -82,19 +82,52 @@ checked:
 # there (or a non-zero exit with NO artifact at all to explain it) fails
 # `make fuzz` -- a run that exits non-zero with only oom-*/slow-unit-*
 # files is logged and treated as a pass.
-# Not part of `make check` (like asan/checked) — weekly/pre-release via
-# .github/workflows/deep-checks.yml.
+#
+# Found via issue #136 (msgpack): the -DTINOX_NO_GC leak-driven slowdown
+# above isn't just "malloc bookkeeping grows with heap size" -- ASan's own
+# allocator/redzone tracking also gets measurably slower as the total
+# LIVE (never-freed) allocation count grows, and for a target with a
+# high allocations-per-exec ratio (msgpack decodes into a tree of several
+# heap objects per value, unlike e.g. hpack's flatter List<HpackHeader>)
+# that compounds badly: exec/s visibly degrades over a run's lifetime
+# even though no *individual* execution is ever slow (confirmed directly:
+# -timeout=1 -- 1 SECOND per input -- never fired across repeated runs,
+# ruling out a single pathological/hanging input), and worse, libFuzzer's
+# own post-OOM shutdown/cleanup path itself gets slow at that allocation
+# volume, so the run can keep running well past both -max_total_time and
+# the moment its own log prints "libFuzzer: out-of-memory" / "run
+# interrupted; exiting". Lowering -rss_limit_mb does NOT reliably fix
+# this (tested down to 512MB, still didn't return promptly) since it's
+# allocation COUNT, not RSS size, driving the slowdown. So: wrap the
+# invocation itself in `timeout` with a grace period beyond
+# FUZZ_SECONDS -- if a target doesn't self-terminate in time for ANY
+# reason (this one, or a future different one), the outer timeout forces
+# it and `status` becomes exactly 124 (coreutils' `timeout` own,
+# reserved exit code for "I killed this"). That status gets its own
+# branch below, checked BEFORE the generic "no artifact" one: killing a
+# worker before it ever crosses the threshold that would make it write
+# an oom-*/slow-unit-* artifact is exactly what's expected here (msgpack
+# observed: killed with ZERO artifacts on disk, well before the ~10+
+# minutes it can take to naturally reach one) -- the ABSENCE of an
+# artifact is not suspicious in this specific case, the 124 exit code
+# already IS the full explanation, so this must not fall through to the
+# generic "non-zero exit with no artifact = fail" check below (confirmed
+# by running into exactly that false failure before adding this branch).
+# --kill-after gives a short grace window for a plain SIGTERM before
+# escalating to SIGKILL, in case a target's own shutdown path is merely
+# slow rather than truly stuck.
 FUZZ_SECONDS ?= 60
 fuzz:
 	cargo build --release -p tinox
 	@set -e; \
-	for t in json zip hpack amqp091 amqp10 http2; do \
+	for t in json zip hpack amqp091 amqp10 http2 msgpack; do \
 		echo "=== fuzz/$$t ==="; \
 		bash fuzz/$$t/build.sh; \
 		mkdir -p fuzz/$$t/corpus; \
 		rm -rf fuzz/$$t/artifacts; mkdir -p fuzz/$$t/artifacts; \
 		status=0; \
-		ASAN_OPTIONS=detect_leaks=0 fuzz/$$t/$${t}_fuzzer \
+		ASAN_OPTIONS=detect_leaks=0 timeout --kill-after=15 $$(( $(FUZZ_SECONDS) + 60 )) \
+			fuzz/$$t/$${t}_fuzzer \
 			-fork=4 -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048 -detect_leaks=0 \
 			-ignore_ooms=1 -artifact_prefix=fuzz/$$t/artifacts/ \
 			fuzz/$$t/corpus/ fuzz/$$t/seeds/ || status=$$?; \
@@ -104,6 +137,8 @@ fuzz:
 			echo "fuzz/$$t: REAL finding(s), not just OOM/slow-unit recycling:"; \
 			echo "$$real_findings"; \
 			exit 1; \
+		elif [ "$$status" = 124 ]; then \
+			echo "fuzz/$$t: hit the outer timeout safety net (didn't self-terminate within FUZZ_SECONDS+60s) -- expected for high-allocation-density targets under -DTINOX_NO_GC+ASan (see comment above), not a finding -- treating as pass"; \
 		elif [ "$$status" != 0 ] && [ "$$harmless" = 0 ]; then \
 			echo "fuzz/$$t: exited $$status with no artifact to explain it"; \
 			exit 1; \

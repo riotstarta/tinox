@@ -507,6 +507,7 @@
 
     <li class="section-label">Data Formats</li>
     <li><a href="#mod-json">json</a></li>
+    <li><a href="#mod-msgpack">msgpack</a></li>
     <li><a href="#mod-xml">xml</a></li>
     <li><a href="#mod-yaml">yaml</a></li>
     <li><a href="#mod-csv">csv</a></li>
@@ -3633,6 +3634,103 @@ class Main
         return 0;
     }
 }
+  </div>
+
+  <div class="mod-section" id="mod-msgpack">
+
+  <h2>msgpack</h2>
+  <p class="import-hint"><code>import tinox.core.msgpack;</code></p>
+  <p>
+    Compact binary serialization (<a href="https://msgpack.org/" target="_blank" rel="noopener">MessagePack</a>),
+    a binary counterpart to <code>json</code>'s text-based <code>JsonValue</code>
+    tree — useful for AMQP message payloads, inter-service RPC, or just
+    storing structured data more compactly than JSON. No schema/codegen
+    step, same self-describing dynamic-value model as JSON (object/array/
+    string/int/float/bool/null). <code>MsgpackValue</code> mirrors
+    <code>JsonValue</code>'s API shape (<code>isString</code>/<code>getString</code>,
+    <code>isInt</code>/<code>getInt</code>, <code>isArray</code>/<code>asArray</code>,
+    <code>isObject</code>/<code>getField</code>, ...) but — unlike the C-backed
+    <code>JsonValue</code> — is a plain Tinox value: construct one directly
+    via a struct literal for encoding, e.g.
+    <code>MsgpackValue { kind: "string", stringValue: "hi" }</code>.
+  </p>
+  <p>
+    Encoding always picks the most compact representation that fits
+    (fixint/fixstr/fixarray/fixmap where possible, otherwise the smallest
+    width that holds the value). Decoding handles every core MessagePack
+    type an external encoder could legitimately produce (all int widths
+    signed/unsigned, both float widths, all string/array/map length-prefix
+    widths) — verified against Python's independent <code>msgpack</code>
+    library in both directions, and fuzz-tested (<code>fuzz/msgpack/</code>).
+  </p>
+  <p>
+    <strong>v1 scope:</strong> no <code>bin8/16/32</code> (raw byte strings) or the
+    <code>ext</code> family (application-specific extension types) — neither has
+    a <code>JsonValue</code>-model equivalent to represent it as. A decoded map
+    with a non-string key fails the whole decode (this module's object
+    model only supports string keys, matching <code>JsonValue</code>). A decoded
+    <code>uint64</code> value ≥ 2⁶³ comes out as a negative <code>Int64</code>
+    (the same 64 raw bits reinterpreted as signed) — Tinox's <code>Int64</code>
+    has no wider/unsigned counterpart to hold the full range.
+  </p>
+
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Msgpack::encode</code></td>
+        <td><code>fn encode(value: MsgpackValue) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Encodes a value tree to MessagePack bytes.</td>
+      </tr>
+      <tr>
+        <td><code>Msgpack::decode</code></td>
+        <td><code>fn decode(bytes: List&lt;Int64&gt;) -&gt; MsgpackValue</code></td>
+        <td>Decodes MessagePack bytes into a value tree. Never crashes or
+        hangs on truncated/malformed input (matching this stdlib's other
+        self-contained-buffer parsers, it doesn't expose a separate
+        success/failure flag either — a malformed input decodes to
+        whatever partial/null result naturally falls out).</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>isNull/isBool/isInt/isFloat/isString/isArray/isObject() -&gt; Bool</code></td>
+        <td>Type checks.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>getBool/getInt/getFloat/getString() -&gt; ...</code></td>
+        <td>Scalar accessors.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>asArray() -&gt; List&lt;MsgpackValue&gt;</code>, <code>asMap() -&gt; Map&lt;String, MsgpackValue&gt;</code></td>
+        <td>Container accessors.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue::getField</code></td>
+        <td><code>fn getField(key: String) -&gt; MsgpackValue</code></td>
+        <td>Reads an object field; returns a null-kind value if this isn't
+        an object or the key is absent.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Example</h3>
+  <pre><code>import tinox.core.msgpack;
+
+var fields: Map&lt;String, MsgpackValue&gt; = Map::new();
+fields["name"] = MsgpackValue { kind: "string", stringValue: "Tinox" };
+fields["version"] = MsgpackValue { kind: "int", intValue: 2 };
+
+let root: MsgpackValue = MsgpackValue { kind: "object", objectValue: fields };
+let bytes: List&lt;Int64&gt; = Msgpack::encode(root);
+
+let decoded: MsgpackValue = Msgpack::decode(bytes);
+println(decoded.getField("name").getString());
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-xml">

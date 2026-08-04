@@ -507,6 +507,7 @@
 
     <li class="section-label">Datenformate</li>
     <li><a href="#mod-json">json</a></li>
+    <li><a href="#mod-msgpack">msgpack</a></li>
     <li><a href="#mod-xml">xml</a></li>
     <li><a href="#mod-yaml">yaml</a></li>
     <li><a href="#mod-csv">csv</a></li>
@@ -3646,6 +3647,107 @@ class Main
         return 0;
     }
 }
+  </div>
+
+  <div class="mod-section" id="mod-msgpack">
+
+  <h2>msgpack</h2>
+  <p class="import-hint"><code>import tinox.core.msgpack;</code></p>
+  <p>
+    Kompakte Binärserialisierung (<a href="https://msgpack.org/" target="_blank" rel="noopener">MessagePack</a>),
+    ein binäres Gegenstück zu <code>json</code>s textbasiertem
+    <code>JsonValue</code>-Baum — nützlich für AMQP-Nachrichten-Payloads,
+    Inter-Service-RPC, oder einfach um strukturierte Daten kompakter als
+    JSON zu speichern. Kein Schema/Codegen-Schritt, dasselbe
+    selbstbeschreibende dynamische Wertemodell wie JSON (Object/Array/
+    String/Int/Float/Bool/Null). <code>MsgpackValue</code> spiegelt
+    <code>JsonValue</code>s API-Form (<code>isString</code>/<code>getString</code>,
+    <code>isInt</code>/<code>getInt</code>, <code>isArray</code>/<code>asArray</code>,
+    <code>isObject</code>/<code>getField</code>, ...), ist aber — anders als das
+    C-gestützte <code>JsonValue</code> — ein reiner Tinox-Wert: für die
+    Kodierung direkt per Struct-Literal konstruieren, z. B.
+    <code>MsgpackValue { kind: "string", stringValue: "hi" }</code>.
+  </p>
+  <p>
+    Kodierung wählt immer die kompakteste passende Darstellung (fixint/
+    fixstr/fixarray/fixmap wo möglich, sonst die kleinste Breite, die den
+    Wert fasst). Dekodierung behandelt jeden Kern-MessagePack-Typ, den ein
+    externer Encoder legitim erzeugen könnte (alle Int-Breiten
+    signed/unsigned, beide Float-Breiten, alle String-/Array-/Map-
+    Längenpräfix-Breiten) — gegen Pythons unabhängige <code>msgpack</code>-
+    Bibliothek in beide Richtungen verifiziert, und fuzz-getestet
+    (<code>fuzz/msgpack/</code>).
+  </p>
+  <p>
+    <strong>v1-Umfang:</strong> kein <code>bin8/16/32</code> (rohe Byte-Strings)
+    oder die <code>ext</code>-Familie (anwendungsspezifische Extension-Typen) —
+    beide haben kein <code>JsonValue</code>-Modell-Äquivalent. Eine dekodierte
+    Map mit Nicht-String-Key lässt die gesamte Dekodierung scheitern
+    (dieses Moduls Object-Modell unterstützt nur String-Keys, analog zu
+    <code>JsonValue</code>). Ein dekodierter <code>uint64</code>-Wert ≥ 2⁶³ kommt
+    als negatives <code>Int64</code> heraus (dieselben 64 Rohbits als signed
+    reinterpretiert) — Tinox' <code>Int64</code> hat kein breiteres/unsigned
+    Gegenstück für den vollen Wertebereich.
+  </p>
+
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Msgpack::encode</code></td>
+        <td><code>fn encode(value: MsgpackValue) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Kodiert einen Werte-Baum zu MessagePack-Bytes.</td>
+      </tr>
+      <tr>
+        <td><code>Msgpack::decode</code></td>
+        <td><code>fn decode(bytes: List&lt;Int64&gt;) -&gt; MsgpackValue</code></td>
+        <td>Dekodiert MessagePack-Bytes zu einem Werte-Baum. Stürzt bei
+        abgeschnittener/fehlerhafter Eingabe nie ab und hängt nie (wie
+        die anderen Parser dieser Stdlib für in sich geschlossene Puffer
+        legt auch dieser keinen separaten Erfolgs-/Fehlerflag offen — eine
+        fehlerhafte Eingabe dekodiert zu dem, was als Teilergebnis/Null
+        natürlich dabei herauskommt).</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>isNull/isBool/isInt/isFloat/isString/isArray/isObject() -&gt; Bool</code></td>
+        <td>Typprüfungen.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>getBool/getInt/getFloat/getString() -&gt; ...</code></td>
+        <td>Skalar-Zugriffe.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue</code></td>
+        <td><code>asArray() -&gt; List&lt;MsgpackValue&gt;</code>, <code>asMap() -&gt; Map&lt;String, MsgpackValue&gt;</code></td>
+        <td>Container-Zugriffe.</td>
+      </tr>
+      <tr>
+        <td><code>MsgpackValue::getField</code></td>
+        <td><code>fn getField(key: String) -&gt; MsgpackValue</code></td>
+        <td>Liest ein Objektfeld; liefert einen Null-Wert, falls dies kein
+        Objekt ist oder der Key fehlt.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.msgpack;
+
+var fields: Map&lt;String, MsgpackValue&gt; = Map::new();
+fields["name"] = MsgpackValue { kind: "string", stringValue: "Tinox" };
+fields["version"] = MsgpackValue { kind: "int", intValue: 2 };
+
+let root: MsgpackValue = MsgpackValue { kind: "object", objectValue: fields };
+let bytes: List&lt;Int64&gt; = Msgpack::encode(root);
+
+let decoded: MsgpackValue = Msgpack::decode(bytes);
+println(decoded.getField("name").getString());
+</code></pre>
   </div>
 
   <div class="mod-section" id="mod-xml">

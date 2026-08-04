@@ -313,6 +313,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "msgpack",
+        imports: &["tinox.core.msgpack"],
+        body: "let v: MsgpackValue = MsgpackValue { kind: \"int\", intValue: 42 };\n    let bytes: List<Int64> = Msgpack::encode(v);\n    println(Msgpack::decode(bytes).getInt());",
+        expects: &["42"],
+        contains: &[],
+    },
+    Smoke {
         key: "oauth2",
         imports: &["tinox.core.oauth2"],
         body: "let c: OAuth2Client = OAuth2Client::new(\"https://example.com/authorize\", \"https://example.com/token\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid\");\n    if r.url.contains(\"code_challenge=\") { println(\"yes\"); } else { println(\"no\"); }",

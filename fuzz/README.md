@@ -25,12 +25,14 @@ against clang 22.1.8.
 | AMQP-0-9-1 frame reader | `amqp091/` | `Amqp091::readFrame(Int64)` (`crates/tinox-core/amqp091/Amqp091.tnx`) | `Amqp091Driver.tnx` wraps it same as HPACK; the fuzz bytes arrive via a pre-filled, write-shutdown `socketpair()` instead of a plain buffer — see "AMQP frame readers: calling compiled Tinox code that reads from a socket" below |
 | AMQP-1.0 frame reader | `amqp10/` | `Amqp10::readFrame(Int64)` (`crates/tinox-core/amqp10/Amqp10.tnx`) | same socketpair bridging as `amqp091/` |
 | HTTP/2 frame reader | `http2/` | `Http2Server::readFrame(Http2Conn)` (`crates/tinox-core/http2_server/Http2Server.tnx`) | `Http2Driver.tnx` wraps it same as AMQP — same socketpair bridging, but `Http2Conn::new(conn)`'s `handle` field can be the socketpair fd directly, since `httpServerReadRawBytes` reads off a raw fd rather than a `TinoxConn*` — see "HTTP/2: frame parsing without a connection" below |
+| MessagePack decoder | `msgpack/` | `Msgpack::decode(List<Int64>)` (`crates/tinox-core/msgpack/Msgpack.tnx`) | `MsgpackDriver.tnx` wraps it exactly like HPACK — a pure `(List<Int64>) -> MsgpackValue` function with no socket dependency, same driver-module + recompiled-IR technique, no bridging needed beyond the `TinoxArray` handle itself |
 
 JSON and ZIP call straight into the real `runtime/runtime.c`; HPACK,
-AMQP-0-9-1, AMQP-1.0, and HTTP/2 call straight into the real, compiled
-`crates/tinox-core/{hpack,amqp091,amqp10,http2_server}/*.tnx` — none of
-the six are a copy of the parsing logic, so a fix or a regression in any
-of them is picked up automatically.
+AMQP-0-9-1, AMQP-1.0, HTTP/2, and MessagePack call straight into the
+real, compiled
+`crates/tinox-core/{hpack,amqp091,amqp10,http2_server,msgpack}/*.tnx` —
+none of the seven are a copy of the parsing logic, so a fix or a
+regression in any of them is picked up automatically.
 
 ### HPACK: calling compiled Tinox code, not C
 
@@ -148,6 +150,7 @@ fuzz/hpack/build.sh   && fuzz/hpack/hpack_fuzzer   fuzz/hpack/corpus/   fuzz/hpa
 fuzz/amqp091/build.sh && fuzz/amqp091/amqp091_fuzzer fuzz/amqp091/corpus/ fuzz/amqp091/seeds/
 fuzz/amqp10/build.sh  && fuzz/amqp10/amqp10_fuzzer  fuzz/amqp10/corpus/  fuzz/amqp10/seeds/
 fuzz/http2/build.sh   && fuzz/http2/http2_fuzzer    fuzz/http2/corpus/   fuzz/http2/seeds/
+fuzz/msgpack/build.sh && fuzz/msgpack/msgpack_fuzzer fuzz/msgpack/corpus/ fuzz/msgpack/seeds/
 ```
 
 `corpus/` is the fuzzer's working corpus (gitignored — it grows large and
@@ -164,9 +167,9 @@ gitignored). Reproduce and debug one with:
 fuzz/json/json_fuzzer fuzz/json/crashes/crash-<hash>
 ```
 
-### `make fuzz`: all six targets, CI-wired
+### `make fuzz`: all seven targets, CI-wired
 
-`make fuzz` (repo root) builds and briefly runs all six targets against
+`make fuzz` (repo root) builds and briefly runs all seven targets against
 their checked-in seeds in one command — `bash fuzz/<t>/build.sh` followed
 by a short `-fork=4` run per target, `FUZZ_SECONDS` (default 60) apiece.
 It's wired into `.github/workflows/deep-checks.yml` alongside `asan`/
@@ -310,12 +313,27 @@ the seed corpus turned up only the same harmless `-rss_limit_mb`
 OOM every other target here hits eventually under `-DTINOX_NO_GC` — no
 ASan findings.
 
+## What the MessagePack target found
+
+Nothing — no ASan findings across a `-fork=4` run against a seed corpus
+generated with Python's `msgpack` library (issue #136: the encoder/
+decoder were cross-verified against that same real, independent
+implementation in both directions before this target was even built,
+see that issue's closing comment). `Msgpack::decode`'s own bounds
+checks (declared string/array/map lengths checked against actual
+remaining bytes before ever looping, the same declared-length-vs-
+actual-size shape as the `httpConnReadN`/`httpServerReadRawBytes`
+fixes above) already reject a huge declared length instantly instead of
+looping/allocating proportionally to it — verified this holds under
+fuzzing, not just against the handful of manually-written truncated-
+input cases in the e2e test.
+
 ## Extending further
 
-`amqp091`/`amqp10`/HPACK/HTTP/2 frame parsing are now covered; ZIP and
-JSON were covered from the start (see "HPACK: calling compiled Tinox
-code, not C" above for why those three needed different bridging
-techniques). What's left, tracked as follow-up in
+`amqp091`/`amqp10`/HPACK/HTTP/2 frame parsing/MessagePack are now
+covered; ZIP and JSON were covered from the start (see "HPACK: calling
+compiled Tinox code, not C" above for why those three needed different
+bridging techniques). What's left, tracked as follow-up in
 [#111](https://github.com/subnix-work/tinox/issues/111):
 
 - **The rest of the HTTP/2 connection state machine.** The `http2/`

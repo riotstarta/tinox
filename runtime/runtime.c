@@ -2290,6 +2290,59 @@ int64_t* tinoxGunzip(int64_t* bytes) {
     return nh;
 }
 
+// ---- Float64/Float32 bit-pattern reinterpretation (issue #136) ----
+//
+// tinox.core.msgpack's encoder/decoder is written entirely in Tinox
+// (mirroring hpack/Hpack.tnx's precedent: hand-roll the protocol framing
+// directly over List<Int64> byte arrays, no bespoke runtime primitive
+// for the format itself) -- but MessagePack's float32/float64 types are
+// IEEE 754 bit patterns, and Tinox arithmetic alone can't reconstruct
+// IEEE 754 bit-for-bit (sign/exponent/mantissa extraction without native
+// bit ops risks subtle rounding/denormal/NaN bugs, exactly the kind of
+// thing a fuzz harness would catch). So unlike the rest of the codec,
+// these three are plain reinterpret-casts, not string/array framing
+// logic, and stay in C where memcpy makes them trivially, obviously
+// correct.
+int64_t msgpackFloat64ToBits(double f) {
+    int64_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+double msgpackBitsToFloat64(int64_t bits) {
+    double f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+// bits32 arrives as the low 32 bits of an Int64 (the Tinox-side decoder
+// already reassembled them big-endian via shift/or into an Int64); only
+// the low 32 bits are meaningful here.
+double msgpackBitsToFloat32(int64_t bits32) {
+    float f;
+    int32_t b = (int32_t)(bits32 & 0xffffffff);
+    memcpy(&f, &b, sizeof(f));
+    return (double)f;
+}
+
+// Builds a String from a List<Int64> byte array in one pass (issue #136,
+// found by fuzzing: Msgpack::decodeString originally built its result via
+// a loop of `s = s + fromCharCode(byte)`, and every `+` on a Tinox string
+// (tinox_string_concat below) mallocs a NEW buffer sized to BOTH operands
+// and copies both in -- chaining N of those is O(n) per call over a
+// string that grows to length n, i.e. O(n^2) total. Confirmed quadratic
+// empirically (100k-byte string: ~0.9s; 200k-byte string: ~3.2s, ~3.4x
+// not ~2x) before this fix. This primitive collects the bytes into a
+// List<Int64> first (tinox_array_push's existing amortized-doubling
+// growth, genuinely O(n) total) and does the byte->char conversion in a
+// single fixed-size allocation, turning the whole decode back to O(n).
+char* tinoxBytesToString(int64_t* bytes) {
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    char* buf = (char*)GC_malloc((size_t)n + 1);
+    for (int64_t i = 0; i < n; i++) buf[i] = (char)(a->data[i] & 0xff);
+    buf[n] = '\0';
+    return buf;
+}
+
 // ---- Regex builtins ----
 
 #include <regex.h>
