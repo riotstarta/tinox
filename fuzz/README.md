@@ -127,6 +127,49 @@ gitignored). Reproduce and debug one with:
 fuzz/json/json_fuzzer fuzz/json/crashes/crash-<hash>
 ```
 
+### `make fuzz`: all five targets, CI-wired
+
+`make fuzz` (repo root) builds and briefly runs all five targets against
+their checked-in seeds in one command — `bash fuzz/<t>/build.sh` followed
+by a short `-fork=4` run per target, `FUZZ_SECONDS` (default 60) apiece.
+It's wired into `.github/workflows/deep-checks.yml` alongside `asan`/
+`checked`, so it runs weekly (and on `workflow_dispatch`) with no extra
+CI setup — the same clang/llvm install those two targets already need
+covers `-fsanitize=fuzzer` too.
+
+Two libFuzzer quirks, both hit and root-caused while wiring this target
+up, are worth knowing about before "fixing" what looks like a fuzz
+failure but isn't:
+
+- **A non-zero exit code alone does not mean a real finding.** Because
+  every harness here builds `runtime.c` with `-DTINOX_NO_GC` (leaks are
+  intentional, see below), a `-fork=4` worker will eventually hit
+  `-rss_limit_mb` from pure accumulation — no bug required, just enough
+  fuzzer iterations. When that happens, libFuzzer's `-fork` driver exits
+  non-zero (observed: `71`) for the *whole run*, even with
+  `-ignore_ooms=1` passed explicitly (verified: that flag only affects
+  whether the coordinator keeps scheduling new jobs after an OOM, not the
+  final exit code).
+- **`slow-unit-*` artifacts can be a false alarm for the same reason.**
+  As a single long-lived worker's never-freed heap grows into the
+  hundreds of MB/GB over a run, glibc `malloc`'s own bookkeeping overhead
+  grows with it — so an input executed late in the run can take
+  measurably longer in wall-clock time than an equally-cheap input
+  executed early, without being algorithmically slower at all. Verified
+  by replaying several `slow-unit-*` files this surfaced (each well under
+  500 bytes) standalone in a **fresh** process: every one parsed in
+  ~0.1–0.2s, nothing like a hang.
+
+So `make fuzz` doesn't trust the raw exit code: each target run passes
+`-artifact_prefix=fuzz/<t>/artifacts/` (a fresh, empty directory per
+run), and afterward the Makefile inspects what actually landed there.
+`oom-*` and `slow-unit-*` files are exactly the two harmless cases above
+and are logged, not failed. Only a `crash-*`/`timeout-*`/`leak-*` file
+(an actual libFuzzer/ASan finding) — or a non-zero exit with *no*
+artifact at all to explain it — fails the target. See the extensive
+comment directly above the `fuzz:` target in the `Makefile` for the exact
+logic.
+
 ## All targets run in `-DTINOX_NO_GC` mode — leaks are intentional
 
 Every harness builds `runtime.c` with `-DTINOX_NO_GC` (see each

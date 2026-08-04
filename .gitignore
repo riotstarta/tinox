@@ -66,7 +66,9 @@ massif.out.*
 fuzz/*/*_fuzzer
 fuzz/*/corpus/
 fuzz/*/crashes/
+fuzz/*/artifacts/
 fuzz/*/crash-*
 fuzz/*/leak-*
 fuzz/*/timeout-*
 fuzz/*/oom-*
+fuzz/*/slow-unit-*

@@ -6219,6 +6219,18 @@ extern __thread int64_t __tinox_err;
 // thread (the `registered` guard below is itself `__thread`, so each
 // thread gets its own independent one-shot check).
 static void tinox_gc_register_thread_roots(void) {
+#ifndef TINOX_NO_GC
+    // GC_add_roots is a Boehm-GC-specific API (<gc.h>, only included in
+    // the #else branch of the TINOX_NO_GC switch near the top of this
+    // file) — under TINOX_NO_GC (make asan, and every fuzz/*/build.sh
+    // harness) there is no collector to register roots with in the first
+    // place (plain malloc, nothing ever collected), so this is
+    // unconditionally a no-op there, matching GC_INIT()'s own no-op
+    // definition in that mode. Found via fuzz/*/build.sh failing to
+    // compile at all ("call to undeclared function 'GC_add_roots'") —
+    // this function's body was written assuming <gc.h> is always
+    // included, which stopped being true the moment TINOX_NO_GC gained
+    // its own code path (this function predates it).
     static __thread int registered = 0;
     if (registered) return;
     registered = 1;
@@ -6235,6 +6247,7 @@ static void tinox_gc_register_thread_roots(void) {
     TINOX_GC_ROOT(g_path_params_map);
     TINOX_GC_ROOT(__tinox_err);
 #undef TINOX_GC_ROOT
+#endif
 }
 
 int main(int argc, char** argv) {

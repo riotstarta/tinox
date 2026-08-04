@@ -13,7 +13,7 @@ clang -c "$RUNTIME_C" -o runtime_fuzz.o \
     -fsanitize=fuzzer-no-link,address -g -O1
 
 clang++ -fsanitize=fuzzer,address zip_fuzzer.cc runtime_fuzz.o \
-    -o "$OUT" -lm -lpthread
+    -o "$OUT" -lm -lpthread -lz
 
 rm -f runtime_fuzz.o
 echo "built fuzz/zip/$OUT"

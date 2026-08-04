@@ -1,7 +1,12 @@
 # Wöchentliche Tiefen-Prüfungen (TESTPLAN 2.3 + Phase 4): AddressSanitizer-
-# und Checked-Lauf der E2E-/Grenzwert-Suite. Bewusst nicht Teil des
-# Push-Gates (Laufzeit); Cron + manuell auslösbar. Kein Dogfood-Checkout
-# nötig — beide Targets bauen nur examples-unabhängige Suiten.
+# und Checked-Lauf der E2E-/Grenzwert-Suite, plus die libFuzzer-Harnesses
+# in fuzz/*/ (issue #111, see fuzz/README.md) gegen ihren Seed-Corpus.
+# Bewusst nicht Teil des Push-Gates (Laufzeit); Cron + manuell auslösbar.
+# Kein Dogfood-Checkout nötig — alle drei Targets bauen nur
+# examples-unabhängige Suiten. `make fuzz` braucht keine eigene
+# Sonderbehandlung hier: sein FUZZ_SECONDS?=60-Default pro Target läuft
+# problemlos unter dem generischen `make ${{ matrix.target }}`-Schritt
+# unten mit, genau wie asan/checked.
 
 name: deep-checks
 
@@ -22,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [asan, checked]
+        target: [asan, checked, fuzz]
     steps:
       - uses: actions/checkout@v5
 
