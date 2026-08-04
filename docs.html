@@ -3010,37 +3010,41 @@ let checkJwt: fnc(HttpContext) -> Bool = ctx => {
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.oauth2;
 
-fn main() -> Nothing
+class Main
 {
-    let client: OAuth2Client = OAuth2Client::new(
-        "https://accounts.google.com/o/oauth2/v2/auth",
-        "https://oauth2.googleapis.com/token",
-        "meine-client-id",
-        "mein-client-secret",
-        "https://meine-app.example.com/callback"
-    );
+    fnc main() -> Int32
+    {
+        let client: OAuth2Client = OAuth2Client::new(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            "meine-client-id",
+            "mein-client-secret",
+            "https://meine-app.example.com/callback"
+        );
 
-    // 1. Nutzer zur Provider-Login-Seite weiterleiten
-    let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-    // authReq.state und authReq.codeVerifier session-seitig speichern,
-    // dann den Browser zu authReq.url weiterleiten.
-    println("Weiterleiten zu: " + authReq.url);
+        // 1. Nutzer zur Provider-Login-Seite weiterleiten
+        let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+        // authReq.state und authReq.codeVerifier session-seitig speichern,
+        // dann den Browser zu authReq.url weiterleiten.
+        println("Weiterleiten zu: " + authReq.url);
 
-    // 2. Im Callback-Handler: state gegen den gespeicherten Wert prüfen,
-    //    dann den Code gegen ein Token-Paar tauschen.
-    let tokens: OAuth2TokenResponse = client.exchangeCode("code-aus-dem-callback", authReq.codeVerifier);
-    if tokens.ok {
-        println("Access-Token: " + tokens.accessToken);
-    } else {
-        println("Fehler: " + tokens.errorMessage);
+        // 2. Im Callback-Handler: state gegen den gespeicherten Wert prüfen,
+        //    dann den Code gegen ein Token-Paar tauschen.
+        let tokens: OAuth2TokenResponse = client.exchangeCode("code-aus-dem-callback", authReq.codeVerifier);
+        if tokens.ok {
+            println("Access-Token: " + tokens.accessToken);
+        } else {
+            println("Fehler: " + tokens.errorMessage);
+        }
+
+        // 3. Später: Token erneuern
+        let refreshed: OAuth2TokenResponse = client.refresh(tokens.refreshToken);
+        if refreshed.ok {
+            println("Neues Access-Token: " + refreshed.accessToken);
+        }
+        return 0;
     }
-
-    // 3. Später: Token erneuern
-    let refreshed: OAuth2TokenResponse = client.refresh(tokens.refreshToken);
-    if refreshed.ok {
-        println("Neues Access-Token: " + refreshed.accessToken);
-    }
-}</code></pre>
+}
   </div>
 
   <div class="mod-section" id="mod-oidc">
@@ -3102,30 +3106,34 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.oidc;
 
-fn main() -> Nothing
+class Main
 {
-    let client: OidcClient = OidcClient::new(
-        "https://accounts.google.com",
-        "https://accounts.google.com/o/oauth2/v2/auth",
-        "https://oauth2.googleapis.com/token",
-        "https://www.googleapis.com/oauth2/v3/certs",
-        "meine-client-id",
-        "mein-client-secret",
-        "https://meine-app.example.com/callback"
-    );
+    fnc main() -> Int32
+    {
+        let client: OidcClient = OidcClient::new(
+            "https://accounts.google.com",
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            "https://www.googleapis.com/oauth2/v3/certs",
+            "meine-client-id",
+            "mein-client-secret",
+            "https://meine-app.example.com/callback"
+        );
 
-    // 1. Nutzer zur Provider-Login-Seite weiterleiten ("openid" ist Pflicht)
-    let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-    println("Weiterleiten zu: " + authReq.url);
+        // 1. Nutzer zur Provider-Login-Seite weiterleiten ("openid" ist Pflicht)
+        let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+        println("Weiterleiten zu: " + authReq.url);
 
-    // 2. Im Callback-Handler: state prüfen, dann Code tauschen + id_token verifizieren
-    let tokens: OidcTokenResponse = client.exchangeCode("code-aus-dem-callback", authReq.codeVerifier);
-    if tokens.ok {
-        println("Angemeldet als: " + tokens.claims["sub"].getString());
-    } else {
-        println("Fehler: " + tokens.errorMessage);
+        // 2. Im Callback-Handler: state prüfen, dann Code tauschen + id_token verifizieren
+        let tokens: OidcTokenResponse = client.exchangeCode("code-aus-dem-callback", authReq.codeVerifier);
+        if tokens.ok {
+            println("Angemeldet als: " + tokens.claims["sub"].getString());
+        } else {
+            println("Fehler: " + tokens.errorMessage);
+        }
+        return 0;
     }
-}</code></pre>
+}
   <h3>OidcWebApp — fertiger Browser-Login "out of the box"</h3>
   <p>
     <code>OidcClient</code> oben ist der Low-Level-Baustein — der
@@ -3188,26 +3196,36 @@ fn main() -> Nothing
   <pre><code>import tinox.core.oidc;
 import tinox.core.http_server;
 
-fn main() -> Nothing
+class Main
 {
-    let client: OidcClient = OidcClient::new(
-        issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri
-    );
-    let app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
+    fnc main() -> Int32
+    {
+        let client: OidcClient = OidcClient::new(
+            "https://accounts.google.com",
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            "https://www.googleapis.com/oauth2/v3/certs",
+            "meine-client-id",
+            "mein-client-secret",
+            "https://meine-app.example.com/callback"
+        );
+        let app: OidcWebApp = OidcWebApp::new(client, "mein-cookie-secret");
 
-    let server: HttpServer = HttpServer::new(8096);
-    app.install(server);
+        let server: HttpServer = HttpServer::new(8096);
+        app.install(server);
 
-    server.get("/", ctx => {
-        if !app.requireLogin(ctx) { return; }
-        let claims: Map&lt;String, JsonValue&gt; = app.currentUser(ctx);
-        ctx.response.text("Hallo, " + claims["sub"].getString());
-    });
+        server.get("/", ctx => {
+            if !app.requireLogin(ctx) { return; }
+            let claims: Map&lt;String, JsonValue&gt; = app.currentUser(ctx);
+            ctx.response.text("Hallo, " + claims["sub"].getString());
+        });
 
-    server.get("/logout", ctx => { app.logout(ctx); });
+        server.get("/logout", ctx => { app.logout(ctx); });
 
-    server.listen();
-}</code></pre>
+        server.listen();
+        return 0;
+    }
+}
   <p>
     Ein vollständiges, gegen echtes Keycloak verifiziertes Beispiel liegt
     unter <code>examples/keycloak_oidc_api/src/WebLogin.tnx</code>.
@@ -3335,29 +3353,33 @@ class Produkt
     var preis: Float64;
 }
 
-fn main() -> Nothing
+class Main
 {
-    // Objekt serialisieren
-    let p: Produkt = Produkt { id: 42, name: "Stift", preis: 1.99 };
-    let jsonStr: String = Json::serialize(p);
-    println(jsonStr);
+    fnc main() -> Int32
+    {
+        // Objekt serialisieren
+        let p: Produkt = Produkt { id: 42, name: "Stift", preis: 1.99 };
+        let jsonStr: String = Json::serialize(p);
+        println(jsonStr);
 
-    // JSON parsen und Felder auslesen
-    let raw: String = "{\"titel\":\"Test\",\"wert\":7}";
-    let v: JsonValue = Json::parse(raw);
-    let titel: String = v.getField("titel").getString();
-    let wert: Int64 = v.getField("wert").getInt();
-    println(titel + " = " + wert.toString());
+        // JSON parsen und Felder auslesen
+        let raw: String = "{\"titel\":\"Test\",\"wert\":7}";
+        let v: JsonValue = Json::parse(raw);
+        let titel: String = v.getField("titel").getString();
+        let wert: Int64 = v.getField("wert").getInt();
+        println(titel + " = " + wert.toString());
 
-    // Int-Array runden-trip
-    let ids: List<Int64> = [1, 2, 3];
-    let wrapped: String = Json::intArrayWrap("ids", ids);
-    println(wrapped);
+        // Int-Array runden-trip
+        let ids: List<Int64> = [1, 2, 3];
+        let wrapped: String = Json::intArrayWrap("ids", ids);
+        println(wrapped);
 
-    // Deserialisieren
-    let p2: Produkt = Json::deserialize<Produkt>(jsonStr);
-    println(p2.name);
-}</code></pre>
+        // Deserialisieren
+        let p2: Produkt = Json::deserialize<Produkt>(jsonStr);
+        println(p2.name);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-xml">
@@ -3433,31 +3455,35 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.xml;
 
-fn main() -> Nothing
+class Main
 {
-    let dokument: String = "&lt;katalog&gt;" +
-        "&lt;buch id=\"1\"&gt;&lt;titel&gt;Tinox Grundlagen&lt;/titel&gt;&lt;/buch&gt;" +
-        "&lt;buch id=\"2\"&gt;&lt;titel&gt;Fortgeschrittenes Tinox&lt;/titel&gt;&lt;/buch&gt;" +
-        "&lt;/katalog&gt;";
-
-    let root: XmlNode = Xml::parse(dokument);
-    println("Wurzel-Tag: " + root.tagName());
-
-    let kinder: List&lt;XmlNode&gt; = root.children();
-    var i: Int64 = 0;
-    while i &lt; kinder.len()
+    fnc main() -> Int32
     {
-        let buch: XmlNode = kinder[i];
-        let id: String = buch.attr("id");
-        let titel: XmlNode = buch.firstChild("titel");
-        println("Buch " + id + ": " + titel.textContent());
-        i = i + 1;
-    }
+        let dokument: String = "&lt;katalog&gt;" +
+            "&lt;buch id=\"1\"&gt;&lt;titel&gt;Tinox Grundlagen&lt;/titel&gt;&lt;/buch&gt;" +
+            "&lt;buch id=\"2\"&gt;&lt;titel&gt;Fortgeschrittenes Tinox&lt;/titel&gt;&lt;/buch&gt;" +
+            "&lt;/katalog&gt;";
 
-    // Zurück in XML-String rendern
-    let ausgabe: String = Xml::stringify(root);
-    println(ausgabe);
-}</code></pre>
+        let root: XmlNode = Xml::parse(dokument);
+        println("Wurzel-Tag: " + root.tagName());
+
+        let kinder: List&lt;XmlNode&gt; = root.children();
+        var i: Int64 = 0;
+        while i &lt; kinder.len()
+        {
+            let buch: XmlNode = kinder[i];
+            let id: String = buch.attr("id");
+            let titel: XmlNode = buch.firstChild("titel");
+            println("Buch " + id + ": " + titel.textContent());
+            i = i + 1;
+        }
+
+        // Zurück in XML-String rendern
+        let ausgabe: String = Xml::stringify(root);
+        println(ausgabe);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-yaml">
@@ -3532,40 +3558,44 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.yaml;
 
-fn main() -> Nothing
+class Main
 {
-    // YamlValue-Baum manuell aufbauen
-    let name: YamlValue = YamlValue {
-        kind: "string",
-        stringValue: "Tinox"
-    };
-    let version: YamlValue = YamlValue {
-        kind: "int",
-        intValue: 2
-    };
+    fnc main() -> Int32
+    {
+        // YamlValue-Baum manuell aufbauen
+        let name: YamlValue = YamlValue {
+            kind: "string",
+            stringValue: "Tinox"
+        };
+        let version: YamlValue = YamlValue {
+            kind: "int",
+            intValue: 2
+        };
 
-    let m: Map&lt;String, YamlValue&gt; = Map::new();
-    m["name"] = name;
-    m["version"] = version;
+        let m: Map&lt;String, YamlValue&gt; = Map::new();
+        m["name"] = name;
+        m["version"] = version;
 
-    let root: YamlValue = YamlValue {
-        kind: "map",
-        mapValue: m
-    };
+        let root: YamlValue = YamlValue {
+            kind: "map",
+            mapValue: m
+        };
 
-    // Als YAML-String ausgeben
-    let yamlStr: String = Yaml::stringify(root);
-    println(yamlStr);
+        // Als YAML-String ausgeben
+        let yamlStr: String = Yaml::stringify(root);
+        println(yamlStr);
 
-    // Typprüfungen
-    println(name.isString().toString());  // true
-    println(version.isInt().toString());  // true
-    println(root.isMap().toString());     // true
+        // Typprüfungen
+        println(name.isString().toString());  // true
+        println(version.isInt().toString());  // true
+        println(root.isMap().toString());     // true
 
-    // Rückparsen (liefert leere Map als Platzhalter)
-    let parsed: YamlValue = Yaml::parse(yamlStr);
-    println(parsed.isMap().toString());
-}</code></pre>
+        // Rückparsen (liefert leere Map als Platzhalter)
+        let parsed: YamlValue = Yaml::parse(yamlStr);
+        println(parsed.isMap().toString());
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-csv">
@@ -3610,35 +3640,39 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.csv;
 
-fn main() -> Nothing
+class Main
 {
-    let csvText: String =
-        "name,alter,stadt\n" +
-        "Anna,30,Berlin\n" +
-        "\"Müller, Klaus\",45,\"Frankfurt am Main\"\n" +
-        "Lea,22,Hamburg\n";
-
-    let tabelle: List&lt;List&lt;String&gt;&gt; = Csv::parse(csvText);
-
-    // Kopfzeile ausgeben
-    let header: List&lt;String&gt; = tabelle[0];
-    println(header[0] + " | " + header[1] + " | " + header[2]);
-
-    // Datenzeilen ausgeben
-    var i: Int64 = 1;
-    while i &lt; tabelle.len()
+    fnc main() -> Int32
     {
-        let zeile: List&lt;String&gt; = tabelle[i];
-        println(zeile[0] + " ist " + zeile[1] + " Jahre alt, wohnt in " + zeile[2]);
-        i = i + 1;
-    }
+        let csvText: String =
+            "name,alter,stadt\n" +
+            "Anna,30,Berlin\n" +
+            "\"Müller, Klaus\",45,\"Frankfurt am Main\"\n" +
+            "Lea,22,Hamburg\n";
 
-    // Neue Zeile hinzufügen und zurück serialisieren
-    let neueZeile: List&lt;String&gt; = ["Tom", "28", "München"];
-    tabelle.push(neueZeile);
-    let ausgabe: String = Csv::toString(tabelle);
-    println(ausgabe);
-}</code></pre>
+        let tabelle: List&lt;List&lt;String&gt;&gt; = Csv::parse(csvText);
+
+        // Kopfzeile ausgeben
+        let header: List&lt;String&gt; = tabelle[0];
+        println(header[0] + " | " + header[1] + " | " + header[2]);
+
+        // Datenzeilen ausgeben
+        var i: Int64 = 1;
+        while i &lt; tabelle.len()
+        {
+            let zeile: List&lt;String&gt; = tabelle[i];
+            println(zeile[0] + " ist " + zeile[1] + " Jahre alt, wohnt in " + zeile[2]);
+            i = i + 1;
+        }
+
+        // Neue Zeile hinzufügen und zurück serialisieren
+        let neueZeile: List&lt;String&gt; = ["Tom", "28", "München"];
+        tabelle.push(neueZeile);
+        let ausgabe: String = Csv::toString(tabelle);
+        println(ausgabe);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-toml">
@@ -3738,35 +3772,39 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.toml;
 
-fn main() -> Nothing
+class Main
 {
-    let konfigText: String =
-        "debug = true\n" +
-        "port = 8080\n" +
-        "host = \"localhost\"\n" +
-        "\n" +
-        "[datenbank]\n" +
-        "url = \"postgres://localhost/mydb\"\n" +
-        "pool = 5\n";
+    fnc main() -> Int32
+    {
+        let konfigText: String =
+            "debug = true\n" +
+            "port = 8080\n" +
+            "host = \"localhost\"\n" +
+            "\n" +
+            "[datenbank]\n" +
+            "url = \"postgres://localhost/mydb\"\n" +
+            "pool = 5\n";
 
-    let config: TomlValue = Toml::parse(konfigText);
+        let config: TomlValue = Toml::parse(konfigText);
 
-    // Wurzel-Tabelle auslesen
-    let tabelle: Map&lt;String, TomlValue&gt; = config.asTable();
+        // Wurzel-Tabelle auslesen
+        let tabelle: Map&lt;String, TomlValue&gt; = config.asTable();
 
-    let port: Int64 = tabelle["port"].asInt();
-    let host: String = tabelle["host"].asString();
-    let debug: Bool = tabelle["debug"].asBool();
+        let port: Int64 = tabelle["port"].asInt();
+        let host: String = tabelle["host"].asString();
+        let debug: Bool = tabelle["debug"].asBool();
 
-    println("Host: " + host + ", Port: " + port.toString());
-    println("Debug: " + debug.toString());
+        println("Host: " + host + ", Port: " + port.toString());
+        println("Debug: " + debug.toString());
 
-    // Untersektion
-    let db: Map&lt;String, TomlValue&gt; = tabelle["datenbank"].asTable();
-    let dbUrl: String = db["url"].asString();
-    let pool: Int64 = db["pool"].asInt();
-    println("DB: " + dbUrl + " (Pool: " + pool.toString() + ")");
-}</code></pre>
+        // Untersektion
+        let db: Map&lt;String, TomlValue&gt; = tabelle["datenbank"].asTable();
+        let dbUrl: String = db["url"].asString();
+        let pool: Int64 = db["pool"].asInt();
+        println("DB: " + dbUrl + " (Pool: " + pool.toString() + ")");
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-ini">
@@ -3821,36 +3859,40 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.ini;
 
-fn main() -> Nothing
+class Main
 {
-    let iniText: String =
-        "; Server-Konfiguration\n" +
-        "[server]\n" +
-        "host=127.0.0.1\n" +
-        "port=3000\n" +
-        "\n" +
-        "[logging]\n" +
-        "level=info\n" +
-        "# Maximale Dateigröße in MB\n" +
-        "maxsize=10\n";
+    fnc main() -> Int32
+    {
+        let iniText: String =
+            "; Server-Konfiguration\n" +
+            "[server]\n" +
+            "host=127.0.0.1\n" +
+            "port=3000\n" +
+            "\n" +
+            "[logging]\n" +
+            "level=info\n" +
+            "# Maximale Dateigröße in MB\n" +
+            "maxsize=10\n";
 
-    let config: IniConfig = Ini::parse(iniText);
+        let config: IniConfig = Ini::parse(iniText);
 
-    // Werte lesen
-    let host: String = IniConfig::getString(config, "server", "host", "localhost");
-    let port: Int64 = IniConfig::getInt(config, "server", "port", 80);
-    let level: String = IniConfig::getString(config, "logging", "level", "warn");
+        // Werte lesen
+        let host: String = IniConfig::getString(config, "server", "host", "localhost");
+        let port: Int64 = IniConfig::getInt(config, "server", "port", 80);
+        let level: String = IniConfig::getString(config, "logging", "level", "warn");
 
-    println("Server: " + host + ":" + port.toString());
-    println("Log-Level: " + level);
+        println("Server: " + host + ":" + port.toString());
+        println("Log-Level: " + level);
 
-    // Wert hinzufügen
-    IniConfig::setString(config, "server", "timeout", "30");
+        // Wert hinzufügen
+        IniConfig::setString(config, "server", "timeout", "30");
 
-    // Zurück serialisieren
-    let ausgabe: String = Ini::stringify(config);
-    println(ausgabe);
-}</code></pre>
+        // Zurück serialisieren
+        let ausgabe: String = Ini::stringify(config);
+        println(ausgabe);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-base64">
@@ -3900,31 +3942,35 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.base64;
 
-fn main() -> Nothing
+class Main
 {
-    // Einfacher String-Runden-Trip
-    let original: String = "Hallo Tinox!";
-    let kodiert: String = Base64::encode(original);
-    println("Kodiert:   " + kodiert);
+    fnc main() -> Int32
+    {
+        // Einfacher String-Runden-Trip
+        let original: String = "Hallo Tinox!";
+        let kodiert: String = Base64::encode(original);
+        println("Kodiert:   " + kodiert);
 
-    let dekodiert: String = Base64::decode(kodiert);
-    println("Dekodiert: " + dekodiert);
+        let dekodiert: String = Base64::decode(kodiert);
+        println("Dekodiert: " + dekodiert);
 
-    // Byte-Liste kodieren
-    let bytes: List&lt;Int64&gt; = [72, 101, 108, 108, 111];  // "Hello"
-    let byteEncoded: String = Base64::encodeBytes(bytes);
-    println("Bytes kodiert: " + byteEncoded);
+        // Byte-Liste kodieren
+        let bytes: List&lt;Int64&gt; = [72, 101, 108, 108, 111];  // "Hello"
+        let byteEncoded: String = Base64::encodeBytes(bytes);
+        println("Bytes kodiert: " + byteEncoded);
 
-    // Anwendungsfall: HTTP Basic Auth Header
-    let credentials: String = "benutzer:geheim";
-    let authHeader: String = "Basic " + Base64::encode(credentials);
-    println(authHeader);
+        // Anwendungsfall: HTTP Basic Auth Header
+        let credentials: String = "benutzer:geheim";
+        let authHeader: String = "Basic " + Base64::encode(credentials);
+        println(authHeader);
 
-    // Prüfen ob encode/decode korrekt umkehrbar ist
-    let test: String = "Sonderzeichen: äöü 123";
-    let roundTrip: String = Base64::decode(Base64::encode(test));
-    println(roundTrip);
-}</code></pre>
+        // Prüfen ob encode/decode korrekt umkehrbar ist
+        let test: String = "Sonderzeichen: äöü 123";
+        let roundTrip: String = Base64::decode(Base64::encode(test));
+        println(roundTrip);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-hex">
@@ -3980,31 +4026,35 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.hex;
 
-fn main() -> Nothing
+class Main
 {
-    let text: String = "Hello";
+    fnc main() -> Int32
+    {
+        let text: String = "Hello";
 
-    // String als Hex kodieren
-    let hexKodiert: String = Hex::encode(text);
-    println("Hex:  " + hexKodiert);   // 48656c6c6f
+        // String als Hex kodieren
+        let hexKodiert: String = Hex::encode(text);
+        println("Hex:  " + hexKodiert);   // 48656c6c6f
 
-    // Hex-Dump (leerzeichen-separiert)
-    let dump: String = Hex::dump(text);
-    println("Dump: " + dump);         // 48 65 6c 6c 6f
+        // Hex-Dump (leerzeichen-separiert)
+        let dump: String = Hex::dump(text);
+        println("Dump: " + dump);         // 48 65 6c 6c 6f
 
-    // Zurückdekodieren
-    let original: String = Hex::decode(hexKodiert);
-    println("Original: " + original); // Hello
+        // Zurückdekodieren
+        let original: String = Hex::decode(hexKodiert);
+        println("Original: " + original); // Hello
 
-    // Einzelne Nibble-Konvertierungen
-    let c: String = Hex::nibbleToChar(10);  // "a"
-    let n: Int64 = Hex::charToNibble("f");  // 15
-    println("10 -> " + c + ", f -> " + n.toString());
+        // Einzelne Nibble-Konvertierungen
+        let c: String = Hex::nibbleToChar(10);  // "a"
+        let n: Int64 = Hex::charToNibble("f");  // 15
+        println("10 -> " + c + ", f -> " + n.toString());
 
-    // Anwendungsfall: Hash-Ausgabe prüfen
-    let hashBytes: String = "\xde\xad\xbe\xef";
-    println("Hash-Hex: " + Hex::encode(hashBytes));
-}</code></pre>
+        // Anwendungsfall: Hash-Ausgabe prüfen
+        let hashBytes: String = "\xde\xad\xbe\xef";
+        println("Hash-Hex: " + Hex::encode(hashBytes));
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-encoding">
@@ -4058,35 +4108,39 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.encoding;
 
-fn main() -> Nothing
+class Main
 {
-    // Codepoint-Konvertierungen
-    let code: Int64 = Encoding::toCharCode("A");
-    println("'A' hat Codepoint: " + code.toString());  // 65
+    fnc main() -> Int32
+    {
+        // Codepoint-Konvertierungen
+        let code: Int64 = Encoding::toCharCode("A");
+        println("'A' hat Codepoint: " + code.toString());  // 65
 
-    let zeichen: String = Encoding::fromCharCode(9731); // ☃
-    println("Codepoint 9731: " + zeichen);
+        let zeichen: String = Encoding::fromCharCode(9731); // ☃
+        println("Codepoint 9731: " + zeichen);
 
-    // UTF-8 Byte-Liste
-    let text: String = "Hi!";
-    let bytes: List&lt;Int64&gt; = Encoding::toUtf8(text);
-    println("Bytes: " + bytes[0].toString() + " " +
-                        bytes[1].toString() + " " +
-                        bytes[2].toString());  // 72 105 33
+        // UTF-8 Byte-Liste
+        let text: String = "Hi!";
+        let bytes: List&lt;Int64&gt; = Encoding::toUtf8(text);
+        println("Bytes: " + bytes[0].toString() + " " +
+                            bytes[1].toString() + " " +
+                            bytes[2].toString());  // 72 105 33
 
-    let zurueck: String = Encoding::fromUtf8(bytes);
-    println("Rekonstruiert: " + zurueck);  // Hi!
+        let zurueck: String = Encoding::fromUtf8(bytes);
+        println("Rekonstruiert: " + zurueck);  // Hi!
 
-    // HTML-Encoding für sichere Ausgabe im Browser
-    let benutzereingabe: String = "&lt;script&gt;alert(\"XSS\")&lt;/script&gt;";
-    let sicher: String = Encoding::htmlEncode(benutzereingabe);
-    println(sicher);
+        // HTML-Encoding für sichere Ausgabe im Browser
+        let benutzereingabe: String = "&lt;script&gt;alert(\"XSS\")&lt;/script&gt;";
+        let sicher: String = Encoding::htmlEncode(benutzereingabe);
+        println(sicher);
 
-    // HTML-Decoding
-    let entitaeten: String = "&amp;lt;b&amp;gt;Fett&amp;lt;/b&amp;gt;";
-    let original: String = Encoding::htmlDecode(entitaeten);
-    println(original);
-}</code></pre>
+        // HTML-Decoding
+        let entitaeten: String = "&amp;lt;b&amp;gt;Fett&amp;lt;/b&amp;gt;";
+        let original: String = Encoding::htmlDecode(entitaeten);
+        println(original);
+        return 0;
+    }
+}
   </div>
 
   <div class="mod-section" id="mod-array">
@@ -4171,30 +4225,34 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.array;
 
-fn main() -> Nothing
+class Main
 {
-    let zahlen: List&lt;Int64&gt; = [-3, 7, 2, -1, 5, 0, 9];
+    fnc main() -> Int32
+    {
+        let zahlen: List&lt;Int64&gt; = [-3, 7, 2, -1, 5, 0, 9];
 
-    let pos: List&lt;Int64&gt; = Arrays::filterPositive(zahlen);
-    // pos = [7, 2, 5, 9]
+        let pos: List&lt;Int64&gt; = Arrays::filterPositive(zahlen);
+        // pos = [7, 2, 5, 9]
 
-    let sortiert: List&lt;Int64&gt; = Arrays::bubbleSort(pos);
-    // sortiert = [2, 5, 7, 9]
+        let sortiert: List&lt;Int64&gt; = Arrays::bubbleSort(pos);
+        // sortiert = [2, 5, 7, 9]
 
-    let min: Int64 = Arrays::findMin(sortiert);   // 2
-    let max: Int64 = Arrays::findMax(sortiert);   // 9
-    let s: Int64   = Arrays::sum(sortiert);       // 23
-    let avg: Int64 = Arrays::average(sortiert);   // 5
+        let min: Int64 = Arrays::findMin(sortiert);   // 2
+        let max: Int64 = Arrays::findMax(sortiert);   // 9
+        let s: Int64   = Arrays::sum(sortiert);       // 23
+        let avg: Int64 = Arrays::average(sortiert);   // 5
 
-    let idx: Int64 = Arrays::indexOfInt(sortiert, 7);  // 2
-    let hat5: Bool = Arrays::containsInt(sortiert, 5); // true
+        let idx: Int64 = Arrays::indexOfInt(sortiert, 7);  // 2
+        let hat5: Bool = Arrays::containsInt(sortiert, 5); // true
 
-    let rev: List&lt;Int64&gt; = Arrays::reverseInt(sortiert);
-    // rev = [9, 7, 5, 2]
+        let rev: List&lt;Int64&gt; = Arrays::reverseInt(sortiert);
+        // rev = [9, 7, 5, 2]
 
-    let r: List&lt;Int64&gt;   = Arrays::range(1, 6);   // [1,2,3,4,5]
-    let f: List&lt;Int64&gt;   = Arrays::fill(0, 4);    // [0,0,0,0]
-    let ok: Bool         = Arrays::isSorted(sortiert); // true
+        let r: List&lt;Int64&gt;   = Arrays::range(1, 6);   // [1,2,3,4,5]
+        let f: List&lt;Int64&gt;   = Arrays::fill(0, 4);    // [0,0,0,0]
+        let ok: Bool         = Arrays::isSorted(sortiert); // true
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4311,29 +4369,33 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.collections;
 
-fn main() -> Nothing
+class Main
 {
-    // Stack-Verwendung
-    let s: Stack&lt;Int64&gt; = Stack&lt;Int64&gt;::new();
-    s.push(10);
-    s.push(20);
-    s.push(30);
-    let top: Int64 = s.peek();   // 30
-    let val: Int64 = s.pop();    // 30
-    let groesse: Int64 = s.size(); // 2
+    fnc main() -> Int32
+    {
+        // Stack-Verwendung
+        let s: Stack&lt;Int64&gt; = Stack&lt;Int64&gt;::new();
+        s.push(10);
+        s.push(20);
+        s.push(30);
+        let top: Int64 = s.peek();   // 30
+        let popped: Int64 = s.pop();    // 30
+        let groesse: Int64 = s.size(); // 2
 
-    // Queue-Verwendung
-    let q: Queue&lt;String&gt; = Collections::newQueue&lt;String&gt;();
-    q.enqueue("alpha");
-    q.enqueue("beta");
-    q.enqueue("gamma");
-    let erstes: String = q.dequeue(); // "alpha"
-    let leer: Bool     = q.isEmpty(); // false
+        // Queue-Verwendung
+        let q: Queue&lt;String&gt; = Collections::newQueue&lt;String&gt;();
+        q.enqueue("alpha");
+        q.enqueue("beta");
+        q.enqueue("gamma");
+        let erstes: String = q.dequeue(); // "alpha"
+        let leer: Bool     = q.isEmpty(); // false
 
-    // Pair-Verwendung
-    let p: Pair&lt;String, Int64&gt; = Collections::newPair&lt;String, Int64&gt;("Alter", 42);
-    let schluessel: String = p.getFirst();  // "Alter"
-    let alter: Int64       = p.getSecond(); // 42
+        // Pair-Verwendung
+        let p: Pair&lt;String, Int64&gt; = Collections::newPair&lt;String, Int64&gt;("Alter", 42);
+        let schluessel: String = p.getFirst();  // "Alter"
+        let alter: Int64       = p.getSecond(); // 42
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4451,36 +4513,40 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.heap;
 
-fn main() -> Nothing
+class Main
 {
-    // Min-Heap: kleinstes Element zuerst
-    let min: MinHeap&lt;Int64&gt; = MinHeap&lt;Int64&gt;::new();
-    MinHeap::push(min, 5);
-    MinHeap::push(min, 1);
-    MinHeap::push(min, 3);
-    let kleinster: Int64 = MinHeap::peek(min);  // 1
-    let entfernt: Int64  = MinHeap::pop(min);   // 1
-    let naechster: Int64 = MinHeap::pop(min);   // 3
+    fnc main() -> Int32
+    {
+        // Min-Heap: kleinstes Element zuerst
+        let min: MinHeap&lt;Int64&gt; = MinHeap&lt;Int64&gt;::new();
+        MinHeap::push(min, 5);
+        MinHeap::push(min, 1);
+        MinHeap::push(min, 3);
+        let kleinster: Int64 = MinHeap::peek(min);  // 1
+        let entfernt: Int64  = MinHeap::pop(min);   // 1
+        let naechster: Int64 = MinHeap::pop(min);   // 3
 
-    // Max-Heap: größtes Element zuerst
-    let max: MaxHeap&lt;Int64&gt; = MaxHeap&lt;Int64&gt;::new();
-    MaxHeap::push(max, 5);
-    MaxHeap::push(max, 1);
-    MaxHeap::push(max, 8);
-    let groesster: Int64 = MaxHeap::pop(max);   // 8
+        // Max-Heap: größtes Element zuerst
+        let max: MaxHeap&lt;Int64&gt; = MaxHeap&lt;Int64&gt;::new();
+        MaxHeap::push(max, 5);
+        MaxHeap::push(max, 1);
+        MaxHeap::push(max, 8);
+        let groesster: Int64 = MaxHeap::pop(max);   // 8
 
-    // Generischer Heap mit eigenem Vergleich (Min-Heap für Float64)
-    let cmp: fnc(Float64, Float64) -&gt; Bool = fnc(a: Float64, b: Float64) -&gt; Bool { return a &lt; b; };
-    let h: Heap&lt;Float64&gt; = Heap&lt;Float64&gt;::newWithCompare(cmp);
-    Heap::push(h, 3.14);
-    Heap::push(h, 1.41);
-    let leer: Bool = Heap::isEmpty(h);         // false
-    let anz: Int64 = Heap::size(h);            // 2
+        // Generischer Heap mit eigenem Vergleich (Min-Heap für Float64)
+        let cmp: fnc(Float64, Float64) -&gt; Bool = fnc(a: Float64, b: Float64) -&gt; Bool { return a &lt; b; };
+        let h: Heap&lt;Float64&gt; = Heap&lt;Float64&gt;::newWithCompare(cmp);
+        Heap::push(h, 3.14);
+        Heap::push(h, 1.41);
+        let leer: Bool = Heap::isEmpty(h);         // false
+        let anz: Int64 = Heap::size(h);            // 2
 
-    // buildHeap: Heap aus Liste aufbauen
-    let h2: Heap&lt;Int64&gt; = Heap&lt;Int64&gt;::new();
-    Heap::buildHeap(h2, [9, 4, 7, 2, 6]);
-    let wurzel: Int64 = Heap::peek(h2);        // 2
+        // buildHeap: Heap aus Liste aufbauen
+        let h2: Heap&lt;Int64&gt; = Heap&lt;Int64&gt;::new();
+        Heap::buildHeap(h2, [9, 4, 7, 2, 6]);
+        let wurzel: Int64 = Heap::peek(h2);        // 2
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4567,28 +4633,32 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.queue;
 
-fn main() -> Nothing
+class Main
 {
-    // Prioritätswarteschlange
-    let pq: PriorityQueue&lt;String&gt; = PriorityQueue&lt;String&gt;::new();
-    PriorityQueue::enqueue(pq, "Niedrig",   10);
-    PriorityQueue::enqueue(pq, "Kritisch",   1);
-    PriorityQueue::enqueue(pq, "Mittel",     5);
+    fnc main() -> Int32
+    {
+        // Prioritätswarteschlange
+        let pq: PriorityQueue&lt;String&gt; = PriorityQueue&lt;String&gt;::new();
+        PriorityQueue::enqueue(pq, "Niedrig",   10);
+        PriorityQueue::enqueue(pq, "Kritisch",   1);
+        PriorityQueue::enqueue(pq, "Mittel",     5);
 
-    let erstes: String  = PriorityQueue::dequeue(pq); // "Kritisch"
-    let zweites: String = PriorityQueue::dequeue(pq); // "Mittel"
-    let groesse: Int64  = PriorityQueue::size(pq);    // 1
+        let erstes: String  = PriorityQueue::dequeue(pq); // "Kritisch"
+        let zweites: String = PriorityQueue::dequeue(pq); // "Mittel"
+        let groesse: Int64  = PriorityQueue::size(pq);    // 1
 
-    // Ringpuffer mit Kapazität 3
-    let buf: CircularBuffer&lt;Int64&gt; = CircularBuffer&lt;Int64&gt;::new(3);
-    let ok1: Bool = CircularBuffer::push(buf, 100); // true
-    let ok2: Bool = CircularBuffer::push(buf, 200); // true
-    let ok3: Bool = CircularBuffer::push(buf, 300); // true
-    let ok4: Bool = CircularBuffer::push(buf, 400); // false – voll
+        // Ringpuffer mit Kapazität 3
+        let buf: CircularBuffer&lt;Int64&gt; = CircularBuffer&lt;Int64&gt;::new(3);
+        let ok1: Bool = CircularBuffer::push(buf, 100); // true
+        let ok2: Bool = CircularBuffer::push(buf, 200); // true
+        let ok3: Bool = CircularBuffer::push(buf, 300); // true
+        let ok4: Bool = CircularBuffer::push(buf, 400); // false – voll
 
-    let voll: Bool  = CircularBuffer::isFull(buf);  // true
-    let wert: Int64 = CircularBuffer::pop(buf);     // 100
-    let leer: Bool  = CircularBuffer::isEmpty(buf); // false
+        let voll: Bool  = CircularBuffer::isFull(buf);  // true
+        let wert: Int64 = CircularBuffer::pop(buf);     // 100
+        let leer: Bool  = CircularBuffer::isEmpty(buf); // false
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4665,33 +4735,37 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.set;
 
-fn main() -> Nothing
+class Main
 {
-    let a: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
-    Set::add(a, 1);
-    Set::add(a, 2);
-    Set::add(a, 3);
-    Set::add(a, 2); // Duplikat – wird ignoriert
+    fnc main() -> Int32
+    {
+        let a: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
+        Set::add(a, 1);
+        Set::add(a, 2);
+        Set::add(a, 3);
+        Set::add(a, 2); // Duplikat – wird ignoriert
 
-    let b: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
-    Set::add(b, 2);
-    Set::add(b, 3);
-    Set::add(b, 4);
+        let b: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
+        Set::add(b, 2);
+        Set::add(b, 3);
+        Set::add(b, 4);
 
-    let u: Set&lt;Int64&gt; = Set::union(a, b);        // {1,2,3,4}
-    let s: Set&lt;Int64&gt; = Set::intersection(a, b); // {2,3}
-    let d: Set&lt;Int64&gt; = Set::difference(a, b);   // {1}
+        let u: Set&lt;Int64&gt; = Set::union(a, b);        // {1,2,3,4}
+        let s: Set&lt;Int64&gt; = Set::intersection(a, b); // {2,3}
+        let d: Set&lt;Int64&gt; = Set::difference(a, b);   // {1}
 
-    let enthalten: Bool = Set::contains(a, 3);    // true
-    let groesse: Int64  = Set::size(a);            // 3
+        let enthalten: Bool = Set::contains(a, 3);    // true
+        let groesse: Int64  = Set::size(a);            // 3
 
-    let c: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
-    Set::add(c, 2);
-    Set::add(c, 3);
-    let teilmenge: Bool = Set::isSubsetOf(c, a);  // true
+        let c: Set&lt;Int64&gt; = Set&lt;Int64&gt;::new();
+        Set::add(c, 2);
+        Set::add(c, 3);
+        let teilmenge: Bool = Set::isSubsetOf(c, a);  // true
 
-    let entfernt: Bool  = Set::remove(a, 1);       // true
-    let leer: Bool      = Set::isEmpty(a);         // false
+        let entfernt: Bool  = Set::remove(a, 1);       // true
+        let leer: Bool      = Set::isEmpty(a);         // false
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4754,26 +4828,30 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.sort;
 
-fn main() -> Nothing
+class Main
 {
-    let daten: List&lt;Int64&gt; = [64, 25, 12, 22, 11];
+    fnc main() -> Int32
+    {
+        let daten: List&lt;Int64&gt; = [64, 25, 12, 22, 11];
 
-    // Quicksort
-    let qs: List&lt;Int64&gt; = Sort::quickSort(daten);
-    // qs = [11, 12, 22, 25, 64]
+        // Quicksort
+        let qs: List&lt;Int64&gt; = Sort::quickSort(daten);
+        // qs = [11, 12, 22, 25, 64]
 
-    // Merge-Sort
-    let ms: List&lt;Int64&gt; = Sort::mergeSort(daten);
-    // ms = [11, 12, 22, 25, 64]
+        // Merge-Sort
+        let ms: List&lt;Int64&gt; = Sort::mergeSort(daten);
+        // ms = [11, 12, 22, 25, 64]
 
-    // Insertion-Sort (gut für kleine Listen)
-    let kleine: List&lt;Int64&gt; = [5, 3, 1, 4, 2];
-    let is: List&lt;Int64&gt; = Sort::insertionSort(kleine);
-    // is = [1, 2, 3, 4, 5]
+        // Insertion-Sort (gut für kleine Listen)
+        let kleine: List&lt;Int64&gt; = [5, 3, 1, 4, 2];
+        let is: List&lt;Int64&gt; = Sort::insertionSort(kleine);
+        // is = [1, 2, 3, 4, 5]
 
-    // Manuelle Partition für eigene Algorithmen
-    let arr: List&lt;Int64&gt; = [3, 6, 8, 10, 1, 2, 1];
-    let pivotIdx: Int64 = Sort::partition(arr, 0, arr.len() - 1);
+        // Manuelle Partition für eigene Algorithmen
+        let arr: List&lt;Int64&gt; = [3, 6, 8, 10, 1, 2, 1];
+        let pivotIdx: Int64 = Sort::partition(arr, 0, arr.len() - 1);
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -4858,40 +4936,44 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.iter;
 
-fn main() -> Nothing
+class Main
 {
-    // Zahlenbereich mit Schrittweite
-    let it: Iterator = Iter::rangeStep(0, 10, 2);
-    while it.hasNext()
+    fnc main() -> Int32
     {
-        let n: Int64 = it.next(); // 0, 2, 4, 6, 8
+        // Zahlenbereich mit Schrittweite
+        let it: Iterator = Iter::rangeStep(0, 10, 2);
+        while it.hasNext()
+        {
+            let n: Int64 = it.next(); // 0, 2, 4, 6, 8
+        }
+
+        // map: Quadratzahlen
+        let zahlen: List&lt;Int64&gt; = [1, 2, 3, 4, 5];
+        let quadrate: List&lt;Int64&gt; = Iter::map&lt;Int64, Int64&gt;(zahlen, fnc(x: Int64) -&gt; Int64 { return x * x; });
+        // [1, 4, 9, 16, 25]
+
+        // filter: nur gerade Zahlen
+        let gerade: List&lt;Int64&gt; = Iter::filter&lt;Int64&gt;(zahlen, fnc(x: Int64) -&gt; Bool { return x % 2 == 0; });
+        // [2, 4]
+
+        // reduce: Summe
+        let summe: Int64 = Iter::reduce&lt;Int64, Int64&gt;(zahlen, 0, fnc(acc: Int64, x: Int64) -&gt; Int64 { return acc + x; });
+        // 15
+
+        // enumerate
+        let paare: List&lt;Pair&lt;Int64, Int64&gt;&gt; = Iter::enumerate&lt;Int64&gt;(zahlen);
+        // [(0,1),(1,2),(2,3),(3,4),(4,5)]
+
+        // zip
+        let buchstaben: List&lt;String&gt; = ["a", "b", "c"];
+        let kombiniert = Iter::zip&lt;Int64, String&gt;(zahlen, buchstaben);
+        // [(1,"a"),(2,"b"),(3,"c")]
+
+        // repeat
+        let nullen: List&lt;Int64&gt; = Iter::repeat&lt;Int64&gt;(0, 5);
+        // [0, 0, 0, 0, 0]
+        return 0;
     }
-
-    // map: Quadratzahlen
-    let zahlen: List&lt;Int64&gt; = [1, 2, 3, 4, 5];
-    let quadrate: List&lt;Int64&gt; = Iter::map&lt;Int64, Int64&gt;(zahlen, fnc(x: Int64) -&gt; Int64 { return x * x; });
-    // [1, 4, 9, 16, 25]
-
-    // filter: nur gerade Zahlen
-    let gerade: List&lt;Int64&gt; = Iter::filter&lt;Int64&gt;(zahlen, fnc(x: Int64) -&gt; Bool { return x % 2 == 0; });
-    // [2, 4]
-
-    // reduce: Summe
-    let summe: Int64 = Iter::reduce&lt;Int64, Int64&gt;(zahlen, 0, fnc(acc: Int64, x: Int64) -&gt; Int64 { return acc + x; });
-    // 15
-
-    // enumerate
-    let paare: List&lt;Pair&lt;Int64, Int64&gt;&gt; = Iter::enumerate&lt;Int64&gt;(zahlen);
-    // [(0,1),(1,2),(2,3),(3,4),(4,5)]
-
-    // zip
-    let buchstaben: List&lt;String&gt; = ["a", "b", "c"];
-    let kombiniert = Iter::zip&lt;Int64, String&gt;(zahlen, buchstaben);
-    // [(1,"a"),(2,"b"),(3,"c")]
-
-    // repeat
-    let nullen: List&lt;Int64&gt; = Iter::repeat&lt;Int64&gt;(0, 5);
-    // [0, 0, 0, 0, 0]
 }
 </code></pre>
   </div>
@@ -4959,38 +5041,42 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.graph;
 
-fn main() -> Nothing
+class Main
 {
-    let g: Graph&lt;String&gt; = Graph&lt;String&gt;::new();
+    fnc main() -> Int32
+    {
+        let g: Graph&lt;String&gt; = Graph&lt;String&gt;::new();
 
-    Graph::addNode(g, "A", "Stadt A");
-    Graph::addNode(g, "B", "Stadt B");
-    Graph::addNode(g, "C", "Stadt C");
-    Graph::addNode(g, "D", "Stadt D");
+        Graph::addNode(g, "A", "Stadt A");
+        Graph::addNode(g, "B", "Stadt B");
+        Graph::addNode(g, "C", "Stadt C");
+        Graph::addNode(g, "D", "Stadt D");
 
-    Graph::addEdge(g, "A", "B", 4.0);
-    Graph::addEdge(g, "A", "C", 2.0);
-    Graph::addEdge(g, "C", "B", 1.0);
-    Graph::addEdge(g, "B", "D", 5.0);
-    Graph::addEdge(g, "C", "D", 8.0);
+        Graph::addEdge(g, "A", "B", 4.0);
+        Graph::addEdge(g, "A", "C", 2.0);
+        Graph::addEdge(g, "C", "B", 1.0);
+        Graph::addEdge(g, "B", "D", 5.0);
+        Graph::addEdge(g, "C", "D", 8.0);
 
-    // Breitensuche ab A
-    Graph::bfs(g, "A", fnc(id: String) -&gt; Nothing {
-        // Besuchte Reihenfolge: A, B, C, D
-    });
+        // Breitensuche ab A
+        Graph::bfs(g, "A", fnc(id: String) -&gt; Nothing {
+            // Besuchte Reihenfolge: A, B, C, D
+        });
 
-    // Tiefensuche ab A
-    Graph::dfs(g, "A", fnc(id: String) -&gt; Nothing {
-        // Besuchte Reihenfolge (tiefenzuerst): A, B, D, C
-    });
+        // Tiefensuche ab A
+        Graph::dfs(g, "A", fnc(id: String) -&gt; Nothing {
+            // Besuchte Reihenfolge (tiefenzuerst): A, B, D, C
+        });
 
-    // Dijkstra: kürzester Weg von A nach D
-    let distanz: Float64 = Graph::dijkstra(g, "A", "D");
-    // A->C (2.0) + C->B (1.0) + B->D (5.0) = 8.0
+        // Dijkstra: kürzester Weg von A nach D
+        let distanz: Float64 = Graph::dijkstra(g, "A", "D");
+        // A->C (2.0) + C->B (1.0) + B->D (5.0) = 8.0
 
-    // Nachbarn von C abrufen
-    let nb: List&lt;GraphEdge&gt; = Graph::neighbors(g, "C");
-    // nb[0].to = "B", nb[0].weight = 1.0
+        // Nachbarn von C abrufen
+        let nb: List&lt;GraphEdge&gt; = Graph::neighbors(g, "C");
+        // nb[0].to = "B", nb[0].weight = 1.0
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5053,34 +5139,38 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.trie;
 
-fn main() -> Nothing
+class Main
 {
-    let t: Trie = Trie::new();
+    fnc main() -> Int32
+    {
+        let t: Trie = Trie::new();
 
-    // Wörter einfügen
-    Trie::insert(t, "apfel");
-    Trie::insert(t, "apfelbaum");
-    Trie::insert(t, "aprikose");
-    Trie::insert(t, "banane");
-    Trie::insert(t, "birne");
+        // Wörter einfügen
+        Trie::insert(t, "apfel");
+        Trie::insert(t, "apfelbaum");
+        Trie::insert(t, "aprikose");
+        Trie::insert(t, "banane");
+        Trie::insert(t, "birne");
 
-    // Exakte Suche
-    let gefunden: Bool  = Trie::search(t, "apfel");     // true
-    let fehlt: Bool     = Trie::search(t, "apfelkuchen"); // false
+        // Exakte Suche
+        let gefunden: Bool  = Trie::search(t, "apfel");     // true
+        let fehlt: Bool     = Trie::search(t, "apfelkuchen"); // false
 
-    // Präfixprüfung
-    let hatAp: Bool     = Trie::startsWith(t, "ap");    // true
-    let hatXy: Bool     = Trie::startsWith(t, "xy");    // false
+        // Präfixprüfung
+        let hatAp: Bool     = Trie::startsWith(t, "ap");    // true
+        let hatXy: Bool     = Trie::startsWith(t, "xy");    // false
 
-    // Autovervollständigung
-    let vorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "ap");
-    // ["apfel", "apfelbaum", "aprikose"] (Reihenfolge abhängig von Map-Keys)
+        // Autovervollständigung
+        let vorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "ap");
+        // ["apfel", "apfelbaum", "aprikose"] (Reihenfolge abhängig von Map-Keys)
 
-    let bVorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "b");
-    // ["banane", "birne"]
+        let bVorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "b");
+        // ["banane", "birne"]
 
-    let keineVorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "z");
-    // []
+        let keineVorschlaege: List&lt;String&gt; = Trie::autocomplete(t, "z");
+        // []
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5156,29 +5246,33 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.math;
 
-fn main() -> Nothing
+class Main
 {
-    // Konstanten ausgeben
-    let pi: Float64 = Math::pi();
-    let e: Float64  = Math::e();
-    println("Pi = " + pi.toString());
-    println("e  = " + e.toString());
+    fnc main() -> Int32
+    {
+        // Konstanten ausgeben
+        let pi: Float64 = Math::pi();
+        let e: Float64  = Math::e();
+        println("Pi = " + pi.toString());
+        println("e  = " + e.toString());
 
-    // Grundoperationen
-    let a: Int64 = -7;
-    let b: Int64 = 3;
-    println("abs(-7)    = " + Math::abs(a).toString());
-    println("min(-7, 3) = " + Math::min(a, b).toString());
-    println("max(-7, 3) = " + Math::max(a, b).toString());
-    println("square(5)  = " + Math::square(5).toString());
+        // Grundoperationen
+        let a: Int64 = -7;
+        let b: Int64 = 3;
+        println("abs(-7)    = " + Math::abs(a).toString());
+        println("min(-7, 3) = " + Math::min(a, b).toString());
+        println("max(-7, 3) = " + Math::max(a, b).toString());
+        println("square(5)  = " + Math::square(5).toString());
 
-    // Potenz und Fakultät
-    println("2^10       = " + Math::pow(2, 10).toString());
-    println("7!         = " + Math::factorial(7).toString());
+        // Potenz und Fakultät
+        println("2^10       = " + Math::pow(2, 10).toString());
+        println("7!         = " + Math::factorial(7).toString());
 
-    // Pseudo-Zufall
-    let rnd: Int64 = Math::randomSeed(42);
-    println("randomSeed(42) = " + rnd.toString());
+        // Pseudo-Zufall
+        let rnd: Int64 = Math::randomSeed(42);
+        println("randomSeed(42) = " + rnd.toString());
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5289,29 +5383,33 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.mathf;
 
-fn main() -> Nothing
+class Main
 {
-    // Wurzel und Rundung
-    let r: Float64 = Mathf::sqrt(2.0);
-    println("sqrt(2) = " + r.toString());
-    println("floor(2.9)  = " + Mathf::floor(2.9).toString());
-    println("ceil(2.1)   = " + Mathf::ceil(2.1).toString());
-    println("round(2.5)  = " + Mathf::round(2.5).toString());
+    fnc main() -> Int32
+    {
+        // Wurzel und Rundung
+        let r: Float64 = Mathf::sqrt(2.0);
+        println("sqrt(2) = " + r.toString());
+        println("floor(2.9)  = " + Mathf::floor(2.9).toString());
+        println("ceil(2.1)   = " + Mathf::ceil(2.1).toString());
+        println("round(2.5)  = " + Mathf::round(2.5).toString());
 
-    // Clamp und Lerp
-    let clamped: Float64 = Mathf::clamp(150.0, 0.0, 100.0);
-    println("clamp(150, 0, 100) = " + clamped.toString());
-    let mid: Float64 = Mathf::lerp(0.0, 10.0, 0.5);
-    println("lerp(0, 10, 0.5) = " + mid.toString());
+        // Clamp und Lerp
+        let clamped: Float64 = Mathf::clamp(150.0, 0.0, 100.0);
+        println("clamp(150, 0, 100) = " + clamped.toString());
+        let mid: Float64 = Mathf::lerp(0.0, 10.0, 0.5);
+        println("lerp(0, 10, 0.5) = " + mid.toString());
 
-    // Trigonometrie
-    let angle: Float64 = Mathf::pi() / 4.0;
-    println("sin(pi/4) = " + Mathf::sin(angle).toString());
-    println("cos(pi/4) = " + Mathf::cos(angle).toString());
+        // Trigonometrie
+        let angle: Float64 = Mathf::pi() / 4.0;
+        println("sin(pi/4) = " + Mathf::sin(angle).toString());
+        println("cos(pi/4) = " + Mathf::cos(angle).toString());
 
-    // Logarithmen
-    println("log(e)   = " + Mathf::log(Mathf::e()).toString());
-    println("log10(100) = " + Mathf::log10(100.0).toString());
+        // Logarithmen
+        println("log(e)   = " + Mathf::log(Mathf::e()).toString());
+        println("log10(100) = " + Mathf::log10(100.0).toString());
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5391,28 +5489,32 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.mathx;
 
-fn main() -> Nothing
+class Main
 {
-    // ggT und kgV
-    println("gcd(48, 18) = " + Mathx::gcd(48, 18).toString());
-    println("lcm(4, 6)   = " + Mathx::lcm(4, 6).toString());
+    fnc main() -> Int32
+    {
+        // ggT und kgV
+        println("gcd(48, 18) = " + Mathx::gcd(48, 18).toString());
+        println("lcm(4, 6)   = " + Mathx::lcm(4, 6).toString());
 
-    // Primzahlen
-    println("isPrime(17) = " + Mathx::isPrime(17).toString());
-    println("isPrime(18) = " + Mathx::isPrime(18).toString());
-    println("nextPrime(20) = " + Mathx::nextPrime(20).toString());
+        // Primzahlen
+        println("isPrime(17) = " + Mathx::isPrime(17).toString());
+        println("isPrime(18) = " + Mathx::isPrime(18).toString());
+        println("nextPrime(20) = " + Mathx::nextPrime(20).toString());
 
-    // Fibonacci
-    println("fibonacci(10) = " + Mathx::fibonacci(10).toString());
+        // Fibonacci
+        println("fibonacci(10) = " + Mathx::fibonacci(10).toString());
 
-    // Kombinatorik
-    println("C(10, 3) = " + Mathx::combinations(10, 3).toString());
-    println("P(5, 2)  = " + Mathx::permutations(5, 2).toString());
+        // Kombinatorik
+        println("C(10, 3) = " + Mathx::combinations(10, 3).toString());
+        println("P(5, 2)  = " + Mathx::permutations(5, 2).toString());
 
-    // Modulare Potenz und Ziffernanalyse
-    println("modPow(2, 10, 1000) = " + Mathx::modPow(2, 10, 1000).toString());
-    println("digitSum(12345)     = " + Mathx::digitSum(12345).toString());
-    println("digitCount(99999)   = " + Mathx::digitCount(99999).toString());
+        // Modulare Potenz und Ziffernanalyse
+        println("modPow(2, 10, 1000) = " + Mathx::modPow(2, 10, 1000).toString());
+        println("digitSum(12345)     = " + Mathx::digitSum(12345).toString());
+        println("digitCount(99999)   = " + Mathx::digitCount(99999).toString());
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5508,30 +5610,34 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.complex;
 
-fn main() -> Nothing
+class Main
 {
-    // Erzeugung
-    let a: Complex = Complex::new(3.0, 4.0);
-    let b: Complex = Complex::new(1.0, -2.0);
+    fnc main() -> Int32
+    {
+        // Erzeugung
+        let a: Complex = Complex::new(3.0, 4.0);
+        let b: Complex = Complex::new(1.0, -2.0);
 
-    // Grundrechenarten
-    println("a + b = " + Complex::toString(Complex::add(a, b)));
-    println("a - b = " + Complex::toString(Complex::subtract(a, b)));
-    println("a * b = " + Complex::toString(Complex::multiply(a, b)));
-    println("a / b = " + Complex::toString(Complex::divide(a, b)));
+        // Grundrechenarten
+        println("a + b = " + Complex::toString(Complex::add(a, b)));
+        println("a - b = " + Complex::toString(Complex::subtract(a, b)));
+        println("a * b = " + Complex::toString(Complex::multiply(a, b)));
+        println("a / b = " + Complex::toString(Complex::divide(a, b)));
 
-    // Betrag und Phase
-    println("|a| = " + Complex::magnitude(a).toString());
-    println("arg(a) = " + Complex::phase(a).toString());
+        // Betrag und Phase
+        println("|a| = " + Complex::magnitude(a).toString());
+        println("arg(a) = " + Complex::phase(a).toString());
 
-    // Konjugation und Kehrwert
-    println("conj(a)      = " + Complex::toString(Complex::conjugate(a)));
-    println("reciprocal(b)= " + Complex::toString(Complex::reciprocal(b)));
+        // Konjugation und Kehrwert
+        println("conj(a)      = " + Complex::toString(Complex::conjugate(a)));
+        println("reciprocal(b)= " + Complex::toString(Complex::reciprocal(b)));
 
-    // Polar-Erzeugung und Potenz
-    let c: Complex = Complex::fromPolar(1.0, Mathf::pi() / 2.0);
-    println("fromPolar(1, pi/2) = " + Complex::toString(c));
-    println("a^2 = " + Complex::toString(Complex::pow(a, 2.0)));
+        // Polar-Erzeugung und Potenz
+        let c: Complex = Complex::fromPolar(1.0, Mathf::pi() / 2.0);
+        println("fromPolar(1, pi/2) = " + Complex::toString(c));
+        println("a^2 = " + Complex::toString(Complex::pow(a, 2.0)));
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5617,27 +5723,31 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.decimal;
 
-fn main() -> Nothing
+class Main
 {
-    // Erzeugung aus verschiedenen Quellen
-    let preis:   Decimal = Decimal::new("1999");
-    let steuer:  Decimal = Decimal::fromInt(319);
-    let zinssatz: Decimal = Decimal::fromFloat(0.035);
+    fnc main() -> Int32
+    {
+        // Erzeugung aus verschiedenen Quellen
+        let preis:   Decimal = Decimal::new("1999");
+        let steuer:  Decimal = Decimal::fromInt(319);
+        let zinssatz: Decimal = Decimal::fromFloat(0.035);
 
-    // Grundrechenarten
-    let gesamt: Decimal = Decimal::add(preis, steuer);
-    println("Preis + Steuer = " + Decimal::toString(gesamt));
+        // Grundrechenarten
+        let gesamt: Decimal = Decimal::add(preis, steuer);
+        println("Preis + Steuer = " + Decimal::toString(gesamt));
 
-    let differenz: Decimal = Decimal::subtract(preis, steuer);
-    println("Differenz = " + Decimal::toString(differenz));
+        let differenz: Decimal = Decimal::subtract(preis, steuer);
+        println("Differenz = " + Decimal::toString(differenz));
 
-    let menge:   Decimal = Decimal::fromInt(3);
-    let produkt: Decimal = Decimal::multiply(preis, menge);
-    println("3 x Preis = " + Decimal::toString(produkt));
+        let menge:   Decimal = Decimal::fromInt(3);
+        let produkt: Decimal = Decimal::multiply(preis, menge);
+        println("3 x Preis = " + Decimal::toString(produkt));
 
-    // Division mit Präzision
-    let ergebnis: Decimal = Decimal::divide(preis, menge, 4);
-    println("Preis / 3 (4 Stellen) = " + Decimal::toString(ergebnis));
+        // Division mit Präzision
+        let ergebnis: Decimal = Decimal::divide(preis, menge, 4);
+        println("Preis / 3 (4 Stellen) = " + Decimal::toString(ergebnis));
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5699,29 +5809,33 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.random;
 
-fn main() -> Nothing
+class Main
 {
-    // Einfache Zufallswerte
-    println("nextInt(100)  = " + Random::nextInt(100).toString());
-    println("nextFloat()   = " + Random::nextFloat().toString());
-    println("nextBool()    = " + Random::nextBool().toString());
+    fnc main() -> Int32
+    {
+        // Einfache Zufallswerte
+        println("nextInt(100)  = " + Random::nextInt(100).toString());
+        println("nextFloat()   = " + Random::nextFloat().toString());
+        println("nextBool()    = " + Random::nextBool().toString());
 
-    // Auswahl aus einer Liste
-    let farben: List<String> = ["rot", "grün", "blau", "gelb"];
-    println("pickOne = " + Random::pickOne(farben));
+        // Auswahl aus einer Liste
+        let farben: List<String> = ["rot", "grün", "blau", "gelb"];
+        println("pickOne = " + Random::pickOne(farben));
 
-    // Mischen
-    let zahlen: List<Int64> = [1, 2, 3, 4, 5, 6, 7, 8];
-    let gemischt: List<Int64> = Random::shuffle(zahlen);
-    println("shuffle([1..8]) = " + gemischt.toString());
+        // Mischen
+        let zahlen: List<Int64> = [1, 2, 3, 4, 5, 6, 7, 8];
+        let gemischt: List<Int64> = Random::shuffle(zahlen);
+        println("shuffle([1..8]) has " + gemischt.len().toString() + " elements");
 
-    // Stichprobe
-    let stichprobe: List<String> = Random::sample(farben, 2);
-    println("sample(farben, 2) = " + stichprobe.toString());
+        // Stichprobe
+        let stichprobe: List<String> = Random::sample(farben, 2);
+        println("sample(farben, 2) = " + stichprobe.join(", "));
 
-    // Zufalls-String
-    let token: String = Random::generateString(16);
-    println("Token = " + token);
+        // Zufalls-String
+        let token: String = Random::generateString(16);
+        println("Token = " + token);
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5827,31 +5941,35 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.string;
 
-fn main() -> Nothing
+class Main
 {
-    let text: String = "  Hallo, Tinox-Welt!  ";
+    fnc main() -> Int32
+    {
+        let text: String = "  Hallo, Tinox-Welt!  ";
 
-    // Grundoperationen
-    println("Länge (getrimmt): " + Strings::length(Strings::trim(text)).toString());
-    println("Großbuchstaben:   " + Strings::toUpperCase(Strings::trim(text)));
-    println("Kleinbuchstaben:  " + Strings::toLowerCase(Strings::trim(text)));
+        // Grundoperationen
+        println("Länge (getrimmt): " + Strings::length(Strings::trim(text)).toString());
+        println("Großbuchstaben:   " + Strings::toUpperCase(Strings::trim(text)));
+        println("Kleinbuchstaben:  " + Strings::toLowerCase(Strings::trim(text)));
 
-    // Suche und Prüfung
-    println("Enthält 'Tinox': " + Strings::contains(text, "Tinox").toString());
-    println("Beginnt mit '  H': " + Strings::startsWith(text, "  H").toString());
-    println("Endet mit '!  ': "  + Strings::endsWith(text, "!  ").toString());
+        // Suche und Prüfung
+        println("Enthält 'Tinox': " + Strings::contains(text, "Tinox").toString());
+        println("Beginnt mit '  H': " + Strings::startsWith(text, "  H").toString());
+        println("Endet mit '!  ': "  + Strings::endsWith(text, "!  ").toString());
 
-    // Transformation
-    println("Umkehrung: " + Strings::reverse("Tinox"));
-    println("Wiederholung: " + Strings::repeat("ab", 4));
-    println("Ersetzen: " + Strings::replace(text, "Tinox", "Welt"));
+        // Transformation
+        println("Umkehrung: " + Strings::reverse("Tinox"));
+        println("Wiederholung: " + Strings::repeat("ab", 4));
+        println("Ersetzen: " + Strings::replace(text, "Tinox", "Welt"));
 
-    // Aufteilen und Zusammenfügen
-    let teile: List<String> = Strings::split("a,b,c,d", ",");
-    println("Teile: " + Strings::join(teile, " | "));
+        // Aufteilen und Zusammenfügen
+        let teile: List<String> = Strings::split("a,b,c,d", ",");
+        println("Teile: " + Strings::join(teile, " | "));
 
-    // Zahlenkonvertierung
-    println(Strings::intToString(42) + " / " + Strings::floatToString(3.14));
+        // Zahlenkonvertierung
+        println(Strings::intToString(42) + " / " + Strings::floatToString(3.14));
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5897,26 +6015,30 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.fmt;
 
-fn main() -> Nothing
+class Main
 {
-    // Einfache String-Interpolation
-    let name: String = Fmt::sprintf("Hallo, %s!", ["Tinox"]);
-    println(name);
+    fnc main() -> Int32
+    {
+        // Einfache String-Interpolation
+        let name: String = Fmt::sprintf("Hallo, %s!", ["Tinox"]);
+        println(name);
 
-    // Gemischte Typen in einer Zeile
-    Fmt::printlnf("Benutzer: %s | Alter: %d | Guthaben: %f EUR",
-                  ["Alice", "30", "123.45"]);
+        // Gemischte Typen in einer Zeile
+        Fmt::printlnf("Benutzer: %s | Alter: %d | Guthaben: %f EUR",
+                      ["Alice", "30", "123.45"]);
 
-    // Hexadezimale und binäre Ausgabe
-    Fmt::printlnf("255 in hex: %x", ["255"]);
-    Fmt::printlnf("255 in bin: %b", ["255"]);
+        // Hexadezimale und binäre Ausgabe
+        Fmt::printlnf("255 in hex: %x", ["255"]);
+        Fmt::printlnf("255 in bin: %b", ["255"]);
 
-    // Wörtliches Prozentzeichen
-    Fmt::printlnf("Rabatt: 20%%", []);
+        // Wörtliches Prozentzeichen
+        Fmt::printlnf("Rabatt: 20%%", []);
 
-    // sprintf als Rückgabewert weiterverwenden
-    let zeile: String = Fmt::sprintf("[%s] Fehler %d", ["WARN", "404"]);
-    println(zeile);
+        // sprintf als Rückgabewert weiterverwenden
+        let zeile: String = Fmt::sprintf("[%s] Fehler %d", ["WARN", "404"]);
+        println(zeile);
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -5967,24 +6089,28 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.format;
 
-fn main() -> Nothing
+class Main
 {
-    // Auffüllen (Padding)
-    println(Format::padLeft("42", 6, " "));    // "    42"
-    println(Format::padLeft("42", 6, "0"));    // "000042"
-    println(Format::padRight("OK", 8, "."));   // "OK......"
-
-    // Zahlenbasen
-    println("255 binär: "  + Format::intToBinary(255));   // "11111111"
-    println("255 hex:   "  + Format::intToHex(255));      // "ff"
-    println("4096 hex:  "  + Format::intToHex(4096));     // "1000"
-
-    // Tabellarische Ausgabe
-    let i: Int64 = 1;
-    while i <= 5
+    fnc main() -> Int32
     {
-        println(Format::formatInt(i, 4) + " | " + Format::formatInt(i * i, 6));
-        i = i + 1;
+        // Auffüllen (Padding)
+        println(Format::padLeft("42", 6, " "));    // "    42"
+        println(Format::padLeft("42", 6, "0"));    // "000042"
+        println(Format::padRight("OK", 8, "."));   // "OK......"
+
+        // Zahlenbasen
+        println("255 binär: "  + Format::intToBinary(255));   // "11111111"
+        println("255 hex:   "  + Format::intToHex(255));      // "ff"
+        println("4096 hex:  "  + Format::intToHex(4096));     // "1000"
+
+        // Tabellarische Ausgabe
+        var i: Int64 = 1;
+        while i <= 5
+        {
+            println(Format::formatInt(i, 4) + " | " + Format::formatInt(i * i, 6));
+            i = i + 1;
+        }
+        return 0;
     }
 }
 </code></pre>
@@ -6037,30 +6163,34 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.regex;
 
-fn main() -> Nothing
+class Main
 {
-    let text: String = "Bestellnr: 1042, Menge: 3, Preis: 29.99 EUR";
+    fnc main() -> Int32
+    {
+        let text: String = "Bestellnr: 1042, Menge: 3, Preis: 29.99 EUR";
 
-    // Übereinstimmungsprüfung
-    let hatZahl: Bool = Regex::isMatch("[0-9]+", text);
-    println("Enthält Zahlen: " + hatZahl.toString());
+        // Übereinstimmungsprüfung
+        let hatZahl: Bool = Regex::isMatch("[0-9]+", text);
+        println("Enthält Zahlen: " + hatZahl.toString());
 
-    // Ersten Treffer finden
-    let ersteZahl: String = Regex::findFirst("[0-9]+", text);
-    println("Erste Zahl: " + ersteZahl);
+        // Ersten Treffer finden
+        let ersteZahl: String = Regex::findFirst("[0-9]+", text);
+        println("Erste Zahl: " + ersteZahl);
 
-    // Alle Treffer finden
-    let alleZahlen: List<String> = Regex::findAll("[0-9]+\\.?[0-9]*", text);
-    println("Alle Zahlen: " + alleZahlen.toString());
+        // Alle Treffer finden
+        let alleZahlen: List<String> = Regex::findAll("[0-9]+\\.?[0-9]*", text);
+        println("Alle Zahlen: " + alleZahlen.join(", "));
 
-    // Ersetzen
-    let bereinigt: String = Regex::replaceAll("[0-9]+", text, "###");
-    println("Anonymisiert: " + bereinigt);
+        // Ersetzen
+        let bereinigt: String = Regex::replaceAll("[0-9]+", text, "###");
+        println("Anonymisiert: " + bereinigt);
 
-    // Aufteilen
-    let csv: String = "alpha;  beta;gamma; delta";
-    let teile: List<String> = Regex::split(";\\s*", csv);
-    println("Teile: " + teile.toString());
+        // Aufteilen
+        let csv: String = "alpha;  beta;gamma; delta";
+        let teile: List<String> = Regex::split(";\\s*", csv);
+        println("Teile: " + teile.join(", "));
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -6121,30 +6251,34 @@ fn main() -> Nothing
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.uri;
 
-fn main() -> Nothing
+class Main
 {
-    // Kodierung und Dekodierung
-    let roh: String = "Suchbegriff: Täglich frisch!";
-    let kodiert: String = Uri::encodeComponent(roh);
-    println("Kodiert:   " + kodiert);
-    println("Dekodiert: " + Uri::decodeComponent(kodiert));
+    fnc main() -> Int32
+    {
+        // Kodierung und Dekodierung
+        let roh: String = "Suchbegriff: Täglich frisch!";
+        let kodiert: String = Uri::encodeComponent(roh);
+        println("Kodiert:   " + kodiert);
+        println("Dekodiert: " + Uri::decodeComponent(kodiert));
 
-    // Vollständige URI kodieren
-    let url: String = "https://example.com/suche?q=Tinox Docs&lang=de";
-    println("URI encoded: " + Uri::encode(url));
+        // Vollständige URI kodieren
+        let url: String = "https://example.com/suche?q=Tinox Docs&lang=de";
+        println("URI encoded: " + Uri::encode(url));
 
-    // URL parsen
-    let komplex: String = "https://api.tinox.dev:8080/v1/users?limit=10&page=2#ergebnisse";
-    let teile: UriParts = Uri::parse(komplex);
-    println("Schema:   " + teile.scheme);
-    println("Host:     " + teile.host);
-    println("Pfad:     " + teile.path);
-    println("Query:    " + teile.query);
-    println("Fragment: " + teile.fragment);
+        // URL parsen
+        let komplex: String = "https://api.tinox.dev:8080/v1/users?limit=10&page=2#ergebnisse";
+        let teile: UriParts = Uri::parse(komplex);
+        println("Schema:   " + teile.scheme);
+        println("Host:     " + teile.host);
+        println("Pfad:     " + teile.path);
+        println("Query:    " + teile.query);
+        println("Fragment: " + teile.fragment);
 
-    // Einfache URL ohne Pfad
-    let einfach: UriParts = Uri::parse("ftp://files.example.org");
-    println("FTP-Host: " + einfach.host);
+        // Einfache URL ohne Pfad
+        let einfach: UriParts = Uri::parse("ftp://files.example.org");
+        println("FTP-Host: " + einfach.host);
+        return 0;
+    }
 }
 </code></pre>
   </div>
@@ -7620,35 +7754,42 @@ println("Cache geleert.");</code></pre>
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.option;
 
-fn sucheNutzer(id: Int64) -&gt; Option&lt;String&gt;
+class Main
 {
-    if id == 1
+    fnc sucheNutzer(id: Int64) -&gt; Option&lt;String&gt;
     {
-        return Option::some("Alice");
-    }
-    return Option::none();
-}
-
-// Wert extrahieren mit Fallback
-let name: String = sucheNutzer(1).unwrapOr("Unbekannt");
-println("Gefunden: " + name);
-
-// Transformation mit map
-let gross: Option&lt;String&gt; = sucheNutzer(1).map(n =&gt; n.toUpperCase());
-println("Großschreibung: " + gross.unwrapOr("–"));
-
-// Verkettung mit andThen
-let ergebnis: Option&lt;Int64&gt; = sucheNutzer(1)
-    .andThen(n =&gt; {
-        if n.len() &gt; 3 { return Option::some(n.len()); }
+        if id == 1
+        {
+            return Option::some("Alice");
+        }
         return Option::none();
-    });
-println("Länge: " + ergebnis.unwrapOr(0).toString());
+    }
 
-// orElse-Fallback
-let alternativ: Option&lt;String&gt; = sucheNutzer(99)
-    .orElse(() =&gt; Option::some("Gast"));
-println("Alternativ: " + alternativ.unwrap());</code></pre>
+    fnc main() -&gt; Int32
+    {
+        // Wert extrahieren mit Fallback
+        let name: String = sucheNutzer(1).unwrapOr("Unbekannt");
+        println("Gefunden: " + name);
+
+        // Transformation mit map
+        let gross: Option&lt;String&gt; = sucheNutzer(1).map(fnc(n: String) -&gt; String { return n.toUpperCase(); });
+        println("Großschreibung: " + gross.unwrapOr("–"));
+
+        // Verkettung mit andThen
+        let ergebnis: Option&lt;Int64&gt; = sucheNutzer(1)
+            .andThen(fnc(n: String) -&gt; Option&lt;Int64&gt; {
+                if n.len() &gt; 3 { return Option::some(n.len()); }
+                return Option::none();
+            });
+        println("Länge: " + ergebnis.unwrapOr(0).toString());
+
+        // orElse-Fallback
+        let alternativ: Option&lt;String&gt; = sucheNutzer(99)
+            .orElse(fnc() -&gt; Option&lt;String&gt; { return Option::some("Gast"); });
+        println("Alternativ: " + alternativ.unwrap());
+        return 0;
+    }
+}</code></pre>
   </div>
 
   <div class="mod-section" id="mod-result">
@@ -7677,32 +7818,39 @@ println("Alternativ: " + alternativ.unwrap());</code></pre>
   <h3>Beispiel</h3>
   <pre><code>import tinox.core.result;
 
-fn dividiere(a: Int64, b: Int64) -&gt; Result&lt;Int64&gt;
+class Main
 {
-    if b == 0
+    fnc dividiere(a: Int64, b: Int64) -&gt; Result&lt;Int64&gt;
     {
-        return Result::err("Division durch null");
+        if b == 0
+        {
+            return Result::err("Division durch null");
+        }
+        return Result::ok(a / b);
     }
-    return Result::ok(a / b);
-}
 
-// Einfache Verwendung
-let r: Result&lt;Int64&gt; = dividiere(10, 2);
-if r.isOk()
-{
-    println("Ergebnis: " + r.unwrap().toString());
-}
+    fnc main() -&gt; Int32
+    {
+        // Einfache Verwendung
+        let r: Result&lt;Int64&gt; = dividiere(10, 2);
+        if r.isOk()
+        {
+            println("Ergebnis: " + r.unwrap().toString());
+        }
 
-// Fehlerfall
-let fehler: Result&lt;Int64&gt; = dividiere(5, 0);
-println("Fehler: " + fehler.getError());
-println("Fallback: " + fehler.unwrapOr(-1).toString());
+        // Fehlerfall
+        let fehler: Result&lt;Int64&gt; = dividiere(5, 0);
+        println("Fehler: " + fehler.getError());
+        println("Fallback: " + fehler.unwrapOr(-1).toString());
 
-// Verkettung
-let kette: Result&lt;String&gt; = dividiere(100, 4)
-    .map(n =&gt; "Wert: " + n.toString())
-    .mapErr(e =&gt; "Berechnung fehlgeschlagen – " + e);
-println(kette.unwrapOr("Kein Ergebnis"));</code></pre>
+        // Verkettung
+        let kette: Result&lt;String&gt; = dividiere(100, 4)
+            .map(fnc(n: Int64) -&gt; String { return "Wert: " + n.toString(); })
+            .mapErr(fnc(e: String) -&gt; String { return "Berechnung fehlgeschlagen – " + e; });
+        println(kette.unwrapOr("Kein Ergebnis"));
+        return 0;
+    }
+}</code></pre>
   </div>
 
   <div class="mod-section" id="mod-logger">

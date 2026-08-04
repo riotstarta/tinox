@@ -104,10 +104,13 @@ table to `tinox.toml` and installs it in one step.
 ## Hello World
 
 ```tinox
-fn main() -> Int64
+class Main
 {
-    println("Hello, World!");
-    return 0;
+    fnc main() -> Int32
+    {
+        println("Hello, World!");
+        return 0;
+    }
 }
 ```
 
@@ -141,11 +144,14 @@ namespace math {
     }
 }
 
-fn main() -> Int64
+class Main
 {
-    println(Utils.add(3, 4));    // 7
-    println(Utils.square(5));    // 25
-    return 0;
+    fnc main() -> Int32
+    {
+        println(Utils.add(3, 4));    // 7
+        println(Utils.square(5));    // 25
+        return 0;
+    }
 }
 ```
 
@@ -254,11 +260,6 @@ namespace nav {
 ### Generics
 
 ```tinox
-fn identity<T>(x: T) -> T
-{
-    return x;
-}
-
 class Box<T>
 {
     value: T;
@@ -269,8 +270,20 @@ class Box<T>
     }
 }
 
-let b = new Box<Int64>(42);
-println(b.get());
+class Main
+{
+    fnc identity<T>(x: T) -> T
+    {
+        return x;
+    }
+
+    fnc main() -> Int32
+    {
+        let b = new Box<Int64>(42);
+        println(b.get());
+        return 0;
+    }
+}
 ```
 
 ### Function Types
@@ -278,16 +291,19 @@ println(b.get());
 Functions as values and parameters use `fnc(T1, T2) -> R` as their type:
 
 ```tinox
-fn apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
+class Main
 {
-    return f(x);
-}
+    fnc apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
+    {
+        return f(x);
+    }
 
-fn main() -> Int64
-{
-    let doubled = apply(21, n => n * 2);
-    println(doubled);   // 42
-    return 0;
+    fnc main() -> Int32
+    {
+        let doubled = apply(21, n => n * 2);
+        println(doubled);   // 42
+        return 0;
+    }
 }
 ```
 
@@ -356,22 +372,25 @@ for ch in "hello"           // character iteration
 ### Async / Concurrency
 
 ```tinox
-async fn fetchData(id: Int64) -> Int64
+class Main
 {
-    return id * 2;
-}
+    async fnc fetchData(id: Int64) -> Int64
+    {
+        return id * 2;
+    }
 
-fn main() -> Int64
-{
-    let handle = spawn fetchData(21);
-    let result = await handle;      // 42
-    println(result);
+    fnc main() -> Int32
+    {
+        let handle = spawn fetchData(21);
+        let result = await handle;      // 42
+        println(result);
 
-    let ch = channel;
-    send ch -> 99;
-    let v = recv ch;
-    println(v);
-    return 0;
+        let ch = channel;
+        send ch -> 99;
+        let v = recv ch;
+        println(v);
+        return 0;
+    }
 }
 ```
 
@@ -408,12 +427,15 @@ Modes: `"r"` (read, default), `"w"` (write), `"a"` (append), `"rb"` / `"wb"` (bi
 ### Defer
 
 ```tinox
-fn readFile(path: String) -> String
+class Main
 {
-    let f = open(path);
-    defer { f.close(); }   // runs automatically at the end of the function
+    fnc readFile(path: String) -> String
+    {
+        let f = open(path);
+        defer { f.close(); }   // runs automatically at the end of the function
 
-    return f.read();
+        return f.read();
+    }
 }
 ```
 
@@ -446,13 +468,16 @@ finally
 `throw` raises an exception:
 
 ```tinox
-fn divide(a: Int64, b: Int64) -> Int64
+class Main
 {
-    if b == 0
+    fnc divide(a: Int64, b: Int64) -> Int64
     {
-        throw "Division by zero";
+        if b == 0
+        {
+            throw "Division by zero";
+        }
+        return a / b;
     }
-    return a / b;
 }
 ```
 
@@ -461,16 +486,19 @@ fn divide(a: Int64, b: Int64) -> Int64
 Tinox supports annotations with `@Name` or `@Name(args)` syntax on classes, methods, functions, and fields:
 
 ```tinox
-@inline
-fnc fastCalc(x: Int64) -> Int64
+class Main
 {
-    return x * x + 1;
-}
+    @inline
+    fnc fastCalc(x: Int64) -> Int64
+    {
+        return x * x + 1;
+    }
 
-@deprecated("Use newApi instead")
-fnc oldApi() -> Unit
-{
-    println("legacy");
+    @deprecated("Use newApi instead")
+    fnc oldApi()
+    {
+        println("legacy");
+    }
 }
 ```
 
@@ -498,12 +526,18 @@ The compiler validates annotations (unknown annotations or invalid placement are
 Both styles are equivalent:
 
 ```tinox
-@GET("/users")              // path directly in the annotation
-fnc listUsers(...) -> Unit { ... }
+class UserController
+{
+    @GET("/users")              // path directly in the annotation
+    fnc listUsers(...) { ... }
+}
 
-@GET                        // or separated with @Path
-@Path("/users")
-fnc listUsers(...) -> Unit { ... }
+class UserController
+{
+    @GET                        // or separated with @Path
+    @Path("/users")
+    fnc listUsers(...) { ... }
+}
 ```
 
 ### HTTP Server & REST Framework
