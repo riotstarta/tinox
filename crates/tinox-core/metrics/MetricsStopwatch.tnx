@@ -1,0 +1,34 @@
+module tinox.core.metrics;
+
+namespace tinox.core.metrics
+{
+    // Named MetricsStopwatch, not the bare Stopwatch its docs/usages once
+    // used (issue #170): tinox.core.time also declares its own unrelated
+    // Stopwatch class, and tinox-typecheck's per-class symbol tables
+    // (class_fields, self.symbols.functions, ...) are keyed by bare class
+    // name only, with no module/namespace qualification -- two classes
+    // sharing a name across modules silently collide there if a program
+    // ever imports both. This rename sidesteps that specific collision;
+    // the underlying lack of qualified symbol keys is a separate, larger
+    // design gap (#170) left open.
+    class MetricsStopwatch
+    {
+        var startNs: Int64;
+
+        fn start() -> MetricsStopwatch
+        {
+            return MetricsStopwatch { startNs: tinox_clock_nanos() };
+        }
+
+        fn elapsedNs(sw: MetricsStopwatch) -> Int64
+        {
+            return tinox_clock_nanos() - sw.startNs;
+        }
+
+        fn recordTo(sw: MetricsStopwatch, metricName: String) -> Nothing
+        {
+            let elapsed: Int64 = tinox_clock_nanos() - sw.startNs;
+            tinox_histogram_record(metricName, elapsed);
+        }
+    }
+}
