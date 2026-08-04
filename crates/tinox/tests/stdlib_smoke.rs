@@ -103,6 +103,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "compress",
+        imports: &["tinox.core.compress"],
+        body: "let packed: List<Int64> = Compress::gzip([104, 105]);\n    let back: List<Int64> = Compress::gunzip(packed);\n    println(Compress::lastGunzipOk());\n    println(back.len());",
+        expects: &["true", "2"],
+        contains: &[],
+    },
+    Smoke {
         key: "cron",
         imports: &["tinox.core.cron"],
         body: "let e: CronExpr = Cron::parse(\"* * * * *\");\n    println(\"ok\");",

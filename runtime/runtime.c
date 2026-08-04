@@ -2167,6 +2167,129 @@ int64_t* tinoxInflateRaw(int64_t* bytes) {
     return nh;
 }
 
+// ---- General-purpose gzip (tinox.core.compress, issue #132) ----
+//
+// Same zlib deflate/inflate as tinoxDeflateRaw/tinoxInflateRaw above, but
+// windowBits=15+16 instead of -15: tells zlib to wrap the stream in a full
+// RFC 1952 gzip container (magic bytes, CM/flags/mtime/XFL/OS header, then
+// the deflate stream, then a CRC32 + ISIZE trailer) instead of bare raw
+// DEFLATE -- the format most external tools/HTTP Content-Encoding: gzip
+// expect. zlib computes and verifies that CRC32/ISIZE trailer internally
+// as part of the gzip framing, so unlike the issue's suggested approach
+// there's no need to call zlib's crc32() separately here -- a mismatched
+// trailer on decompression already surfaces as inflate() returning
+// Z_DATA_ERROR, caught by the same failure path as any other malformed
+// stream below.
+int64_t* tinoxGzip(int64_t* bytes) {
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc(n > 0 ? (size_t)n : 1);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(in);
+        return tinox_array_new(0, 4);
+    }
+    strm.next_in = in;
+    strm.avail_in = (uInt)n;
+
+    size_t cap = (size_t)(n > 0 ? n : 1) + 64;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    int ret;
+    for (;;) {
+        strm.next_out = out + total;
+        strm.avail_out = (uInt)(cap - total);
+        ret = deflate(&strm, Z_FINISH); // can't fail once deflateInit2 succeeded
+        total = cap - strm.avail_out;
+        if (ret == Z_STREAM_END) break;
+        cap *= 2;
+        out = (unsigned char*)realloc(out, cap);
+    }
+    deflateEnd(&strm);
+    free(in);
+
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
+// Thread-local companion to tinoxGunzip, same rationale/pattern as
+// wsLastInflateOk() above (kein Silent-Garbage: a truncated/malformed
+// stream or a CRC32/ISIZE trailer mismatch must not silently look like a
+// valid empty result) -- own dedicated flag, not shared with
+// _tinox_inflate_ok, so the raw-DEFLATE (WebSocket) and gzip
+// (tinox.core.compress) call paths can't clobber each other's status.
+static __thread bool _tinox_gunzip_ok = true;
+
+bool tinoxLastGunzipOk(void) {
+    return _tinox_gunzip_ok;
+}
+
+int64_t* tinoxGunzip(int64_t* bytes) {
+    _tinox_gunzip_ok = true;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc(n > 0 ? (size_t)n : 1);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (inflateInit2(&strm, 15 + 16) != Z_OK) {
+        free(in);
+        _tinox_gunzip_ok = false;
+        return tinox_array_new(0, 4);
+    }
+    strm.next_in = in;
+    strm.avail_in = (uInt)n;
+
+    size_t cap = 4096;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    bool failed = false;
+    for (;;) {
+        strm.next_out = out + total;
+        strm.avail_out = (uInt)(cap - total);
+        uInt avail_in_before = strm.avail_in;
+        uInt avail_out_before = strm.avail_out;
+        int ret = inflate(&strm, Z_NO_FLUSH);
+        total = cap - strm.avail_out;
+        // Decompression-bomb cap: same 16MB limit as tinoxInflateRaw above.
+        if (total > 16777216) { failed = true; break; }
+        if (ret == Z_STREAM_END) break;
+        if (ret != Z_OK && ret != Z_BUF_ERROR) { failed = true; break; }
+        if (strm.avail_in == avail_in_before && strm.avail_out == avail_out_before) {
+            // No progress this call. Unlike tinoxInflateRaw's raw DEFLATE
+            // (which has no formal end marker of its own), a well-formed
+            // complete gzip stream always reaches Z_STREAM_END on its own
+            // -- running out of input before that means the trailer
+            // (or more) is missing, i.e. truncated, not a valid result.
+            failed = true;
+            break;
+        }
+        if (strm.avail_out == 0) {
+            cap *= 2;
+            out = (unsigned char*)realloc(out, cap);
+        }
+    }
+    inflateEnd(&strm);
+    free(in);
+
+    if (failed) {
+        free(out);
+        _tinox_gunzip_ok = false;
+        return tinox_array_new(0, 4);
+    }
+
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
 // ---- Regex builtins ----
 
 #include <regex.h>

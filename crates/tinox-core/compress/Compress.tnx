@@ -1,0 +1,70 @@
+/**
+ * Tinox Standard Library - Compress Module
+ * General-purpose byte compression, for arbitrary payloads (log shipping,
+ * HTTP response bodies, message-queue payload compression, ...) — unlike
+ * tinox.core.zip's Zip, which is STORED-only (no compression).
+ *
+ *   let packed: List<Int64> = Compress::gzip(bytes);
+ *   let restored: List<Int64> = Compress::gunzip(packed);
+ *   if !Compress::lastGunzipOk() { throw "corrupt gzip stream"; }
+ *
+ * Two formats:
+ *   - gzip/gunzip: RFC 1952 — magic bytes, header, deflate stream, then a
+ *     CRC32 + size trailer that decompression verifies automatically.
+ *     The format most external tools/HTTP Content-Encoding: gzip expect.
+ *   - deflateRaw/inflateRaw: RFC 1951 raw DEFLATE, no header/trailer —
+ *     smallest possible framing, same on-wire format WebSocket
+ *     permessage-deflate (tinox.core.websocket) already uses. Prefer
+ *     gzip/gunzip unless framing size specifically matters and both ends
+ *     already agree out-of-band on the format.
+ *
+ * Decompression failure (truncated/malformed input, a CRC32/trailer
+ * mismatch, or a payload exceeding the 16MB decompression-bomb cap) is
+ * reported via lastInflateOk()/lastGunzipOk() rather than a silent
+ * empty-but-"successful" result — check it immediately after calling
+ * inflateRaw()/gunzip().
+ */
+module tinox.core.compress;
+
+namespace tinox.core.compress
+{
+    extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn wsLastInflateOk() -> Bool;
+    extern fn tinoxGzip(bytes: List<Int64>) -> List<Int64>;
+    extern fn tinoxGunzip(bytes: List<Int64>) -> List<Int64>;
+    extern fn tinoxLastGunzipOk() -> Bool;
+
+    class Compress
+    {
+        fnc gzip(bytes: List<Int64>) -> List<Int64>
+        {
+            return tinoxGzip(bytes);
+        }
+
+        fnc gunzip(bytes: List<Int64>) -> List<Int64>
+        {
+            return tinoxGunzip(bytes);
+        }
+
+        fnc lastGunzipOk() -> Bool
+        {
+            return tinoxLastGunzipOk();
+        }
+
+        fnc deflateRaw(bytes: List<Int64>) -> List<Int64>
+        {
+            return tinoxDeflateRaw(bytes);
+        }
+
+        fnc inflateRaw(bytes: List<Int64>) -> List<Int64>
+        {
+            return tinoxInflateRaw(bytes);
+        }
+
+        fnc lastInflateOk() -> Bool
+        {
+            return wsLastInflateOk();
+        }
+    }
+}

@@ -546,6 +546,7 @@
     <li><a href="#mod-env">env</a></li>
     <li><a href="#mod-process">process</a></li>
     <li><a href="#mod-zip">zip</a></li>
+    <li><a href="#mod-compress">compress</a></li>
     <li><a href="#mod-asm">asm</a></li>
     <li><a href="#mod-bitmap">bitmap</a></li>
     <li><a href="#mod-debug">debug</a></li>
@@ -6843,6 +6844,98 @@ Zip::removeFile(archiv, "config.json");
 print("Einträge nach Löschen: " + archiv.entries.len().toString() + "\n");
 
 Zip::close(archiv);
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-compress">
+
+  <h2>compress</h2>
+  <p class="import-hint"><code>import tinox.core.compress;</code></p>
+  <p>
+    Das Modul <strong>compress</strong> bietet allgemeine Byte-Kompression für
+    beliebige Nutzdaten (Log-Versand, HTTP-Response-Bodies, Kompression von
+    Message-Queue-Payloads, ...) — im Gegensatz zu <code>zip</code>s <code>Zip</code>,
+    das nur STORED (ohne Kompression) unterstützt. Zwei Formate stehen zur Verfügung:
+    <strong>gzip</strong> (RFC 1952 — Magic Bytes, Header, Deflate-Stream, dann ein
+    CRC32- + Größen-Trailer, der bei der Dekompression automatisch geprüft wird; das
+    Format, das die meisten externen Tools/HTTP <code>Content-Encoding: gzip</code>
+    erwarten) und <strong>raw DEFLATE</strong> (RFC 1951, ohne Header/Trailer —
+    kleinstmögliches Framing, dasselbe Wire-Format, das das <code>websocket</code>-Modul
+    für Permessage-Deflate bereits nutzt). <code>gzip</code>/<code>gunzip</code>
+    bevorzugen, außer wenn die Framing-Größe konkret eine Rolle spielt und beide
+    Seiten das Format bereits außerhalb dieses Kanals vereinbart haben.
+  </p>
+  <p>
+    Ein Dekompressions-Fehlschlag (abgeschnittene/fehlerhafte Eingabe, ein
+    CRC32/Trailer-Mismatch, oder eine Payload über der 16-MB-Dekompressionsbomben-
+    Grenze) wird über <code>lastGunzipOk()</code>/<code>lastInflateOk()</code>
+    gemeldet statt als stilles, scheinbar erfolgreiches leeres Ergebnis —
+    direkt nach dem Aufruf von <code>gunzip()</code>/<code>inflateRaw()</code> prüfen.
+  </p>
+
+  <h3>Klassen &amp; Methoden</h3>
+  <table>
+    <thead>
+      <tr><th>Klasse / Methode</th><th>Signatur</th><th>Beschreibung</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Compress::gzip</code></td>
+        <td><code>fnc gzip(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Komprimiert Bytes in einen gzip-Container (RFC 1952).</td>
+      </tr>
+      <tr>
+        <td><code>Compress::gunzip</code></td>
+        <td><code>fnc gunzip(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Dekomprimiert einen gzip-Container zurück zu den Originalbytes. Bei
+        Fehlschlag: leere Liste, <code>lastGunzipOk()</code> liefert <code>false</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::lastGunzipOk</code></td>
+        <td><code>fnc lastGunzipOk() -&gt; Bool</code></td>
+        <td>Ob der letzte <code>gunzip()</code>-Aufruf in diesem Thread erfolgreich
+        war. Direkt nach dem Aufruf von <code>gunzip()</code> prüfen.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::deflateRaw</code></td>
+        <td><code>fnc deflateRaw(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Komprimiert Bytes mit raw DEFLATE (RFC 1951, ohne gzip-Header/-Trailer).</td>
+      </tr>
+      <tr>
+        <td><code>Compress::inflateRaw</code></td>
+        <td><code>fnc inflateRaw(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Dekomprimiert einen raw-DEFLATE-Stream. Bei Fehlschlag: leere Liste,
+        <code>lastInflateOk()</code> liefert <code>false</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::lastInflateOk</code></td>
+        <td><code>fnc lastInflateOk() -&gt; Bool</code></td>
+        <td>Ob der letzte <code>inflateRaw()</code>-Aufruf in diesem Thread
+        erfolgreich war. Direkt nach dem Aufruf von <code>inflateRaw()</code> prüfen.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Beispiel</h3>
+  <pre><code>import tinox.core.compress;
+
+let nachricht: String = "hallo, tinox compress modul!";
+var bytes: List&lt;Int64&gt; = [];
+var i: Int64 = 0;
+while i &lt; nachricht.len()
+{
+    bytes.push(nachricht.charCodeAt(i));
+    i = i + 1;
+}
+
+// gzip-Roundtrip
+let gepackt: List&lt;Int64&gt; = Compress::gzip(bytes);
+let wiederhergestellt: List&lt;Int64&gt; = Compress::gunzip(gepackt);
+if !Compress::lastGunzipOk()
+{
+    throw "kaputter gzip-Stream";
+}
+print("aus " + bytes.len().toString() + " Bytes wurden " + gepackt.len().toString() + " Bytes\n");
 </code></pre>
   </div>
 

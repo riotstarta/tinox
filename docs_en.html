@@ -546,6 +546,7 @@
     <li><a href="#mod-env">env</a></li>
     <li><a href="#mod-process">process</a></li>
     <li><a href="#mod-zip">zip</a></li>
+    <li><a href="#mod-compress">compress</a></li>
     <li><a href="#mod-asm">asm</a></li>
     <li><a href="#mod-bitmap">bitmap</a></li>
     <li><a href="#mod-debug">debug</a></li>
@@ -6828,6 +6829,97 @@ Zip::removeFile(archive, "config.json");
 print("Entries after deletion: " + archive.entries.len().toString() + "\n");
 
 Zip::close(archive);
+</code></pre>
+  </div>
+
+  <div class="mod-section" id="mod-compress">
+
+  <h2>compress</h2>
+  <p class="import-hint"><code>import tinox.core.compress;</code></p>
+  <p>
+    The <strong>compress</strong> module provides general-purpose byte compression for
+    arbitrary payloads (log shipping, HTTP response bodies, message-queue payload
+    compression, ...) — unlike <code>zip</code>'s <code>Zip</code>, which is
+    STORED-only (no compression). Two formats are supported: <strong>gzip</strong>
+    (RFC 1952 — magic bytes, header, deflate stream, then a CRC32 + size trailer that
+    decompression verifies automatically; the format most external tools/HTTP
+    <code>Content-Encoding: gzip</code> expect) and <strong>raw DEFLATE</strong>
+    (RFC 1951, no header/trailer — smallest possible framing, the same on-wire format
+    the <code>websocket</code> module's permessage-deflate already uses). Prefer
+    <code>gzip</code>/<code>gunzip</code> unless framing size specifically matters and
+    both ends already agree out-of-band on the format.
+  </p>
+  <p>
+    Decompression failure (truncated/malformed input, a CRC32/trailer mismatch, or a
+    payload exceeding a 16MB decompression-bomb cap) is reported via
+    <code>lastGunzipOk()</code>/<code>lastInflateOk()</code> rather than a silent
+    empty-but-"successful" result — check it immediately after calling
+    <code>gunzip()</code>/<code>inflateRaw()</code>.
+  </p>
+
+  <h3>Classes &amp; Methods</h3>
+  <table>
+    <thead>
+      <tr><th>Class / Method</th><th>Signature</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Compress::gzip</code></td>
+        <td><code>fnc gzip(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Compresses bytes into a gzip (RFC 1952) container.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::gunzip</code></td>
+        <td><code>fnc gunzip(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Decompresses a gzip container back to the original bytes. On failure,
+        returns an empty list and <code>lastGunzipOk()</code> reports <code>false</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::lastGunzipOk</code></td>
+        <td><code>fnc lastGunzipOk() -&gt; Bool</code></td>
+        <td>Whether the most recent <code>gunzip()</code> call on this thread
+        succeeded. Check immediately after calling <code>gunzip()</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::deflateRaw</code></td>
+        <td><code>fnc deflateRaw(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Compresses bytes with raw DEFLATE (RFC 1951, no gzip header/trailer).</td>
+      </tr>
+      <tr>
+        <td><code>Compress::inflateRaw</code></td>
+        <td><code>fnc inflateRaw(bytes: List&lt;Int64&gt;) -&gt; List&lt;Int64&gt;</code></td>
+        <td>Decompresses a raw DEFLATE stream. On failure, returns an empty list and
+        <code>lastInflateOk()</code> reports <code>false</code>.</td>
+      </tr>
+      <tr>
+        <td><code>Compress::lastInflateOk</code></td>
+        <td><code>fnc lastInflateOk() -&gt; Bool</code></td>
+        <td>Whether the most recent <code>inflateRaw()</code> call on this thread
+        succeeded. Check immediately after calling <code>inflateRaw()</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Example</h3>
+  <pre><code>import tinox.core.compress;
+
+let msg: String = "hello, tinox compress module!";
+var bytes: List&lt;Int64&gt; = [];
+var i: Int64 = 0;
+while i &lt; msg.len()
+{
+    bytes.push(msg.charCodeAt(i));
+    i = i + 1;
+}
+
+// gzip round trip
+let packed: List&lt;Int64&gt; = Compress::gzip(bytes);
+let restored: List&lt;Int64&gt; = Compress::gunzip(packed);
+if !Compress::lastGunzipOk()
+{
+    throw "corrupt gzip stream";
+}
+print("compressed " + bytes.len().toString() + " bytes down to " + packed.len().toString() + "\n");
 </code></pre>
   </div>
 
