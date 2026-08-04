@@ -5,6 +5,8 @@ import tinox.core.base64;
 
 namespace tinox.core.amqp10
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     /*
      * Gegenstück zu Amqp10Writer: liest big-endian aus `bytes` ab einer
      * internen Cursor-Position `pos`. Formatcode-getrieben — anders als
@@ -100,16 +102,19 @@ namespace tinox.core.amqp10
 
         fn readRawStr(n: Int64) -> String
         {
-            var s: String = "";
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `s = s + fromCharCode(...)`
+            // in the loop, which is O(n^2) over the string length (issue #167).
+            var bytes: List<Int64> = [];
             for i in 0..n {
                 // Bug 86: a broker-controlled length prefix (n) can vastly
                 // exceed the actual remaining bytes — stop as soon as we
                 // run out instead of looping n times over dummy 0 bytes.
                 if this.truncated { break; }
                 let b = this.readU8();
-                s = s + fromCharCode(b);
+                bytes.push(b);
             }
-            return s;
+            return tinoxBytesToString(bytes);
         }
 
         fn readRawBytes(n: Int64) -> List<Int64>

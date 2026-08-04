@@ -5,6 +5,8 @@ import tinox.core.base64;
 
 namespace tinox.core.amqp10
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     class Amqp10
     {
         /*
@@ -408,11 +410,10 @@ namespace tinox.core.amqp10
          */
         fn bytesToString(b: List<Int64>) -> String
         {
-            var s: String = "";
-            for i in 0..b.len() {
-                s = s + fromCharCode(b[i]);
-            }
-            return s;
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `s = s + fromCharCode(...)` in a loop, which
+            // is O(n^2) over the string length (issue #167).
+            return tinoxBytesToString(b);
         }
 
         fn xorBytes(a: List<Int64>, b: List<Int64>) -> List<Int64>

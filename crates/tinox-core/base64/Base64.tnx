@@ -2,6 +2,8 @@ module tinox.core.base64;
 
 namespace tinox.core.base64
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     class Base64
     {
         fn encode(data: String) -> String
@@ -48,38 +50,12 @@ namespace tinox.core.base64
 
         fn decode(encoded: String) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
-            let len: Int64 = encoded.len();
-            while i + 4 <= len
-            {
-                let c0: String = encoded.substring(i, i + 1);
-                let c1: String = encoded.substring(i + 1, i + 2);
-                let c2: String = encoded.substring(i + 2, i + 3);
-                let c3: String = encoded.substring(i + 3, i + 4);
-
-                let v0: Int64 = Base64::charToValue(c0);
-                let v1: Int64 = Base64::charToValue(c1);
-                let v2: Int64 = Base64::charToValue(c2);
-                let v3: Int64 = Base64::charToValue(c3);
-
-                let b0: Int64 = ((v0 << 2) | (v1 >> 4)) & 255;
-                result = result + fromCharCode(b0);
-
-                if c2 != "="
-                {
-                    let b1: Int64 = ((v1 << 4) | (v2 >> 2)) & 255;
-                    result = result + fromCharCode(b1);
-                }
-                if c3 != "="
-                {
-                    let b2: Int64 = ((v2 << 6) | v3) & 255;
-                    result = result + fromCharCode(b2);
-                }
-
-                i = i + 4;
-            }
-            return result;
+            // Delegates to decodeBytes() + tinoxBytesToString (one-pass
+            // byte->char conversion) instead of building the result via
+            // `result = result + fromCharCode(...)` in the loop, which is
+            // O(n^2) over the decoded length (issue #167). decodeBytes()
+            // already avoided this pattern.
+            return tinoxBytesToString(Base64::decodeBytes(encoded));
         }
 
         fn charToValue(c: String) -> Int64

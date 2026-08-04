@@ -30,6 +30,7 @@ import tinox.core.socket;
 namespace tinox.core.redis
 {
     extern fn httpConnReadLine(conn: Int64) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     class RedisClient
     {
@@ -85,14 +86,19 @@ namespace tinox.core.redis
             }
             let len = header.substring(1, header.len()).toInt();
             let bytes = httpConnReadN(this.conn, len + 2); // value + trailing \r\n
-            var result: String = "";
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `result = result + fromCharCode(...)` in a
+            // loop, which is O(n^2) over the value length (issue #167).
+            // bytes includes the trailing \r\n (2 extra bytes past `len`),
+            // so slice it down to just the value first.
+            var value: List<Int64> = [];
             var i: Int64 = 0;
             while i < len {
-                result = result + fromCharCode(bytes[i]);
+                value.push(bytes[i]);
                 i = i + 1;
             }
             this.getFound = true;
-            return result;
+            return tinoxBytesToString(value);
         }
 
         fn lastGetFound() -> Bool

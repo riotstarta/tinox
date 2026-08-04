@@ -2,6 +2,8 @@ module tinox.core.hpack;
 
 namespace tinox.core.hpack
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     /**
      * HPACK encoder/decoder
      *
@@ -176,7 +178,7 @@ namespace tinox.core.hpack
             let lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7);
             let strLen: Int64 = lenResult.value;
             let pos: Int64 = lenResult.nextOffset;
-            var str: String = "";
+            var bytes: List<Int64> = [];
             var i: Int64 = 0;
             // strLen comes straight off the wire (decodeInt) and can claim
             // far more bytes than are actually left in `data` — stop at the
@@ -184,12 +186,16 @@ namespace tinox.core.hpack
             // data[pos + i] for i in [0, strLen), so a truncated/malformed
             // length crashed the whole process via tinox_array_get's bounds
             // check, not just this connection).
+            //
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `str = str + fromCharCode(...)`
+            // in the loop, which is O(n^2) over the string length (issue #167).
             while i < strLen && (pos + i) < data.len()
             {
-                str = str + fromCharCode(data[pos + i]);
+                bytes.push(data[pos + i]);
                 i = i + 1;
             }
-            return HpackStrResult { value: str, nextOffset: pos + i };
+            return HpackStrResult { value: tinoxBytesToString(bytes), nextOffset: pos + i };
         }
 
         /**

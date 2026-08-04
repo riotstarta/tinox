@@ -7,6 +7,7 @@ namespace tinox.core.http2_server
 {
     // Roh-Bytes von einem Socket-fd lesen (HTTP/2-Framing).
     extern fn httpServerReadRawBytes(fd: Int64, count: Int64) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     /**
      * HTTP/2 server with a fluent route-registration API identical to HttpServer.
@@ -118,14 +119,10 @@ namespace tinox.core.http2_server
 
         fn sendBytes(fd: Int64, bytes: List<Int64>) -> Nothing
         {
-            var raw: String = "";
-            var i: Int64 = 0;
-            while i < bytes.len()
-            {
-                raw = raw + fromCharCode(bytes[i]);
-                i = i + 1;
-            }
-            httpServerSendRaw(fd, raw);
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `raw = raw + fromCharCode(...)` in the loop,
+            // which is O(n^2) over the byte count (issue #167).
+            httpServerSendRaw(fd, tinoxBytesToString(bytes));
         }
 
         fn appendBytes(dest: List<Int64>, src: List<Int64>) -> Nothing
@@ -482,14 +479,10 @@ namespace tinox.core.http2_server
                 i = i + 1;
             }
 
-            var bodyStr: String = "";
-            var j: Int64 = 0;
-            while j < stream.body.len()
-            {
-                bodyStr = bodyStr + fromCharCode(stream.body[j]);
-                j = j + 1;
-            }
-            request.body = bodyStr;
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `bodyStr = bodyStr + fromCharCode(...)` in a
+            // loop, which is O(n^2) over the body length (issue #167).
+            request.body = tinoxBytesToString(stream.body);
 
             let response: HttpResponse = HttpResponse::new();
             let ctx: HttpContext = HttpContext::new(request, response);
@@ -588,13 +581,11 @@ namespace tinox.core.http2_server
                 httpServerCloseConn(fd);
                 return;
             }
-            var prefaceStr: String = "";
-            var pi: Int64 = 0;
-            while pi < 24
-            {
-                prefaceStr = prefaceStr + fromCharCode(prefaceBytes[pi]);
-                pi = pi + 1;
-            }
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `prefaceStr = prefaceStr + fromCharCode(...)`
+            // in a loop (issue #167; bounded to 24 bytes here, but kept
+            // consistent with the rest of this module's byte->string sites).
+            let prefaceStr: String = tinoxBytesToString(prefaceBytes);
             if prefaceStr != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
             {
                 httpServerCloseConn(fd);

@@ -4,6 +4,8 @@ import tinox.core.socket;
 
 namespace tinox.core.amqp091
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     /*
      * Gegenstück zu AmqpWriter091: liest big-endian aus `bytes` ab einer
      * internen Cursor-Position `pos`. Kein Bounds-Check auf Array-Ebene
@@ -88,7 +90,10 @@ namespace tinox.core.amqp091
 
         fn rawStr(n: Int64) -> String
         {
-            var s: String = "";
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `s = s + fromCharCode(...)`
+            // in the loop, which is O(n^2) over the string length (issue #167).
+            var bytes: List<Int64> = [];
             for i in 0..n {
                 // Bug 66 (gefixt): fromCharCode(this.octet()) direkt wertete
                 // das seiteneffektbehaftete Argument doppelt aus. Fix liegt
@@ -96,9 +101,9 @@ namespace tinox.core.amqp091
                 // vermutlich analog betroffen (s. bugs.md) — hier trotzdem
                 // vorsichtshalber über eine lokale Variable.
                 let b = this.octet();
-                s = s + fromCharCode(b);
+                bytes.push(b);
             }
-            return s;
+            return tinoxBytesToString(bytes);
         }
 
         fn shortstr() -> String

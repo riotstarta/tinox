@@ -26,6 +26,7 @@ namespace tinox.core.websocket
     extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>;
     extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>;
     extern fn wsLastInflateOk() -> Bool;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     class Ws
     {
@@ -399,14 +400,14 @@ namespace tinox.core.websocket
          * Text-Payload eines Frames als String. Byte-für-Byte (fromCharCode) —
          * für ASCII korrekt; Multi-Byte-UTF-8 kommt als Einzelbytes an
          * (dokumentierte v1-Vereinfachung).
+         *
+         * Collects bytes into a List<Int64> and converts in one pass
+         * (tinoxBytesToString) instead of `s = s + fromCharCode(...)` in
+         * the loop, which is O(n^2) over the payload length (issue #167).
          */
         fn text(f: WsFrame) -> String
         {
-            var s: String = "";
-            for i in 0..f.payload.len() {
-                s = s + fromCharCode(f.payload[i]);
-            }
-            return s;
+            return tinoxBytesToString(f.payload);
         }
 
         fn textToBytes(s: String) -> List<Int64>

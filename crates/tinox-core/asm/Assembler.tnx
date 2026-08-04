@@ -2,6 +2,8 @@ module tinox.core.asm;
 
 namespace tinox.core.asm
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     class Assembler
     {
         var bytecode: List<Int64>;
@@ -39,14 +41,10 @@ namespace tinox.core.asm
 
         fn toBytes(asm: Assembler) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
-            while i < asm.bytecode.len()
-            {
-                result = result + fromCharCode(asm.bytecode[i]);
-                i = i + 1;
-            }
-            return result;
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `result = result + fromCharCode(...)` in a
+            // loop, which is O(n^2) over the bytecode length (issue #167).
+            return tinoxBytesToString(asm.bytecode);
         }
     }
 }

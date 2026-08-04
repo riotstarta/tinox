@@ -2,6 +2,8 @@ module tinox.core.uri;
 
 namespace tinox.core.uri
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     class Uri
     {
         fn isUnreserved(code: Int64) -> Bool
@@ -95,7 +97,10 @@ namespace tinox.core.uri
 
         fn decodeComponent(s: String) -> String
         {
-            var result: String = "";
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result + ...` in
+            // the loop, which is O(n^2) over the decoded length (issue #167).
+            var bytes: List<Int64> = [];
             var i: Int64 = 0;
             let len: Int64 = s.len();
             while i < len
@@ -105,21 +110,24 @@ namespace tinox.core.uri
                 {
                     let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
                     let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
-                    result = result + fromCharCode((hi << 4) | lo);
+                    bytes.push((hi << 4) | lo);
                     i = i + 3;
                 }
                 else
                 {
-                    result = result + c;
+                    bytes.push(c.charCodeAt(0));
                     i = i + 1;
                 }
             }
-            return result;
+            return tinoxBytesToString(bytes);
         }
 
         fn decode(s: String) -> String
         {
-            var result: String = "";
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result + ...` in
+            // the loop, which is O(n^2) over the decoded length (issue #167).
+            var bytes: List<Int64> = [];
             var i: Int64 = 0;
             let len: Int64 = s.len();
             while i < len
@@ -129,16 +137,16 @@ namespace tinox.core.uri
                 {
                     let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
                     let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
-                    result = result + fromCharCode((hi << 4) | lo);
+                    bytes.push((hi << 4) | lo);
                     i = i + 3;
                 }
                 else
                 {
-                    result = result + c;
+                    bytes.push(c.charCodeAt(0));
                     i = i + 1;
                 }
             }
-            return result;
+            return tinoxBytesToString(bytes);
         }
 
         fn parse(url: String) -> UriParts

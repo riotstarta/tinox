@@ -5,6 +5,7 @@ import tinox.core.random;
 namespace tinox.core.crypto
 {
     extern fn secureRandomBytesRaw(n: Int64) -> List<Int64>;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     class Crypto
     {
@@ -88,15 +89,18 @@ namespace tinox.core.crypto
 
         fn generateKey(length: Int64) -> String
         {
-            var result: String = "";
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result +
+            // fromCharCode(...)` in the loop, which is O(n^2) over `length`
+            // (issue #167).
+            var bytes: List<Int64> = [];
             var i: Int64 = 0;
             while i < length
             {
-                let byte: Int64 = Random::nextInt(256);
-                result = result + fromCharCode(byte);
+                bytes.push(Random::nextInt(256));
                 i = i + 1;
             }
-            return result;
+            return tinoxBytesToString(bytes);
         }
 
         fn pbkdf2(password: String, salt: String, iterations: Int64, keyLength: Int64) -> String

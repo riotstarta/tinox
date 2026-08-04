@@ -13,6 +13,7 @@ namespace tinox.core.jwt
     // deprecated legacy RSA_* calls) in runtime.c, gated behind TINOX_TLS
     // like the rest of the OpenSSL-backed crypto in this codebase.
     extern fn rsaVerifySha256(message: List<Int64>, signature: List<Int64>, modulus: List<Int64>, exponent: List<Int64>) -> Bool;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     class Jwt
     {
@@ -254,14 +255,10 @@ namespace tinox.core.jwt
 
         fn bytesToString(b: List<Int64>) -> String
         {
-            var s: String = "";
-            var i: Int64 = 0;
-            while i < b.len()
-            {
-                s = s + fromCharCode(b[i]);
-                i = i + 1;
-            }
-            return s;
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `s = s + fromCharCode(...)` in a loop, which
+            // is O(n^2) over the string length (issue #167).
+            return tinoxBytesToString(b);
         }
     }
 }

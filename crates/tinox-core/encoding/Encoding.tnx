@@ -2,6 +2,8 @@ module tinox.core.encoding;
 
 namespace tinox.core.encoding
 {
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
     class Encoding
     {
         fn toCharCode(s: String) -> Int64
@@ -32,14 +34,10 @@ namespace tinox.core.encoding
 
         fn fromUtf8(codes: List<Int64>) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
-            while i < codes.len()
-            {
-                result = result + fromCharCode(codes[i]);
-                i = i + 1;
-            }
-            return result;
+            // tinoxBytesToString does the byte->char conversion in one
+            // pass instead of `result = result + fromCharCode(...)` in a
+            // loop, which is O(n^2) over the string length (issue #167).
+            return tinoxBytesToString(codes);
         }
 
         fn htmlEncode(s: String) -> String
