@@ -573,9 +573,9 @@ class HttpServer
 
     fnc new(port: Int64) -> HttpServer { ... }
 
-    fn get(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer { ... }
-    fn post(path: String, handler: fnc(HttpContext) -> Unit) -> HttpServer { ... }
-    fn listen() -> Unit { ... }
+    fn get(path: String, handler: fnc(HttpContext)) -> HttpServer { ... }
+    fn post(path: String, handler: fnc(HttpContext)) -> HttpServer { ... }
+    fn listen() { ... }
 }
 ```
 
@@ -590,7 +590,7 @@ class UserController
     @Path("/users")
     @Produces("application/json")
     @StatusCode(200)
-    fnc listUsers(ctx: HttpContext) -> Unit
+    fnc listUsers(ctx: HttpContext)
     {
         ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
     }
@@ -599,14 +599,14 @@ class UserController
     @Path("/users")
     @Consumes("application/json")
     @StatusCode(201)
-    fnc createUser(ctx: HttpContext) -> Unit
+    fnc createUser(ctx: HttpContext)
     {
         ctx.response.body = "{\"id\":2}";
     }
 
     @GET
     @Path("/users/:id")
-    fnc getUser(ctx: HttpContext) -> Unit
+    fnc getUser(ctx: HttpContext)
     {
         let id: String = ctx.request.params["id"];
         ctx.response.body = "{\"id\":${id}}";
@@ -616,7 +616,7 @@ class UserController
     @Path("/users/:id")
     @Auth("bearer")
     @StatusCode(204)
-    fnc deleteUser(ctx: HttpContext) -> Unit
+    fnc deleteUser(ctx: HttpContext)
     {
         ctx.response.statusCode = 204;
     }
