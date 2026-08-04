@@ -3044,17 +3044,20 @@ impl CodeGen {
 
         let is_inline = f.annotations.iter().any(|a| a.name == "inline")
             || self.inline_functions.contains(&fn_name);
-        let linkage = if is_inline {
-            "define alwaysinline "
-        } else {
-            "define "
-        };
+        // `alwaysinline` is a FUNCTION attribute in LLVM IR syntax — it
+        // belongs after the parameter list, not between `define` and the
+        // return type (that position is for RETURN-VALUE attributes like
+        // `zeroext`; LLVM rejects `alwaysinline` there with "this
+        // attribute does not apply to return values"). Previously placed
+        // there unconditionally, so `@inline` ICE'd on every function/
+        // method with a non-void return type — see #162.
+        let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
         let (dbg, call_dbg) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
         writeln!(
             &mut self.ir,
-            "{}{} @{}({}){} {{",
-            linkage, ret_type, fn_name, params_str, dbg
+            "define {} @{}({}){}{} {{",
+            ret_type, fn_name, params_str, fn_attrs, dbg
         )
         .unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();
@@ -3162,18 +3165,16 @@ impl CodeGen {
 
         let is_inline = method.annotations.iter().any(|a| a.name == "inline")
             || self.inline_methods.contains(&(class_name.to_string(), method.name.clone()));
-        let linkage = if is_inline {
-            "define alwaysinline "
-        } else {
-            "define "
-        };
+        // See the identical fix + comment in gen_fn (#162) — `alwaysinline`
+        // is a function attribute, must follow the parameter list.
+        let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
         let dbg_name = format!("{}.{}", class_name, method.name);
         let (dbg, call_dbg) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
         writeln!(
             &mut self.ir,
-            "{}{} @{}({}){} {{",
-            linkage, ret_type, fn_name, params_str, dbg
+            "define {} @{}({}){}{} {{",
+            ret_type, fn_name, params_str, fn_attrs, dbg
         )
         .unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();

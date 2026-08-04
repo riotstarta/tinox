@@ -1,0 +1,32 @@
+// @inline on a function/method with a non-void return type — regression
+// test for issue #162: `alwaysinline` was emitted as an LLVM
+// return-value attribute (between `define` and the return type) instead
+// of a function attribute (after the parameter list), which LLVM
+// rejects outright ("this attribute does not apply to return values"),
+// making @inline completely non-functional for any annotated
+// function/method. Covers both a top-level (well, class-static) fnc and
+// an instance fn, both returning non-void.
+// expect: 16
+// expect: 17
+class Main
+{
+    @inline
+    fnc square(x: Int64) -> Int64
+    {
+        return x * x;
+    }
+
+    @inline
+    fn instanceSquarePlusOne(x: Int64) -> Int64
+    {
+        return x * x + 1;
+    }
+
+    fnc main() -> Int32
+    {
+        println(square(4));
+        let m = Main {};
+        println(m.instanceSquarePlusOne(4));
+        return 0;
+    }
+}
