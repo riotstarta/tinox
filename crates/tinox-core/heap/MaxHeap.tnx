@@ -4,6 +4,8 @@ namespace tinox.core.heap
 {
     class MaxHeap<T>
     {
+        var heap: Heap<T>;
+
         fn new() -> MaxHeap<T>
         {
             let comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };

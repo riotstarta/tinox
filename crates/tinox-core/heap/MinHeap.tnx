@@ -4,6 +4,8 @@ namespace tinox.core.heap
 {
     class MinHeap<T>
     {
+        var heap: Heap<T>;
+
         fn new() -> MinHeap<T>
         {
             return MinHeap<T> { heap: Heap::new() };

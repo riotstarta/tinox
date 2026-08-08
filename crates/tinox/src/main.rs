@@ -1110,10 +1110,36 @@ fn run_tests_once(args: &[String]) {
 
 // ─── tinox doc ────────────────────────────────────────────────────────────────
 
+/// Recursively collects every .tnx file under `dir` — a multi-file module
+/// (e.g. tinox-core's `websocket/` with Ws.tnx/WsClient.tnx/WsFrame.tnx/
+/// WsServer.tnx as siblings) needs all of them merged into one doc page,
+/// not just whichever file happens to sort first.
+fn collect_tnx_files_for_docs(dir: &Path, out: &mut Vec<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_tnx_files_for_docs(&path, out);
+        } else if path.extension().map(|x| x == "tnx").unwrap_or(false) {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
 fn gen_docs(args: &[String]) {
     let open = args.iter().any(|a| a == "--open");
+    let out_override: Option<&String> = args.iter()
+        .position(|a| a == "--out")
+        .and_then(|i| args.get(i + 1));
 
-    // Collect source files from project or explicit arg
+    // Collect source files from project or explicit arg, and remember the
+    // project root along the way — description/dependencies/examples below
+    // all read from files relative to it, same as tinox.toml itself.
+    let mut project_root: Option<PathBuf> = None;
     let source_files: Vec<String> = if let Some(f) = args.first().filter(|a| !a.starts_with('-')) {
         vec![f.clone()]
     } else {
@@ -1123,15 +1149,9 @@ fn gen_docs(args: &[String]) {
             if dir.join("tinox.toml").exists() {
                 let src = dir.join("src");
                 if src.is_dir() {
-                    if let Ok(entries) = fs::read_dir(&src) {
-                        for e in entries.flatten() {
-                            let p = e.path();
-                            if p.extension().map(|x| x == "tnx").unwrap_or(false) {
-                                files.push(p.to_string_lossy().into_owned());
-                            }
-                        }
-                    }
+                    collect_tnx_files_for_docs(&src, &mut files);
                 }
+                project_root = Some(dir);
                 break;
             }
             if !dir.pop() { break; }
@@ -1159,15 +1179,53 @@ fn gen_docs(args: &[String]) {
         }
     }
 
-    let html = render_docs_html(&project_name, &doc_items);
+    // Description + declared dependencies come straight from tinox.toml —
+    // real project metadata, not re-derived/guessed. Examples are read from
+    // an `examples/*.tnx` directory next to `src/`, one file per example,
+    // sorted by filename so an author can order them (01_basic.tnx, ...).
+    let (description, dependencies) = match &project_root {
+        Some(root) => match pm::read_manifest(root) {
+            Ok(m) => (
+                m.package.as_ref().map(|p| p.description.clone()).filter(|d| !d.is_empty()),
+                m.dependencies,
+            ),
+            Err(_) => (None, Vec::new()),
+        },
+        None => (None, Vec::new()),
+    };
+    let examples: Vec<(String, String)> = project_root.as_ref()
+        .map(|root| root.join("examples"))
+        .filter(|dir| dir.is_dir())
+        .map(|dir| {
+            let mut files: Vec<PathBuf> = fs::read_dir(&dir)
+                .map(|entries| entries.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|x| x == "tnx").unwrap_or(false))
+                    .collect())
+                .unwrap_or_default();
+            files.sort();
+            files.into_iter()
+                .filter_map(|p| {
+                    let src = fs::read_to_string(&p).ok()?;
+                    let stem = p.file_stem()?.to_string_lossy().into_owned();
+                    Some((humanize_example_name(&stem), src))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    // Write to docs/index.html
-    let docs_dir = PathBuf::from("docs");
-    if let Err(e) = fs::create_dir_all(&docs_dir) {
-        eprintln!("error: cannot create docs/: {}", e);
-        return;
+    let html = render_docs_html(&project_name, description.as_deref(), &dependencies, &examples, &doc_items);
+
+    let out_path = match out_override {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("docs").join("index.html"),
+    };
+    if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("error: cannot create {}: {}", parent.display(), e);
+            return;
+        }
     }
-    let out_path = docs_dir.join("index.html");
     if let Err(e) = fs::write(&out_path, &html) {
         eprintln!("error: cannot write {}: {}", out_path.display(), e);
         return;
@@ -1303,9 +1361,56 @@ fn type_str_simple(ty: &tinox_parser::Type) -> String {
 
 // ── HTML renderer ─────────────────────────────────────────────────────────────
 
-fn render_docs_html(project_name: &str, items: &[DocItem]) -> String {
+fn render_docs_html(
+    project_name: &str,
+    description: Option<&str>,
+    dependencies: &[pm::Dependency],
+    examples: &[(String, String)],
+    items: &[DocItem],
+) -> String {
     let mut nav = String::new();
     let mut body = String::new();
+
+    // 1) Description, 2) Dependencies, 3) Examples, 4) the existing
+    // class/interface/function reference — in that fixed order, matching
+    // "what it is → what it needs → how to use it → full API".
+    if let Some(desc) = description {
+        nav.push_str("<li class=\"nav-section\">Overview</li><li><a href=\"#overview\">Description</a></li>");
+        body.push_str(&format!(
+            "<section id=\"overview\" class=\"item\"><p class=\"doc\" style=\"margin-bottom:0\">{}</p></section>",
+            html_escape(desc)
+        ));
+    }
+
+    if !dependencies.is_empty() {
+        nav.push_str("<li class=\"nav-section\">Dependencies</li><li><a href=\"#dependencies\">Dependencies</a></li>");
+        let rows: String = dependencies.iter().map(|d| {
+            // Sibling docs.html, one directory per artifactId — matches
+            // how these pages are actually laid out (docs/tinox-core/<mod>/docs.html).
+            format!(
+                "<tr><td class=\"member-name\"><a href=\"../{}/docs.html\"><code>{}</code></a></td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
+                html_escape(&d.artifact_id), html_escape(&d.artifact_id), html_escape(&d.version), html_escape(&d.group)
+            )
+        }).collect();
+        body.push_str(&format!(
+            "<section id=\"dependencies\" class=\"item\"><table class=\"members\"><tr><th style=\"text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px\">Module</th><th style=\"text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px\">Version</th><th style=\"text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px\">Group</th></tr>{}</table></section>",
+            rows
+        ));
+    }
+
+    if !examples.is_empty() {
+        nav.push_str("<li class=\"nav-section\">Examples</li>");
+        let mut ex_body = String::new();
+        for (title, src) in examples {
+            let slug: String = title.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+            nav.push_str(&format!("<li><a href=\"#ex-{slug}\">{}</a></li>", html_escape(title)));
+            ex_body.push_str(&format!(
+                "<section id=\"ex-{slug}\" class=\"item\"><h3 style=\"margin-top:0\">{}</h3><pre><code>{}</code></pre></section>",
+                html_escape(title), highlight_tinox_source(src)
+            ));
+        }
+        body.push_str(&ex_body);
+    }
 
     let classes: Vec<&DocItem> = items.iter().filter(|i| matches!(i, DocItem::Class {..})).collect();
     let interfaces: Vec<&DocItem> = items.iter().filter(|i| matches!(i, DocItem::Interface {..})).collect();
@@ -1390,6 +1495,9 @@ fn render_docs_html(project_name: &str, items: &[DocItem]) -> String {
         }
     }
 
+    // Same palette/layout conventions as docs_en.html (the hand-written
+    // language reference) so auto-generated per-module doc pages read as
+    // one consistent site rather than a visibly different tool's output.
     format!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1397,31 +1505,48 @@ fn render_docs_html(project_name: &str, items: &[DocItem]) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{project_name} — Tinox Docs</title>
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0f1117;color:#e2e8f0;display:flex;min-height:100vh}}
-nav{{width:240px;min-height:100vh;background:#1a1d2e;padding:20px 0;position:sticky;top:0;overflow-y:auto;flex-shrink:0}}
-nav h1{{padding:0 20px 16px;font-size:15px;color:#7c85ff;font-weight:700;border-bottom:1px solid #2a2d3e;margin-bottom:8px}}
-nav ul{{list-style:none;padding:0}}
-nav li a{{display:block;padding:5px 20px;color:#a0aec0;text-decoration:none;font-size:13px}}
-nav li a:hover{{color:#fff;background:#252840}}
-nav li.nav-section{{padding:12px 20px 4px;font-size:11px;color:#4a5568;text-transform:uppercase;letter-spacing:.08em;font-weight:600}}
-main{{flex:1;padding:40px 60px;max-width:900px}}
-main h1{{font-size:28px;color:#fff;margin-bottom:8px}}
-main>p{{color:#718096;margin-bottom:32px;font-size:14px}}
-.item{{border:1px solid #1e2235;border-radius:8px;padding:24px;margin-bottom:24px;background:#13151f}}
-.item-name{{font-size:18px;font-weight:600;color:#e2e8f0;margin-bottom:12px;font-family:"SFMono-Regular",Consolas,monospace}}
-.kw{{color:#7c85ff}}
-.doc{{color:#a0aec0;font-size:14px;margin-bottom:16px;line-height:1.6}}
-h3{{font-size:13px;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin:16px 0 8px;font-weight:600}}
-table.members{{width:100%;border-collapse:collapse;font-size:13px}}
-table.members tr{{border-bottom:1px solid #1e2235}}
-table.members td{{padding:6px 8px;vertical-align:top}}
-.member-name{{font-family:monospace;color:#e2e8f0;width:35%}}
-.member-type{{color:#63b3ed;width:20%}}
-.method-sig{{background:#0d0f1a;border-radius:6px;padding:10px 14px;font-family:monospace;font-size:13px;color:#e2e8f0;margin-bottom:8px;border:1px solid #1e2235}}
-.method-doc{{color:#a0aec0;font-size:13px;margin-bottom:12px;line-height:1.5}}
-.ann{{color:#68d391;font-size:12px;display:inline-block;margin-right:6px}}
-code{{color:#63b3ed;font-family:"SFMono-Regular",Consolas,monospace}}
+:root {{
+  --bg:        #0f1117;
+  --bg2:       #171b26;
+  --bg3:       #1e2333;
+  --sidebar:   #13161f;
+  --border:    #2a2f42;
+  --accent:    #5b8ff9;
+  --accent2:   #7c5bf9;
+  --green:     #4ecb71;
+  --text:      #dde1f0;
+  --text2:     #8a91aa;
+  --text3:     #5a6080;
+  --code-bg:   #0b0e18;
+  --tag-bg:    #1a2540;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; display: flex; min-height: 100vh; }}
+nav {{ width: 270px; min-width: 270px; background: var(--sidebar); border-right: 1px solid var(--border); padding: 32px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; flex-shrink: 0; }}
+nav h1 {{ padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.5px; color: #fff; }}
+nav ul {{ list-style: none; }}
+nav li.nav-section {{ font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }}
+nav li a {{ display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }}
+nav li a:hover {{ color: var(--text); background: var(--bg3); border-left-color: var(--accent); }}
+main {{ flex: 1; max-width: 920px; padding: 56px 64px; }}
+main h1 {{ font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }}
+main > p {{ color: var(--text2); margin-bottom: 32px; font-size: 0.88rem; }}
+.item {{ border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); }}
+.item-name {{ font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'Fira Code', 'Cascadia Code', monospace; }}
+.kw {{ color: #c792ea; }}
+.doc {{ color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }}
+h3 {{ font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }}
+table.members {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+table.members tr {{ border-bottom: 1px solid var(--border); }}
+table.members td {{ padding: 8px 10px; vertical-align: top; }}
+.member-name {{ font-family: 'Fira Code', 'Cascadia Code', monospace; color: var(--text); width: 35%; }}
+.member-type {{ color: #ffcb6b; width: 20%; }}
+.method-sig {{ background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }}
+.method-doc {{ color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }}
+.ann {{ color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }}
+code {{ font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: #a8d0ff; }}
+a {{ color: var(--accent); text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
@@ -1452,9 +1577,9 @@ fn render_method_html(out: &mut String, m: &DocMethod) {
 
 fn render_sig(name: &str, params: &[DocParam], ret: &str, _static: bool) -> String {
     let ps: Vec<String> = params.iter()
-        .map(|p| format!("{}: <span style=\"color:#63b3ed\">{}</span>", html_escape(&p.name), html_escape(&p.ty)))
+        .map(|p| format!("{}: <span style=\"color:#ffcb6b\">{}</span>", html_escape(&p.name), html_escape(&p.ty)))
         .collect();
-    format!("{}({}) → <span style=\"color:#63b3ed\">{}</span>", html_escape(name), ps.join(", "), html_escape(ret))
+    format!("{}({}) → <span style=\"color:#ffcb6b\">{}</span>", html_escape(name), ps.join(", "), html_escape(ret))
 }
 
 fn render_annotations(anns: &[String]) -> String {
@@ -1463,6 +1588,85 @@ fn render_annotations(anns: &[String]) -> String {
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// `01_basic_publish.tnx` → `Basic publish`; `-`/`_` become spaces, a
+/// leading numeric ordering prefix (`01_`, `2-`) is dropped, first letter
+/// capitalized. Falls back to the stem itself if that leaves nothing.
+fn humanize_example_name(stem: &str) -> String {
+    let no_prefix = stem.trim_start_matches(|c: char| c.is_ascii_digit())
+        .trim_start_matches(['_', '-']);
+    let words: Vec<&str> = if no_prefix.is_empty() { stem } else { no_prefix }
+        .split(['_', '-'])
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return stem.to_string();
+    }
+    let mut out = String::new();
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 { out.push(' '); }
+        if i == 0 {
+            let mut chars = w.chars();
+            if let Some(c) = chars.next() {
+                out.extend(c.to_uppercase());
+                out.push_str(chars.as_str());
+            }
+        } else {
+            out.push_str(w);
+        }
+    }
+    out
+}
+
+/// Real-lexer-based syntax highlighting for example code blocks — reuses
+/// `tinox_lexer::Lexer` (the same tokenizer the compiler itself runs)
+/// rather than a regex approximation, so keywords/strings/comments/numbers
+/// are colored exactly per the real grammar, not guessed. Falls back to
+/// plain escaped text if the example doesn't lex cleanly. Types aren't a
+/// distinct token kind in this lexer, so a capitalized identifier is
+/// treated as one — matches this codebase's own PascalCase-for-types,
+/// camelCase-for-values convention throughout tinox-core.
+fn highlight_tinox_source(src: &str) -> String {
+    use tinox_lexer::TokenKind;
+
+    let mut lexer = Lexer::new(src);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(_) => return html_escape(src),
+    };
+
+    let mut out = String::new();
+    let mut pos = 0usize;
+    for tok in &tokens {
+        let start = tok.span.start.offset as usize;
+        let end = tok.span.end.offset as usize;
+        if start > pos && start <= src.len() {
+            out.push_str(&html_escape(&src[pos..start]));
+        }
+        if start > end || end > src.len() {
+            continue;
+        }
+        let text = &src[start..end];
+        let escaped = html_escape(text);
+        let class = match &tok.kind {
+            TokenKind::Keyword(_) | TokenKind::Bool(_) => Some("kw"),
+            TokenKind::String(_) | TokenKind::RawString(_) | TokenKind::InterpString(_) | TokenKind::Char(_) => Some("str"),
+            TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::IntegerSuffix(_) | TokenKind::FloatSuffix(_) => Some("num"),
+            TokenKind::Comment(_) | TokenKind::DocComment(_) => Some("cmt"),
+            TokenKind::Ident(name) if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => Some("type"),
+            _ => None,
+        };
+        match class {
+            Some(c) => out.push_str(&format!("<span class=\"{}\">{}</span>", c, escaped)),
+            None => out.push_str(&escaped),
+        }
+        pos = end.max(pos);
+    }
+    if pos < src.len() {
+        out.push_str(&html_escape(&src[pos..]));
+    }
+    out
 }
 
 /// Parse a file and return all @Test entries without compiling.
