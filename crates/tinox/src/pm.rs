@@ -384,11 +384,26 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
         .call()
         .map_err(|e| format!("Download failed ({}): {}", dep.url, e))?;
 
-    let mut bytes: Vec<u8> = Vec::new();
+    let mut raw_bytes: Vec<u8> = Vec::new();
     response
         .into_reader()
-        .read_to_end(&mut bytes)
+        .read_to_end(&mut raw_bytes)
         .map_err(|e| format!("Read failed: {}", e))?;
+
+    // A registry API (e.g. tinox-central) can't return artifact bytes as a
+    // raw response body — tinox's `String` is NUL-terminated at the
+    // runtime level (see tinox-central's PLAN.md §7.1), so any server
+    // built with tinox.core.http_server has to wrap the artifact in a
+    // `{"filename": "...", "contentBase64": "..."}` JSON envelope instead
+    // of streaming octets directly. Detect and unwrap that shape before
+    // falling back to "response body IS the artifact", so a dependency
+    // URL pointing at such a registry (whose path rarely carries a
+    // .tar.gz/.zip suffix) still resolves to the right filename/bytes.
+    let (bytes, filename_hint): (Vec<u8>, Option<String>) =
+        match parse_registry_envelope(&raw_bytes) {
+            Some((filename, decoded)) => (decoded, Some(filename)),
+            None => (raw_bytes, None),
+        };
 
     let actual_sha256 = sha256_hex(&bytes);
     verify_checksum(dep, lock, update, &actual_sha256)?;
@@ -396,18 +411,24 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
     fs::create_dir_all(&install_dir)
         .map_err(|e| format!("Cannot create install dir: {}", e))?;
 
-    let url_lower = dep.url.to_lowercase();
-    if url_lower.ends_with(".tar.gz") || url_lower.ends_with(".tgz") {
+    // Prefer the artifact's own filename (from a registry envelope) for
+    // the tar.gz/zip/single-file dispatch — the dependency URL itself
+    // (e.g. a registry API path with no file extension at all) isn't a
+    // reliable signal in that case.
+    let name_for_dispatch = filename_hint
+        .clone()
+        .unwrap_or_else(|| dep.url.split('/').next_back().unwrap_or("lib.tnx").to_string());
+    let name_lower = name_for_dispatch.to_lowercase();
+    if name_lower.ends_with(".tar.gz") || name_lower.ends_with(".tgz") {
         extract_tar_gz(&bytes, &install_dir)?;
-    } else if url_lower.ends_with(".zip") {
+    } else if name_lower.ends_with(".zip") {
         extract_zip(&bytes, &install_dir)?;
     } else {
         // Single .tnx file — save directly
-        let filename = dep.url.split('/').next_back().unwrap_or("lib.tnx");
-        let filename = if filename.ends_with(".tnx") {
-            filename.to_string()
+        let filename = if name_for_dispatch.ends_with(".tnx") {
+            name_for_dispatch
         } else {
-            format!("{}.tnx", filename)
+            format!("{}.tnx", name_for_dispatch)
         };
         fs::write(install_dir.join(filename), &bytes)
             .map_err(|e| format!("Cannot write file: {}", e))?;
@@ -418,6 +439,115 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
         dep.group, dep.artifact_id, dep.version, actual_sha256
     );
     Ok(Some(actual_sha256))
+}
+
+/// Recognizes a tinox-central-shaped download response — a JSON object
+/// with (at least) `filename` and `contentBase64` string fields — and
+/// returns the decoded artifact bytes plus its reported filename. `None`
+/// for anything else (a plain tar.gz/zip/.tnx response body, which is
+/// the common case for a dependency hosted as a static file), so callers
+/// fall back to treating the raw bytes as the artifact itself.
+///
+/// Hand-rolled rather than pulling in a JSON crate, matching this file's
+/// existing hand-rolled TOML manifest parser — the shape needed here is
+/// two fixed string fields, not general JSON.
+fn parse_registry_envelope(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let filename = extract_json_string_field(trimmed, "filename")?;
+    let content_base64 = extract_json_string_field(trimmed, "contentBase64")?;
+    let decoded = base64_decode(&content_base64)?;
+    Some((filename, decoded))
+}
+
+/// Finds `"field": "value"` in a (trusted, server-controlled) JSON object
+/// string and returns `value`, unescaping `\"` and `\\` only (the only
+/// escapes tinox-central's `Json::serialize` needs for a filename/base64
+/// payload — both are otherwise plain-ASCII fields).
+fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\"", field);
+    let key_pos = json.find(&needle)?;
+    let after_key = &json[key_pos + needle.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = after_key[colon_pos + 1..].trim_start();
+    let mut chars = after_colon.char_indices();
+    let (_, first) = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+    let mut result = String::new();
+    let mut escaped = false;
+    for (i, c) in chars {
+        if escaped {
+            match c {
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                other => result.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            let _ = i;
+            return Some(result);
+        }
+        result.push(c);
+    }
+    None
+}
+
+/// Standard base64 (RFC 4648, with `=` padding) decoder — the alphabet
+/// `tinox.core.base64`'s `Base64::encodeBytes` uses on the server side.
+/// Hand-rolled for the same reason as `parse_registry_envelope`: one
+/// fixed, well-known format, not worth a new crate dependency for.
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
+    let mut i = 0;
+    while i < clean.len() {
+        let b0 = *clean.get(i)?;
+        let c0 = val(b0)?;
+        let b1 = *clean.get(i + 1)?;
+        let c1 = val(b1)?;
+        let b2 = clean.get(i + 2).copied();
+        let b3 = clean.get(i + 3).copied();
+
+        out.push((c0 << 2) | (c1 >> 4));
+
+        match (b2, b3) {
+            (Some(b'='), _) | (None, _) => break,
+            (Some(b2v), Some(b'=')) | (Some(b2v), None) => {
+                let c2 = val(b2v)?;
+                out.push((c1 << 4) | (c2 >> 2));
+                break;
+            }
+            (Some(b2v), Some(b3v)) => {
+                let c2 = val(b2v)?;
+                out.push((c1 << 4) | (c2 >> 2));
+                let c3 = val(b3v)?;
+                out.push((c2 << 6) | c3);
+            }
+        }
+        i += 4;
+    }
+    Some(out)
 }
 
 fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {
@@ -619,7 +749,15 @@ pub fn cmd_package() {
     let archive_name = format!("{}-{}.tar.gz", pkg.name, pkg.version);
     let archive_path = root.join(&archive_name);
 
-    match build_tar_gz(&archive_path, &root, &tnx_files) {
+    // Archive entries are relative to src/, not to the project root: a
+    // consumer's `tinox install` extracts this archive directly into
+    // .tinox/deps/<group>/<artifactId>/<version>/, and import resolution
+    // (resolve_in_dep_dirs in main.rs) looks for the imported module path
+    // right under THAT directory — a leading "src/" in the archive would
+    // put every file one level too deep and break every import of this
+    // package (confirmed by hand: a consumer importing `foo.Bar` expects
+    // <dep-dir>/foo/Bar.tnx, not <dep-dir>/src/foo/Bar.tnx).
+    match build_tar_gz(&archive_path, &src_dir, &tnx_files) {
         Ok(_) => println!("Packaged: {}", archive_name),
         Err(e) => eprintln!("error: {}", e),
     }
@@ -942,5 +1080,85 @@ mod tests {
         assert_eq!(reread.dependencies[0].version, "2.0.0");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn base64_decode_matches_known_vectors() {
+        // RFC 4648 test vectors.
+        assert_eq!(base64_decode("").unwrap(), b"".to_vec());
+        assert_eq!(base64_decode("Zg==").unwrap(), b"f".to_vec());
+        assert_eq!(base64_decode("Zm8=").unwrap(), b"fo".to_vec());
+        assert_eq!(base64_decode("Zm9v").unwrap(), b"foo".to_vec());
+        assert_eq!(base64_decode("Zm9vYg==").unwrap(), b"foob".to_vec());
+        assert_eq!(base64_decode("Zm9vYmE=").unwrap(), b"fooba".to_vec());
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar".to_vec());
+    }
+
+    #[test]
+    fn base64_decode_roundtrips_binary_with_embedded_nul() {
+        // The whole point of this codepath: bytes a plain tinox `String`
+        // can't represent (embedded 0x00) must still decode correctly.
+        let raw: Vec<u8> = vec![0x00, 0x01, 0xff, 0x00, b'A', 0xfe];
+        // Precomputed standard base64 of the bytes above.
+        let encoded = "AAH/AEH+";
+        assert_eq!(base64_decode(encoded).unwrap(), raw);
+    }
+
+    #[test]
+    fn parse_registry_envelope_extracts_filename_and_decodes_content() {
+        let json = br#"{"filename":"websocket-1.0.0.tar.gz","sha256":"abc","sizeBytes":3,"contentBase64":"Zm9v"}"#;
+        let (filename, decoded) = parse_registry_envelope(json).expect("envelope should parse");
+        assert_eq!(filename, "websocket-1.0.0.tar.gz");
+        assert_eq!(decoded, b"foo".to_vec());
+    }
+
+    #[test]
+    fn parse_registry_envelope_handles_escaped_filename() {
+        let json = br#"{"filename":"weird\"name\\.tnx","contentBase64":"Zg=="}"#;
+        let (filename, decoded) = parse_registry_envelope(json).expect("envelope should parse");
+        assert_eq!(filename, "weird\"name\\.tnx");
+        assert_eq!(decoded, b"f".to_vec());
+    }
+
+    #[test]
+    fn build_tar_gz_entries_have_no_src_prefix() {
+        // #172 follow-on: `tinox package` archives must extract directly
+        // into a dependency install dir with the module path at the top
+        // level (matching resolve_in_dep_dirs' expectations), not nested
+        // under an extra "src/" the consumer never asked for.
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "build_tar_gz_no_src_prefix"
+        ));
+        let src_dir = dir.join("src");
+        fs::create_dir_all(src_dir.join("foo")).unwrap();
+        fs::write(src_dir.join("foo").join("Bar.tnx"), "class Bar {}").unwrap();
+
+        let files = vec![src_dir.join("foo").join("Bar.tnx")];
+        let archive_path = dir.join("out.tar.gz");
+        build_tar_gz(&archive_path, &src_dir, &files).unwrap();
+
+        let extract_dir = dir.join("extracted");
+        let bytes = fs::read(&archive_path).unwrap();
+        extract_tar_gz(&bytes, &extract_dir).unwrap();
+
+        assert!(
+            extract_dir.join("foo").join("Bar.tnx").exists(),
+            "expected foo/Bar.tnx directly under the extract dir, found: {:?}",
+            fs::read_dir(&extract_dir).ok().map(|e| e.filter_map(|x| x.ok().map(|x| x.path())).collect::<Vec<_>>())
+        );
+        assert!(!extract_dir.join("src").exists(), "archive must not carry a leading src/ path segment");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_registry_envelope_returns_none_for_non_json_bytes() {
+        // A real tar.gz/zip response body never starts with '{' as valid
+        // UTF-8 text -- must fall through untouched, not be misdetected.
+        let gzip_magic: &[u8] = &[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00];
+        assert!(parse_registry_envelope(gzip_magic).is_none());
+        assert!(parse_registry_envelope(b"not json at all").is_none());
     }
 }

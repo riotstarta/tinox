@@ -4612,9 +4612,22 @@ static int route_matches(const char* pattern, const char* path, void* params_map
             const char* pname = pattern + 1;
             const char* pend  = pname;
             while (*pend && *pend != '/') pend++;
-            char pname_buf[64];
+            // Bug 176: this used to be `char pname_buf[64]` -- a stack
+            // buffer reused on every loop iteration -- passed straight to
+            // tinox_map_set(params_map, pname_buf, ...). params_map here is
+            // always g_path_params_map (thread_local_init(), borrowed_keys=1),
+            // and tinox_map_set only strdup()s the key when borrowed_keys==0;
+            // with borrowed_keys==1 it stores the raw pointer as-is. So every
+            // route with N>1 `:param`s ended up with every entry's key
+            // pointing at the SAME reused stack slot, left holding whatever
+            // the *last* parameter's name happened to be by the time a
+            // handler actually read the map -- every earlier parameter's
+            // getParam() lookup then silently failed (key no longer matched)
+            // and returned "". Heap-allocating the name buffer here, exactly
+            // like `val` right below already does, gives each parameter name
+            // its own storage that outlives this loop iteration.
             size_t nlen = (size_t)(pend - pname);
-            if (nlen >= sizeof(pname_buf)) nlen = sizeof(pname_buf) - 1;
+            char* pname_buf = (char*)malloc(nlen + 1);
             memcpy(pname_buf, pname, nlen);
             pname_buf[nlen] = '\0';
             // Extract value from path
