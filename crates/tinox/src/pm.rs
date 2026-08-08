@@ -318,13 +318,39 @@ pub fn dep_install_dir(root: &Path, dep: &Dependency) -> Result<PathBuf, String>
         .join(&dep.version))
 }
 
-pub fn installed_dep_dirs(root: &Path, manifest: &TinoxManifest) -> Vec<PathBuf> {
-    manifest
-        .dependencies
-        .iter()
-        .filter_map(|d| dep_install_dir(root, d).ok())
-        .filter(|p| p.exists())
-        .collect()
+/// Every installed dependency directory reachable for import resolution —
+/// not just the ones this project's own tinox.toml lists directly.
+/// `install_dep_transitively` installs a dependency's own transitive
+/// dependencies flat into the SAME `.tinox/deps/<group>/<artifactId>/
+/// <version>/` tree as direct ones (deliberately, see that function's own
+/// doc comment) specifically so a package like `oidc` — which itself
+/// imports `tinox.core.oauth2` — keeps compiling for a consumer whose own
+/// tinox.toml only declares `oidc` directly. Walking the manifest's
+/// `.dependencies` list alone (the previous behavior) missed exactly
+/// those transitively-installed-but-not-directly-declared directories,
+/// so any multi-level dependency chain failed to build with "Cannot
+/// resolve stdlib import" despite `tinox install` having fetched
+/// everything it needed onto disk. `manifest` is unused now but kept in
+/// the signature — this stays a drop-in replacement at its one call site.
+pub fn installed_dep_dirs(root: &Path, _manifest: &TinoxManifest) -> Vec<PathBuf> {
+    let deps_root = root.join(".tinox").join("deps");
+    let mut dirs = Vec::new();
+    let Ok(groups) = fs::read_dir(&deps_root) else {
+        return dirs;
+    };
+    for group in groups.flatten() {
+        let Ok(artifacts) = fs::read_dir(group.path()) else { continue };
+        for artifact in artifacts.flatten() {
+            let Ok(versions) = fs::read_dir(artifact.path()) else { continue };
+            for version in versions.flatten() {
+                let p = version.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                }
+            }
+        }
+    }
+    dirs
 }
 
 /// Resolves the expected checksum for `dep` per the priority described on
@@ -757,7 +783,20 @@ pub fn cmd_package() {
     // put every file one level too deep and break every import of this
     // package (confirmed by hand: a consumer importing `foo.Bar` expects
     // <dep-dir>/foo/Bar.tnx, not <dep-dir>/src/foo/Bar.tnx).
-    match build_tar_gz(&archive_path, &src_dir, &tnx_files) {
+    //
+    // tinox.toml itself rides along at the archive root (i.e. also
+    // directly under the extracted dep dir), NOT relative to src/ like the
+    // .tnx files — it's what makes this package's own [[dependencies]]
+    // discoverable at all. Without it, install_dep_transitively's
+    // `read_manifest(&install_dir)` silently sees "no manifest" (its
+    // documented behavior for a dependency that "doesn't ship its own
+    // tinox.toml") and drops every transitive dependency this package
+    // declares — confirmed by hand: a package depending on this one
+    // installed fine but silently missing everything BUT this package's
+    // own direct files.
+    let manifest_path = root.join("tinox.toml");
+    let extra: &[(&Path, &str)] = &[(manifest_path.as_path(), "tinox.toml")];
+    match build_tar_gz(&archive_path, &src_dir, &tnx_files, extra) {
         Ok(_) => println!("Packaged: {}", archive_name),
         Err(e) => eprintln!("error: {}", e),
     }
@@ -778,7 +817,15 @@ fn collect_tnx_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn build_tar_gz(archive_path: &Path, root: &Path, files: &[PathBuf]) -> Result<(), String> {
+/// `extra` are files added under an explicit archive-relative name instead
+/// of being stripped relative to `root` — namely tinox.toml, which lives
+/// at the project root while every other archived file lives under src/.
+fn build_tar_gz(
+    archive_path: &Path,
+    root: &Path,
+    files: &[PathBuf],
+    extra: &[(&Path, &str)],
+) -> Result<(), String> {
     use flate2::{write::GzEncoder, Compression};
     use tar::Builder;
 
@@ -794,6 +841,14 @@ fn build_tar_gz(archive_path: &Path, root: &Path, files: &[PathBuf]) -> Result<(
         builder
             .append_path_with_name(file_path, rel)
             .map_err(|e| format!("Cannot add {}: {}", rel.display(), e))?;
+    }
+
+    for (extra_path, archive_name) in extra {
+        if extra_path.exists() {
+            builder
+                .append_path_with_name(extra_path, archive_name)
+                .map_err(|e| format!("Cannot add {}: {}", archive_name, e))?;
+        }
     }
 
     builder
@@ -912,6 +967,36 @@ mod tests {
         let dir = dep_install_dir(root, &dep("com.example", "mylib", "1.2.3")).unwrap();
         assert!(dir.starts_with(root.join(".tinox").join("deps")));
         assert_eq!(dir, root.join(".tinox/deps/com.example/mylib/1.2.3"));
+    }
+
+    #[test]
+    fn installed_dep_dirs_finds_transitively_installed_deps_not_just_direct_ones() {
+        // #172 follow-on: install_dep_transitively installs a dependency's
+        // OWN dependencies into the same flat .tinox/deps tree as direct
+        // ones. installed_dep_dirs must surface all of them for import
+        // resolution, not just whatever the project's own tinox.toml lists
+        // directly — otherwise a package like oidc (which itself imports
+        // oauth2) fails to compile for a consumer that only declared oidc.
+        let root = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "installed_dep_dirs_transitive"
+        ));
+        let direct = root.join(".tinox/deps/tinox.core/oidc/1.0.0");
+        let transitive = root.join(".tinox/deps/tinox.core/oauth2/1.0.0");
+        fs::create_dir_all(&direct).unwrap();
+        fs::create_dir_all(&transitive).unwrap();
+
+        // Empty manifest: nothing declared directly in tinox.toml here —
+        // both dirs must still show up, since they're both already on disk.
+        let manifest = TinoxManifest::default();
+        let mut dirs = installed_dep_dirs(&root, &manifest);
+        dirs.sort();
+        let mut expected = vec![direct, transitive];
+        expected.sort();
+        assert_eq!(dirs, expected);
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -1137,7 +1222,7 @@ mod tests {
 
         let files = vec![src_dir.join("foo").join("Bar.tnx")];
         let archive_path = dir.join("out.tar.gz");
-        build_tar_gz(&archive_path, &src_dir, &files).unwrap();
+        build_tar_gz(&archive_path, &src_dir, &files, &[]).unwrap();
 
         let extract_dir = dir.join("extracted");
         let bytes = fs::read(&archive_path).unwrap();
@@ -1149,6 +1234,44 @@ mod tests {
             fs::read_dir(&extract_dir).ok().map(|e| e.filter_map(|x| x.ok().map(|x| x.path())).collect::<Vec<_>>())
         );
         assert!(!extract_dir.join("src").exists(), "archive must not carry a leading src/ path segment");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_tar_gz_carries_manifest_for_transitive_deps() {
+        // A dependency's own [[dependencies]] are only discoverable by
+        // install_dep_transitively if tinox.toml itself is in the
+        // archive, at the extracted root (NOT under src/, unlike every
+        // .tnx file) — otherwise read_manifest(&install_dir) silently
+        // sees "no manifest" and drops every transitive dependency.
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "build_tar_gz_manifest"
+        ));
+        let src_dir = dir.join("src");
+        fs::create_dir_all(src_dir.join("foo")).unwrap();
+        fs::write(src_dir.join("foo").join("Bar.tnx"), "class Bar {}").unwrap();
+        fs::write(
+            dir.join("tinox.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"g\"\nartifactId = \"a\"\nversion = \"1.0.0\"\nurl = \"http://example.com/a\"\n",
+        )
+        .unwrap();
+
+        let files = vec![src_dir.join("foo").join("Bar.tnx")];
+        let archive_path = dir.join("out.tar.gz");
+        let manifest_path = dir.join("tinox.toml");
+        build_tar_gz(&archive_path, &src_dir, &files, &[(manifest_path.as_path(), "tinox.toml")]).unwrap();
+
+        let extract_dir = dir.join("extracted");
+        let bytes = fs::read(&archive_path).unwrap();
+        extract_tar_gz(&bytes, &extract_dir).unwrap();
+
+        assert!(extract_dir.join("foo").join("Bar.tnx").exists());
+        let extracted_manifest = read_manifest(&extract_dir).unwrap();
+        assert_eq!(extracted_manifest.dependencies.len(), 1);
+        assert_eq!(extracted_manifest.dependencies[0].artifact_id, "a");
 
         fs::remove_dir_all(&dir).ok();
     }
