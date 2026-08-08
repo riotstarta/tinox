@@ -1385,11 +1385,13 @@ fn render_docs_html(
     if !dependencies.is_empty() {
         nav.push_str("<li class=\"nav-section\">Dependencies</li><li><a href=\"#dependencies\">Dependencies</a></li>");
         let rows: String = dependencies.iter().map(|d| {
-            // Sibling docs.html, one directory per artifactId — matches
-            // how these pages are actually laid out (docs/tinox-core/<mod>/docs.html).
+            // Sibling docs.html, one directory per artifactId THEN version
+            // — matches how these pages are actually laid out
+            // (docs/tinox-core/<mod>/<version-with-dashes>/docs.html).
+            let version_slug = version_path_slug(&d.version);
             format!(
-                "<tr><td class=\"member-name\"><a href=\"../{}/docs.html\"><code>{}</code></a></td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
-                html_escape(&d.artifact_id), html_escape(&d.artifact_id), html_escape(&d.version), html_escape(&d.group)
+                "<tr><td class=\"member-name\"><a href=\"../../{}/{}/docs.html\"><code>{}</code></a></td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
+                html_escape(&d.artifact_id), version_slug, html_escape(&d.artifact_id), html_escape(&d.version), html_escape(&d.group)
             )
         }).collect();
         body.push_str(&format!(
@@ -1593,6 +1595,13 @@ fn html_escape(s: &str) -> String {
 /// `01_basic_publish.tnx` → `Basic publish`; `-`/`_` become spaces, a
 /// leading numeric ordering prefix (`01_`, `2-`) is dropped, first letter
 /// capitalized. Falls back to the stem itself if that leaves nothing.
+/// `1.0.0` → `1-0-0` — the version-directory naming convention used for
+/// `docs/tinox-core/<module>/<version>/docs.html` (dots aren't ideal
+/// directory-name characters on every filesystem/URL context, dashes are).
+fn version_path_slug(version: &str) -> String {
+    version.replace('.', "-")
+}
+
 fn humanize_example_name(stem: &str) -> String {
     let no_prefix = stem.trim_start_matches(|c: char| c.is_ascii_digit())
         .trim_start_matches(['_', '-']);
