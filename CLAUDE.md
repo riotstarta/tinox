@@ -67,6 +67,29 @@ nicht per angenommener Nummer.
   gefixt in Bug 40; ein `.toString()`-Fund bei Bug 38 → gefixt in Bug
   39). Erst per Repro nachstellen, dann Zeit investieren.
 
+## Design preference: annotations over manual boilerplate
+
+When working on tinox — whether extending the language itself or writing
+examples/docs — prefer a declarative, annotation-based solution over
+hand-written imperative wiring, if both are reasonably possible. This
+applies to both directions:
+
+- **Language design:** when adding a new capability that involves
+  boilerplate-y setup/wiring (routing, lifecycle hooks, auth/role checks,
+  serialization, endpoint registration, etc.), design it as an annotation
+  (`@Http3RestController`, `@WebsocketEndpoint`, `@OnOpen`, OIDC role
+  guards, …) that generates/wires the code, rather than requiring the
+  user to write that plumbing by hand. Existing annotation-driven features
+  are the template to follow.
+- **Examples:** when writing or updating example code (`examples/**`),
+  demonstrate the annotation-based way of doing something rather than the
+  manual/imperative equivalent, whenever an annotation for it exists.
+
+Only fall back to the manual/imperative approach when no annotation
+exists for the capability yet, the annotation route would be
+disproportionately invasive for the size of the change, or the example's
+whole point is to show the manual/low-level mechanism itself.
+
 ## Build & Test
 
 - `make check` (clippy + Unit-Tests + e2e/matrix/boundary/stdlib_smoke
