@@ -66,12 +66,12 @@ GOOD_EXAMPLES=(
     examples/GreetCommand.tnx
     examples/simple_test/Main.tnx
     examples/vtable_dispatch/Main.tnx
-    examples/rest_minimal/UserController.tnx
-    examples/UserController.tnx
+    examples/rest_minimal/Main.tnx
+    examples/rest_auto/Main.tnx
     examples/modules/main_example/Main.tnx
     examples/modules/multi_import_example/Main.tnx
     examples/interface_extends/Main.tnx
-    examples/rest_with_mini/UserController.tnx
+    examples/rest_with_mini/Main.tnx
 )
 for f in "${GOOD_EXAMPLES[@]}"; do
     run_job "$(job_id "build_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "build_$f")"

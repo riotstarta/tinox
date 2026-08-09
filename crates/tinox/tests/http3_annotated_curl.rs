@@ -1,6 +1,6 @@
 //! @Http3RestController: declarative HTTP/3 REST endpoints
-//! (examples/http3_rest_api/src/TaskController.tnx), compiled entirely by
-//! the compiler's auto-generated `main` (tinox_typecheck's
+//! (examples/http3_rest_api_annotated/src/TaskController.tnx), spawned by
+//! the mandatory Main.tnx bootstrap (tinox_typecheck's
 //! Http3RestControllerInfo + tinox_codegen's emit_http3_route_code) rather
 //! than the hand-written Http3Server::new()/.get()/... calls in
 //! examples/http3_rest_api/src/Main.tnx.
@@ -60,7 +60,7 @@ fn http3_rest_controller_crud_flow() {
 
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let src = root.join("examples/http3_rest_api/src/TaskController.tnx");
+    let src = root.join("examples/http3_rest_api_annotated/src/Main.tnx");
     let workdir = std::env::temp_dir().join(format!(
         "tinox-http3-annotated-curl-{}",
         std::process::id()

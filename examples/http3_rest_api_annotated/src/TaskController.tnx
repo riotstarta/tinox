@@ -1,11 +1,13 @@
-// Declarative counterpart to main.tnx's hand-written Http3Server::new()/
-// .get()/.post()/... version -- same Task CRUD surface, but every route
-// is just a @GET/@POST/@PUT/@PATCH/@DELETE + @Path method, exactly like
-// the plain (TCP) REST annotations in examples/rest_minimal. The single
-// @Http3RestController(port, cert, key) annotation is what routes these
-// through tinox.core.http3_server.Http3Server (QUIC) instead of the
-// TCP auto-server -- the compiler generates the entire Http3Server::new/
-// .get/.post/.../listen() wiring that main.tnx writes out by hand.
+// Declarative counterpart to examples/http3_rest_api/src/Main.tnx's
+// hand-written Http3Server::new()/.get()/.post()/... version -- same Task
+// CRUD surface, but every route is just a @GET/@POST/@PUT/@PATCH/@DELETE +
+// @Path method, exactly like the plain (TCP) REST annotations in
+// examples/rest_minimal. The single @Http3RestController(port, cert, key)
+// annotation is what routes these through tinox.core.http3_server.Http3Server
+// (QUIC) instead of the TCP auto-server -- the compiler generates the
+// Http3Server::new/.get/.post/.../listen() wiring, spawned alongside
+// Main.main() (see sibling Main.tnx) instead of providing its own implicit
+// main.
 //
 // @ApplicationComponent makes the compiler reuse ONE TaskController
 // instance across every request (via a generated _di_get() singleton

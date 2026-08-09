@@ -1,10 +1,11 @@
 //! @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose annotations.
 //!
-//! Compiles examples/EchoEndpoint.tnx (a generated auto-main accept/
-//! message loop — never returns), runs it as a background process, drives
-//! a real handshake + text-frame roundtrip over a raw TCP socket, then kills
-//! it. Not part of the golden-test harness (e2e.rs): those cases must exit
-//! on their own within RUN_TIMEOUT, which an auto-run WS server never does.
+//! Compiles examples/ws_echo_annotated/Main.tnx (a generated auto-run accept/
+//! message loop, spawned by the mandatory Main.tnx bootstrap — never
+//! returns), runs it as a background process, drives a real handshake +
+//! text-frame roundtrip over a raw TCP socket, then kills it. Not part of
+//! the golden-test harness (e2e.rs): those cases must exit on their own
+//! within RUN_TIMEOUT, which an auto-run WS server never does.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -39,7 +40,7 @@ fn read_n(stream: &mut TcpStream, n: usize) -> Vec<u8> {
 fn ws_annotated_endpoint_handshake_and_echo() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let src = root.join("examples/EchoEndpoint.tnx");
+    let src = root.join("examples/ws_echo_annotated/Main.tnx");
     let workdir = std::env::temp_dir().join(format!(
         "tinox-ws-annotations-{}",
         std::process::id()

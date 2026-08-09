@@ -414,6 +414,18 @@ pub struct CodeGen {
     test_entry: Option<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
+    /// Names of `__tinox_run_<kind>()` functions emitted by the REST/HTTP3/
+    /// WS/AMQP auto-run annotation processors -- collected here instead of
+    /// each one claiming @tinox_main directly, so emit_tinox_main_bootstrap
+    /// can spawn all of them (plus call Main_main if present) from one
+    /// unified entry point.
+    background_run_fns: Vec<String>,
+    /// Whether `class Main { fnc main() -> Int32 }` was found and validated
+    /// by emit_class_main_entry_point -- consumed by
+    /// emit_tinox_main_bootstrap, which calls @Main_main from the
+    /// synthesized @tinox_main instead of emit_class_main_entry_point
+    /// wiring it directly (so it can coexist with background_run_fns).
+    user_main_class: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
     /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
@@ -501,6 +513,8 @@ impl CodeGen {
             metrics_path: None,
             test_entry: None,
             has_main: false,
+            background_run_fns: Vec::new(),
+            user_main_class: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
             struct_field_llvm_types: HashMap::new(),
@@ -1831,9 +1845,10 @@ impl CodeGen {
         }
 
         // Alternative entry point `class Main { fnc main() -> Int32 }`
-        // (Issue #149 stage 1) — checked before all the inferred
-        // (HTTP/CLI/websocket/AMQP/test) fallbacks below, since an explicit
-        // class Main should take priority over an implicit one.
+        // (Issue #149 stage 1) — validates the shape and (if valid) records
+        // user_main_class; emit_tinox_main_bootstrap below wires it into
+        // @tinox_main once every auto-run kind has had a chance to register
+        // into background_run_fns, so class Main can coexist with them.
         self.emit_class_main_entry_point(source)?;
 
         // Emit vtable globals for classes that implement interfaces
@@ -1853,6 +1868,9 @@ impl CodeGen {
 
         // Emit the auto-run connect/receive loop for an @Amqp091Consumer class
         self.emit_amqp091_consumer_code();
+
+        // Unify user_main_class + background_run_fns into @tinox_main
+        self.emit_tinox_main_bootstrap();
 
         // Emit DI globals, getters, factories, and startup initializer
         self.emit_di_code();
@@ -2009,13 +2027,17 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        // ── Auto-generated main (only when no user main exists) ─────────────────
+        // ── Auto-run listen loop (only when no legacy bare-fn-main exists) ──────
+        // Registered into background_run_fns instead of claiming @tinox_main
+        // directly, so emit_tinox_main_bootstrap can spawn it (and call
+        // Main_main, and any other registered kind) from one unified entry
+        // point.
         if !self.has_main {
             let port = std::env::var("TINOX_PORT")
                 .ok()
                 .and_then(|s| s.parse::<u16>().ok())
                 .unwrap_or(8080);
-            writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_http() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {port})").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @__tinox_register_routes(i64* %server)").unwrap();
@@ -2023,6 +2045,8 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push("__tinox_run_http".to_string());
         }
     }
 
@@ -2362,7 +2386,10 @@ impl CodeGen {
 
         // ── Auto-main: build the Http3Server, register every route as a
         // closure value, listen ───────────────────────────────────────────────
-        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
+        // The listen loop lives in __tinox_run_http3(), a plain callee (not
+        // @tinox_main directly), so a later spawn-based bootstrap can run it
+        // on its own thread instead of tail-calling it inline.
+        writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_http3() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
         writeln!(&mut self.lambda_ir,
             "  %h3_certp = getelementptr [{cert_len} x i8], [{cert_len} x i8]* @__h3_cert, i64 0, i64 0").unwrap();
@@ -2401,7 +2428,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        self.has_main = true;
+        self.background_run_fns.push("__tinox_run_http3".to_string());
     }
 
     /// Generates an auto-run `main` for a single `@WebsocketEndpoint`-annotated class:
@@ -2411,16 +2438,19 @@ impl CodeGen {
     /// (`examples/ws_echo/Main.tnx`), calling the already-compiled `Ws`/`WsServer`
     /// static methods from `tinox.core.websocket` (which the file must import).
     ///
-    /// Only fires when there is exactly one endpoint and no user `main` (mirrors
-    /// the REST auto-main in `emit_route_code`); more than one endpoint is a hard
-    /// error raised before codegen runs (see main.rs), so this defensively no-ops
-    /// instead of silently picking one. A REST auto-main (routes present) wins by
-    /// running first and setting `has_main`.
+    /// Fires once per `@WebsocketEndpoint` class found (no upper limit — each
+    /// gets its own uniquely-named `__tinox_run_ws_<idx>()`, spawned on its
+    /// own thread by `emit_tinox_main_bootstrap`, so distinct endpoints on
+    /// distinct ports coexist fine; two endpoints on the *same* port both
+    /// still compile, but the second one's `WsServer_listen` bind fails at
+    /// runtime and that thread exits early -- not caught at compile time,
+    /// same as any other port-already-in-use situation). No-op without a
+    /// user `main` shape issue; skipped entirely once a legacy top-level
+    /// `fn main()` already claims `has_main`.
     fn emit_ws_code(&mut self) {
-        if self.ws_endpoints.is_empty() || self.has_main || self.ws_endpoints.len() > 1 {
+        if self.ws_endpoints.is_empty() || self.has_main {
             return;
         }
-        let ep = self.ws_endpoints[0].clone();
 
         // No `declare` here for WsServer_listen/accept/Ws_readMessage/Ws_text/Ws_close:
         // they are `define`d by tinox.core.websocket itself (required import, checked
@@ -2430,63 +2460,71 @@ impl CodeGen {
             panic!("@WebsocketEndpoint requires `import tinox.core.websocket;` (WsFrame type not found)");
         }
 
-        let inst_size = self.struct_layouts.get(ep.class_name.as_str())
-            .map(|f| (f.len().max(1) * 8) as i64)
-            .unwrap_or(8);
-        let port = ep.port
-            .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
-            .unwrap_or(8080);
+        let endpoints = self.ws_endpoints.clone();
+        for (idx, ep) in endpoints.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(ep.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+            let port = ep.port
+                .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
+                .unwrap_or(8080);
 
-        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+            // The accept/message loop lives in __tinox_run_ws_<idx>(), a
+            // plain callee (not @tinox_main directly), so
+            // emit_tinox_main_bootstrap can run it on its own thread instead
+            // of tail-calling it inline.
+            let run_fn = format!("__tinox_run_ws_{idx}");
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
 
-        writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
 
-        writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %conn_open").unwrap();
+            writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %conn_open").unwrap();
 
-        writeln!(&mut self.lambda_ir, "conn_open:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-        if let Some(ref on_open) = ep.on_open {
-            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
+            writeln!(&mut self.lambda_ir, "conn_open:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            if let Some(ref on_open) = ep.on_open {
+                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+
+            // opcode 1 (text) → @OnMessage; anything else (binary, close, EOF,
+            // protocol error — Ping/Pong are already auto-handled inside
+            // Ws::readMessage and never reach here) ends the connection.
+            writeln!(&mut self.lambda_ir, "msg_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_text = icmp eq i64 %opcode, 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %handle_text, label %conn_end").unwrap();
+
+            writeln!(&mut self.lambda_ir, "handle_text:").unwrap();
+            if let Some(ref on_message) = ep.on_message {
+                writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "conn_end:").unwrap();
+            if let Some(ref on_close) = ep.on_close {
+                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push(run_fn);
         }
-        writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
-
-        // opcode 1 (text) → @OnMessage; anything else (binary, close, EOF,
-        // protocol error — Ping/Pong are already auto-handled inside
-        // Ws::readMessage and never reach here) ends the connection.
-        writeln!(&mut self.lambda_ir, "msg_loop:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
-        writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
-        writeln!(&mut self.lambda_ir, "  %is_text = icmp eq i64 %opcode, 1").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %handle_text, label %conn_end").unwrap();
-
-        writeln!(&mut self.lambda_ir, "handle_text:").unwrap();
-        if let Some(ref on_message) = ep.on_message {
-            writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
-        }
-        writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
-
-        writeln!(&mut self.lambda_ir, "conn_end:").unwrap();
-        if let Some(ref on_close) = ep.on_close {
-            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
-        }
-        writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
-        writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
-
-        writeln!(&mut self.lambda_ir, "}}").unwrap();
-        writeln!(&mut self.lambda_ir).unwrap();
-
-        self.has_main = true;
     }
 
     /// Registers a string literal (same bookkeeping as `gen_literal`'s
@@ -2513,88 +2551,96 @@ impl CodeGen {
     /// receives the whole `Amqp10Message` pointer (not a decoded body) so no
     /// string-building loop needs to be hand-rolled in raw IR.
     ///
-    /// Only fires when there is exactly one consumer and no user `main`
-    /// (mirrors the WS/REST auto-main precedence); more than one consumer is
-    /// a hard error raised before codegen runs (see main.rs), so this
-    /// defensively no-ops instead of silently picking one.
+    /// Fires once per `@Amqp10Consumer` class found (no upper limit — each
+    /// gets its own uniquely-named `__tinox_run_amqp10_<idx>()`, spawned on
+    /// its own thread by `emit_tinox_main_bootstrap`; multiple consumers
+    /// against the same broker/port but different queues is a normal,
+    /// expected shape, unlike WS where the same port would collide).
     fn emit_amqp10_consumer_code(&mut self) {
-        if self.amqp10_consumers.is_empty() || self.has_main || self.amqp10_consumers.len() > 1 {
+        if self.amqp10_consumers.is_empty() || self.has_main {
             return;
         }
-        let c = self.amqp10_consumers[0].clone();
 
         if !self.class_named_types.contains("Amqp10Message") {
             panic!("@Amqp10Consumer requires `import tinox.core.amqp10;` (Amqp10Message type not found)");
         }
 
-        let inst_size = self.struct_layouts.get(c.class_name.as_str())
-            .map(|f| (f.len().max(1) * 8) as i64)
-            .unwrap_or(8);
+        let consumers = self.amqp10_consumers.clone();
+        for (idx, c) in consumers.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(c.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
 
-        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            // The connect/receive loop lives in __tinox_run_amqp10_<idx>(), a
+            // plain callee (not @tinox_main directly), so
+            // emit_tinox_main_bootstrap can run it on its own thread instead
+            // of tail-calling it inline.
+            let run_fn = format!("__tinox_run_amqp10_{idx}");
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
-        let host_ptr = self.emit_lambda_string_literal(&c.host);
-        let user_ptr = self.emit_lambda_string_literal(&c.user);
-        let pass_ptr = self.emit_lambda_string_literal(&c.pass);
-        let address_ptr = self.emit_lambda_string_literal(&c.address);
-        let name_ptr = self.emit_lambda_string_literal("tinox-consumer");
+            let host_ptr = self.emit_lambda_string_literal(&c.host);
+            let user_ptr = self.emit_lambda_string_literal(&c.user);
+            let pass_ptr = self.emit_lambda_string_literal(&c.pass);
+            let address_ptr = self.emit_lambda_string_literal(&c.address);
+            let name_ptr = self.emit_lambda_string_literal("tinox-consumer");
 
-        writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @Amqp10Connection_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.Amqp10Connection, ptr %conn_obj, i32 0, i32 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_begin").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @Amqp10Connection_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.Amqp10Connection, ptr %conn_obj, i32 0, i32 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_begin").unwrap();
 
-        writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
 
-        writeln!(&mut self.lambda_ir, "do_begin:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %sess_obj = call i64* @Amqp10Session_begin(i64* null, i64* %conn_obj)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chan_field = getelementptr %class.Amqp10Session, ptr %sess_obj, i32 0, i32 1").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chan_val = load i64, i64* %chan_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chan_val, -1").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %begin_fail, label %do_attach").unwrap();
+            writeln!(&mut self.lambda_ir, "do_begin:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %sess_obj = call i64* @Amqp10Session_begin(i64* null, i64* %conn_obj)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chan_field = getelementptr %class.Amqp10Session, ptr %sess_obj, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chan_val = load i64, i64* %chan_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chan_val, -1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %begin_fail, label %do_attach").unwrap();
 
-        writeln!(&mut self.lambda_ir, "begin_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "begin_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
-        writeln!(&mut self.lambda_ir, "do_attach:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %link_obj = call i64* @Amqp10Link_attach(i64* null, i64* %sess_obj, i8* {name_ptr}, i1 1, i8* {address_ptr})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %handle_field = getelementptr %class.Amqp10Link, ptr %link_obj, i32 0, i32 2").unwrap();
-        writeln!(&mut self.lambda_ir, "  %handle_val = load i64, i64* %handle_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %handle_bad = icmp eq i64 %handle_val, -1").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %handle_bad, label %attach_fail, label %consumer_ready").unwrap();
+            writeln!(&mut self.lambda_ir, "do_attach:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %link_obj = call i64* @Amqp10Link_attach(i64* null, i64* %sess_obj, i8* {name_ptr}, i1 1, i8* {address_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handle_field = getelementptr %class.Amqp10Link, ptr %link_obj, i32 0, i32 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handle_val = load i64, i64* %handle_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handle_bad = icmp eq i64 %handle_val, -1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %handle_bad, label %attach_fail, label %consumer_ready").unwrap();
 
-        writeln!(&mut self.lambda_ir, "attach_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
+            writeln!(&mut self.lambda_ir, "attach_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
-        writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
-        writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
-        writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_grantCredit(i64* %link_obj, i64 1)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
-        writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_grantCredit(i64* %link_obj, i64 1)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
-        writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
-        if let Some(ref on_message) = c.on_message {
-            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if let Some(ref on_message) = c.on_message {
+                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push(run_fn);
         }
-        writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
-        writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
-        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
-
-        writeln!(&mut self.lambda_ir, "}}").unwrap();
-        writeln!(&mut self.lambda_ir).unwrap();
-
-        self.has_main = true;
     }
 
     /// Generates an auto-run `main` for a single `@Amqp091Consumer`-annotated
@@ -2609,89 +2655,166 @@ impl CodeGen {
     /// is hardcoded to 1 (mirrors amqp10's per-message `grantCredit(1)`) —
     /// no annotation argument for it in v1, s. tasklist.md "Später".
     ///
-    /// Only fires when there is exactly one consumer and no user `main`
-    /// (mirrors the WS/AMQP-1.0 auto-main precedence); more than one
-    /// consumer is a hard error raised before codegen runs (see main.rs),
-    /// so this defensively no-ops instead of silently picking one.
+    /// Fires once per `@Amqp091Consumer` class found (no upper limit — each
+    /// gets its own uniquely-named `__tinox_run_amqp091_<idx>()`, spawned on
+    /// its own thread by `emit_tinox_main_bootstrap`; multiple consumers
+    /// against the same broker/port but different queues is a normal,
+    /// expected shape, unlike WS where the same port would collide).
     fn emit_amqp091_consumer_code(&mut self) {
-        if self.amqp091_consumers.is_empty() || self.has_main || self.amqp091_consumers.len() > 1 {
+        if self.amqp091_consumers.is_empty() || self.has_main {
             return;
         }
-        let c = self.amqp091_consumers[0].clone();
 
         if !self.class_named_types.contains("AmqpMessage091") {
             panic!("@Amqp091Consumer requires `import tinox.core.amqp091;` (AmqpMessage091 type not found)");
         }
 
-        let inst_size = self.struct_layouts.get(c.class_name.as_str())
-            .map(|f| (f.len().max(1) * 8) as i64)
-            .unwrap_or(8);
+        let consumers = self.amqp091_consumers.clone();
+        for (idx, c) in consumers.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(c.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
 
-        writeln!(&mut self.lambda_ir, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            // The connect/receive loop lives in __tinox_run_amqp091_<idx>(),
+            // a plain callee (not @tinox_main directly), so
+            // emit_tinox_main_bootstrap can run it on its own thread instead
+            // of tail-calling it inline.
+            let run_fn = format!("__tinox_run_amqp091_{idx}");
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
-        let host_ptr = self.emit_lambda_string_literal(&c.host);
-        let vhost_ptr = self.emit_lambda_string_literal(&c.vhost);
-        let user_ptr = self.emit_lambda_string_literal(&c.user);
-        let pass_ptr = self.emit_lambda_string_literal(&c.pass);
-        let queue_ptr = self.emit_lambda_string_literal(&c.queue);
+            let host_ptr = self.emit_lambda_string_literal(&c.host);
+            let vhost_ptr = self.emit_lambda_string_literal(&c.vhost);
+            let user_ptr = self.emit_lambda_string_literal(&c.user);
+            let pass_ptr = self.emit_lambda_string_literal(&c.pass);
+            let queue_ptr = self.emit_lambda_string_literal(&c.queue);
 
-        writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @AmqpConnection091_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {vhost_ptr}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.AmqpConnection091, ptr %conn_obj, i32 0, i32 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_open").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @AmqpConnection091_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {vhost_ptr}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.AmqpConnection091, ptr %conn_obj, i32 0, i32 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_open").unwrap();
 
-        writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
 
-        writeln!(&mut self.lambda_ir, "do_open:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chan_obj = call i64* @AmqpChannel091_open(i64* null, i64* %conn_obj)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chanid_field = getelementptr %class.AmqpChannel091, ptr %chan_obj, i32 0, i32 1").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chanid_val = load i64, i64* %chanid_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chanid_val, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
+            writeln!(&mut self.lambda_ir, "do_open:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chan_obj = call i64* @AmqpChannel091_open(i64* null, i64* %conn_obj)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chanid_field = getelementptr %class.AmqpChannel091, ptr %chan_obj, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chanid_val = load i64, i64* %chanid_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chanid_val, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
 
-        writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
-        writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %qos_ok = call i1 @AmqpChannel091_qos(i64* %chan_obj, i64 1)").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
+            writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %qos_ok = call i1 @AmqpChannel091_qos(i64* %chan_obj, i64 1)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
 
-        writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
+            writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
-        writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %tag_ptr = call i8* @AmqpChannel091_consume(i64* %chan_obj, i8* {queue_ptr})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %tag_len = call i64 @tinox_string_length(i8* %tag_ptr)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %tag_bad = icmp eq i64 %tag_len, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
+            writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tag_ptr = call i8* @AmqpChannel091_consume(i64* %chan_obj, i8* {queue_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tag_len = call i64 @tinox_string_length(i8* %tag_ptr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tag_bad = icmp eq i64 %tag_len, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
 
-        writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
-        writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
+            writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
 
-        writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
-        writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
-        writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
-        writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
-        writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
-        writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
-        writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
-        if let Some(ref on_message) = c.on_message {
-            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if let Some(ref on_message) = c.on_message {
+                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push(run_fn);
         }
-        writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
-        writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
-        writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
-        writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+    }
 
+    /// Unifies `class Main { fnc main() }` (user_main_class) and the
+    /// auto-run kinds registered in background_run_fns (REST/HTTP3/WS/AMQP)
+    /// into one @tinox_main, instead of each claiming it directly and
+    /// silently pre-empting the others via has_main. Each background kind
+    /// runs on its own real thread (tinox_task_spawn) so e.g. a REST
+    /// controller and a WebSocket endpoint can now run in the same process;
+    /// @Main_main (if present) runs on the main thread and its return code
+    /// is what the process exits with once every spawned kind is joined
+    /// (which for a listen loop never happens -- same "blocks forever"
+    /// behavior a single directly-called `.listen()` had before).
+    ///
+    /// No-op (falls through to has_main's existing "undefined reference to
+    /// tinox_main" link-time signal) when there is nothing to wire: no
+    /// class Main and no background kind. Also a no-op when a legacy
+    /// top-level `fn main()` already claimed @tinox_main directly (that
+    /// deprecated pre-#149 shape intentionally does not participate in this
+    /// unification).
+    fn emit_tinox_main_bootstrap(&mut self) {
+        if self.has_main {
+            return;
+        }
+        if !self.user_main_class && self.background_run_fns.is_empty() {
+            return;
+        }
+
+        let run_fns = self.background_run_fns.clone();
+        let mut handles = Vec::new();
+        for (idx, run_fn) in run_fns.iter().enumerate() {
+            let tramp = format!("__tinox_trampoline_{idx}");
+            writeln!(&mut self.lambda_ir, "define i8* @{tramp}(i8* %_unused) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %r = call i64 @{run_fn}()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %rp = inttoptr i64 %r to i8*").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i8* %rp").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+            handles.push((idx, tramp));
+        }
+
+        writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        for (idx, tramp) in &handles {
+            writeln!(&mut self.lambda_ir,
+                "  %h_{idx} = call i8* @tinox_task_spawn(i8* (i8*)* @{tramp}, i8* null)").unwrap();
+        }
+
+        if self.user_main_class {
+            writeln!(&mut self.lambda_ir, "  %rc = call i32 @Main_main()").unwrap();
+        }
+
+        for (idx, _) in &handles {
+            writeln!(&mut self.lambda_ir, "  %j_{idx} = call i64 @tinox_task_await(i8* %h_{idx})").unwrap();
+        }
+
+        if self.user_main_class {
+            writeln!(&mut self.lambda_ir, "  ret i32 %rc").unwrap();
+        } else {
+            // No class Main: the first background kind's own join result is
+            // the process's exit code (matches the pre-bootstrap behavior
+            // of a lone auto-run kind returning its own value directly).
+            writeln!(&mut self.lambda_ir, "  %rc32 = trunc i64 %j_0 to i32").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i32 %rc32").unwrap();
+        }
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
@@ -4717,14 +4840,13 @@ impl CodeGen {
             return Err(bag);
         }
 
-        let mut b = String::new();
-        writeln!(&mut b, "define i32 @tinox_main() {{").unwrap();
-        writeln!(&mut b, "  %r = call i32 @Main_main()").unwrap();
-        writeln!(&mut b, "  ret i32 %r").unwrap();
-        writeln!(&mut b, "}}").unwrap();
-        writeln!(&mut b).unwrap();
-        self.lambda_ir.push_str(&b);
-        self.has_main = true;
+        // The actual @tinox_main wiring (call Main_main, plus spawning any
+        // background_run_fns registered by the REST/HTTP3/WS/AMQP
+        // annotation processors) happens later in
+        // emit_tinox_main_bootstrap, once all of those have had a chance to
+        // run -- letting class Main coexist with them instead of one
+        // silently pre-empting the other via has_main.
+        self.user_main_class = true;
 
         Ok(())
     }

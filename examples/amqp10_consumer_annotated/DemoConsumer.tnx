@@ -1,8 +1,9 @@
-// Issue #81: annotation-driven AMQP-1.0 consumer, analogous to the
+// Annotation-driven AMQP-1.0 consumer, analogous to the
 // @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose annotations
-// (examples/ws_echo_annotated.tnx). The compiler generates a complete
-// connect/begin/attach/grantCredit/nextMessage/ack loop as `main` — no
-// hand-written main needed, exactly one @Amqp10Consumer class per program.
+// (examples/ws_echo_annotated/EchoEndpoint.tnx). The compiler generates a
+// complete connect/begin/attach/grantCredit/nextMessage/ack loop, spawned
+// alongside Main.main() (see sibling Main.tnx) instead of providing its own
+// implicit main -- exactly one @Amqp10Consumer class per program.
 //
 // The handler receives the whole Amqp10Message (body/contentType/
 // deliveryId/ok/errorMessage), not a decoded String — body decoding stays

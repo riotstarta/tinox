@@ -1127,12 +1127,12 @@
         <tr><td><code>@deprecated("msg")</code></td><td>Alle</td><td>Deprecation-Warnung</td></tr>
         <tr><td><code>@Command("name")</code></td><td>Klasse</td><td>CLI-Kommando</td></tr>
         <tr><td><code>@annotation</code></td><td>Klasse</td><td>Eigene Annotation definieren</td></tr>
-        <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Klasse</td><td>WebSocket: generiert einen Accept/Message-Loop als <code>main</code> (nur bei genau einer Endpoint-Klasse und ohne eigenes <code>main</code>)</td></tr>
+        <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Klasse</td><td>WebSocket: generiert einen Accept/Message-Loop, gespawnt neben <code>class Main</code> (mehrere Klassen erlaubt, je eigener Port)</td></tr>
         <tr><td><code>@OnOpen</code></td><td>Methode</td><td>WebSocket: Aufruf bei neuer Verbindung, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
         <tr><td><code>@OnMessage</code></td><td>Methode</td><td>WebSocket: Aufruf pro Text-Nachricht, Signatur <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: Amqp10Message) -&gt; Nothing</code>. AMQP-0-9-1: Aufruf pro empfangener Nachricht, Signatur <code>fn(msg: AmqpMessage091) -&gt; Nothing</code></td></tr>
         <tr><td><code>@OnClose</code></td><td>Methode</td><td>WebSocket: Aufruf beim Verbindungsende, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
-        <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Klasse</td><td>AMQP-1.0: generiert einen Connect/Attach/Receive-Loop als <code>main</code> (nur bei genau einer Consumer-Klasse und ohne eigenes <code>main</code>)</td></tr>
-        <tr><td><code>@Amqp091Consumer(host, port, vhost, user, pass, queue)</code></td><td>Klasse</td><td>AMQP-0-9-1: generiert einen Connect/Open/Qos/Consume/Receive-Loop als <code>main</code> (nur bei genau einer Consumer-Klasse und ohne eigenes <code>main</code>); Prefetch ist v1 fest auf 1</td></tr>
+        <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Klasse</td><td>AMQP-1.0: generiert einen Connect/Attach/Receive-Loop, gespawnt neben <code>class Main</code> (mehrere Consumer-Klassen erlaubt, auch gegen denselben Broker mit unterschiedlichen Queues)</td></tr>
+        <tr><td><code>@Amqp091Consumer(host, port, vhost, user, pass, queue)</code></td><td>Klasse</td><td>AMQP-0-9-1: generiert einen Connect/Open/Qos/Consume/Receive-Loop, gespawnt neben <code>class Main</code> (mehrere Consumer-Klassen erlaubt); Prefetch ist v1 fest auf 1</td></tr>
       </tbody>
     </table>
   </section>
@@ -2017,14 +2017,18 @@ server.listen();
   <p>
     Höchstens eine <code>@Http3RestController</code>-Klasse pro Programm
     (hart erzwungen); alle <code>@GET</code>/… Routen im gesamten Programm
-    landen auf diesem einen Server. Nicht kombinierbar mit
+    landen auf diesem einen Server. Jedes Tinox-Programm braucht dafür ein
+    <code>class Main { fnc main() -&gt; Int32 }</code> als Einstiegspunkt
+    (siehe <code>tinox new</code>) — <code>@Http3RestController</code> läuft
+    dann auf einem eigenen Thread parallel dazu und kann mit
     <code>@WebsocketEndpoint</code>/<code>@Amqp10Consumer</code>/
-    <code>@Amqp091Consumer</code> (jede erzeugt ihr eigenes Auto-`main`).
+    <code>@Amqp091Consumer</code> im selben Programm kombiniert werden.
     Da der Compiler pro Request standardmäßig eine frische, genullte
     Controller-Instanz alloziert, braucht ein Controller mit Zustand
     zusätzlich <code>@ApplicationComponent</code> (eine wiederverwendete
     Singleton-Instanz über <code>{Klasse}_di_get()</code>) — Beispiel und
-    Details dazu in <code>examples/http3_rest_api/src/TaskController.tnx</code>.
+    Details dazu in
+    <code>examples/http3_rest_api_annotated/src/TaskController.tnx</code>.
   </p>
   <pre><code>import tinox.core.http3_server;
 
@@ -2161,9 +2165,12 @@ if srv < <span class="num">0</span> { <span class="kw">return</span> <span class
   <p>
     Alternativ generiert der Compiler den kompletten Loop selbst — siehe
     <a href="#annotationen">Annotationen</a> (<code>@WebsocketEndpoint</code>/<code>@OnOpen</code>/
-    <code>@OnMessage</code>/<code>@OnClose</code>). Gilt nur, wenn die Datei kein eigenes
-    <code>main</code> definiert und genau eine <code>@WebsocketEndpoint</code>-Klasse enthält
-    (mehrere sind ein Compile-Fehler, kein stilles Ignorieren):
+    <code>@OnMessage</code>/<code>@OnClose</code>). Das Programm braucht wie immer ein
+    <code>class Main { fnc main() -&gt; Int32 }</code> (siehe <code>tinox new</code>) — der
+    Compiler spawnt den Loop auf einem eigenen Thread daneben. Mehrere
+    <code>@WebsocketEndpoint</code>-Klassen im selben Programm sind erlaubt, solange
+    jede einen anderen Port bekommt — zwei auf demselben Port sind ein Compile-Fehler
+    (kein stiller Bind-Fehlschlag erst zur Laufzeit):
   </p>
   <pre><code>import tinox.core.websocket;
 
@@ -2427,10 +2434,11 @@ let confirm = ch.waitForConfirm();
     Wie bei WebSocket/AMQP-1.0 generiert der Compiler alternativ den
     kompletten Connect/Open/Qos/Consume/Receive-Loop selbst — siehe
     <a href="#annotationen">Annotationen</a> (<code>@Amqp091Consumer</code>/
-    <code>@OnMessage</code>). Gilt nur, wenn die Datei kein eigenes
-    <code>main</code> definiert und genau eine <code>@Amqp091Consumer</code>-
-    Klasse enthält (mehrere sind ein Compile-Fehler, kein stilles
-    Ignorieren). Prefetch ist v1 fest auf 1 (kein Annotation-Argument
+    <code>@OnMessage</code>). Das Programm braucht wie immer ein
+    <code>class Main { fnc main() -&gt; Int32 }</code> — der Compiler spawnt
+    den Loop auf einem eigenen Thread daneben. Mehrere <code>@Amqp091Consumer</code>-
+    Klassen im selben Programm sind erlaubt, auch gegen denselben Broker/Port mit
+    unterschiedlichen Queues. Prefetch ist v1 fest auf 1 (kein Annotation-Argument
     dafür). Der Handler bekommt die komplette <code>AmqpMessage091</code>
     übergeben (nicht einen bereits dekodierten String) — Body-Dekodierung
     bleibt beim Aufrufer, genau wie im manuellen Beispiel oben:
@@ -2508,10 +2516,11 @@ conn.close();
     Wie bei WebSocket generiert der Compiler alternativ den kompletten
     Connect/Attach/Receive-Loop selbst — siehe
     <a href="#annotationen">Annotationen</a> (<code>@Amqp10Consumer</code>/
-    <code>@OnMessage</code>). Gilt nur, wenn die Datei kein eigenes
-    <code>main</code> definiert und genau eine <code>@Amqp10Consumer</code>-
-    Klasse enthält (mehrere sind ein Compile-Fehler, kein stilles
-    Ignorieren). Der Handler bekommt die komplette <code>Amqp10Message</code>
+    <code>@OnMessage</code>). Das Programm braucht wie immer ein
+    <code>class Main { fnc main() -&gt; Int32 }</code> — der Compiler spawnt
+    den Loop auf einem eigenen Thread daneben. Mehrere <code>@Amqp10Consumer</code>-
+    Klassen im selben Programm sind erlaubt, auch gegen denselben Broker/Port mit
+    unterschiedlichen Adressen. Der Handler bekommt die komplette <code>Amqp10Message</code>
     übergeben (nicht einen bereits dekodierten String) — Body-Dekodierung
     bleibt beim Aufrufer, genau wie im manuellen Beispiel oben:
   </p>

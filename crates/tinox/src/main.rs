@@ -1941,6 +1941,21 @@ fn collect_top_level_fn_names(decls: &[tinox_parser::Decl]) -> Vec<&str> {
     names
 }
 
+/// Whether the (post-import-merge) decl list contains a class literally
+/// named `Main` — existence only, not full shape validation (that stays
+/// `emit_class_main_entry_point`'s job in codegen, which has a real `Span`
+/// to attach a precise error to). Used by `compile_file` to hard-error
+/// early, with a clearer message than the "undefined reference to
+/// tinox_main" link failure that used to be the only signal when no
+/// annotation-driven auto-run kind happened to be present either.
+fn has_class_named_main(decls: &[tinox_parser::Decl]) -> bool {
+    decls.iter().any(|d| match &d.node {
+        DeclKind::Class(c) => c.name == "Main",
+        DeclKind::Namespace(ns) => has_class_named_main(&ns.decls),
+        _ => false,
+    })
+}
+
 /// Issue #149 stage 3: hard-enforces "no top-level `fn` with a body" — the
 /// language has no implicit global function namespace anymore, every
 /// function must be a class method (`fn`/`fnc`). Mirrors
@@ -2268,6 +2283,18 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
     }
 
+    // `class Main { fnc main() -> Int32 }` is now the mandatory program
+    // entry point (shape itself is still validated with a real Span by
+    // emit_class_main_entry_point in codegen) -- @Command CLI programs are
+    // exempt, they dispatch via argv through their own, separately
+    // generated tinox_main and were never part of this unification.
+    if ann_result.cli_commands.is_empty() && !has_class_named_main(&ast.decls) {
+        return Err(format!(
+            "'{}' has no `class Main {{ fnc main() -> Int32 }}` -- every Tinox program requires this as its entry point now (create src/Main.tnx, see `tinox new` for the scaffold shape); @GET/@Http3RestController/@WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer classes run alongside it instead of providing their own implicit main",
+            input_path
+        ));
+    }
+
     let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
         .route_entries
         .iter()
@@ -2285,12 +2312,32 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
-    if ann_result.ws_endpoints.len() > 1 {
-        return Err(format!(
-            "found {} @WebsocketEndpoint classes ({}); v1 supports exactly one auto-run WebSocket endpoint per program",
-            ann_result.ws_endpoints.len(),
-            ann_result.ws_endpoints.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
-        ));
+    // Multiple @WebsocketEndpoint classes are fine now (Phase 4: each is
+    // spawned on its own thread by emit_tinox_main_bootstrap, no longer
+    // competing for a single auto-run `main`) -- but unlike AMQP consumers
+    // (where several consumers sharing one broker/port on different queues
+    // is normal), two endpoints binding the *same* port is a real, easily
+    // checkable mistake: the second one's WsServer_listen would silently
+    // fail to bind at runtime with no compile-time signal otherwise. Port
+    // resolution mirrors emit_ws_code's exactly (explicit port, else
+    // TINOX_PORT, else 8080) so this can't disagree with what actually gets
+    // bound.
+    {
+        let mut by_port: std::collections::HashMap<i64, Vec<&str>> = std::collections::HashMap::new();
+        for e in &ann_result.ws_endpoints {
+            let port = e.port
+                .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
+                .unwrap_or(8080);
+            by_port.entry(port).or_default().push(e.class_name.as_str());
+        }
+        for (port, classes) in &by_port {
+            if classes.len() > 1 {
+                return Err(format!(
+                    "@WebsocketEndpoint classes {} all resolve to port {port} -- each needs a distinct port (pass it explicitly: @WebsocketEndpoint(\"/path\", port))",
+                    classes.join(", ")
+                ));
+            }
+        }
     }
     let ws_endpoints: Vec<tinox_codegen::WsEndpointEntry> = ann_result
         .ws_endpoints
@@ -2305,13 +2352,10 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
-    if ann_result.amqp10_consumers.len() > 1 {
-        return Err(format!(
-            "found {} @Amqp10Consumer classes ({}); v1 supports exactly one auto-run AMQP-1.0 consumer per program",
-            ann_result.amqp10_consumers.len(),
-            ann_result.amqp10_consumers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
-        ));
-    }
+    // Multiple @Amqp10Consumer classes are fine now (Phase 4: each spawned
+    // on its own thread) -- unlike @WebsocketEndpoint, several consumers
+    // sharing the same broker host/port but different queues/addresses is
+    // a normal, expected shape, so there is no port-collision check here.
     let amqp10_consumers: Vec<tinox_codegen::Amqp10ConsumerEntry> = ann_result
         .amqp10_consumers
         .iter()
@@ -2326,13 +2370,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
-    if ann_result.amqp091_consumers.len() > 1 {
-        return Err(format!(
-            "found {} @Amqp091Consumer classes ({}); v1 supports exactly one auto-run AMQP-0-9-1 consumer per program",
-            ann_result.amqp091_consumers.len(),
-            ann_result.amqp091_consumers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
-        ));
-    }
+    // Same reasoning as @Amqp10Consumer above: multiple @Amqp091Consumer
+    // classes against the same broker/port but different queues is normal,
+    // no port-collision check needed.
     let amqp091_consumers: Vec<tinox_codegen::Amqp091ConsumerEntry> = ann_result
         .amqp091_consumers
         .iter()
@@ -2355,15 +2395,13 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
-    if !ann_result.http3_rest_controllers.is_empty()
-        && (!ann_result.ws_endpoints.is_empty()
-            || !ann_result.amqp10_consumers.is_empty()
-            || !ann_result.amqp091_consumers.is_empty())
-    {
-        return Err(
-            "@Http3RestController cannot be combined with @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer in the same program (each generates its own auto-run `main`)".to_string(),
-        );
-    }
+    // Cross-kind combos (@Http3RestController + @WebsocketEndpoint/@Amqp10Consumer/
+    // @Amqp091Consumer, or any of those + plain @GET/@Path routes) used to be
+    // rejected here because each auto-run kind generated its own competing
+    // @tinox_main. Since emit_tinox_main_bootstrap now spawns every kind on
+    // its own thread from one unified @tinox_main, they can coexist -- only
+    // more than one instance of the *same* kind (checked above) is still
+    // disallowed.
     let http3_rest_controller: Option<tinox_codegen::Http3RestControllerEntry> = ann_result
         .http3_rest_controllers
         .first()

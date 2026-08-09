@@ -187,6 +187,76 @@ unberührt — die Regel ist „höchstens eine", nicht „genau eine".
   Programmen unverändert weiter, nur Mehrdatei-Programme mit
   Interface-Upcast sind betroffen).
 
+## Pflicht-Entry-Point: `class Main` + CDI-artiger Bootstrap (seit 2026-08-09)
+
+Seit 2026-08-09 gilt hart compilerseitig erzwungen (`compile_file` in
+`crates/tinox/src/main.rs`, `has_class_named_main`): **jedes über `tinox
+build`/`tinox run` gebaute Programm braucht `class Main { fnc main() ->
+Int32 }`** in der Entry-Datei — sonst harter Compile-Fehler statt des
+alten, verwirrenden „undefined reference to tinox_main"-Linker-Fehlers.
+Ausgenommen sind `@Command`-CLI-Programme (eigenes Argv-Dispatch, eigenes
+generiertes `main`) und `tinox test` (eigener Test-Runner-Entry) — beide
+unverändert. `tinox check` prüft nur Typen, ruft nie Codegen auf, ist also
+ebenfalls nicht betroffen.
+
+**Warum:** Vorher generierte jede Auto-Run-Annotation (`@Http3RestController`/
+`@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`/plain `@GET`/
+`@Path`) ihr eigenes `@tinox_main` — „wer zuerst dran ist, gewinnt"
+(`has_main`-Flag), und `class Main` gewann dabei IMMER zuerst (lief als
+erstes in `gen()`), wodurch andere Annotationen im selben Programm
+stillschweigend NICHT verdrahtet wurden — keine Fehlermeldung, die Routen
+liefen einfach nie. Jetzt läuft dafür ein einziger, immer gleich
+aufgebauter Bootstrap (`emit_tinox_main_bootstrap` in
+`crates/tinox-codegen/src/codegen.rs`): spawnt jede im Programm gefundene
+Auto-Run-Komponente auf einem eigenen echten Thread (`tinox_task_spawn`,
+derselbe Mechanismus wie `spawn`), ruft dann `Main.main()` auf und joint
+danach alle gespawnten Threads (blockt für immer, falls welche laufen —
+genau wie ein einzelner direkter `.listen()`-Aufruf das vorher tat).
+
+- **Cross-Kind-Kombinationen sind jetzt erlaubt** (vorher hart in
+  `main.rs` blockiert): `@Http3RestController` + `@WebsocketEndpoint`/
+  `@Amqp10Consumer`/`@Amqp091Consumer` im selben Programm, oder eine
+  beliebige Kombination davon zusammen mit `class Main` — sie konkurrieren
+  nicht mehr um dasselbe `@tinox_main`-Symbol.
+- **Seit 2026-08-09 (Phase 4) auch mehrere Instanzen DERSELBEN Art
+  erlaubt** für `@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`
+  (nicht für `@Http3RestController` — der routet weiterhin ALLE `@GET`/…
+  im Programm auf einen einzigen Server, mehrere Instanzen wären
+  architektonisch mehrdeutig, bewusst out of scope). `emit_ws_code`/
+  `emit_amqp10_consumer_code`/`emit_amqp091_consumer_code` iterieren jetzt
+  über alle gefundenen Klassen statt hart `[0]` zu lesen und erzeugen pro
+  Instanz ein eindeutig benanntes `__tinox_run_<kind>_<idx>()`. Für
+  `@WebsocketEndpoint` prüft `compile_file` zusätzlich auf doppelt
+  belegte Ports (jeder bindet einen eigenen Listening-Socket — zwei auf
+  demselben Port wäre sonst ein stiller Bind-Fehlschlag erst zur
+  Laufzeit); für die beiden AMQP-Consumer-Arten gibt es KEINEN
+  Port-Kollisions-Check, da mehrere Consumer gegen denselben Broker/Port
+  mit unterschiedlichen Queues/Adressen der normale, erwartete Fall ist.
+- **Neue Concurrency-Falle, die es vorher strukturell nicht geben
+  konnte:** Lief vorher immer nur EINE Auto-Run-Art pro Prozess, war ein
+  über `@ApplicationComponent` geteiltes Singleton implizit sicher (nur
+  eine Event-Loop fasste es je an). Laufen jetzt z. B. ein REST-Controller
+  UND ein WebSocket-Endpoint gleichzeitig auf echten, unabhängigen
+  Threads, wird ein zwischen beiden geteiltes Singleton-Feld zum ersten
+  Mal echt nebenläufig zugegriffen. Der Compiler synchronisiert das NICHT
+  automatisch (unverhältnismäßig invasiv für v1) — bei geteiltem
+  veränderlichem Zustand über Komponenten-Arten hinweg manuell
+  synchronisieren (`tinox.core.semaphore`).
+- **Migration der Beispiele (2026-08-09):** Annotation-only-Dateien ohne
+  eigenes `class Main` (`examples/rest_minimal`, `examples/rest_with_mini`)
+  haben ein triviales `Main.tnx` bekommen; flach in `examples/` liegende
+  Einzeldatei-Demos ohne Verzeichnis (`UserController.tnx`,
+  `EchoEndpoint.tnx`, `DemoConsumer.tnx`, `DemoConsumer091.tnx`) sind je in
+  ein eigenes Verzeichnis mit `Main.tnx` gewandert (`examples/rest_auto/`,
+  `examples/ws_echo_annotated/`, `examples/amqp10_consumer_annotated/`,
+  `examples/amqp091_consumer_annotated/`). `examples/http3_rest_api/src/
+  TaskController.tnx` konnte kein eigenes `Main.tnx` neben dem
+  bestehenden imperativen `src/Main.tnx` bekommen (Namenskollision) und
+  wurde stattdessen in ein eigenes Geschwister-Beispiel
+  `examples/http3_rest_api_annotated/` verschoben. `scripts/dogfood.sh`
+  und die betroffenen `crates/tinox/tests/*.rs`-Pfade wurden entsprechend
+  angepasst.
+
 ## Runtime-Eigenheiten (nicht offensichtlich aus dem Code)
 
 - **`spawn` startet einen echten POSIX-Thread** (`pthread_create` in

@@ -1,0 +1,36 @@
+// WebSocket echo server via annotations.
+// Start:  tinox run examples/ws_echo_annotated/Main.tnx
+// Test:   browser console:  s = new WebSocket("ws://localhost:8793/echo");
+//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hallo");
+//
+// @WebsocketEndpoint generates the complete accept/handshake/message loop,
+// spawned alongside Main.main() (see sibling Main.tnx) instead of providing
+// its own implicit main -- no lambda handler needed, the @OnOpen/@OnMessage/
+// @OnClose methods are called by name directly. Only text frames (opcode 1)
+// reach @OnMessage; anything else (binary, close, EOF, protocol error) ends
+// the connection.
+
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/echo", 8793)
+class EchoEndpoint
+{
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing
+    {
+        println("Client verbunden");
+    }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        println("empfangen: " + msg);
+        Ws::sendText(conn, "echo: " + msg);
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing
+    {
+        println("Client getrennt");
+    }
+}

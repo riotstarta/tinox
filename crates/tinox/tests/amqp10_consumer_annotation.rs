@@ -1,13 +1,13 @@
 //! @Amqp10Consumer/@OnMessage annotation (Issue #81).
 //!
-//! Compiles examples/DemoConsumer.tnx (a generated auto-main
-//! connect/begin/attach/grantCredit/nextMessage/ack loop — never returns)
-//! and a small standalone fake-broker helper program (a normal `main`, not
-//! annotation-driven — a separate process, so the "exactly one main-owning
-//! annotation per program" rule doesn't apply to it), runs both as
-//! background processes, and asserts on their captured stdout. Not part of
-//! the golden-test harness (e2e.rs): those cases must exit on their own
-//! within RUN_TIMEOUT, which an auto-run AMQP-1.0 consumer never does.
+//! Compiles examples/amqp10_consumer_annotated/Main.tnx (a generated
+//! auto-run connect/begin/attach/grantCredit/nextMessage/ack loop, spawned
+//! by the mandatory Main.tnx bootstrap — never returns) and a small
+//! standalone fake-broker helper program (its own separate process, own
+//! class Main), runs both as background processes, and asserts on their
+//! captured stdout. Not part of the golden-test harness (e2e.rs): those
+//! cases must exit on their own within RUN_TIMEOUT, which an auto-run
+//! AMQP-1.0 consumer never does.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ impl Drop for KillOnDrop {
 }
 
 // Port must match the literal baked into @Amqp10Consumer(...) in
-// examples/DemoConsumer.tnx.
+// examples/amqp10_consumer_annotated/DemoConsumer.tnx.
 const FAKE_BROKER_SRC: &str = r#"
 import tinox.core.amqp10;
 import tinox.core.socket;
@@ -199,7 +199,7 @@ fn wait_for_line(rx: &mpsc::Receiver<String>, needle: &str, timeout: Duration, l
 fn amqp10_consumer_annotation_receives_and_acks() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let root = repo_root();
-    let consumer_src = root.join("examples/DemoConsumer.tnx");
+    let consumer_src = root.join("examples/amqp10_consumer_annotated/Main.tnx");
 
     let workdir = std::env::temp_dir().join(format!(
         "tinox-amqp10-consumer-annotation-{}",

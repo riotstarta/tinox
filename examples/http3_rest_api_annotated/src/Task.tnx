@@ -1,0 +1,7 @@
+@JsonSerializable
+class Task
+{
+    var id: Int64;
+    var title: String;
+    var done: Bool;
+}

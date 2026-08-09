@@ -72,13 +72,17 @@ curl --http3-only -k -i https://localhost:8843/tasks/999
 self-signed. `-v` on any of these shows the QUIC/TLS-1.3 handshake and
 `ALPN, offering h3` / negotiated `h3` in the log.
 
-## 3. The declarative version (`src/TaskController.tnx`)
+## 3. The declarative version (`examples/http3_rest_api_annotated/`)
 
 The exact same API, but written with the same `@GET`/`@POST`/`@PUT`/
 `@PATCH`/`@DELETE`/`@Path`/`@StatusCode` annotations already used by the
 plain (TCP) REST examples (`examples/rest_minimal`) -- the compiler
 generates the entire `Http3Server::new()`/`.get()`/`.post()`/.../
-`.listen()` wiring that `src/main.tnx` writes out by hand:
+`.listen()` wiring that this directory's `src/Main.tnx` writes out by
+hand. It lives in a sibling example directory rather than right next to
+this one's `src/Main.tnx`, since every Tinox program now requires exactly
+one `class Main { fnc main() -> Int32 }` as its entry point, and a second
+one can't also be named `Main.tnx` in the same directory:
 
 ```tinox
 @ApplicationComponent
@@ -99,24 +103,29 @@ class TaskController
 
 `@Http3RestController(port, certPath, keyPath)` is what routes these
 routes through `Http3Server` (QUIC) instead of the default, GC-crash-prone
-TCP auto-server (issue #140) -- at most one per program, and it can't be
-combined with `@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`
-(each generates its own auto-run `main`). `@ApplicationComponent` makes
-the compiler reuse one `TaskController` instance across every request
-(instead of a fresh, zeroed one per call) -- required here since `tasks`
-needs to persist between requests; see the comment at the top of
-`TaskController.tnx` for why `tasks` is lazily seeded in an `ensureInit()`
-method rather than a constructor.
+TCP auto-server (issue #140) -- at most one per program, but it can now
+freely be combined with `@WebsocketEndpoint`/`@Amqp10Consumer`/
+`@Amqp091Consumer` (each is spawned on its own thread by the `Main.tnx`
+bootstrap instead of competing for a single auto-run `main`).
+`@ApplicationComponent` makes the compiler reuse one `TaskController`
+instance across every request (instead of a fresh, zeroed one per call)
+-- required here since `tasks` needs to persist between requests; see the
+comment at the top of `TaskController.tnx` for why `tasks` is lazily
+seeded in an `ensureInit()` method rather than a constructor.
 
-Build and run it exactly like `main.tnx`, just pointing at the other file:
+Build and run it (own certs, same as step 1):
 
 ```sh
-TINOX_HTTP3=1 tinox build src/TaskController.tnx -o tasks_api_annotated
+cd ../http3_rest_api_annotated
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem -days 365 -subj "/CN=localhost"
+TINOX_HTTP3=1 tinox build src/Main.tnx -o tasks_api_annotated
 ./tasks_api_annotated
 ```
 
-Same routes, same responses, same port (8843) -- run one or the other,
-not both.
+Same routes, same responses, same port (8843) -- a separate example
+directory, so both this one and the declarative one can run at the same
+time if you want to compare them side by side.
 
 ## Notes
 

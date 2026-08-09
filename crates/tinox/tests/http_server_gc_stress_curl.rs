@@ -60,10 +60,25 @@ class Ctrl
     )
     .expect("write Ctrl.tnx");
 
+    std::fs::write(
+        workdir.join("Main.tnx"),
+        r#"import Ctrl;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}
+"#,
+    )
+    .expect("write Main.tnx");
+
     let exe = workdir.join("heavy_server");
     let build = Command::new(tinox)
         .arg("build")
-        .arg(workdir.join("Ctrl.tnx"))
+        .arg(workdir.join("Main.tnx"))
         .arg("-o")
         .arg(&exe)
         .current_dir(&workdir)
