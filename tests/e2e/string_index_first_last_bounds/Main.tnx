@@ -1,8 +1,8 @@
-// Bugs 58/59 (Fortsetzung der Bounds-Härtung): String-Index `s[i]` machte einen
-// unchecked inline load (wie charCodeAt vor Bug 54) — jetzt bounds-geprüft (-1 bei
-// out-of-range). `first()`/`last()` lasen Element 0 bzw. len-1 (bei leerem Array
-// = -1, Read vor dem Buffer!) ungeprüft — jetzt über tinox_array_get (harter
-// Fehler bei leerem Array). Hier die gültigen Pfade + String-OOB → -1.
+// Bugs 58/59 (continuation of bounds hardening): string index `s[i]` did an
+// unchecked inline load (like charCodeAt before Bug 54) — now bounds-checked (-1 on
+// out-of-range). `first()`/`last()` read element 0 resp. len-1 (for an empty array
+// = -1, a read before the buffer!) unchecked — now via tinox_array_get (hard
+// error on an empty array). Here are the valid paths + string OOB → -1.
 // expect: 104
 // expect: -1
 // expect: 10,30
@@ -11,12 +11,12 @@
 class Main
 {
     fnc main() -> Int32 {
-        // String-Index: gültig + out-of-bounds
+        // String index: valid + out-of-bounds
         let s: String = "hi";
         println(s[0].toString());        // 104 (h)
-        println(s[100].toString());      // -1 (out of bounds, war 0/Müll)
+        println(s[100].toString());      // -1 (out of bounds, used to be 0/garbage)
 
-        // first()/last() auf Int- und String-Arrays (gültig)
+        // first()/last() on Int and String arrays (valid)
         let xs: List<Int64> = [10, 20, 30];
         println(xs.first().toString() + "," + xs.last().toString());   // 10,30
         let ss: List<String> = ["a", "b", "c"];

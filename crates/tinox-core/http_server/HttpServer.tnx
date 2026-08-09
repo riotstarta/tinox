@@ -187,7 +187,7 @@ namespace tinox.core.http_server
             this.socketHandle = httpServerCreateTls(this.port, certPath, keyPath);
             if this.socketHandle < 0
             {
-                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS-Setup fehlgeschlagen — Runtime mit TINOX_TLS=0 gebaut, oder Cert/Key ungültig)";
+                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS setup failed — runtime built with TINOX_TLS=0, or cert/key invalid)";
             }
             this.running = true;
             while this.running

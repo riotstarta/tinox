@@ -1,8 +1,8 @@
-// WebSocket-Echo-Server (tasklist.md Phase 4.3).
-// Start:  tinox run examples/ws_echo.tnx
-// Test:   Browser-Konsole:  s = new WebSocket("ws://localhost:8790");
-//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hallo");
-// Bedient eine Verbindung nach der anderen (blocking, v1 — s. tasklist.md 4.2).
+// WebSocket echo server.
+// Start:  tinox run examples/ws_echo/Main.tnx
+// Test:   browser console:  s = new WebSocket("ws://localhost:8790");
+//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hello");
+// Serves one connection at a time (blocking, v1).
 
 import tinox.core.websocket;
 
@@ -11,21 +11,21 @@ class Main
     fnc main() -> Int32 {
         let srv = WsServer::listen(8790);
         if srv < 0 {
-            println("Port 8790 belegt");
+            println("port 8790 in use");
             return 1;
         }
-        println("ws://localhost:8790 bereit");
+        println("ws://localhost:8790 ready");
         while true {
             let conn = WsServer::accept(srv);
             if conn <= 0 {
                 continue;
             }
-            println("Client verbunden");
+            println("client connected");
             while true {
                 let f = Ws::readMessage(conn);
                 if f.opcode == 1 {
                     let msg = Ws::text(f);
-                    println("empfangen: " + msg);
+                    println("received: " + msg);
                     Ws::sendText(conn, "echo: " + msg);
                     continue;
                 }
@@ -33,11 +33,11 @@ class Main
                     Ws::sendBinary(conn, f.payload);
                     continue;
                 }
-                // Close (8), EOF (-1) oder Protokollfehler (-2): Verbindung beenden
+                // Close (8), EOF (-1), or protocol error (-2): end the connection
                 break;
             }
             Ws::close(conn);
-            println("Client getrennt");
+            println("client disconnected");
         }
         return 0;
     }

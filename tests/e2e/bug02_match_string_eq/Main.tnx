@@ -1,4 +1,4 @@
-// Bug 2: == auf match-gebundenen Strings gab immer false
+// Bug 2: == on match-bound strings always returned false
 // expect: eq
 // expect: neq
 import bug02_match_string_eq;

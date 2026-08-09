@@ -503,10 +503,10 @@ pub struct ImmutableDecl {
 }
 
 #[derive(Debug, Clone)]
-// Function ist mit Abstand am häufigsten (~180 Konstruktions-/Match-Stellen
-// über den ganzen Workspace) — Boxing würde dort überall eine Indirektion
-// erzwingen, für einen reinen Stack-Größen-Vorteil bei den selteneren
-// Varianten. Nicht im Verhältnis zum Nutzen.
+// Function is by far the most common (~180 construction/match sites
+// across the whole workspace) — boxing would force an indirection there
+// everywhere, for a pure stack-size benefit on the rarer variants. Not
+// worth it.
 #[allow(clippy::large_enum_variant)]
 pub enum DeclKind {
     Function(Function),

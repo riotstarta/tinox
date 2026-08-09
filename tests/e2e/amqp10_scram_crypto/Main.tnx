@@ -1,11 +1,11 @@
-// Issue 77: SCRAM-SHA-256 Kryptografie-Kern (PBKDF2/ClientKey/StoredKey/
-// ServerKey/ClientProof/ServerSignature) gegen fixe, mit Python hashlib/hmac
-// (unabhaengige Referenz, s. CLAUDE.md — simulierte Broker-Tests finden
-// keine Bugs, bei denen die eigene Implementierung nur mit sich selbst
-// konsistent ist) vorab-berechnete Werte geprueft. Fixierte Eingaben
-// (Passwort/Salt/Nonces/Username), damit die erwarteten Werte deterministisch
-// sind — die eigentliche Zufalls-Nonce-Generierung (Amqp10::generateScramNonce)
-// wird hier bewusst NICHT genutzt.
+// Issue 77: SCRAM-SHA-256 cryptographic core (PBKDF2/ClientKey/StoredKey/
+// ServerKey/ClientProof/ServerSignature) checked against fixed values
+// pre-computed with Python hashlib/hmac (an independent reference, see
+// CLAUDE.md — simulated broker tests find no bugs where the
+// implementation is only consistent with itself). Fixed inputs
+// (password/salt/nonces/username) so the expected values are
+// deterministic — the actual random nonce generation
+// (Amqp10::generateScramNonce) is deliberately NOT used here.
 // expect: salted:match
 // expect: clientKey:match
 // expect: storedKey:match

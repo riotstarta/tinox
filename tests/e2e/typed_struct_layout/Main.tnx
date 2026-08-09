@@ -1,13 +1,13 @@
 import Inner;
 import Outer;
 
-// B1 Phase 1: getypte LLVM-Struct-Layouts (%class.<name>) für einfache Klassen.
-// Feldzugriff nutzt jetzt ein getyptes GEP + direktes typed load statt i64-Slot +
-// bitcast. Das Layout bleibt byte-identisch (jedes Feld ein 8-Byte-Slot), daher
-// müssen Float-, String-, Int- und Objekt-Referenz-Felder unverändert korrekt
-// gelesen werden — inkl. verschachtelter Objektzugriffe.
-// Phase 2 ergänzt die Store-Seite: StructLiteral-Konstruktion schreibt Felder
-// über getypte GEP + `store <slot>` (double/ptr/i64), inkl. Bool (i1 -> i64-Slot).
+// B1 phase 1: typed LLVM struct layouts (%class.<name>) for simple classes.
+// Field access now uses a typed GEP + direct typed load instead of an i64 slot +
+// bitcast. The layout stays byte-identical (every field an 8-byte slot), so
+// float, string, int and object-reference fields must still be read correctly
+// unchanged — including nested object accesses.
+// Phase 2 adds the store side: StructLiteral construction writes fields
+// via a typed GEP + `store <slot>` (double/ptr/i64), including bool (i1 -> i64 slot).
 // expect: 7.5
 // expect: hallo
 // expect: 42
@@ -22,17 +22,17 @@ class Main
 {
     fnc main() -> Int32 {
         let o: Outer = Outer::make();
-        println((o.fx + o.fy).toString());   // 7.5 — Float-Felder (double-Slot)
-        println(o.name);                      // hallo — String-Feld (ptr-Slot)
-        println(o.inner.value.toString());    // 42 — Objekt-Feld -> Int-Feld
-        println(o.inner.neg.toString());      // -3 — negativer Int
-        if o.flag { println("flag-true"); } else { println("flag-false"); }  // Bool i1->i64-Slot
+        println((o.fx + o.fy).toString());   // 7.5 — float fields (double slot)
+        println(o.name);                      // hallo — string field (ptr slot)
+        println(o.inner.value.toString());    // 42 — object field -> int field
+        println(o.inner.neg.toString());      // -3 — negative int
+        if o.flag { println("flag-true"); } else { println("flag-false"); }  // bool i1->i64 slot
 
-        // Phase 3: getypte Feld-Assignments (obj.f = v) über double/ptr/i64-Slots
+        // Phase 3: typed field assignments (obj.f = v) via double/ptr/i64 slots
         o.fx = 1.5;
         o.name = "welt";
         o.flag = false;
-        o.inner.value = 100;                  // Assignment auf Objekt-Feld -> Int
+        o.inner.value = 100;                  // assignment on object field -> int
         println((o.fx + o.fy).toString());    // 5.5
         println(o.name);                       // welt
         if o.flag { println("flag-true"); } else { println("flag-false"); }  // flag-false

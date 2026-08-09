@@ -1,5 +1,5 @@
-// Int32/Int64-Mix: Breiten-Vereinheitlichung in Binär-Ops, Zuweisungs-
-// Koerzierung, numerisches print(Int32)
+// Int32/Int64 mix: width unification in binary ops, assignment
+// coercion, numeric print(Int32)
 // expect: 30
 // expect: 120
 // expect: 55

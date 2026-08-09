@@ -1,4 +1,4 @@
-// Bug 4: Float64 war komplett kaputt (Bitmuster statt IEEE-754)
+// Bug 4: Float64 was completely broken (bit pattern instead of IEEE-754)
 // expect: 3.14
 // expect: 3.75
 // expect: 1.5

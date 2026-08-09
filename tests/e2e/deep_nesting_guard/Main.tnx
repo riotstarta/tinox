@@ -1,21 +1,21 @@
-// Rekursions-Tiefen-Guard (Bug 49): tief verschachtelter Ausdruck knapp unter dem
-// Limit muss sauber kompilieren (der große Compiler-Stack + MAX_RECURSION_DEPTH
-// verhindern den Stack-Overflow, den pathologisch tiefe Eingabe früher auslöste).
-// Dieser Test prüft die legitime Seite — dass moderate Verschachtelung (hier ~40
-// tief geklammert und ~30 verschachtelte if) NICHT fälschlich abgelehnt wird.
+// Recursion depth guard (Bug 49): a deeply nested expression just below the
+// limit must compile cleanly (the large compiler stack + MAX_RECURSION_DEPTH
+// prevent the stack overflow that pathologically deep input used to trigger).
+// This test checks the legitimate side — that moderate nesting (here ~40
+// levels of parentheses and ~30 nested ifs) is NOT falsely rejected.
 // expect: deep: 7
 // expect: nested if ok
 
 class Main
 {
     fnc deep() -> Int64 {
-        // 40-fach geklammerter Ausdruck — legitim, muss durchgehen
+        // 40-fold parenthesized expression — legitimate, must pass
         return ((((((((((((((((((((((((((((((((((((((((7))))))))))))))))))))))))))))))))))))))));
     }
 
 
     fnc nested(n: Int64) -> String {
-        // verschachtelte if-Kette
+        // nested if chain
         if n == 1 { if n == 1 { if n == 1 { if n == 1 { if n == 1 {
             return "nested if ok";
         } } } } }

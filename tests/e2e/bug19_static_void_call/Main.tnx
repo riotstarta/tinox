@@ -1,6 +1,6 @@
-// Bug 19: Class::method(obj, …) auf einer Nothing-Methode emittierte
-// "%tmp.N = call void …" — benannte void-Calls sind ungültiges IR.
-// Gefunden vom Stdlib-Smoke-Gate (Trie::insert, Env::setVar, …).
+// Bug 19: Class::method(obj, …) on a Nothing method emitted
+// "%tmp.N = call void …" — named void calls are invalid IR.
+// Found by the stdlib smoke gate (Trie::insert, Env::setVar, …).
 // expect: 5
 // expect: ok
 

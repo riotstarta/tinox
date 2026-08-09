@@ -1,14 +1,14 @@
-// Issue 71: throw-Unwinding lief nur auf Statement-Granularitaet (Bug 40) — in
-// einem zusammengesetzten Ausdruck wie `a() + b()` lief `b()` trotzdem noch,
-// wenn `a()` schon geworfen hatte; die Pruefung griff erst an der naechsten
-// Statement-Grenze. Gefixt: gen_expr prueft jetzt nach JEDEM werfenden
-// Teilausdruck sofort, nicht erst am Statement-Ende.
+// Issue 71: throw unwinding only operated at statement granularity (Bug 40) — in
+// a compound expression like `a() + b()`, `b()` would still run even
+// though `a()` had already thrown; the check only kicked in at the next
+// statement boundary. Fixed: gen_expr now checks after EVERY throwing
+// sub-expression immediately, not only at the end of the statement.
 // expect: caught binary: boom-a
 // expect: caught call-args: boom-a
 // expect: caught array-lit: boom-a
 // expect: caught method-args: boom-a
 // expect: caught nested: boom-a
-// expect: fertig
+// expect: done
 
 import throw_substatement_unwinding;
 
@@ -20,7 +20,7 @@ class Main
     fnc sum(x: Int64, y: Int64) -> Int64 { return x + y; }
 
     fnc main() -> Int32 {
-        // Binaerer Ausdruck: a() wirft, b() darf nicht mehr laufen.
+        // Binary expression: a() throws, b() must not run anymore.
         try {
             let r: Int64 = a() + b();
             println("unreached:" + r.toString());
@@ -28,8 +28,8 @@ class Main
             println("caught binary: " + e);
         }
 
-        // Funktionsargumente: a() als erstes Argument wirft, b() (zweites
-        // Argument) darf nicht mehr ausgewertet werden.
+        // Function arguments: a() as the first argument throws, b() (the second
+        // argument) must not be evaluated anymore.
         try {
             let r: Int64 = sum(a(), b());
             println("unreached:" + r.toString());
@@ -37,7 +37,7 @@ class Main
             println("caught call-args: " + e);
         }
 
-        // Array-Literal: gleiche Regel fuer Elemente nach einem werfenden Element.
+        // Array literal: same rule for elements after a throwing element.
         try {
             let xs: List<Int64> = [a(), b()];
             println("unreached:" + xs.len().toString());
@@ -45,7 +45,7 @@ class Main
             println("caught array-lit: " + e);
         }
 
-        // Methodenaufruf-Argumente.
+        // Method-call arguments.
         try {
             let acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 };
             let r: Int64 = acc.add(a(), b());
@@ -54,9 +54,9 @@ class Main
             println("caught method-args: " + e);
         }
 
-        // Verschachtelt: der werfende Aufruf steckt selbst als ARGUMENT in einem
-        // inneren Call (sum(a(), b())); das darf das AEUSSERE zweite Argument
-        // (nochmal b()) genauso wenig mehr auswerten wie das innere.
+        // Nested: the throwing call itself sits as an ARGUMENT in an
+        // inner call (sum(a(), b())); the OUTER second argument
+        // (b() again) must not be evaluated anymore either, just like the inner one.
         try {
             let r: Int64 = sum(sum(a(), b()), b());
             println("unreached:" + r.toString());
@@ -64,7 +64,7 @@ class Main
             println("caught nested: " + e);
         }
 
-        println("fertig");
+        println("done");
         return 0;
     }
 }

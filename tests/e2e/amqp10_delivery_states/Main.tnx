@@ -1,6 +1,6 @@
 // Issue 78: AMQP 1.0 delivery states beyond `accepted` — Amqp10Link::
-// reject()/release()/modify() (§3.4.3-3.4.5). Muster wie
-// amqp10_transfer_flow.tnx (simulierter Broker per spawn, Receiver-Link).
+// reject()/release()/modify() (§3.4.3-3.4.5). Same pattern as
+// amqp10_transfer_flow.tnx (simulated broker via spawn, receiver link).
 // expect: ok-connect
 // expect: broker-saw-reject:true
 // expect: broker-saw-reject-error:true
@@ -38,7 +38,7 @@ class Main
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation ---
+        // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
@@ -47,7 +47,7 @@ class Main
         let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -69,20 +69,20 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
-        // --- attach (Receiver) / attach-ok ---
+        // --- attach (receiver) / attach-ok ---
         let fAttach = Amqp10::readFrame(sconn);
         let pAttach = Amqp10::decodePerformative(fAttach.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
 
-        // --- flow vom Client (Credit-Vergabe) lesen ---
+        // --- read flow from the client (credit grant) ---
         Amqp10::readFrame(sconn);
 
-        // --- drei Transfers senden (deliveryId 1/2/3) ---
+        // --- send three transfers (deliveryId 1/2/3) ---
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(1, [65]));
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(2, [66]));
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(3, [67]));
 
-        // --- disposition 1: rejected mit error ---
+        // --- disposition 1: rejected with error ---
         let fDisp1 = Amqp10::readFrame(sconn);
         let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
         var rejectOk: Bool = false;
@@ -120,7 +120,7 @@ class Main
             }
         }
 
-        // --- disposition 2: released, keine Felder ---
+        // --- disposition 2: released, no fields ---
         let fDisp2 = Amqp10::readFrame(sconn);
         let pDisp2 = Amqp10::decodePerformative(fDisp2.body);
         var releaseOk: Bool = false;
@@ -139,7 +139,7 @@ class Main
             }
         }
 
-        // --- disposition 3: modified mit delivery-failed=true, undeliverable-here=false ---
+        // --- disposition 3: modified with delivery-failed=true, undeliverable-here=false ---
         let fDisp3 = Amqp10::readFrame(sconn);
         let pDisp3 = Amqp10::decodePerformative(fDisp3.body);
         var modifyOk: Bool = false;
@@ -189,14 +189,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47713);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47713, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");

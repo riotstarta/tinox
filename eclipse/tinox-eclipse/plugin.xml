@@ -2,7 +2,7 @@
 <?eclipse version="3.4"?>
 <plugin>
 
-  <!-- Content-Type für .tnx Dateien -->
+  <!-- Content type for .tnx files -->
   <extension point="org.eclipse.core.contenttype.contentTypes">
     <content-type
       id="tinox.contenttype"
@@ -12,7 +12,7 @@
       priority="normal"/>
   </extension>
 
-  <!-- Language Server registrieren und an Content-Type binden -->
+  <!-- Register the language server and bind it to the content type -->
   <extension point="org.eclipse.lsp4e.languageServer">
     <server
       id="tinox.lsp"
@@ -23,7 +23,7 @@
       contentType="tinox.contenttype"/>
   </extension>
 
-  <!-- Preference-Page für Binary-Pfad -->
+  <!-- Preference page for the binary path -->
   <extension point="org.eclipse.ui.preferencePages">
     <page
       id="tinox.preferences"
@@ -32,12 +32,12 @@
       class="tinox.eclipse.TinoxPreferencePage"/>
   </extension>
 
-  <!-- Preference-Store initialisieren -->
+  <!-- Initialize the preference store -->
   <extension point="org.eclipse.core.runtime.preferences">
     <initializer class="tinox.eclipse.TinoxPreferenceInitializer"/>
   </extension>
 
-  <!-- Run-Kommando -->
+  <!-- Run command -->
   <extension point="org.eclipse.ui.commands">
     <command id="tinox.run" name="Run Tinox File"/>
   </extension>
@@ -67,13 +67,13 @@
     </menuContribution>
   </extension>
 
-  <!-- Keybinding: Ctrl+F11 für Tinox Run -->
+  <!-- Keybinding: Ctrl+F11 for Tinox Run -->
   <extension point="org.eclipse.ui.bindings">
     <key sequence="M1+F11" commandId="tinox.run"
         schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"/>
   </extension>
 
-  <!-- TextMate-Grammatik für Syntax Highlighting -->
+  <!-- TextMate grammar for syntax highlighting -->
   <extension point="org.eclipse.tm4e.registry.grammars">
     <grammar
       scopeName="source.tinox"

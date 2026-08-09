@@ -1,9 +1,9 @@
-// AMQP-1.0 Phase 3 (tasklist.md): Frame-Codec + Performative-Hülle.
-// In-memory Encode/Decode-Rundtrip fuer encodePerformative/decodePerformative
-// (keine Verbindung noetig) + echter Frame-Rundtrip ueber eine Loopback-Conn
-// (Muster wie amqp_frame_codec.tnx bei 0-9-1) + Protokollfehler-Faelle
-// (size < 8, doff < 2, headerBytes > size, Payload-Cap, EOF) + Extended-
-// Header-Skip (doff > 2, AMQP-1.0-spezifisch, kein 0-9-1-Aequivalent).
+// AMQP-1.0 Phase 3 (tasklist.md): frame codec + performative envelope.
+// In-memory encode/decode round trip for encodePerformative/decodePerformative
+// (no connection needed) + real frame round trip over a loopback conn
+// (same pattern as amqp_frame_codec.tnx for 0-9-1) + protocol error
+// cases (size < 8, doff < 2, headerBytes > size, payload cap, EOF) + extended
+// header skip (doff > 2, AMQP-1.0-specific, no 0-9-1 equivalent).
 // expect: ok-performative-roundtrip
 // expect: ok-performative-multi-field
 // expect: ok-performative-bad-shape
@@ -21,7 +21,7 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        // --- Performative-Envelope: In-memory Rundtrip ---
+        // --- Performative envelope: in-memory round trip ---
         let body1 = Amqp10::encodePerformative(0x10, [Amqp10Value::StrVal("container-id")]);
         let p1 = Amqp10::decodePerformative(body1);
         if p1.descriptor == 0x10 {
@@ -33,7 +33,7 @@ class Main
             }
         }
 
-        // --- Mehrere positionelle Felder gemischten Typs ---
+        // --- Multiple positional fields of mixed type ---
         var fields2: List<Amqp10Value> = [
             Amqp10Value::UShortVal(2047),
             Amqp10Value::UIntVal(131072),
@@ -53,7 +53,7 @@ class Main
             }
         }
 
-        // --- Kaputte Struktur: kein Described Type, sondern ein rohes UIntVal ---
+        // --- Broken structure: not a described type, just a raw UIntVal ---
         let w3 = Amqp10Writer::new();
         w3.writeUint(42);
         let p3 = Amqp10::decodePerformative(w3.bytes);
@@ -63,10 +63,10 @@ class Main
             }
         }
 
-        // --- Echter Frame-Rundtrip ueber Loopback ---
+        // --- Real frame round trip over loopback ---
         let srv = httpServerCreate(47625);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let cfd = socketCreateTcp();
@@ -89,8 +89,8 @@ class Main
             }
         }
 
-        // --- Extended Header (doff=3): 4 Byte Fuellwerte werden uebersprungen ---
-        // size=14 (8 Fixed-Header + 4 Extended + 2 Body), doff=3, type=0, chanId=0
+        // --- Extended header (doff=3): 4 filler bytes are skipped ---
+        // size=14 (8 fixed header + 4 extended + 2 body), doff=3, type=0, chanId=0
         httpConnWriteBytes(cconn, [0, 0, 0, 14, 3, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD, 9, 9]);
         let fExt = Amqp10::readFrame(sconn);
         if fExt.frameType == 0 {
@@ -103,28 +103,28 @@ class Main
             }
         }
 
-        // --- Protokollfehler: size < 8 (kleiner als der Fixed-Header) ---
+        // --- Protocol error: size < 8 (smaller than the fixed header) ---
         httpConnWriteBytes(cconn, [0, 0, 0, 4, 2, 0, 0, 0]);
         let fBadSize = Amqp10::readFrame(sconn);
         if fBadSize.frameType == -2 {
             println("ok-frame-bad-size");
         }
 
-        // --- Protokollfehler: doff < 2 (Header kann nicht kleiner als 8 Byte sein) ---
+        // --- Protocol error: doff < 2 (the header can't be smaller than 8 bytes) ---
         httpConnWriteBytes(cconn, [0, 0, 0, 8, 1, 0, 0, 0]);
         let fBadDoff = Amqp10::readFrame(sconn);
         if fBadDoff.frameType == -2 {
             println("ok-frame-bad-doff");
         }
 
-        // --- Protokollfehler: doff*4 (Header) groesser als size (Gesamtgroesse) ---
+        // --- Protocol error: doff*4 (header) larger than size (total size) ---
         httpConnWriteBytes(cconn, [0, 0, 0, 8, 3, 0, 0, 0]);
         let fHdrExceeds = Amqp10::readFrame(sconn);
         if fHdrExceeds.frameType == -2 {
             println("ok-frame-header-exceeds-size");
         }
 
-        // --- Payload-Cap ueberschritten (> 16 MB, kein echter Read der Riesenmenge) ---
+        // --- Payload cap exceeded (> 16 MB, no actual read of the huge amount) ---
         httpConnWriteBytes(cconn, [1, 0, 0, 16, 2, 0, 0, 0]);
         let fCap = Amqp10::readFrame(sconn);
         if fCap.frameType == -2 {

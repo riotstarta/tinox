@@ -23,7 +23,7 @@ class Main
         if sconn <= 0 {
             return 0;
         }
-        httpConnReadN(sconn, 8); // Protokoll-Header, s. amqp10_phase1_handshake.tnx
+        httpConnReadN(sconn, 8); // protocol header, see amqp10_phase1_handshake.tnx
 
         let w1 = AmqpWriter091::new();
         w1.octet(0);
@@ -36,7 +36,7 @@ class Main
         Amqp091::writeFrame(sconn, 1, 0, startPayload);
 
         let f1 = Amqp091::readFrame(sconn);
-        Amqp091::decodeMethodPayload(f1.payload); // start-ok, ungeprueft (Positivpfad reicht hier)
+        Amqp091::decodeMethodPayload(f1.payload); // start-ok, unchecked (positive path is enough here)
 
         let w2 = AmqpWriter091::new();
         w2.short(2047);
@@ -71,7 +71,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreateTls(47705, "tls_cert.pem", "tls_key.pem");
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBrokerTls(srv);
@@ -87,7 +87,7 @@ class Main
             println("ok-framemax");
         }
         if brokerOk != 1 {
-            println("broker-fehler: " + c.errorMessage);
+            println("broker-error: " + c.errorMessage);
         }
 
         // --- Negative path: verify=true must reject the self-signed cert ---

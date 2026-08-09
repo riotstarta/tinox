@@ -5,15 +5,14 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Ein geöffneter Channel auf einer AmqpConnection091 (§1.4.2.2).
-     * Mehrere Channels pro Verbindung mit unabhängigem Traffic werden
-     * unterstützt (issue #123): jeder Channel bekommt beim Öffnen eine
-     * eigene, fortlaufend vergebene Channel-ID (AmqpConnection091::
-     * allocateChanId()) und eine eigene Frame-Inbox, die vom
-     * connection-weiten Hintergrund-Dispatcher (amqp091DispatchLoop in
-     * AmqpConnection091.tnx) anhand der chanId beliefert wird — jeder
-     * lesende Aufruf hier (`recv this.inbox`) liest also nur Frames für
-     * GENAU diesen Channel, nie die eines anderen.
+     * An open channel on an AmqpConnection091 (§1.4.2.2). Multiple
+     * channels per connection with independent traffic are supported
+     * (issue #123): each channel gets its own, sequentially assigned
+     * channel ID when opened (AmqpConnection091::allocateChanId()) and
+     * its own frame inbox, fed by the connection-wide background
+     * dispatcher (amqp091DispatchLoop in AmqpConnection091.tnx) based on
+     * the chanId — so every read here (`recv this.inbox`) only reads
+     * frames for EXACTLY this channel, never another one's.
      */
     class AmqpChannel091
     {
@@ -28,13 +27,13 @@ namespace tinox.core.amqp091
         fn open(connection: AmqpConnection091) -> AmqpChannel091
         {
             if connection.conn <= 0 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "Connection nicht aufgebaut: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "connection not established: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             let chanId = connection.allocateChanId();
             let inbox: Channel<AmqpFrame091> = channel;
-            // MUSS vor writeFrame passieren: sonst könnte channel.open-ok
-            // ankommen, bevor der Dispatcher weiß, wohin er es routen soll
-            // (s. AmqpConnection091::registerChannelInbox).
+            // MUST happen before writeFrame: otherwise channel.open-ok
+            // could arrive before the dispatcher knows where to route it
+            // (see AmqpConnection091::registerChannelInbox).
             connection.registerChannelInbox(chanId, inbox);
 
             let w = AmqpWriter091::new();
@@ -44,31 +43,31 @@ namespace tinox.core.amqp091
 
             let f = recv inbox;
             if f.frameType != 1 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
             if mf.classId == 20 && mf.methodId == 40 {
                 let msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41);
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open fehlgeschlagen: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             if mf.classId != 20 || mf.methodId != 11 {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "erwartete channel.open-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "expected channel.open-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
             }
             return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox };
         }
 
         /*
-         * `queue.declare` + `-ok`. Liefert den tatsächlichen Queue-Namen
-         * (wichtig bei server-generierten Namen, wenn `name` leer ist) oder
-         * "" bei Fehler (echte Queue-Namen sind nie leer — `errorMessage`
-         * beschreibt dann die Ursache).
+         * `queue.declare` + `-ok`. Returns the actual queue name
+         * (important for server-generated names when `name` is empty) or
+         * "" on error (real queue names are never empty — `errorMessage`
+         * then describes the cause).
          */
         fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -> String
         {
             let w = AmqpWriter091::new();
             w.short(0); // reserved-1 (ticket, deprecated)
             w.shortstr(name);
-            var flags: Int64 = 0; // Bit 0 (passive) v1 immer 0
+            var flags: Int64 = 0; // bit 0 (passive) always 0 in v1
             if durable {
                 flags = flags | 2;
             }
@@ -78,11 +77,11 @@ namespace tinox.core.amqp091
             if autoDelete {
                 flags = flags | 8;
             }
-            w.octet(flags); // Bit 4 (no-wait) v1 immer 0
+            w.octet(flags); // bit 4 (no-wait) always 0 in v1
             var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
             w.fieldTable(emptyArgs);
             if w.hasError() {
-                this.errorMessage = "Queue-Name zu lang (max 255 Byte, shortstr): " + name.len().toString() + " Byte";
+                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes";
                 return "";
             }
             let payload = Amqp091::encodeMethodPayload(50, 10, w.bytes);
@@ -90,7 +89,7 @@ namespace tinox.core.amqp091
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "queue.declare fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "queue.declare failed (frameType=" + f.frameType.toString() + ")";
                 return "";
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -99,7 +98,7 @@ namespace tinox.core.amqp091
                 return "";
             }
             if mf.classId != 50 || mf.methodId != 11 {
-                this.errorMessage = "erwartete queue.declare-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected queue.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return "";
             }
             let r = AmqpReader091::new(mf.args);
@@ -107,13 +106,13 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * `exchange.declare` + `-ok` (issue #124 — vorher konnte nur der
-         * Default-Exchange bzw. ein broker-vordefinierter Exchange
-         * (`amq.direct` etc.) per Name benutzt werden, aber kein eigener
-         * Exchange vom Client angelegt werden). `exchangeType` üblich:
-         * "direct", "fanout", "topic", "headers" (broker-seitig geprüft,
-         * v1 validiert den String nicht). `exchange.declare-ok` hat laut
-         * Spec keine Argumente — Erfolg = Frame korrekt empfangen.
+         * `exchange.declare` + `-ok` (issue #124 — previously only the
+         * default exchange or a broker-predefined exchange (`amq.direct`
+         * etc.) could be used by name, but the client couldn't declare
+         * its own exchange). `exchangeType` typically: "direct",
+         * "fanout", "topic", "headers" (checked broker-side, v1 doesn't
+         * validate the string). Per spec, `exchange.declare-ok` has no
+         * arguments — success = frame received correctly.
          */
         fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -> Bool
         {
@@ -121,18 +120,18 @@ namespace tinox.core.amqp091
             w.short(0); // reserved-1 (ticket, deprecated)
             w.shortstr(name);
             w.shortstr(exchangeType);
-            var flags: Int64 = 0; // Bit 0 (passive) v1 immer 0
+            var flags: Int64 = 0; // bit 0 (passive) always 0 in v1
             if durable {
                 flags = flags | 2;
             }
             if autoDelete {
                 flags = flags | 4;
             }
-            w.octet(flags); // Bit 3 (internal), Bit 4 (no-wait) v1 immer 0
+            w.octet(flags); // bit 3 (internal), bit 4 (no-wait) always 0 in v1
             var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
             w.fieldTable(emptyArgs);
             if w.hasError() {
-                this.errorMessage = "Exchange-Name/-Typ zu lang (max 255 Byte, shortstr): " + name.len().toString() + " Byte";
+                this.errorMessage = "exchange name/type too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes";
                 return false;
             }
             let payload = Amqp091::encodeMethodPayload(40, 10, w.bytes);
@@ -140,7 +139,7 @@ namespace tinox.core.amqp091
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "exchange.declare fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "exchange.declare failed (frameType=" + f.frameType.toString() + ")";
                 return false;
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -149,17 +148,16 @@ namespace tinox.core.amqp091
                 return false;
             }
             if mf.classId != 40 || mf.methodId != 11 {
-                this.errorMessage = "erwartete exchange.declare-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected exchange.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return false;
             }
             return true;
         }
 
         /*
-         * `queue.bind` + `-ok`. Bindet an einen beliebigen Exchange (Name
-         * `""` = Default-Exchange, Routing-Key = Queue-Name; oder einen per
-         * `declareExchange()` angelegten bzw. broker-vordefinierten
-         * Exchange).
+         * `queue.bind` + `-ok`. Binds to any exchange (name `""` =
+         * default exchange, routing key = queue name; or an exchange
+         * declared via `declareExchange()` or broker-predefined).
          */
         fn bindQueue(queue: String, exchange: String, routingKey: String) -> Bool
         {
@@ -172,7 +170,7 @@ namespace tinox.core.amqp091
             var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
             w.fieldTable(emptyArgs);
             if w.hasError() {
-                this.errorMessage = "Queue-/Exchange-/Routing-Key-Name zu lang (max 255 Byte, shortstr)";
+                this.errorMessage = "queue/exchange/routing-key name too long (max 255 bytes, shortstr)";
                 return false;
             }
             let payload = Amqp091::encodeMethodPayload(50, 20, w.bytes);
@@ -180,7 +178,7 @@ namespace tinox.core.amqp091
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "queue.bind fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "queue.bind failed (frameType=" + f.frameType.toString() + ")";
                 return false;
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -189,29 +187,29 @@ namespace tinox.core.amqp091
                 return false;
             }
             if mf.classId != 50 || mf.methodId != 21 {
-                this.errorMessage = "erwartete queue.bind-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected queue.bind-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return false;
             }
             return true;
         }
 
         /*
-         * `basic.qos` + `-ok`: Prefetch-Limit vor `consume()` setzen
-         * (sinnvoller Default, sonst schickt der Broker beliebig viele
-         * unbestätigte Nachrichten auf einmal).
+         * `basic.qos` + `-ok`: sets the prefetch limit before
+         * `consume()` (a sensible default, otherwise the broker sends an
+         * unbounded number of unacked messages at once).
          */
         fn qos(prefetchCount: Int64) -> Bool
         {
             let w = AmqpWriter091::new();
-            w.long(0); // prefetch-size: 0 = kein Byte-Limit
+            w.long(0); // prefetch-size: 0 = no byte limit
             w.short(prefetchCount);
-            w.octet(0); // global = false (nur dieser Consumer)
+            w.octet(0); // global = false (this consumer only)
             let payload = Amqp091::encodeMethodPayload(60, 10, w.bytes);
             Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "basic.qos fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "basic.qos failed (frameType=" + f.frameType.toString() + ")";
                 return false;
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -220,22 +218,22 @@ namespace tinox.core.amqp091
                 return false;
             }
             if mf.classId != 60 || mf.methodId != 11 {
-                this.errorMessage = "erwartete basic.qos-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected basic.qos-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return false;
             }
             return true;
         }
 
         /*
-         * `confirm.select` + `-ok` (issue #125 — RabbitMQ-Erweiterung,
-         * Extension-Klasse 85). Aktiviert Publisher-Confirms: ab jetzt
-         * bekommt jede via `publish()` gesendete Nachricht eine
-         * fortlaufende Delivery-Tag-Nummer (1, 2, 3, ...) zugewiesen
-         * (`publish()`s Rückgabewert), und der Broker beantwortet jede
-         * Nachricht später asynchron mit `basic.ack`/`basic.nack` —
-         * abholen über `waitForConfirm()` (blockierender Pull, analog zu
-         * `nextMessage()`). Muss vor dem ersten `publish()` aufgerufen
-         * werden, sonst bleibt `publish()`s Rückgabewert 0.
+         * `confirm.select` + `-ok` (issue #125 — a RabbitMQ extension,
+         * extension class 85). Enables publisher confirms: from now on,
+         * every message sent via `publish()` is assigned a sequential
+         * delivery-tag number (1, 2, 3, ...) (`publish()`'s return
+         * value), and the broker later answers each message
+         * asynchronously with `basic.ack`/`basic.nack` — collected via
+         * `waitForConfirm()` (a blocking pull, analogous to
+         * `nextMessage()`). Must be called before the first `publish()`,
+         * otherwise `publish()`'s return value stays 0.
          */
         fn confirmSelect() -> Bool
         {
@@ -246,7 +244,7 @@ namespace tinox.core.amqp091
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "confirm.select fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "confirm.select failed (frameType=" + f.frameType.toString() + ")";
                 return false;
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -255,7 +253,7 @@ namespace tinox.core.amqp091
                 return false;
             }
             if mf.classId != 85 || mf.methodId != 11 {
-                this.errorMessage = "erwartete confirm.select-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected confirm.select-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return false;
             }
             this.confirmsEnabled = true;
@@ -264,16 +262,15 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * `basic.publish` (kein `-ok`, per Spec asynchron) + Content-Header
-         * + Body-Frame(s). v1: genau zwei Properties unterstützt
-         * (content-type optional, delivery-mode fest auf 2/persistent) —
-         * s. tasklist.md "Später" für den vollen Property-Satz. Body wird
-         * bei `frameMax` gesplittet (Frame-Overhead: 7-Byte-Header +
-         * 1-Byte-Terminator = 8 Byte Sicherheitsabzug).
+         * `basic.publish` (no `-ok`, asynchronous per spec) + content
+         * header + body frame(s). v1: exactly two properties supported
+         * (content-type optional, delivery-mode fixed at 2/persistent).
+         * The body is split at `frameMax` (frame overhead: 7-byte header
+         * + 1-byte terminator = 8-byte safety margin).
          *
-         * Rückgabewert (issue #125): der zugewiesene Delivery-Tag, wenn
-         * `confirmSelect()` vorher aufgerufen wurde (fortlaufend ab 1),
-         * sonst 0 — abholen des zugehörigen Confirms über
+         * Return value (issue #125): the assigned delivery tag if
+         * `confirmSelect()` was called beforehand (sequential starting
+         * at 1), otherwise 0 — collect the matching confirm via
          * `waitForConfirm()`.
          */
         fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Int64
@@ -284,20 +281,20 @@ namespace tinox.core.amqp091
             w.shortstr(routingKey);
             w.octet(0); // mandatory=false, immediate=false
             if w.hasError() {
-                this.errorMessage = "Exchange-/Routing-Key-Name zu lang (max 255 Byte, shortstr) -- basic.publish NICHT gesendet";
+                this.errorMessage = "exchange/routing-key name too long (max 255 bytes, shortstr) -- basic.publish NOT sent";
                 return 0;
             }
 
             var flags: Int64 = 0;
             let pw = AmqpWriter091::new();
             if contentType.len() > 0 {
-                flags = flags | 32768; // Bit 15: content-type
+                flags = flags | 32768; // bit 15: content-type
                 pw.shortstr(contentType);
             }
-            flags = flags | 4096; // Bit 12: delivery-mode
+            flags = flags | 4096; // bit 12: delivery-mode
             pw.octet(2); // persistent
             if pw.hasError() {
-                this.errorMessage = "Content-Type zu lang (max 255 Byte, shortstr) -- basic.publish NICHT gesendet";
+                this.errorMessage = "content-type too long (max 255 bytes, shortstr) -- basic.publish NOT sent";
                 return 0;
             }
 
@@ -312,7 +309,7 @@ namespace tinox.core.amqp091
 
             let hw = AmqpWriter091::new();
             hw.short(60); // class-id
-            hw.short(0);  // weight (ungenutzt)
+            hw.short(0);  // weight (unused)
             hw.longlong(body.len());
             hw.short(flags);
             hw.rawBytes(pw.bytes);
@@ -341,23 +338,23 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * `basic.consume` + `-ok`: registriert den Client als Consumer.
-         * Liefert den (ggf. server-generierten) Consumer-Tag oder "" bei
-         * Fehler. Danach pusht der Broker Nachrichten asynchron —
-         * abholen über `nextMessage()` (blockierender Pull, kein
-         * Lambda-Handler in v1, s. tasklist.md).
+         * `basic.consume` + `-ok`: registers the client as a consumer.
+         * Returns the (possibly server-generated) consumer tag, or "" on
+         * error. After that, the broker pushes messages asynchronously —
+         * collect them via `nextMessage()` (a blocking pull, no lambda
+         * handler in v1).
          */
         fn consume(queue: String) -> String
         {
             let w = AmqpWriter091::new();
             w.short(0); // reserved-1
             w.shortstr(queue);
-            w.shortstr(""); // consumer-tag: server-generiert
+            w.shortstr(""); // consumer-tag: server-generated
             w.octet(0); // no-local=false, no-ack=false, exclusive=false, no-wait=false
             var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
             w.fieldTable(emptyArgs);
             if w.hasError() {
-                this.errorMessage = "Queue-Name zu lang (max 255 Byte, shortstr): " + queue.len().toString() + " Byte";
+                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + queue.len().toString() + " bytes";
                 return "";
             }
             let payload = Amqp091::encodeMethodPayload(60, 20, w.bytes);
@@ -365,7 +362,7 @@ namespace tinox.core.amqp091
 
             let f = recv this.inbox;
             if f.frameType != 1 {
-                this.errorMessage = "basic.consume fehlgeschlagen (frameType=" + f.frameType.toString() + ")";
+                this.errorMessage = "basic.consume failed (frameType=" + f.frameType.toString() + ")";
                 return "";
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
@@ -374,7 +371,7 @@ namespace tinox.core.amqp091
                 return "";
             }
             if mf.classId != 60 || mf.methodId != 21 {
-                this.errorMessage = "erwartete basic.consume-ok, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
+                this.errorMessage = "expected basic.consume-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
                 return "";
             }
             let r = AmqpReader091::new(mf.args);
@@ -382,23 +379,22 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * Blockierender Pull: liest genau EINE komplette Nachricht
-         * (`basic.deliver`-Methode + Content-Header + Body-Frame(s), bis
-         * `body-size` Bytes gelesen sind — analog zu `Ws::readMessage`).
-         * `AmqpMessage091.ok == false` bei jedem Fehler (Aufrufer MUSS
-         * prüfen), `errorMessage` beschreibt die Ursache.
+         * Blocking pull: reads exactly ONE complete message
+         * (`basic.deliver` method + content header + body frame(s),
+         * until `body-size` bytes have been read — analogous to
+         * `Ws::readMessage`). `AmqpMessage091.ok == false` on any error
+         * (caller MUST check), `errorMessage` describes the cause.
          *
-         * v1 dekodiert aus dem Content-Header nur `content-type` und
-         * überspringt alle anderen 13 Basic-Properties korrekt anhand
-         * ihres Bits (sonst würde der Byte-Cursor bei einer Nachricht mit
-         * z. B. `headers` oder `correlation-id` aus der Spur laufen) —
-         * s. tasklist.md "Später" für den vollen Property-Satz.
+         * v1 only decodes `content-type` from the content header and
+         * correctly skips all other 13 basic properties based on their
+         * bit (otherwise the byte cursor would run off track for a
+         * message with, say, `headers` or `correlation-id`).
          */
         fn nextMessage() -> AmqpMessage091
         {
             let f1 = recv this.inbox;
             if f1.frameType != 1 {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete basic.deliver (frameType=" + f1.frameType.toString() + ")" };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")" };
             }
             let mf = Amqp091::decodeMethodPayload(f1.payload);
             if mf.classId == 20 && mf.methodId == 40 {
@@ -406,22 +402,22 @@ namespace tinox.core.amqp091
                 return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: msg };
             }
             if mf.classId != 60 || mf.methodId != 60 {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete basic.deliver, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
             }
             let r = AmqpReader091::new(mf.args);
-            r.shortstr(); // consumer-tag (v1 ungenutzt)
+            r.shortstr(); // consumer-tag (unused in v1)
             let deliveryTag = r.longlong();
-            r.octet(); // redelivered (eigenes Bit-Byte)
+            r.octet(); // redelivered (its own bit byte)
             let exchange = r.shortstr();
             let routingKey = r.shortstr();
 
             let f2 = recv this.inbox;
             if f2.frameType != 2 {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete Content-Header-Frame (frameType=" + f2.frameType.toString() + ")" };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")" };
             }
             let hr = AmqpReader091::new(f2.payload);
-            hr.short(); // class-id (60, ungeprüft)
-            hr.short(); // weight (ungenutzt)
+            hr.short(); // class-id (60, not checked)
+            hr.short(); // weight (unused)
             let bodySize = hr.longlong();
             let flags = hr.short();
             var contentType: String = "";
@@ -446,7 +442,7 @@ namespace tinox.core.amqp091
             while body.len() < bodySize {
                 let f3 = recv this.inbox;
                 if f3.frameType != 3 {
-                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "erwartete Body-Frame (frameType=" + f3.frameType.toString() + ")" };
+                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")" };
                 }
                 for i in 0..f3.payload.len() {
                     body.push(f3.payload[i]);
@@ -456,7 +452,7 @@ namespace tinox.core.amqp091
             return AmqpMessage091 { deliveryTag: deliveryTag, exchange: exchange, routingKey: routingKey, contentType: contentType, body: body, ok: true, errorMessage: "" };
         }
 
-        /* `basic.ack` (kein `-ok`, per Spec asynchron). */
+        /* `basic.ack` (no `-ok`, asynchronous per spec). */
         fn ack(deliveryTag: Int64) -> Nothing
         {
             let w = AmqpWriter091::new();
@@ -467,25 +463,24 @@ namespace tinox.core.amqp091
         }
 
         /*
-         * Blockierender Pull: liest EIN Publisher-Confirm (`basic.ack`
-         * oder `basic.nack`, letzteres eine RabbitMQ-Erweiterung —
-         * gleiche Wire-Struktur wie `basic.ack`, nur Klasse+Methode 60/120
-         * statt 60/80, plus ein zusätzliches Requeue-Bit das v1 ignoriert)
-         * — analog zu `nextMessage()` für Consumer. Setzt vorausgesetzt
-         * `confirmSelect()` wurde aufgerufen. Frames eines ANDEREN Channels
-         * landen nie hier (issue #123: eigene Inbox pro Channel, s.
-         * Klassen-Kommentar oben) — auf DEMSELBEN Channel gleichzeitig zu
-         * konsumieren UND auf Confirms zu warten bleibt aber unsicher:
-         * `basic.deliver`-Frames würden hier fälschlich als Confirm
-         * interpretiert, weil innerhalb eines Channels nach wie vor nicht
-         * nach Methodentyp (deliver vs. ack/nack) dispatcht wird, nur nach
-         * chanId.
+         * Blocking pull: reads ONE publisher confirm (`basic.ack` or
+         * `basic.nack`, the latter a RabbitMQ extension — same wire
+         * structure as `basic.ack`, just class+method 60/120 instead of
+         * 60/80, plus an extra requeue bit that v1 ignores) — analogous
+         * to `nextMessage()` for consumers. Assumes `confirmSelect()`
+         * was called. Frames from a DIFFERENT channel never end up here
+         * (issue #123: its own inbox per channel, see the class comment
+         * above) — but consuming AND waiting for confirms on the SAME
+         * channel at the same time remains unsafe: `basic.deliver`
+         * frames would be wrongly interpreted as a confirm here, because
+         * dispatch within a channel still isn't done by method type
+         * (deliver vs. ack/nack), only by chanId.
          */
         fn waitForConfirm() -> AmqpConfirmResult091
         {
             let f = recv this.inbox;
             if f.frameType != 1 {
-                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "erwartete basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" };
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" };
             }
             let mf = Amqp091::decodeMethodPayload(f.payload);
             if mf.classId == 20 && mf.methodId == 40 {
@@ -493,7 +488,7 @@ namespace tinox.core.amqp091
                 return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: msg };
             }
             if mf.classId != 60 || (mf.methodId != 80 && mf.methodId != 120) {
-                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "erwartete basic.ack/basic.nack, bekam class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
             }
             let r = AmqpReader091::new(mf.args);
             let deliveryTag = r.longlong();

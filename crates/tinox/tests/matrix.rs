@@ -1,35 +1,35 @@
-//! Kontext-Matrix (TESTPLAN Phase 1.3).
+//! Context matrix (TESTPLAN Phase 1.3).
 //!
-//! Schleust dieselben Kern-Operationen pro Typ durch alle Herkunfts-Kontexte
-//! und verlangt identisches Verhalten. Die .tnx-Dateien werden zur Laufzeit
-//! generiert (nichts eingecheckt); pro (Typ × Kontext) entsteht eine Datei
-//! mit allen Operationen dieses Typs.
+//! Runs the same core operations per type through every origin context
+//! and requires identical behavior. The .tnx files are generated at
+//! runtime (nothing checked in); one file per (type × context) with all
+//! operations for that type.
 //!
-//! Bekannte Löcher stehen in KNOWN_FAILURES: ein dort gelisteter Fall MUSS
-//! fehlschlagen (sonst ist der Eintrag veraltet und der Test rot), ein nicht
-//! gelisteter Fall MUSS bestehen. Fixes erzwingen also das Pflegen der Liste.
+//! Known gaps live in KNOWN_FAILURES: a case listed there MUST fail
+//! (otherwise the entry is stale and the test goes red), an unlisted
+//! case MUST pass. Fixes therefore force the list to be kept up to date.
 
 mod common;
 use common::{parse_case, run_case};
 use std::fs;
 use std::path::PathBuf;
 
-/// Kontexte, die heute noch fehlschlagen — jeder Eintrag ist ein offenes
-/// Inferenz-Loch (Format: "matrix_<typ>_<kontext>"). Beim Fixen: Eintrag
-/// entfernen, sonst schlägt der Test mit "stale entry" fehl.
+/// Contexts that still fail today — each entry is an open inference gap
+/// (format: "matrix_<type>_<context>"). When fixed: remove the entry,
+/// otherwise the test fails with "stale entry".
 const KNOWN_FAILURES: &[&str] = &[];
 
 struct TypeSpec {
     key: &'static str,
-    /// Tinox-Typname (für Annotationen, Parameter, Felder, Payloads)
+    /// Tinox type name (for annotations, parameters, fields, payloads)
     tnx: &'static str,
-    /// Literal-Ausdruck des Referenzwerts
+    /// Literal expression of the reference value
     lit: &'static str,
-    /// Anderes Literal gleichen Typs (Erstinitialisierung vor Neuzuweisung)
+    /// Another literal of the same type (initial value before reassignment)
     other: &'static str,
-    /// Operationen: Statement-Template mit {V} als Wert-Ausdruck + erwartete Zeilen
+    /// Operations: statement template with {V} as the value expression + expected lines
     ops: &'static [(&'static str, &'static [&'static str])],
-    /// Typ-eigene Präambel (z. B. Klassen-Deklaration), in jede Datei emittiert
+    /// Type-specific preamble (e.g. class declaration), emitted into every file
     prelude: &'static str,
 }
 
@@ -142,84 +142,84 @@ const TYPES: &[TypeSpec] = &[
     },
 ];
 
-/// Wie der Wert an die Operation kommt. Liefert (Präambel-Decls,
-/// Setup-Statements in main, Wert-Ausdruck) — oder None, wenn der Kontext
-/// für den Typ nicht sinnvoll ist.
+/// How the value reaches the operation. Returns (preamble decls,
+/// setup statements in main, value expression) — or None if the context
+/// doesn't make sense for the type.
 fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
     let t = ty.tnx;
     let lit = ty.lit;
     let other = ty.other;
     Some(match ctx {
-        // Operation direkt auf dem Literal
+        // Operation directly on the literal
         "literal" => (String::new(), String::new(), lit.to_string()),
-        // let ohne Typannotation
+        // let without a type annotation
         "let" => (String::new(), format!("let v = {lit};"), "v".into()),
-        // let mit Typannotation
+        // let with a type annotation
         "let_ann" => (String::new(), format!("let v: {t} = {lit};"), "v".into()),
-        // var, danach Neuzuweisung aus Funktionsergebnis
+        // var, then reassignment from a function result
         "var_reassign" => (
             format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             format!("var v: {t} = {other};\n    v = make();"),
             "v".into(),
         ),
-        // Funktionsparameter
+        // Function parameter
         "param" => (
             String::new(),
             String::new(),
-            // Sonderfall: Ops laufen in einer eigenen Funktion, siehe emit_case
+            // Special case: ops run in their own function, see emit_case
             "v".into(),
         ),
-        // let aus Funktionsrückgabe
+        // let from a function return
         "let_from_fn" => (
             format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             "let v = make();".to_string(),
             "v".into(),
         ),
-        // Operation direkt auf dem Call-Ausdruck
+        // Operation directly on the call expression
         "ret_direct" => (
             format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
             String::new(),
             "make()".into(),
         ),
-        // Element einer Liste (Literal)
+        // Element of a list (literal)
         "list_elem" => (
             String::new(),
             format!("let xs: List<{t}> = [{lit}];"),
             "xs[0]".into(),
         ),
-        // Element einer Liste aus Funktionsrückgabe
+        // Element of a list from a function return
         "list_elem_fn" => (
             format!("fnc makeList() -> List<{t}> {{\n    return [{lit}];\n}}\n"),
             "let xs = makeList();".to_string(),
             "xs[0]".into(),
         ),
-        // Klassenfeld
+        // Class field
         "field" => (
             format!("class Holder {{\n    var f: {t};\n}}\n"),
             format!("let h = Holder {{ f: {lit} }};"),
             "h.f".into(),
         ),
-        // Element eines List-Felds
+        // Element of a list field
         "field_list_elem" => (
             format!("class Holder {{\n    var xs: List<{t}>;\n}}\n"),
             format!("let h = Holder {{ xs: [{lit}] }};"),
             "h.xs[0]".into(),
         ),
-        // Match-Payload
+        // Match payload
         "match_payload" => (
             format!("enum Box {{\n    Val({t}),\n    Empty,\n}}\n"),
             format!("let b = Box::Val({lit});"),
-            // Sonderfall: Ops laufen im Match-Arm, siehe emit_case
+            // Special case: ops run inside the match arm, see emit_case
             "v".into(),
         ),
-        // Schleifenvariable (Liste des Typs), nur 1 Element
+        // Loop variable (list of the type), just 1 element
         "loop_var" => (
             String::new(),
             format!("let xs: List<{t}> = [{lit}];"),
-            // Sonderfall: Ops laufen im Schleifenkörper
+            // Special case: ops run inside the loop body
             "v".into(),
         ),
-        // Map-Value: Wert steckt als Value in einer Map<String, T>
+        // Map value: the value sits as a value in a Map<String, T>
         "map_value" => (
             String::new(),
             format!(
@@ -227,10 +227,10 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
             ),
             r#"m.get("k")"#.into(),
         ),
-        // Cross-Modul: Wert kommt aus einer Funktion eines anderen Moduls.
-        // Typen mit eigener Präambel (Klassen) sind ausgenommen — die Klasse
-        // kann nicht in beiden Modulen deklariert sein (Cross-Modul-Klassen
-        // deckt bug06 ab).
+        // Cross-module: the value comes from a function in another module.
+        // Types with their own preamble (classes) are excluded — the class
+        // can't be declared in both modules (cross-module classes are
+        // covered by bug06).
         // Issue #149 stage 3: mk_X() is now a static method of `class
         // MatrixMod` (no top-level free `fn` allowed anymore), called
         // qualified -- still exercises a cross-module call, just through
@@ -293,14 +293,14 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
     }
 
     let body = match ctx {
-        // Ops laufen in einer eigenen Funktion mit Typ-Parameter
+        // Ops run in their own function with a type parameter
         "param" => format!(
             "fnc useIt(v: {t}) -> Nothing {{\n{ops}}}\n\nfnc main() -> Int32 {{\n    useIt({lit});\n    return 0;\n}}",
             t = ty.tnx,
             ops = op_stmts,
             lit = ty.lit
         ),
-        // Ops laufen im Match-Arm
+        // Ops run inside the match arm
         "match_payload" => format!(
             "fnc main() -> Int32 {{\n    {setup}\n    match b {{\n        Val(v) => {{\n{ops}        }}\n        _ => println(\"none\");\n    }}\n    return 0;\n}}",
             setup = setup,
@@ -309,7 +309,7 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
                 .map(|l| format!("        {l}\n"))
                 .collect::<String>(),
         ),
-        // Ops laufen im Schleifenkörper
+        // Ops run inside the loop body
         "loop_var" => format!(
             "fnc main() -> Int32 {{\n    {setup}\n    for v in xs {{\n{ops}    }}\n    return 0;\n}}",
             setup = setup,
@@ -373,8 +373,8 @@ fn helper_module() -> String {
 }
 
 fn generate_all(shard: usize) -> PathBuf {
-    // Pro Shard ein eigenes Verzeichnis — die Shards laufen als parallele
-    // Threads, ein gemeinsames Verzeichnis würde remove/rewrite-Races geben.
+    // A separate directory per shard — shards run as parallel threads, a
+    // shared directory would cause remove/rewrite races.
     let dir = std::env::temp_dir().join(format!("tinox-matrix-{}-{shard}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir matrix dir");
@@ -524,14 +524,14 @@ fn run_shard(shard: usize, num_shards: usize) {
     let mut problems = Vec::new();
     if !unexpected_failures.is_empty() {
         problems.push(format!(
-            "{} Matrix-Fälle schlagen fehl (neue Inferenz-Löcher — fixen oder in KNOWN_FAILURES eintragen):\n\n{}",
+            "{} matrix cases fail (new inference gaps — fix or add to KNOWN_FAILURES):\n\n{}",
             unexpected_failures.len(),
             unexpected_failures.join("\n\n")
         ));
     }
     if !stale_entries.is_empty() {
         problems.push(format!(
-            "stale KNOWN_FAILURES (bestehen inzwischen — Eintrag entfernen): {}",
+            "stale KNOWN_FAILURES (now passing — remove the entry): {}",
             stale_entries.join(", ")
         ));
     }

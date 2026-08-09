@@ -6,16 +6,16 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Byte-Builder für die AMQP-1.0-Typsystem-Kodierung (Big-Endian).
-     * Schreibt IMMER die volle Breite (kein smalluint/uint0/etc.-Picking —
-     * das ist nur eine optionale Größenoptimierung, kein Korrektheits-
-     * erfordernis) UND bei variabler Breite (Binary/String/Symbol/List/Map)
-     * IMMER die 32-Bit-Form — anders als 0-9-1s shortstr/longstr-Zwei-
-     * Methoden-Unterscheidung gibt es hier keinen Größen-Cutover-Zweig und
-     * keine künstliche 255-Byte-Fehlergrenze: die 32-Bit-Form ist für JEDE
-     * Länge spec-konform, kostet nur ein paar Bytes mehr bei kleinen
-     * Werten. Der Reader MUSS trotzdem alle Kurzformen lesen können, weil
-     * der Broker sie nutzen darf (asymmetrisch wie bei 0-9-1).
+     * Byte builder for the AMQP-1.0 type-system encoding (big-endian).
+     * ALWAYS writes the full width (no smalluint/uint0/etc. picking —
+     * that's only an optional size optimization, not a correctness
+     * requirement) AND for variable width (binary/string/symbol/list/map)
+     * ALWAYS the 32-bit form — unlike 0-9-1's shortstr/longstr two-method
+     * distinction, there's no size cutover branch here and no artificial
+     * 255-byte error boundary: the 32-bit form is spec-compliant for ANY
+     * length, it just costs a few more bytes for small values. The reader
+     * still MUST be able to read all short forms, because the broker is
+     * allowed to use them (asymmetric, same as with 0-9-1).
      */
     class Amqp10Writer
     {
@@ -143,8 +143,9 @@ namespace tinox.core.amqp10
             this.pushU64(v);
         }
 
-        /* `bytes` muss exakt 16 Elemente haben (Aufrufer-Verantwortung,
-         * analog zu 0-9-1s ungeprüften Bounds-Annahmen bei Frame-Payloads). */
+        /* `bytes` must have exactly 16 elements (caller's responsibility,
+         * analogous to 0-9-1's unchecked bounds assumptions for frame
+         * payloads). */
         fn writeUuid(uuidBytes: List<Int64>) -> Nothing
         {
             this.pushU8(0x98);
@@ -184,8 +185,8 @@ namespace tinox.core.amqp10
             this.pushRawBytes(inner.bytes);
         }
 
-        /* `pairs` ist flach (key0, val0, key1, val1, ...) — MUSS eine
-         * gerade Anzahl Elemente haben (Aufrufer-Verantwortung). */
+        /* `pairs` is flat (key0, val0, key1, val1, ...) — MUST have an
+         * even number of elements (caller's responsibility). */
         fn writeMap(pairs: List<Amqp10Value>) -> Nothing
         {
             let inner = Amqp10Writer::new();
@@ -198,9 +199,9 @@ namespace tinox.core.amqp10
             this.pushRawBytes(inner.bytes);
         }
 
-        /* Descriptor immer als smallulong (0x53 + 1 Byte) — alle in v1
-         * genutzten Descriptor-Codes sind < 256 (Performatives 0x10-0x18,
-         * SASL 0x40-0x44, Sections 0x70-0x78), s. Amqp10Described. */
+        /* Descriptor always as smallulong (0x53 + 1 byte) — every
+         * descriptor code used in v1 is < 256 (performatives 0x10-0x18,
+         * SASL 0x40-0x44, sections 0x70-0x78), see Amqp10Described. */
         fn writeDescribed(d: Amqp10Described) -> Nothing
         {
             this.pushU8(0x00);
@@ -233,10 +234,11 @@ namespace tinox.core.amqp10
                 MapVal(pairs) => { this.writeMap(pairs); }
                 DescribedVal(d) => { this.writeDescribed(d); }
                 ErrorVal(_msg) => {
-                    // Ein ErrorVal wird nie gesendet (nur Decode-Ergebnis) —
-                    // kein Silent-Garbage: harter Null-Marker statt Schweigen,
-                    // falls doch versehentlich re-encodiert wird (analog zu
-                    // 0-9-1s AmqpFieldValue091::ErrorVal-Handling).
+                    // An ErrorVal is never sent (decode result only) — no
+                    // silent garbage: a hard null marker instead of
+                    // staying quiet if it's ever accidentally re-encoded
+                    // (analogous to 0-9-1's AmqpFieldValue091::ErrorVal
+                    // handling).
                     this.writeNull();
                 }
             }

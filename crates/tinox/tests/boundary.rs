@@ -1,9 +1,9 @@
-//! Grenzwert-/Gedächtnis-Fälle (TESTPLAN Phase 1.4).
+//! Boundary/memory edge cases.
 //!
-//! Strings an Heap-/Alignment-Grenzen (Bug 15 war nur bei Länge 15–16
-//! sichtbar), Sonderzeichen/UTF-8, leere/1-elementige/verschachtelte
-//! Container. Ground truth rechnet der Rust-Host; die .tnx-Dateien werden
-//! zur Laufzeit generiert. KNOWN_FAILURES wie in matrix.rs.
+//! Strings at heap/alignment boundaries (Bug 15 was only visible at
+//! length 15–16), special characters/UTF-8, empty/1-element/nested
+//! containers. Ground truth is computed by the Rust host; the .tnx files
+//! are generated at runtime. KNOWN_FAILURES like in matrix.rs.
 
 mod common;
 use common::{parse_case, run_case};
@@ -12,14 +12,14 @@ use std::path::PathBuf;
 
 const KNOWN_FAILURES: &[&str] = &[];
 
-/// Ein generierter Fall: Name, Tinox-Quelltext (ohne expect-Header), erwartete Zeilen.
+/// A generated case: name, Tinox source (without an expect header), expected lines.
 fn cases() -> Vec<(String, String, Vec<String>)> {
     let mut out = Vec::new();
 
-    // ── String-Längen an Heap-Grenzen ────────────────────────────────
-    // Jede Länge: Literal-len, len nach Funktionsrückgabe, split-Element
-    // (der Bug-15-Pfad: Elemente mit 15/16 Zeichen verschwanden) und
-    // Konkatenation.
+    // ── String lengths at heap boundaries ────────────────────────────────
+    // Every length: literal len, len after a function return, a split
+    // element (the Bug-15 path: elements of 15/16 characters
+    // disappeared), and concatenation.
     let lengths = [0usize, 1, 7, 8, 15, 16, 17, 31, 32];
     let mut body = String::new();
     let mut expects: Vec<String> = Vec::new();
@@ -34,7 +34,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
         expects.push(l.to_string());
         body.push_str(&format!("    println(ident(s{i}).len());\n"));
         expects.push(l.to_string());
-        // split: Element der Länge L zwischen zwei Ankern
+        // split: an element of length L between two anchors
         body.push_str(&format!(
             "    let parts{i} = (\"x|\" + s{i} + \"|y\").split(\"|\");\n"
         ));
@@ -42,14 +42,14 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
         expects.push("3".to_string());
         body.push_str(&format!("    println(parts{i}[1].len());\n"));
         expects.push(l.to_string());
-        // Konkatenation ändert die Länge korrekt
+        // Concatenation correctly changes the length
         body.push_str(&format!("    println((s{i} + \"!\").len());\n"));
         expects.push((l + 1).to_string());
     }
     body.push_str("    return 0;\n    }\n}\n");
     out.push(("boundary_string_lengths".to_string(), body, expects));
 
-    // ── Sonderzeichen ────────────────────────────────────────────────
+    // ── Special characters ────────────────────────────────────────────────
     let src = r##"class Main {
     fnc main() -> Int32 {
     let hash = "# kein Raw-String";
@@ -78,12 +78,12 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
         "8".into(), "sag \"hi\"".into(),
         "3".into(), "2".into(),
         "9".into(), "  mitte  |".into(),
-        "6".into(), "äöü".into(),   // len zählt Bytes (UTF-8: 2 je Umlaut)
+        "6".into(), "äöü".into(),   // len counts bytes (UTF-8: 2 per umlaut)
         "3".into(),
     ];
     out.push(("boundary_string_special".to_string(), src.to_string(), expects));
 
-    // ── Leere und 1-elementige Container ─────────────────────────────
+    // ── Empty and 1-element containers ─────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
     var e: List<Int64> = [];
@@ -118,7 +118,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     ];
     out.push(("boundary_container_empty_one".to_string(), src.to_string(), expects));
 
-    // ── Verschachtelung: 3 Ebenen Listen ─────────────────────────────
+    // ── Nesting: 3 levels of lists ─────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
     let deep: List<List<List<Int64>>> = [[[1, 2], [3]], [[4]]];
@@ -144,7 +144,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     ];
     out.push(("boundary_list_nested3".to_string(), src.to_string(), expects));
 
-    // ── Liste von Maps ───────────────────────────────────────────────
+    // ── A list of maps ───────────────────────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
     var m1: Map<String, Int64> = Map::new();
@@ -165,7 +165,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     let expects = vec!["2".into(), "1".into(), "2".into(), "1".into(), "3".into()];
     out.push(("boundary_list_of_maps".to_string(), src.to_string(), expects));
 
-    // ── Map mit Listen-Values ────────────────────────────────────────
+    // ── A map with list values ────────────────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
     var m: Map<String, List<Int64>> = Map::new();
@@ -187,8 +187,8 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
 }
 
 fn generate_all(shard: usize) -> PathBuf {
-    // Pro Shard ein eigenes Verzeichnis — die Shards laufen als parallele
-    // Threads, ein gemeinsames Verzeichnis würde remove/rewrite-Races geben.
+    // A separate directory per shard — shards run as parallel threads, a
+    // shared directory would cause remove/rewrite races.
     let dir = std::env::temp_dir().join(format!("tinox-boundary-{}-{shard}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir boundary dir");
@@ -244,14 +244,14 @@ fn run_shard(shard: usize, num_shards: usize) {
     let mut problems = Vec::new();
     if !unexpected.is_empty() {
         problems.push(format!(
-            "{} Grenzwert-Fälle schlagen fehl:\n\n{}",
+            "{} boundary cases fail:\n\n{}",
             unexpected.len(),
             unexpected.join("\n\n")
         ));
     }
     if !stale.is_empty() {
         problems.push(format!(
-            "stale KNOWN_FAILURES (bestehen inzwischen — Eintrag entfernen): {}",
+            "stale KNOWN_FAILURES (now passing — remove the entry): {}",
             stale.join(", ")
         ));
     }

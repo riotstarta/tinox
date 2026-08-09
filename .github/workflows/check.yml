@@ -1,15 +1,15 @@
-# CI-Gate (TESTPLAN 0.1): volles `make check` bei jedem Push/PR —
-# dieselbe Prüfung wie der lokale pre-push-Hook, inklusive Dogfood.
+# CI gate (TESTPLAN 0.1): full `make check` on every push/PR —
+# the same check as the local pre-push hook, including dogfood.
 #
-# Dogfood braucht ein jgrep-tinox-Checkout: lokal liegt es unter
-# ../jgrep-tinox, hier wird es als Geschwister-Verzeichnis ausgecheckt
-# (Repo ist öffentlich, kein Token nötig) und DOGFOOD_DIR zeigt darauf
-# (Makefile-Default ../jgrep-tinox passt zum Layout unten).
+# Dogfood needs a jgrep-tinox checkout: locally it lives under
+# ../jgrep-tinox, here it's checked out as a sibling directory
+# (the repo is public, no token needed) and DOGFOOD_DIR points to it
+# (the Makefile default ../jgrep-tinox matches the layout below).
 #
-# Toolchain: der Tinox-Compiler ruft llc/opt (llvm), cc (clang/gcc) auf
-# und linkt gegen Boehm-GC (libgc-dev); die ORM-E2E-Tests brauchen die
-# sqlite3-CLI (Fixtures) und libsqlite3-dev (-lsqlite3), sonst würden
-# sie geskippt.
+# Toolchain: the Tinox compiler invokes llc/opt (llvm), cc (clang/gcc)
+# and links against Boehm-GC (libgc-dev); the ORM e2e tests need the
+# sqlite3 CLI (fixtures) and libsqlite3-dev (-lsqlite3), otherwise
+# they'd be skipped.
 
 name: check
 
@@ -48,12 +48,12 @@ jobs:
           ref: 1a9149dc4906c079af19d88aebe5ea1101308b29 # main, as of 2026-07-28
           path: jgrep-tinox
 
-      - name: System-Toolchain installieren
+      - name: Install system toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev sqlite3
 
-      - name: llc/opt verfügbar?
+      - name: llc/opt available?
         run: |
           llc --version | head -2
           opt --version | head -2

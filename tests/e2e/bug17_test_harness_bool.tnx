@@ -1,4 +1,4 @@
-// Bug 17: Test-Harness las Bool-Rückgabe als i64 — fehlschlagende Tests wurden PASS
+// Bug 17: test harness read Bool return values as i64 — failing tests became PASS
 // mode: test
 // expect-exit: 1
 // expect-contains: 1 failed

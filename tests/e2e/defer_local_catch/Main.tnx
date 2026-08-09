@@ -1,12 +1,11 @@
-// Regressionstest fuer die in bugs.md (Bug 41, "Bewusst noch offen") zuletzt
-// verbliebene Exception-Semantik-Luecke: defer-Scopes, die INNERHALB eines
-// try-Bodys registriert werden, liefen nicht, wenn der Fehler LOKAL (in
-// derselben Funktion) gefangen wurde -- Bug 41 deckte nur das Entweichen
-// aus dem gesamten Frame ab (throw -> ret), nicht den haeufigeren Fall
-// throw -> catch INNERHALB derselben Funktion (br statt ret). Gefixt:
-// Amqp10Link... nein, codegen.rs emittiert jetzt vor jedem Sprung zu einem
-// lokalen catch_bb die defer-Scopes, die seit dem Betreten des zugehoerigen
-// try-Bodys geoeffnet wurden (emit_unwind_defers_to).
+// Regression test for the exception-semantics gap last left over in bugs.md
+// (Bug 41, "deliberately still open"): defer scopes registered INSIDE a
+// try body did not run when the error was caught LOCALLY (in the same
+// function) -- Bug 41 only covered escaping the entire frame (throw -> ret),
+// not the more common case of throw -> catch INSIDE the same function
+// (br instead of ret). Fixed: codegen.rs now emits, before every jump to a
+// local catch_bb, the defer scopes that have been opened since entering the
+// corresponding try body (emit_unwind_defers_to).
 // expect: A2
 // expect: A1
 // expect: A-caught
@@ -28,8 +27,8 @@ class Main
     }
 
 
-    // Fall A: mehrere defers im selben Scope -> LIFO (zuletzt registriert,
-    // zuerst ausgefuehrt), auch wenn der Sprung zum catch lokal bleibt.
+    // Case A: multiple defers in the same scope -> LIFO (last registered,
+    // first executed), even when the jump to the catch stays local.
     fnc multiDefer() -> Nothing {
         try {
             defer { println("A1"); }
@@ -41,9 +40,9 @@ class Main
     }
 
 
-    // Fall B: ein defer VOR dem try (Funktions-Scope) darf NICHT vorzeitig
-    // laufen -- nur der try-interne defer soll vor dem catch laufen, der
-    // aeussere erst am tatsaechlichen Funktionsende.
+    // Case B: a defer BEFORE the try (function scope) must NOT run
+    // prematurely -- only the try-internal defer should run before the
+    // catch, the outer one only at the actual end of the function.
     fnc outerDeferNotEarly() -> Nothing {
         defer { println("B-outer-defer"); }
         try {
@@ -56,8 +55,8 @@ class Main
     }
 
 
-    // Fall C: verschachtelte Blocks innerhalb des try -- beide Scopes muessen
-    // vor dem catch laufen, innerster zuerst.
+    // Case C: nested blocks inside the try -- both scopes must run before
+    // the catch, innermost first.
     fnc nestedBlocks() -> Nothing {
         try {
             defer { println("C-try-defer"); }
@@ -71,9 +70,9 @@ class Main
     }
 
 
-    // Fall D: ein try ohne eigenen catch (nur finally) innerhalb eines
-    // AEUSSEREN try/catch -- defer laeuft VOR finally, finally VOR dem
-    // Re-throw zum aeusseren catch, kein Doppel-Lauf des inneren defers.
+    // Case D: a try without its own catch (only finally) inside an
+    // OUTER try/catch -- defer runs BEFORE finally, finally BEFORE the
+    // re-throw to the outer catch, no double run of the inner defer.
     fnc nestedTryFinally() -> Nothing {
         try {
             try {

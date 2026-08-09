@@ -1,25 +1,25 @@
-// AMQP-1.0 Phase 7 (tasklist.md): Haertung + Grenzfaelle, analog zu
+// AMQP-1.0 Phase 7 (tasklist.md): hardening + edge cases, analogous to
 // 0-9-1 Phase 5.2 (amqp_edge_cases.tnx/amqp_shortstr_limits.tnx).
 //
-// Teil A (netzwerkfrei): str8/sym8/vbin8-Kurzformen an ihrer 255-Byte-
-// Grenze (Reader MUSS sie lesen koennen, auch wenn der Writer sie nie
-// schreibt, s. Phase 2.2/2.5) + Rundtrip von >255-Byte-Strings/Symbolen/
-// Binaerdaten ueber den Writer (v1 schreibt IMMER die 32-Bit-Form
-// vbin32/str32/sym32, s. tasklist.md 2.2 -- deshalb existiert anders als
-// bei 0-9-1s shortstr KEINE 255-Byte-Schreibgrenze, die einen Bug 71-
-// artigen Silent-Truncate-Fund erlauben wuerde; dieser Test bestaetigt
-// das empirisch statt es nur in der Doku zu behaupten).
+// Part A (network-free): str8/sym8/vbin8 short forms at their 255-byte
+// boundary (the reader MUST be able to read them, even though the writer
+// never writes them, see Phase 2.2/2.5) + round-trip of >255-byte strings/
+// symbols/binary data through the writer (v1 ALWAYS writes the 32-bit form
+// vbin32/str32/sym32, see tasklist.md 2.2 -- so unlike 0-9-1's shortstr
+// there is NO 255-byte write limit that could allow a Bug-71-like
+// silent-truncate finding; this test confirms that empirically instead of
+// merely asserting it in the docs).
 //
-// Teil B (simulierter Broker via spawn/await): leerer Message-Body im
-// vollen Publish/Consume-Roundtrip + Multi-Frame-Transfer-Grenze exakt
-// am max-frame-size-Cutoff (ein Byte drunter = 1 Frame, ein Byte drueber
-// = 2 Frames -- Off-by-one-Absicherung fuer Amqp10Link::publish()s
-// Split-Logik). overhead wird zur Laufzeit ueber echtes
-// encodeMessageBody() gemessen statt hart codiert, damit der Test robust
-// gegen Aenderungen an der Section-Kodierung bleibt.
+// Part B (simulated broker via spawn/await): empty message body in the
+// full publish/consume round trip + multi-frame transfer boundary exactly
+// at the max-frame-size cutoff (one byte under = 1 frame, one byte over
+// = 2 frames -- off-by-one safeguard for Amqp10Link::publish()'s
+// split logic). overhead is measured at runtime via the real
+// encodeMessageBody() instead of being hard-coded, so the test stays
+// robust against changes to the section encoding.
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses its return type):
+// fakeBroker returns Int64 (0/1) instead of Bool.
 // expect: ok-str8-255
 // expect: ok-str8-empty
 // expect: ok-vbin8-empty
@@ -96,7 +96,7 @@ class Main
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation ---
+        // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
@@ -105,7 +105,7 @@ class Main
         let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -127,7 +127,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
-        // --- attach (Sender) / attach-ok + flow(credit=3) -- alle drei Publishes brauchen Credit ---
+        // --- attach (sender) / attach-ok + flow(credit=3) -- all three publishes need credit ---
         let fAttach1 = Amqp10::readFrame(sconn);
         let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
         var okAttach1: Bool = pAttach1.descriptor == 0x12;
@@ -139,33 +139,33 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flowFields));
 
-        // --- drei Transfers empfangen + reassemblieren: leer, exakte Grenze, Grenze+1 ---
+        // --- receive + reassemble three transfers: empty, exact boundary, boundary+1 ---
         let rEmpty = reassembleTransfer(sconn);
         let rExact = reassembleTransfer(sconn);
         let rPlus1 = reassembleTransfer(sconn);
 
-        // --- detach (Sender) / detach-ok ---
+        // --- detach (sender) / detach-ok ---
         let fDetach1 = Amqp10::readFrame(sconn);
         let pDetach1 = Amqp10::decodePerformative(fDetach1.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
 
-        // --- attach (Receiver) / attach-ok ---
+        // --- attach (receiver) / attach-ok ---
         let fAttach2 = Amqp10::readFrame(sconn);
         let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
-        // Issue 76: Link-Handles sind jetzt fortlaufend (Sender-Link=0,
-        // dieser Receiver-Link=1) statt immer 0 — relayMessage() muss das
-        // echte Handle aus dem Attach uebernehmen, sonst schlaegt
-        // Amqp10Link::nextMessage()s neue Handle-Pruefung fehl.
+        // Issue 76: link handles are now sequential (sender link=0, this
+        // receiver link=1) instead of always 0 — relayMessage() must pick
+        // up the real handle from the attach, otherwise
+        // Amqp10Link::nextMessage()'s new handle check fails.
         var subLinkHandle: Int64 = 0;
         if pAttach2.fields.len() > 1 {
             match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
         }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
 
-        // --- flow vom Client (Credit-Vergabe fuer den Receiver-Link) lesen ---
+        // --- read flow from the client (credit grant for the receiver link) ---
         Amqp10::readFrame(sconn);
 
-        // --- alle drei Nachrichten byte-identisch zurueckspiegeln + je auf disposition warten ---
+        // --- mirror all three messages byte-identically + wait for a disposition each time ---
         relayMessage(sconn, fBegin.chanId, subLinkHandle, 11, rEmpty.bytes);
         let fDisp1 = Amqp10::readFrame(sconn);
         let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
@@ -210,10 +210,10 @@ class Main
 
 
     fnc main() -> Int32 {
-        // --- Teil A: netzwerkfreie Typsystem-Grenzfaelle ---
+        // --- Part A: network-free type-system edge cases ---
 
-        // str8 (0xa1) an der 255-Byte-Grenze -- Formcode + 1-Byte-Laenge +
-        // 255 Datenbytes, von Hand gebaut (der Writer schreibt nur str32).
+        // str8 (0xa1) at the 255-byte boundary -- form code + 1-byte length +
+        // 255 data bytes, built by hand (the writer only writes str32).
         var str8Bytes: List<Int64> = [0xa1, 255];
         for i in 0..255 { str8Bytes.push(65); }
         let str8Reader = Amqp10Reader::new(str8Bytes);
@@ -222,21 +222,21 @@ class Main
             _ => {}
         }
 
-        // str8 mit Laenge 0 -- Randfall am UNTEREN Ende der 1-Byte-Laenge.
+        // str8 with length 0 -- edge case at the LOWER end of the 1-byte length.
         let str8EmptyReader = Amqp10Reader::new([0xa1, 0]);
         match str8EmptyReader.readValue() {
             StrVal(s) => { if s.len() == 0 { println("ok-str8-empty"); } }
             _ => {}
         }
 
-        // vbin8 (0xa0) mit Laenge 0.
+        // vbin8 (0xa0) with length 0.
         let vbin8EmptyReader = Amqp10Reader::new([0xa0, 0]);
         match vbin8EmptyReader.readValue() {
             BinaryVal(b) => { if b.len() == 0 { println("ok-vbin8-empty"); } }
             _ => {}
         }
 
-        // sym8 (0xa3) an der 255-Byte-Grenze.
+        // sym8 (0xa3) at the 255-byte boundary.
         var sym8Bytes: List<Int64> = [0xa3, 255];
         for i in 0..255 { sym8Bytes.push(66); }
         let sym8Reader = Amqp10Reader::new(sym8Bytes);
@@ -245,9 +245,9 @@ class Main
             _ => {}
         }
 
-        // Writer-seitiger Rundtrip fuer > 255 Byte -- v1 schreibt IMMER die
-        // 32-Bit-Form (str32/sym32/vbin32), es gibt also KEINE
-        // Schreib-Obergrenze wie bei 0-9-1s shortstr (Bug-Fund dort).
+        // Writer-side round trip for > 255 bytes -- v1 ALWAYS writes the
+        // 32-bit form (str32/sym32/vbin32), so there is NO write-side
+        // upper limit like 0-9-1's shortstr (a bug found there).
         var longStr: String = "";
         for i in 0..300 { longStr = longStr + "A"; }
         let wStr = Amqp10Writer::new();
@@ -275,17 +275,17 @@ class Main
             _ => {}
         }
 
-        // --- Teil B: simulierter Broker, leerer Body + Multi-Frame-Grenze ---
+        // --- Part B: simulated broker, empty body + multi-frame boundary ---
         let srv = httpServerCreate(47630);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47630, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
@@ -293,8 +293,8 @@ class Main
         let session = Amqp10Session::begin(conn);
         var link = Amqp10Link::attach(session, "pub-link", false, "test-target");
 
-        // overhead zur Laufzeit messen statt hart zu codieren -- robust
-        // gegen Aenderungen an encodeMessageBody()s Section-Layout.
+        // Measure overhead at runtime instead of hard-coding it -- robust
+        // against changes to encodeMessageBody()'s section layout.
         let overhead = Amqp10::encodeMessageBody([], "t").len();
         let maxBodyPerFrame = link.maxFrameSize - 64; // s. Amqp10Link::publish()
         let exactLen = maxBodyPerFrame - overhead;

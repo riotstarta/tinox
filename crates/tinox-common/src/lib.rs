@@ -65,10 +65,9 @@ impl fmt::Display for Span {
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
-    /// Eindeutige Knoten-ID, vergeben durch tinox_parser::assign_node_ids
-    /// nach dem Import-Resolve. 0 = nicht vergeben (synthetische Knoten,
-    /// Pfade ohne Nummerierung) — Konsumenten müssen 0 als "unbekannt"
-    /// behandeln.
+    /// Unique node ID, assigned by tinox_parser::assign_node_ids after
+    /// import resolution. 0 = unassigned (synthetic nodes, paths without
+    /// numbering) — consumers must treat 0 as "unknown".
     pub id: u32,
 }
 

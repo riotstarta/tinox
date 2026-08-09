@@ -6,21 +6,20 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Ein Link auf einer Amqp10Session (§2.7.4) — explizite, gerichtete
-     * Sender- ODER Receiver-Rolle mit `source`/`target`-Adressen, kein
-     * Äquivalent in 0-9-1 (dort laufen `basic.publish`/`basic.consume`
-     * implizit auf dem Channel).
+     * A link on an Amqp10Session (§2.7.4) — an explicit, directional
+     * sender OR receiver role with `source`/`target` addresses, no
+     * equivalent in 0-9-1 (there, `basic.publish`/`basic.consume` run
+     * implicitly on the channel).
      *
-     * Issue 76: mehrere Links pro Session sind jetzt strukturell möglich
-     * (jeder attach() bekommt ein eigenes, garantiert eindeutiges Handle
-     * aus Amqp10Session.nextLinkHandle statt des früher fest verdrahteten
-     * Handles 0) — dieselbe v1-Grenze wie bei Amqp10Session gilt auch
-     * hier: kein echter Frame-Dispatcher, mehrere Links funktionieren
-     * korrekt bei sequenzieller Nutzung, nicht bei echt gleichzeitigen
-     * blockierenden Wartezeiten auf zwei Links. nextMessage() prüft das
-     * empfangene `handle`-Feld gegen this.handle, damit ein falsch
-     * zugeordnetes Transfer als harter Fehler auffällt statt als
-     * fälschlich zugestelltes Message-Body-Silent-Garbage.
+     * Issue 76: multiple links per session are now structurally possible
+     * (every attach() gets its own, guaranteed-unique handle from
+     * Amqp10Session.nextLinkHandle instead of the previously hardcoded
+     * handle 0) — the same v1 limitation as with Amqp10Session applies
+     * here too: no real frame dispatcher, multiple links work correctly
+     * with sequential use, not with truly simultaneous blocking waits on
+     * two links. nextMessage() checks the received `handle` field
+     * against this.handle, so a misattributed transfer shows up as a
+     * hard error instead of silently delivering the wrong message body.
      */
     class Amqp10Link
     {
@@ -31,20 +30,20 @@ namespace tinox.core.amqp10
         var linkCredit: Int64;
         var deliveryCount: Int64;
         var errorMessage: String;
-        // Issue 80: delivery-tags, die der BROKER in attach-oks eigenem
-        // unsettled-Feld als (aus SEINER Sicht) noch unsettled zurueck-
-        // meldet — nur bei attachWithRecovery() befuellt (s. dort),
-        // sonst immer leer.
+        // Issue 80: delivery tags the BROKER reports back in its own
+        // unsettled field on attach-ok as (from ITS perspective) still
+        // unsettled — only populated by attachWithRecovery() (see
+        // there), otherwise always empty.
         var recoveredUnsettledTags: List<List<Int64>>;
 
         /*
-         * role: false = Sender (target trägt die Zieladresse, z. B. eine
-         * Queue zum Publishen), true = Receiver (source trägt die
-         * Quelladresse, z. B. eine Queue zum Konsumieren) — Spec-
-         * Konvention. Die jeweils andere Seite bekommt ein leeres,
-         * adressloses Source/Target (Described Type mit leerer Feldliste,
-         * nicht `NullVal` — die meisten Broker erwarten die Hülle auch
-         * ohne Adresse).
+         * role: false = sender (target carries the destination address,
+         * e.g. a queue to publish to), true = receiver (source carries
+         * the source address, e.g. a queue to consume from) — spec
+         * convention. The other side gets an empty, addressless
+         * source/target (a described type with an empty field list, not
+         * `NullVal` — most brokers expect the wrapper even without an
+         * address).
          */
         fn attach(session: Amqp10Session, name: String, role: Bool, address: String) -> Amqp10Link
         {
@@ -52,27 +51,27 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Link-Recovery/Resumption (Issue 80, §2.6.12/3.5.x der Spec):
-         * wie attach(), aber meldet dem Broker im `unsettled`-Feld eine
-         * Liste von delivery-tags, die DIESER Client aus einer fruehe-
-         * ren Session (vor einem Detach/Reconnect) noch als unsettled
-         * in Erinnerung hat — der Broker vergleicht das mit seiner
-         * eigenen Sicht und liefert in DER attach-ANTWORT sein eigenes
-         * unsettled-Feld zurueck (in this.recoveredUnsettledTags), damit
-         * der Aufrufer erkennen kann, welche Deliveries tatsaechlich
-         * noch offen sind.
+         * Link recovery/resumption (issue 80, §2.6.12/3.5.x of the
+         * spec): like attach(), but reports a list of delivery tags in
+         * the `unsettled` field that THIS client still remembers as
+         * unsettled from an earlier session (before a detach/reconnect)
+         * — the broker compares that against its own view and returns
+         * its own unsettled field in the attach RESPONSE (into
+         * this.recoveredUnsettledTags), so the caller can tell which
+         * deliveries are actually still open.
          *
-         * v1-Grenze (bewusst, analog zu Amqp10Connection::reconnect()s
-         * Grenze — Baustein statt automatischer Magie): dieser Client
-         * trackt SELBST noch keine unsettled Deliveries (publish() sendet
-         * immer settled=true, ack()/reject()/... settlen sofort) — WELCHE
-         * Tags als "prior unsettled" gemeldet werden, ist Sache des
-         * Aufrufers (z. B. eigene Buchfuehrung ueber zuletzt gesendete/
-         * empfangene, noch nicht bestaetigte delivery-tags). Der
-         * gemeldete State pro Tag ist immer NullVal ("unbekannt, bitte
-         * Broker-Sicht liefern") statt eines konkreten Delivery-State —
-         * volle Exactly-Once-Reue mit Redelivery-Entscheidung pro Tag
-         * ist ein separates, groesseres Feature.
+         * v1 limitation (deliberate, analogous to
+         * Amqp10Connection::reconnect()'s limitation — a building block
+         * instead of automatic magic): this client does NOT yet track
+         * unsettled deliveries itself (publish() always sends
+         * settled=true, ack()/reject()/... settle immediately) — WHICH
+         * tags get reported as "prior unsettled" is up to the caller
+         * (e.g. its own bookkeeping of recently sent/received,
+         * not-yet-confirmed delivery tags). The reported state per tag
+         * is always NullVal ("unknown, please report the broker's
+         * view") instead of a concrete delivery state — full
+         * exactly-once recovery with a per-tag redelivery decision is a
+         * separate, larger feature.
          */
         fn attachWithRecovery(session: Amqp10Session, name: String, role: Bool, address: String, priorUnsettledTags: List<List<Int64>>) -> Amqp10Link
         {
@@ -92,11 +91,12 @@ namespace tinox.core.amqp10
                 targetVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
             }
 
-            // unsettled (Feld 7): flache Map delivery-tag(binary) -> state.
-            // v1 meldet den State jedes Tags immer als NullVal (s.
-            // attachWithRecovery()-Kommentar) — leere priorUnsettledTags
-            // ergibt weiterhin NullVal statt einer leeren Map (identisch
-            // zum bisherigen attach()-Verhalten, kein Verhaltensbruch).
+            // unsettled (field 7): a flat map delivery-tag(binary) ->
+            // state. v1 always reports each tag's state as NullVal (see
+            // the attachWithRecovery() comment) — an empty
+            // priorUnsettledTags still yields NullVal instead of an
+            // empty map (identical to the previous attach() behavior,
+            // no behavior change).
             var unsettledVal: Amqp10Value = Amqp10Value::NullVal;
             if priorUnsettledTags.len() > 0 {
                 var pairs: List<Amqp10Value> = [];
@@ -107,39 +107,39 @@ namespace tinox.core.amqp10
                 unsettledVal = Amqp10Value::MapVal(pairs);
             }
 
-            // initial-delivery-count (Feld 10) ist per Spec PFLICHT, wenn
-            // role=Sender ("MUST be set if the role is sender") — RabbitMQ
-            // 4.x' rabbit_amqp_session:handle_attach pattern-matched das
-            // Feld hart auf einen echten uint-Wert und crasht mit
-            // function_clause, wenn es fehlt (live gegen echten Broker
-            // gefunden, s. bugs.md).
+            // initial-delivery-count (field 10) is REQUIRED per spec when
+            // role=sender ("MUST be set if the role is sender") —
+            // RabbitMQ 4.x's rabbit_amqp_session:handle_attach
+            // pattern-matches the field hard against a real uint value
+            // and crashes with function_clause if it's missing (found
+            // live against a real broker).
             var attachFields: List<Amqp10Value> = [
                 Amqp10Value::StrVal(name),
                 Amqp10Value::UIntVal(handle),
                 Amqp10Value::BoolVal(role),
-                Amqp10Value::UByteVal(2),  // snd-settle-mode: mixed (Spec-Default, explizit gesetzt)
-                Amqp10Value::UByteVal(0),  // rcv-settle-mode: first (Spec-Default, explizit gesetzt)
+                Amqp10Value::UByteVal(2),  // snd-settle-mode: mixed (spec default, set explicitly)
+                Amqp10Value::UByteVal(0),  // rcv-settle-mode: first (spec default, set explicitly)
                 sourceVal,
                 targetVal,
                 unsettledVal,
-                Amqp10Value::BoolVal(false), // incomplete-unsettled: false (Spec-Default, explizit gesetzt)
-                Amqp10Value::UIntVal(0)    // initial-delivery-count (nur fuer role=Sender relevant, sonst ignoriert)
+                Amqp10Value::BoolVal(false), // incomplete-unsettled: false (spec default, set explicitly)
+                Amqp10Value::UIntVal(0)    // initial-delivery-count (only relevant for role=sender, ignored otherwise)
             ];
             let attachBody = Amqp10::encodePerformative(0x12, attachFields);
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
             let f = Amqp10::readFrame(session.conn);
             if f.frameType != 0 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x12 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
-            // Broker-eigenes unsettled-Feld (Position 7) auswerten — nur
-            // die Tags selbst (nicht deren State-Details, s. Klassen-
-            // kommentar), fuer die Praxis reicht das, um zu wissen WELCHE
-            // Deliveries der Broker noch als offen sieht.
+            // Evaluate the broker's own unsettled field (position 7) —
+            // only the tags themselves (not their state details, see the
+            // class comment), which is enough in practice to know WHICH
+            // deliveries the broker still considers open.
             var recoveredTags: List<List<Int64>> = [];
             if p.fields.len() > 7 {
                 match p.fields[7] {
@@ -160,9 +160,10 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Löst den Link: `detach` senden und auf `detach` vom Broker
-         * warten (v1 ungeprüft). `closed`-Feld weggelassen (Default
-         * false — normales Detach, kein permanentes Löschen des Links).
+         * Detaches the link: send `detach` and wait for `detach` from
+         * the broker (unchecked in v1). The `closed` field is omitted
+         * (default false — a normal detach, not a permanent deletion of
+         * the link).
          */
         fn detach() -> Nothing
         {
@@ -173,36 +174,35 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Liest EIN Frame und erwartet ein `flow` (0x13) — RabbitMQ
-         * schickt es z. B. unaufgefordert direkt nach einem Sender-Attach
-         * (live gegen echten Broker gefunden, s. bugs.md Bug 70/Phase-5-
-         * Live-Erkenntnisse). Aktualisiert `this.linkCredit` aus dem
-         * `link-credit`-Feld (Position 6). v1 hat noch KEINEN echten
-         * Frame-Dispatcher (der genau dafür in der Sondierung als
-         * Phase-6-Bedarf vermerkt wurde) — wer auf `flow` wartet, MUSS
-         * also sicher sein, dass als Nächstes wirklich nur `flow` kommen
-         * kann (hier: direkt nach Attach oder wenn Credit erschöpft ist).
+         * Reads ONE frame and expects a `flow` (0x13) — RabbitMQ sends
+         * it unsolicited, for example, right after a sender attach
+         * (found live against a real broker). Updates `this.linkCredit`
+         * from the `link-credit` field (position 6). v1 doesn't have a
+         * real frame dispatcher yet — whoever waits for `flow` MUST
+         * therefore be sure that only `flow` can really come next (here:
+         * right after attach, or when credit is exhausted).
          */
         fn awaitFlow() -> Nothing
         {
             let f = Amqp10::readFrame(this.conn);
             if f.frameType != 0 {
-                this.errorMessage = "erwartete AMQP-Frame (type=0) beim Warten auf flow, bekam frameType=" + f.frameType.toString();
+                this.errorMessage = "expected AMQP frame (type=0) while waiting for flow, got frameType=" + f.frameType.toString();
                 return;
             }
-            // Issue 76: Kanal-Check wie in nextMessage() — verhindert, dass
-            // ein flow einer ANDEREN Session dieses Links Credit faelschlich
-            // uebernimmt (kein echter Frame-Dispatcher in v1, s. Klassenkommentar).
+            // Issue 76: a channel check like in nextMessage() — prevents
+            // a flow from a DIFFERENT session from wrongly being applied
+            // as credit for this link (no real frame dispatcher in v1,
+            // see the class comment).
             if f.chanId != this.chanId {
-                this.errorMessage = "flow auf falschem Kanal " + f.chanId.toString() + " empfangen (erwartet: " + this.chanId.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76";
+                this.errorMessage = "flow received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76";
                 return;
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x13 {
-                this.errorMessage = "erwartete flow (0x13), bekam descriptor=" + p.descriptor.toString();
+                this.errorMessage = "expected flow (0x13), got descriptor=" + p.descriptor.toString();
                 return;
             }
-            // Feldpositionen: next-incoming-id(0), incoming-window(1),
+            // Field positions: next-incoming-id(0), incoming-window(1),
             // next-outgoing-id(2), outgoing-window(3), handle(4),
             // delivery-count(5), link-credit(6).
             if p.fields.len() > 6 {
@@ -211,16 +211,16 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Sendet `flow` und vergibt `amount` Link-Credit an den Broker
-         * (Receiver-Rolle — der Broker darf uns danach bis zu `amount`
-         * `transfer`s schicken). Kein Äquivalent in 0-9-1, wo
-         * `basic.consume` sofort unbegrenzt liefert; hier zwingend, sonst
-         * schickt der Broker gar nichts.
+         * Sends `flow` and grants `amount` link credit to the broker
+         * (receiver role — the broker may then send us up to `amount`
+         * `transfer`s). No equivalent in 0-9-1, where `basic.consume`
+         * immediately delivers without bound; here it's mandatory,
+         * otherwise the broker sends nothing at all.
          */
         fn grantCredit(amount: Int64) -> Nothing
         {
             var flowFields: List<Amqp10Value> = [
-                Amqp10Value::NullVal,               // next-incoming-id (v1 ungetrackt)
+                Amqp10Value::NullVal,               // next-incoming-id (not tracked in v1)
                 Amqp10Value::UIntVal(2147483647),   // incoming-window
                 Amqp10Value::UIntVal(0),            // next-outgoing-id
                 Amqp10Value::UIntVal(2147483647),   // outgoing-window
@@ -234,16 +234,16 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Published eine Nachricht (Sender-Rolle). Wartet ggf. auf `flow`,
-         * wenn kein Credit vorhanden ist (kreditbasierte Flow-Control ist
-         * bei AMQP 1.0 für JEDEN Transfer zwingend, s. tasklist.md Phase
-         * 6 — anders als 0-9-1, wo Publish immer sofort geht). v1:
-         * `settled=true` (fire-and-forget wie 0-9-1s v1-Publish ohne
-         * Publisher-Confirms, kein Disposition-Roundtrip pro Nachricht).
-         * Body wird bei Überschreiten von `max-frame-size` auf mehrere
-         * `transfer`-Frames mit `more=true` aufgeteilt (funktionales
-         * Äquivalent zu 0-9-1s Multi-Frame-Body-Splitting, anderer
-         * Mechanismus: `more`-Flag statt impliziter Fortsetzung).
+         * Publishes a message (sender role). Waits for `flow` if no
+         * credit is available (credit-based flow control is mandatory
+         * for EVERY transfer in AMQP 1.0 — unlike 0-9-1, where publish
+         * always goes through immediately). v1: `settled=true`
+         * (fire-and-forget, like 0-9-1's v1 publish without publisher
+         * confirms, no disposition round trip per message). The body is
+         * split across multiple `transfer` frames with `more=true` when
+         * it exceeds `max-frame-size` (a functional equivalent to
+         * 0-9-1's multi-frame body splitting, a different mechanism: a
+         * `more` flag instead of implicit continuation).
          */
         fn publish(body: List<Int64>, contentType: String) -> Nothing
         {
@@ -251,16 +251,16 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Wie publish(), aber markiert JEDES Transfer-Frame als Teil der
-         * Transaktion `txnId` (Issue 79) — `state` (Transfer-Feld 7) traegt
-         * einen TransactionalState (Descriptor 0x34: txn-id + optionaler
-         * Outcome, v1 immer NullVal — der Sender legt den Outcome nicht
-         * fest, das macht der Discharge). Der Broker liefert die Nachricht
-         * erst nach einem committenden discharge() tatsaechlich aus (bzw.
-         * verwirft sie bei fail=true) — settled bleibt wie bei publish()
-         * true (v1-Stil, fire-and-forget bzgl. der einzelnen Delivery;
-         * die eigentliche Zusicherung kommt von der Transaktion selbst,
-         * nicht vom Transfer-settled-Flag).
+         * Like publish(), but marks EVERY transfer frame as part of
+         * transaction `txnId` (issue 79) — `state` (transfer field 7)
+         * carries a TransactionalState (descriptor 0x34: txn-id +
+         * optional outcome, always NullVal in v1 — the sender doesn't
+         * decide the outcome, discharge() does that). The broker only
+         * actually delivers the message after a committing discharge()
+         * (or discards it on fail=true) — settled stays true just like
+         * publish() (v1 style, fire-and-forget regarding the individual
+         * delivery; the real guarantee comes from the transaction
+         * itself, not from the transfer's settled flag).
          */
         fn publishTransactional(body: List<Int64>, contentType: String, txnId: List<Int64>) -> Nothing
         {
@@ -279,7 +279,7 @@ namespace tinox.core.amqp10
                     return;
                 }
                 if this.linkCredit <= 0 {
-                    this.errorMessage = "kein Link-Credit trotz flow-Frame erhalten";
+                    this.errorMessage = "no link credit received despite a flow frame";
                     return;
                 }
             }
@@ -287,9 +287,10 @@ namespace tinox.core.amqp10
             let msgBytes = Amqp10::encodeMessageBody(body, contentType);
             let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
 
-            // Grober, aber sicherer Overhead-Puffer für die Transfer-
-            // Performative-Hülle selbst (Handle/Delivery-Id/Tag/Flags) —
-            // v1 schätzt hier bewusst großzügig statt exakt zu rechnen.
+            // A rough but safe overhead buffer for the transfer
+            // performative wrapper itself (handle/delivery-id/tag/flags)
+            // — v1 deliberately estimates generously instead of
+            // computing exactly.
             var maxBodyPerFrame: Int64 = this.maxFrameSize - 64;
             if maxBodyPerFrame < 1 {
                 maxBodyPerFrame = 1;
@@ -312,10 +313,10 @@ namespace tinox.core.amqp10
                     chunk.push(msgBytes[offset + i]);
                 }
 
-                // rcv-settle-mode (6) ist Platzhalter (Spec-Default 0=first)
-                // — noetig, um state (7) zu erreichen, weil Listenfelder
-                // nur am ENDE weggelassen werden duerfen (s. attach()s
-                // initial-delivery-count-Kommentar fuer dasselbe Muster).
+                // rcv-settle-mode (6) is a placeholder (spec default
+                // 0=first) — needed to reach state (7), because list
+                // fields may only be omitted at the END (see attach()'s
+                // initial-delivery-count comment for the same pattern).
                 var transferFields: List<Amqp10Value> = [
                     Amqp10Value::UIntVal(this.handle),
                     Amqp10Value::UIntVal(this.deliveryCount),
@@ -324,7 +325,7 @@ namespace tinox.core.amqp10
                     Amqp10Value::BoolVal(true),   // settled
                     Amqp10Value::BoolVal(more),
                     Amqp10Value::UByteVal(0),     // rcv-settle-mode: first
-                    txnState                      // state (Issue 79: TransactionalState oder NullVal)
+                    txnState                      // state (issue 79: TransactionalState or NullVal)
                 ];
                 let transferBody = Amqp10::encodePerformative(0x14, transferFields);
                 var fullFrame: List<Int64> = [];
@@ -345,31 +346,30 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Blockierender Pull der nächsten Nachricht (Receiver-Rolle,
-         * setzt grantCredit() voraus). v1 setzt KEIN Multi-Frame-
-         * Reassembling für empfangene Transfers um (Gegenstück zum
-         * Sender-seitigen Splitting) — das ist eine bewusste v1-Lücke
-         * (s. tasklist.md „Später"), weil der hier genutzte Test-/
-         * Live-Broker-Rundtrip mit den in v1 verwendeten Nachrichten-
-         * größen nie mehrere Transfer-Frames pro Delivery erzeugt;
-         * `more=true` wird erkannt und als Fehler gemeldet statt
-         * stillschweigend nur den ersten Teil zurückzugeben.
+         * Blocking pull of the next message (receiver role, assumes
+         * grantCredit() was called). v1 does NOT implement multi-frame
+         * reassembly for received transfers (the counterpart to
+         * sender-side splitting) — a deliberate v1 gap, because the
+         * test/live broker round trip used here, with the message sizes
+         * v1 uses, never produces more than one transfer frame per
+         * delivery; `more=true` is detected and reported as an error
+         * instead of silently returning just the first part.
          */
         fn nextMessage() -> Amqp10Message
         {
             let f = Amqp10::readFrameSkipHeartbeats(this.conn);
             if f.frameType != 0 {
-                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString() };
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() };
             }
-            // Issue 76: es gibt keinen echten Frame-Dispatcher — bei
-            // mehreren Sessions/Links auf derselben Connection MUSS hier
-            // geprueft werden, dass das gelesene Frame wirklich zu DIESEM
-            // Link gehoert, statt ein fremdes Transfer stillschweigend als
-            // eigene Nachricht auszuliefern (falscher Message-Body waere
-            // klassisches Silent-Garbage). Kanal zuerst (billig, aus dem
-            // Frame-Header, keine Performative-Dekodierung noetig).
+            // Issue 76: there is no real frame dispatcher — with
+            // multiple sessions/links on the same connection, this MUST
+            // check that the frame read really belongs to THIS link,
+            // instead of silently delivering someone else's transfer as
+            // its own message (a wrong message body would be a classic
+            // case of silent garbage). Channel first (cheap, from the
+            // frame header, no performative decoding needed).
             if f.chanId != this.chanId {
-                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "Frame auf falschem Kanal " + f.chanId.toString() + " empfangen (erwartet: " + this.chanId.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76" };
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "frame received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76" };
             }
             let r = Amqp10Reader::new(f.body);
             let v = r.readValue();
@@ -383,13 +383,13 @@ namespace tinox.core.amqp10
                 _ => {}
             }
             if descriptor != 0x14 {
-                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "erwartete transfer (0x14), bekam descriptor=" + descriptor.toString() };
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected transfer (0x14), got descriptor=" + descriptor.toString() };
             }
             if fields.len() > 0 {
                 match fields[0] {
                     UIntVal(fh) => {
                         if fh != this.handle {
-                            return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "transfer fuer falsches Link-Handle " + fh.toString() + " empfangen (erwartet: " + this.handle.toString() + ") — kein Frame-Dispatcher in v1, s. Issue 76" };
+                            return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "transfer received for the wrong link handle " + fh.toString() + " (expected: " + this.handle.toString() + ") — no frame dispatcher in v1, see issue 76" };
                         }
                     }
                     _ => {}
@@ -403,28 +403,28 @@ namespace tinox.core.amqp10
                 match fields[5] {
                     BoolVal(more) => {
                         if more {
-                            return Amqp10Message { body: [], contentType: "", deliveryId: deliveryId, ok: false, errorMessage: "Multi-Frame-Transfer (more=true) wird in v1 nicht zusammengesetzt" };
+                            return Amqp10Message { body: [], contentType: "", deliveryId: deliveryId, ok: false, errorMessage: "multi-frame transfer (more=true) is not reassembled in v1" };
                         }
                     }
                     _ => {}
                 }
             }
 
-            // Rest des Frame-Bodys nach der Performative sind die
-            // Message-Sections (properties/data ODER amqp-value), roh
-            // weiterlesen.
+            // The rest of the frame body after the performative are the
+            // message sections (properties/data OR amqp-value), read
+            // them raw.
             //
-            // Live-Cross-Check-Fund (python-qpid-proton, s. bugs.md):
-            // andere Implementierungen kodieren einen einfachen String-
-            // Body NICHT zwingend als `data`-Section (0x75, Rohbytes) —
-            // Proton nutzt fuer `Message(body="...")` eine `amqp-value`-
-            // Section (0x77) mit einem `StrVal` darin. Ohne Behandlung
-            // dieses Falls kaeme hier ein leerer Body zurueck, OBWOHL
-            // `ok=true` gemeldet wuerde — genau das Silent-Garbage-Muster,
-            // das dieses Projekt vermeiden will. v1 behandelt deshalb
-            // BEIDE Formen UND schlaegt hart fehl (ok=false), wenn gar
-            // keine erkannte Body-Section gefunden wurde, statt
-            // stillschweigend einen leeren Body zurueckzugeben.
+            // Live cross-check finding (python-qpid-proton): other
+            // implementations do NOT necessarily encode a plain string
+            // body as a `data` section (0x75, raw bytes) — Proton uses
+            // an `amqp-value` section (0x77) with a `StrVal` inside for
+            // `Message(body="...")`. Without handling this case, an
+            // empty body would come back here EVEN THOUGH `ok=true`
+            // would be reported — exactly the silent-garbage pattern
+            // this project wants to avoid. v1 therefore handles BOTH
+            // forms AND fails hard (ok=false) if no recognized body
+            // section was found at all, instead of silently returning
+            // an empty body.
             let restBytes = r.readRawBytes(r.remaining());
             var body: List<Int64> = [];
             var contentType: String = "";
@@ -465,7 +465,7 @@ namespace tinox.core.amqp10
                 }
             }
             if !bodyFound {
-                return Amqp10Message { body: [], contentType: contentType, deliveryId: deliveryId, ok: false, errorMessage: "keine erkannte Body-Section (data/amqp-value) im Transfer gefunden" };
+                return Amqp10Message { body: [], contentType: contentType, deliveryId: deliveryId, ok: false, errorMessage: "no recognized body section (data/amqp-value) found in the transfer" };
             }
 
             this.deliveryCount = this.deliveryCount + 1;
@@ -474,18 +474,18 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Gemeinsamer Kern für ack()/reject()/release()/modify() (Issue
-         * 78): sendet `disposition` (0x15) für GENAU eine Delivery mit dem
-         * gegebenen State. role/first/last/settled sind für alle vier
-         * Outcomes identisch, nur das `state`-Feld selbst unterscheidet
-         * sich (accepted/rejected/released/modified, §3.4).
+         * Shared core for ack()/reject()/release()/modify() (issue 78):
+         * sends `disposition` (0x15) for EXACTLY one delivery with the
+         * given state. role/first/last/settled are identical for all
+         * four outcomes, only the `state` field itself differs
+         * (accepted/rejected/released/modified, §3.4).
          */
         fn sendDisposition(deliveryId: Int64, state: Amqp10Value) -> Nothing
         {
             var dispFields: List<Amqp10Value> = [
                 Amqp10Value::BoolVal(true),   // role: true=receiver
                 Amqp10Value::UIntVal(deliveryId), // first
-                Amqp10Value::NullVal,         // last (nur diese eine Delivery)
+                Amqp10Value::NullVal,         // last (this one delivery only)
                 Amqp10Value::BoolVal(true),   // settled
                 state
             ];
@@ -494,9 +494,9 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Bestätigt eine per nextMessage() erhaltene Nachricht (Receiver-
-         * Rolle) — sendet `disposition` mit `state=accepted`. AMQP-1.0-
-         * Äquivalent zu 0-9-1s `basic.ack`.
+         * Acknowledges a message received via nextMessage() (receiver
+         * role) — sends `disposition` with `state=accepted`. The
+         * AMQP-1.0 equivalent of 0-9-1's `basic.ack`.
          */
         fn ack(deliveryId: Int64) -> Nothing
         {
@@ -505,14 +505,14 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Lehnt eine Nachricht endgültig ab (§3.4.3 `rejected`, Issue 78)
-         * — der Sender darf sie NICHT erneut zustellen (anders als
-         * release()). `condition`/`description` sind optional (leerer
-         * String = kein error-Feld, Listenfeld darf am Ende weggelassen
-         * werden); condition ist ein AMQP-Error-Condition-Symbol, z. B.
-         * "amqp:decode-error" — v1 validiert den String nicht gegen die
-         * Spec-Tabelle, reicht ihn nur durch (analog zu 0-9-1s
-         * unvalidierten Reply-Text-Feldern).
+         * Rejects a message permanently (§3.4.3 `rejected`, issue 78) —
+         * the sender must NOT redeliver it (unlike release()).
+         * `condition`/`description` are optional (an empty string = no
+         * error field, a list field may be omitted at the end);
+         * condition is an AMQP error-condition symbol, e.g.
+         * "amqp:decode-error" — v1 doesn't validate the string against
+         * the spec table, it's just passed through (analogous to
+         * 0-9-1's unvalidated reply-text fields).
          */
         fn reject(deliveryId: Int64, condition: String, description: String) -> Nothing
         {
@@ -529,10 +529,10 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Gibt eine Nachricht unbearbeitet zurück (§3.4.4 `released`,
-         * Issue 78) — im Gegensatz zu reject() KEINE endgültige Ablehnung,
-         * der Broker darf/soll sie erneut zustellen (z. B. an einen
-         * anderen Consumer). Keine Felder (leere Liste, spec-konform).
+         * Returns a message unprocessed (§3.4.4 `released`, issue 78) —
+         * unlike reject(), NOT a permanent rejection, the broker
+         * may/should redeliver it (e.g. to a different consumer). No
+         * fields (an empty list, spec-compliant).
          */
         fn release(deliveryId: Int64) -> Nothing
         {
@@ -541,14 +541,15 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Signalisiert, dass die Zustellung fehlgeschlagen ist UND/ODER an
-         * dieser Stelle nicht zustellbar war (§3.4.5 `modified`, Issue 78)
-         * — feingranularer als release(): deliveryFailed erhöht (falls vom
-         * Sender getrackt) den delivery-count, undeliverableHere weist den
-         * Sender an, es diesem Receiver/Link nicht nochmal anzubieten.
-         * message-annotations (drittes, optionales Listenfeld) ist v1
-         * bewusst nicht unterstützt (analog zu anderen v1-Auslassungen in
-         * diesem Modul, z. B. amqp-value/data-only Body-Sections).
+         * Signals that delivery failed AND/OR was not deliverable at
+         * this point (§3.4.5 `modified`, issue 78) — more fine-grained
+         * than release(): deliveryFailed increases the delivery count
+         * (if tracked by the sender), undeliverableHere tells the
+         * sender not to offer it to this receiver/link again.
+         * message-annotations (the third, optional list field) is
+         * deliberately not supported in v1 (analogous to other v1
+         * omissions in this module, e.g. amqp-value/data-only body
+         * sections).
          */
         fn modify(deliveryId: Int64, deliveryFailed: Bool, undeliverableHere: Bool) -> Nothing
         {
@@ -560,14 +561,14 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Wie ack(), aber quittiert die Delivery ALS TEIL der Transaktion
-         * `txnId` (Issue 79) — der Broker wendet den `accepted`-Outcome
-         * erst bei einem committenden discharge() tatsaechlich an (bei
-         * fail=true/Rollback bleibt die Delivery unsettled/verwerfbar).
-         * `state` (disposition-Feld 4) ist ein TransactionalState
-         * (Descriptor 0x34: txn-id + der EIGENTLICHE Outcome `accepted`
-         * als inneres DescribedVal — anders als bei publishTransactional(),
-         * wo der Sender keinen Outcome festlegt).
+         * Like ack(), but confirms the delivery AS PART OF transaction
+         * `txnId` (issue 79) — the broker only actually applies the
+         * `accepted` outcome on a committing discharge() (on
+         * fail=true/rollback, the delivery stays unsettled/discardable).
+         * `state` (disposition field 4) is a TransactionalState
+         * (descriptor 0x34: txn-id + the ACTUAL outcome `accepted` as an
+         * inner DescribedVal — unlike publishTransactional(), where the
+         * sender doesn't set an outcome).
          */
         fn ackTransactional(deliveryId: Int64, txnId: List<Int64>) -> Nothing
         {
@@ -580,17 +581,16 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Haengt einen TRANSAKTIONS-KONTROLL-Link an (Issue 79, §4.2/4.3
-         * der Transaktions-Erweiterung) — strukturell ein normaler
-         * Sender-Link (role=false), aber mit `target` = `Coordinator`
-         * (Descriptor 0x30, ein Feld: txn-capabilities als Symbol-Array —
-         * v1 schreibt es wie alle Listen/Arrays dieses Moduls immer als
-         * `list` statt der spec-vorgesehenen `array`-Kurzform, s. Phase-
-         * 2.2-Kommentar zu Amqp10Writer; kein Korrektheitsproblem, nur
-         * keine Groessenoptimierung) statt einer normalen Adresse. `source`
-         * bleibt die leere, adresslose Huelle wie bei jedem Sender-Link.
-         * Ueber DIESEN Link laufen ausschliesslich declare()/discharge()
-         * — kein publish()/nextMessage() auf einem Coordinator-Link.
+         * Attaches a TRANSACTION-CONTROL link (issue 79, §4.2/4.3 of the
+         * transactions extension) — structurally a normal sender link
+         * (role=false), but with `target` = `Coordinator` (descriptor
+         * 0x30, one field: txn-capabilities as a symbol array — v1
+         * writes it, like all lists/arrays in this module, always as a
+         * `list` instead of the spec's `array` short form; not a
+         * correctness issue, just no size optimization) instead of a
+         * normal address. `source` stays the empty, addressless wrapper
+         * like on any sender link. ONLY declare()/discharge() run over
+         * THIS link — no publish()/nextMessage() on a coordinator link.
          */
         fn attachCoordinator(session: Amqp10Session, name: String) -> Amqp10Link
         {
@@ -604,44 +604,45 @@ namespace tinox.core.amqp10
             var attachFields: List<Amqp10Value> = [
                 Amqp10Value::StrVal(name),
                 Amqp10Value::UIntVal(handle),
-                Amqp10Value::BoolVal(false), // role: Sender (Client sendet declare/discharge an den Coordinator)
+                Amqp10Value::BoolVal(false), // role: sender (the client sends declare/discharge to the coordinator)
                 Amqp10Value::UByteVal(2),    // snd-settle-mode: mixed
                 Amqp10Value::UByteVal(0),    // rcv-settle-mode: first
                 sourceVal,
-                Amqp10Value::DescribedVal(coordinatorDesc), // target: Coordinator statt normaler Adresse
+                Amqp10Value::DescribedVal(coordinatorDesc), // target: Coordinator instead of a normal address
                 Amqp10Value::NullVal,        // unsettled
                 Amqp10Value::BoolVal(false), // incomplete-unsettled
-                Amqp10Value::UIntVal(0)      // initial-delivery-count (role=Sender)
+                Amqp10Value::UIntVal(0)      // initial-delivery-count (role=sender)
             ];
             let attachBody = Amqp10::encodePerformative(0x12, attachFields);
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
             let f = Amqp10::readFrame(session.conn);
             if f.frameType != 0 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x12 {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "erwartete attach (0x12), bekam descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
-            // Coordinator-Links bekommen kein flow -- der Broker akzeptiert
-            // declare/discharge-Transfers verbindlich unabhaengig von
-            // Link-Credit (Kontrollkanal, kein Nachrichtenfluss). v1
-            // vergibt sich deshalb selbst grosszuegig Credit statt auf ein
-            // flow zu warten, das nie kommt.
+            // Coordinator links never receive flow -- the broker accepts
+            // declare/discharge transfers unconditionally regardless of
+            // link credit (a control channel, not a message flow). v1
+            // therefore generously grants itself credit instead of
+            // waiting for a flow that never comes.
             return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [] };
         }
 
         /*
-         * Sendet den Kontroll-Transfer eines Coordinator-Links (declare
-         * ODER discharge, je nach `controlValue`) und liest die zugehoerige
-         * `disposition` (settled=false, Broker MUSS antworten) — gemeinsamer
-         * Kern fuer declare()/discharge(), analog zu publishCore().
+         * Sends a coordinator link's control transfer (declare OR
+         * discharge, depending on `controlValue`) and reads the matching
+         * `disposition` (settled=false, the broker MUST respond) —
+         * shared core for declare()/discharge(), analogous to
+         * publishCore().
          */
         fn sendCoordinatorControl(controlValue: Amqp10Value) -> Amqp10Value
         {
             let w = Amqp10Writer::new();
-            let sectionDesc = Amqp10Described { descriptor: 0x77, value: controlValue }; // amqp-value-Section
+            let sectionDesc = Amqp10Described { descriptor: 0x77, value: controlValue }; // amqp-value section
             w.writeDescribed(sectionDesc);
 
             let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
@@ -650,7 +651,7 @@ namespace tinox.core.amqp10
                 Amqp10Value::UIntVal(this.deliveryCount),
                 Amqp10Value::BinaryVal(deliveryTag),
                 Amqp10Value::UIntVal(0),       // message-format
-                Amqp10Value::BoolVal(false)    // settled: false -- Broker MUSS mit disposition antworten
+                Amqp10Value::BoolVal(false)    // settled: false -- the broker MUST respond with a disposition
             ];
             let transferBody = Amqp10::encodePerformative(0x14, transferFields);
             var fullFrame: List<Int64> = [];
@@ -661,26 +662,26 @@ namespace tinox.core.amqp10
 
             let f = Amqp10::readFrame(this.conn);
             if f.frameType != 0 {
-                return Amqp10Value::ErrorVal("erwartete AMQP-Frame (type=0), bekam frameType=" + f.frameType.toString());
+                return Amqp10Value::ErrorVal("expected AMQP frame (type=0), got frameType=" + f.frameType.toString());
             }
             let p = Amqp10::decodePerformative(f.body);
             if p.descriptor != 0x15 {
-                return Amqp10Value::ErrorVal("erwartete disposition (0x15), bekam descriptor=" + p.descriptor.toString());
+                return Amqp10Value::ErrorVal("expected disposition (0x15), got descriptor=" + p.descriptor.toString());
             }
             if p.fields.len() < 5 {
-                return Amqp10Value::ErrorVal("disposition ohne state-Feld");
+                return Amqp10Value::ErrorVal("disposition with no state field");
             }
             return p.fields[4];
         }
 
         /*
-         * Startet eine neue Transaktion (Issue 79, §4.4): sendet `declare`
-         * (Descriptor 0x31, einziges Feld global-id = NullVal — v1 nur
-         * lokale Transaktionen, kein verteiltes global-id) ueber DIESEN
-         * (per attachCoordinator() angehaengten) Link, erwartet als
-         * disposition-state ein `declared` (Descriptor 0x33, Feld: txn-id
-         * als binary). `Amqp10Transaction.txnId` wird an publishTransactional()/
-         * ackTransactional()/discharge() weitergereicht.
+         * Starts a new transaction (issue 79, §4.4): sends `declare`
+         * (descriptor 0x31, its only field global-id = NullVal — v1 only
+         * supports local transactions, no distributed global-id) over
+         * THIS link (attached via attachCoordinator()), expects a
+         * `declared` (descriptor 0x33, field: txn-id as binary) as the
+         * disposition state. `Amqp10Transaction.txnId` gets passed to
+         * publishTransactional()/ackTransactional()/discharge().
          */
         fn declare() -> Amqp10Transaction
         {
@@ -705,18 +706,18 @@ namespace tinox.core.amqp10
                 ErrorVal(msg) => { return Amqp10Transaction { txnId: [], ok: false, errorMessage: msg }; }
                 _ => {}
             }
-            return Amqp10Transaction { txnId: [], ok: false, errorMessage: "declare: unerwarteter disposition-state (kein declared/0x33)" };
+            return Amqp10Transaction { txnId: [], ok: false, errorMessage: "declare: unexpected disposition state (not declared/0x33)" };
         }
 
         /*
-         * Beendet eine Transaktion (Issue 79, §4.5): sendet `discharge`
-         * (Descriptor 0x32, Felder txn-id + fail) ueber DIESEN Coordinator-
-         * Link. fail=false committet (alle ueber publishTransactional()/
-         * ackTransactional() markierten Deliveries werden fuer den Broker
-         * verbindlich), fail=true verwirft (Rollback). Erwartet als
-         * disposition-state ein `accepted` — jeder andere State (bzw. ein
-         * `rejected` mit txn-error) ist ein harter Fehler statt eines
-         * stillschweigend als "erfolgreich" gewerteten Discharge.
+         * Ends a transaction (issue 79, §4.5): sends `discharge`
+         * (descriptor 0x32, fields txn-id + fail) over THIS coordinator
+         * link. fail=false commits (every delivery marked via
+         * publishTransactional()/ackTransactional() becomes binding for
+         * the broker), fail=true discards (rollback). Expects an
+         * `accepted` as the disposition state — any other state (or a
+         * `rejected` with a txn-error) is a hard error instead of a
+         * discharge that's silently treated as "successful".
          */
         fn discharge(txnId: List<Int64>, fail: Bool) -> Bool
         {
@@ -729,7 +730,7 @@ namespace tinox.core.amqp10
                 DescribedVal(d) => { if d.descriptor == 0x24 { return true; } } // accepted
                 _ => {}
             }
-            this.errorMessage = "discharge: kein accepted-disposition-state erhalten";
+            this.errorMessage = "discharge: did not receive an accepted disposition state";
             return false;
         }
     }

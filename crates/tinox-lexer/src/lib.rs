@@ -1353,7 +1353,7 @@ mod tests {
     // --- Float literals ---
 
     #[test]
-    #[allow(clippy::approx_constant)] // 3.14 testet Float-Lexing, nicht PI
+    #[allow(clippy::approx_constant)] // 3.14 tests float lexing, not PI
     fn test_float_basic() {
         let toks = lex_kinds("3.14");
         assert!(matches!(toks[0], TokenKind::Float(f) if (f - 3.14).abs() < 1e-10));
@@ -1988,7 +1988,7 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[allow(clippy::approx_constant)] // 3.14 testet Float-Lexing, nicht PI
+    #[allow(clippy::approx_constant)] // 3.14 tests float lexing, not PI
     fn test_float_no_suffix() {
         let toks = lex_kinds("3.14");
         assert!(matches!(toks[0], TokenKind::Float(f) if (f - 3.14).abs() < 0.001));

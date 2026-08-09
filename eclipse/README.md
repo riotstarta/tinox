@@ -1,58 +1,58 @@
 # Tinox Eclipse Plugin
 
-Eclipse-Plugin das den `tinox-lsp` Language Server einbindet.
+Eclipse plugin that integrates the `tinox-lsp` language server.
 
 ## Features (via LSP)
 
-- Fehler-Unterstreichungen (Diagnostics)
-- Hover → Typen und Funktionssignaturen
-- Ctrl+Space → Autocomplete
-- F3 / Ctrl+Click → Go to Definition
-- Outline-View → Document Symbols
+- Error underlining (diagnostics)
+- Hover → types and function signatures
+- Ctrl+Space → autocomplete
+- F3 / Ctrl+Click → go to definition
+- Outline view → document symbols
 
 ## Setup
 
-### 1. tinox-lsp installieren
+### 1. Install tinox-lsp
 
 ```bash
 ./install-lsp.sh
-# Installiert nach ~/.cargo/bin/tinox-lsp
+# Installs to ~/.cargo/bin/tinox-lsp
 ```
 
-### 2. Plugin in Eclipse laden
+### 2. Load the plugin in Eclipse
 
-**Voraussetzung:** Eclipse IDE for Plugin Development (≥ 2023-09) mit PDE und LSP4E.
+**Prerequisite:** Eclipse IDE for Plugin Development (≥ 2023-09) with PDE and LSP4E.
 
-LSP4E installieren falls noch nicht vorhanden:
+Install LSP4E if not already present:
 - Help → Install New Software
 - Work with: `https://download.eclipse.org/lsp4e/releases/latest/`
 - Install: "Language Server Protocol client for Eclipse"
 
-Plugin importieren:
+Import the plugin:
 1. File → Import → Existing Projects into Workspace
-2. Root directory: dieses Verzeichnis (`eclipse/tinox-eclipse`)
+2. Root directory: this directory (`eclipse/tinox-eclipse`)
 3. Finish
 
-### 3. Plugin starten
+### 3. Start the plugin
 
-1. Rechtsklick auf `tinox-eclipse` Projekt → Run As → Eclipse Application
-2. Im neuen Eclipse-Fenster: Neues Projekt anlegen, Datei `*.tnx` erstellen
-3. Language Server startet automatisch
+1. Right-click the `tinox-eclipse` project → Run As → Eclipse Application
+2. In the new Eclipse window: create a new project, create a `*.tnx` file
+3. The language server starts automatically
 
-### 4. Binary-Pfad konfigurieren
+### 4. Configure the binary path
 
-Window → Preferences → Tinox → Pfad zur `tinox-lsp` Binary setzen
+Window → Preferences → Tinox → set the path to the `tinox-lsp` binary
 
-## Projektstruktur
+## Project structure
 
 ```
 tinox-eclipse/
-├── META-INF/MANIFEST.MF       # OSGi Bundle-Manifest
-├── plugin.xml                 # Extension Points
+├── META-INF/MANIFEST.MF       # OSGi bundle manifest
+├── plugin.xml                 # Extension points
 ├── build.properties
 └── src/tinox/eclipse/
-    ├── Activator.java                  # Plugin-Lifecycle
-    ├── TinoxLanguageServer.java        # LSP Server Process
+    ├── Activator.java                  # Plugin lifecycle
+    ├── TinoxLanguageServer.java        # LSP server process
     ├── TinoxPreferencePage.java        # Settings UI
-    └── TinoxPreferenceInitializer.java # Default-Werte
+    └── TinoxPreferenceInitializer.java # Default values
 ```

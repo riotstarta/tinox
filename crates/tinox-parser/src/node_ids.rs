@@ -1,12 +1,11 @@
-//! Vergibt eindeutige NodeIds an alle Expressions (TESTPLAN Phase 4).
+//! Assigns unique NodeIds to every expression.
 //!
-//! Läuft einmal nach dem Import-Resolve über den fertigen AST. Die IDs
-//! keyen die Typ-Tabelle des Typechecks (`expr_types`), die der Codegen
-//! konsumiert — Spans taugen nicht als Key, weil desugarte Knoten den
-//! Span ihres Ursprungs teilen. ID 0 bleibt "nicht vergeben"
-//! (synthetische Knoten, ungenummerte Pfade); jede hier vergessene
-//! Stelle degradiert also nur zu "kein Tabelleneintrag", nie zu einem
-//! falschen Typ.
+//! Runs once over the finished AST after import resolution. The IDs key
+//! the typecheck's type table (`expr_types`), which codegen consumes —
+//! spans don't work as a key, because desugared nodes share their
+//! origin's span. ID 0 stays "unassigned" (synthetic nodes, unnumbered
+//! paths); any site forgotten here therefore only degrades to "no table
+//! entry", never to a wrong type.
 
 use crate::ast::*;
 

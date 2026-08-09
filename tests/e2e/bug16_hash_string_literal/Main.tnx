@@ -1,4 +1,4 @@
-// Bug 16: String-Literal mit führendem # wurde als Raw-String gelext (Escapes kaputt)
+// Bug 16: a string literal with a leading # was lexed as a raw string (escapes broken)
 // expect: 2
 // expect: # top
 // expect: a: 1

@@ -1,27 +1,27 @@
-// AMQP-0-9-1 Phase 5.2 (tasklist.md): Grenzfaelle jenseits des
-// Normalpfads aus Phase 3/4 -- Body-Splitting ueber mehrere Frames in
-// BEIDE Richtungen (publish() UND nextMessage()) und leere Message-Bodies
-// (0 Body-Frames, spec-konform). Basiert strukturell auf
-// amqp_publish_consume_loopback.tnx (spawn/await-Fake-Broker), aber mit
-// `frame-max=100` in der Negotiation (statt des Standard-131072), damit
-// der 250-Byte-Test-Body tatsaechlich gesplittet werden MUSS
-// (chunkSize = frameMax - 8 = 92 -> 3 Frames).
+// AMQP-0-9-1 phase 5.2 (tasklist.md): edge cases beyond the
+// normal path from phase 3/4 -- body splitting across multiple frames in
+// BOTH directions (publish() AND nextMessage()) and empty message bodies
+// (0 body frames, spec-compliant). Structurally based on
+// amqp_publish_consume_loopback.tnx (spawn/await fake broker), but with
+// `frame-max=100` in the negotiation (instead of the standard 131072), so
+// that the 250-byte test body actually MUST be split
+// (chunkSize = frameMax - 8 = 92 -> 3 frames).
 //
-// Hinweis zur Test-Konstruktion: eine fruehere Fassung dieses Tests
-// kombinierte einen `queue.declare`-Aufruf mit einem sehr langen Namen
-// (~150-255 Byte) MIT einem clientseitig verworfenen `declareQueue`-Aufruf
-// (>255 Byte, s. `AmqpWriter091::shortstr()`-Laengengrenze weiter unten)
-// im selben spawn/await-Ablauf. Das legte einen eigenstaendigen,
-// nichtdeterministischen Absturz in der Async-Runtime frei (Bug 68,
-// bugs.md) -- NICHT im AMQP-Code, reproduzierbar auch ganz ohne
-// AMQP-Semantik. Dieser Test bleibt deshalb bewusst bei kurzen,
-// realistischen Namen; die `shortstr`-Laengengrenze selbst wird
-// netzwerkfrei/deterministisch in amqp_shortstr_limits.tnx getestet, die
-// 255-Byte-Grenzwert-Variante zusaetzlich live gegen echtes RabbitMQ
-// verifiziert (s. tasklist.md Log Phase 5.2).
+// Note on test construction: an earlier version of this test
+// combined a `queue.declare` call with a very long name
+// (~150-255 bytes) WITH a client-side rejected `declareQueue` call
+// (>255 bytes, see the `AmqpWriter091::shortstr()` length limit further
+// below) in the same spawn/await flow. That exposed a self-contained,
+// non-deterministic crash in the async runtime (Bug 68,
+// bugs.md) -- NOT in the AMQP code, reproducible even completely without
+// AMQP semantics. This test therefore deliberately sticks to short,
+// realistic names; the `shortstr` length limit itself is
+// tested network-free/deterministically in amqp_shortstr_limits.tnx, and the
+// 255-byte boundary-value variant is additionally verified live against real
+// RabbitMQ (see tasklist.md log, phase 5.2).
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses the return type):
+// fakeBroker returns Int64 (0/1) instead of Bool.
 // expect: ok-declare
 // expect: ok-bind
 // expect: ok-qos
@@ -39,9 +39,9 @@ class Main
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // Protokoll-Header
+        httpConnReadN(sconn, 8); // protocol header
 
-        // --- Negotiation (wie amqp_connection_negotiation.tnx) ---
+        // --- Negotiation (like amqp_connection_negotiation.tnx) ---
         let w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
@@ -69,7 +69,7 @@ class Main
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
-        // --- queue.declare -> declare-ok (spiegelt den angefragten Namen) ---
+        // --- queue.declare -> declare-ok (mirrors the requested name) ---
         let fDecl = Amqp091::readFrame(sconn);
         let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         let declArgs = AmqpReader091::new(mDecl.args);
@@ -95,7 +95,7 @@ class Main
         var ok3: Bool = mQos.classId == 60 && mQos.methodId == 10;
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 11, []));
 
-        // --- basic.publish #1: leerer Body (0 Body-Frames erwartet) ---
+        // --- basic.publish #1: empty body (0 body frames expected) ---
         let fPub0 = Amqp091::readFrame(sconn);
         Amqp091::decodeMethodPayload(fPub0.payload);
         let fHdr0 = Amqp091::readFrame(sconn);
@@ -105,8 +105,8 @@ class Main
         let bodySize0 = hr0.longlong();
         var ok0: Bool = bodySize0 == 0;
 
-        // --- basic.publish #2 (Methode) + Content-Header + Body, ueber
-        // mehrere Frames verteilt (frame-max=100) ---
+        // --- basic.publish #2 (method) + content header + body, spread
+        // across multiple frames (frame-max=100) ---
         let fPub = Amqp091::readFrame(sconn);
         let mPub = Amqp091::decodeMethodPayload(fPub.payload);
         var ok4: Bool = mPub.classId == 60 && mPub.methodId == 40;
@@ -137,7 +137,7 @@ class Main
         wConsOk.shortstr("fake-consumer-tag");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes));
 
-        // --- basic.deliver #1: leerer Body zurueckspiegeln ---
+        // --- basic.deliver #1: mirror back the empty body ---
         let wDeliver0 = AmqpWriter091::new();
         wDeliver0.shortstr("fake-consumer-tag");
         wDeliver0.longlong(1);
@@ -151,15 +151,15 @@ class Main
         wDeliverHdr0.longlong(0);
         wDeliverHdr0.short(0);
         Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr0.bytes);
-        // 0 Body-Frames, spec-konform.
+        // 0 body frames, spec-compliant.
 
-        // --- basic.deliver #2 (Methode) + Content-Header + Body, spiegelt den
-        // vorher empfangenen Publish-Body zurueck, wieder ueber mehrere Frames
-        // verteilt ---
+        // --- basic.deliver #2 (method) + content header + body, mirrors the
+        // previously received publish body back, again spread across multiple
+        // frames ---
         let wDeliver = AmqpWriter091::new();
         wDeliver.shortstr("fake-consumer-tag");
         wDeliver.longlong(2); // delivery-tag
-        wDeliver.octet(0);    // redelivered
+        wDeliver.octet(0);    // redelivered flag
         wDeliver.shortstr("");
         wDeliver.shortstr(queueName);
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes));
@@ -168,7 +168,7 @@ class Main
         wDeliverHdr.short(60);
         wDeliverHdr.short(0);
         wDeliverHdr.longlong(body.len());
-        wDeliverHdr.short(32768); // nur content-type
+        wDeliverHdr.short(32768); // content-type only
         wDeliverHdr.shortstr("text/plain");
         Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr.bytes);
 
@@ -188,7 +188,7 @@ class Main
             dOffset = dEnd;
         }
 
-        // --- zwei basic.ack erwarten ---
+        // --- expect two basic.ack ---
         let fAck0 = Amqp091::readFrame(sconn);
         let mAck0 = Amqp091::decodeMethodPayload(fAck0.payload);
         var ok7a: Bool = mAck0.classId == 60 && mAck0.methodId == 80;
@@ -225,7 +225,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47622);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);

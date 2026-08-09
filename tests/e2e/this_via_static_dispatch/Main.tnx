@@ -2,15 +2,15 @@ import IntBox;
 import Acc;
 import Box;
 
-// `this` in einer via `Class::method(obj, ...)` aufgerufenen Instanzmethode:
-// das führende Arg IST das self. Früher stellte der Static-Dispatch-Pfad ein
-// null-self voran und übergab das Objekt als überzähliges Arg -> `this.feld`
-// las den null-Zeiger -> Segfault (Bug 38). Deckt nicht-generisch, generisch,
-// und obj+weitere-Params ab. Zusätzlich (Bug 39): direktes `.toString()` auf dem
-// generischen Rückgabewert einer Instanzmethode MIT T-Param — die
-// Bindungsinferenz muss das führende Objekt-Arg überspringen, sonst wird T gegen
-// den Objekt-Zeiger (i64*) statt gegen das echte Arg (i64) gebunden → falsche
-// Zeiger-Spezialisierung → unauflösbares @toString.
+// `this` in an instance method called via `Class::method(obj, ...)`:
+// the leading arg IS self. Previously the static-dispatch path prepended a
+// null self and passed the object as an extra arg -> `this.field`
+// read the null pointer -> segfault (Bug 38). Covers non-generic, generic,
+// and obj+additional-params. Additionally (Bug 39): a direct `.toString()` on the
+// generic return value of an instance method WITH a T param — the
+// binding inference must skip the leading object arg, otherwise T gets bound
+// against the object pointer (i64*) instead of against the real arg (i64) → wrong
+// pointer specialization → unresolvable @toString.
 // expect: 42
 // expect: 5
 // expect: 8
@@ -21,23 +21,23 @@ import Box;
 class Main
 {
     fnc main() -> Int32 {
-        // nicht-generisch, this.value ueber ::
+        // non-generic, this.value via ::
         let b: IntBox = IntBox::wrap(42);
         println(IntBox::get(b).toString());        // 42 (obj == self)
 
-        // obj + weiterer deklarierter Param
+        // obj + additional declared param
         let a: Acc = Acc::make();
         println(Acc::addAndGet(a, 5).toString());  // 5
         println(Acc::addAndGet(a, 3).toString());  // 8
 
-        // generisch, this.value ueber ::
+        // generic, this.value via ::
         let g: Box<Int64> = Box::wrap(7);
         println(Box::get(g).toString());           // 7
 
         let h: Box<Int64> = Box::wrap(99);
         println(Box::get(h).toString());           // 99
 
-        // generisch, T-Param, direktes .toString() auf dem Rueckgabewert (Bug 39)
+        // generic, T param, direct .toString() on the return value (Bug 39)
         println(Box::setAndGet(h, 123).toString()); // 123
         return 0;
     }

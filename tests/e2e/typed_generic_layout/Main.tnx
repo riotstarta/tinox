@@ -1,9 +1,9 @@
-// B1 Phase 4: getypte named struct types auch für generische Spezialisierungen
-// (Box__i64, Box__i8P …). Die Typen entstehen on-demand mitten in der Emission
-// und werden per @@SPEC_TYPES@@-Marker VOR alle Funktionsrümpfe gespliced (ein
-// forward-referenzierter named type ist opaque/unsized und würde vom Verifier
-// abgelehnt). Test: getypter Feldzugriff (Read + Assignment) auf zwei verschiedenen
-// Spezialisierungen liefert korrekte Werte.
+// B1 phase 4: typed named struct types also for generic specializations
+// (Box__i64, Box__i8P …). The types come into existence on-demand in the middle of
+// emission and are spliced in BEFORE all function bodies via the @@SPEC_TYPES@@
+// marker (a forward-referenced named type is opaque/unsized and would be
+// rejected by the verifier). Test: typed field access (read + assignment) on two
+// different specializations yields correct values.
 // expect: 42
 // expect: 5
 // expect: 7
@@ -15,14 +15,14 @@ class Main
 {
     fnc main() -> Int32 {
         let a: typed_generic_layout<Int64> = typed_generic_layout::make(42);
-        println(typed_generic_layout::get(a).toString());        // 42 — T-Feld (i64-Slot) via getyptem Read
-        typed_generic_layout::setCount(a, 5);                      // getyptes Assignment auf Box__i64.count
+        println(typed_generic_layout::get(a).toString());        // 42 — T field (i64 slot) via typed read
+        typed_generic_layout::setCount(a, 5);                      // typed assignment on Box__i64.count
         println(typed_generic_layout::getCount(a).toString());    // 5
 
-        // zweite Spezialisierung — eigener named type Box__i64 wird wiederverwendet
+        // second specialization — the same named type Box__i64 is reused
         let b: typed_generic_layout<Int64> = typed_generic_layout::make(7);
         println(typed_generic_layout::get(b).toString());        // 7
-        b.count = 100;                            // direktes getyptes Assignment
+        b.count = 100;                            // direct typed assignment
         println(b.count.toString());             // 100
         return 0;
     }

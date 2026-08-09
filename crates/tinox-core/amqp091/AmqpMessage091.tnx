@@ -5,9 +5,9 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Eine per `nextMessage()` empfangene Nachricht. `ok == false` bei
-     * jedem Fehler (Aufrufer MUSS prüfen, kein Silent-Garbage) —
-     * `errorMessage` beschreibt dann die Ursache.
+     * A message received via `nextMessage()`. `ok == false` on any
+     * error (caller MUST check, no silent garbage) — `errorMessage`
+     * then describes the cause.
      */
     class AmqpMessage091
     {

@@ -1,6 +1,6 @@
-# Ein Einstiegspunkt für alles (TESTPLAN Phase 0.1):
-# Regel: kein Compiler-Commit ohne grünes `make check`.
-# `make install-hooks` aktiviert das pre-push-Gate.
+# One entry point for everything (TESTPLAN Phase 0.1):
+# Rule: no compiler commit without a green `make check`.
+# `make install-hooks` activates the pre-push gate.
 
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
@@ -9,40 +9,40 @@ export DOGFOOD_DIR
 
 check: clippy test e2e dogfood
 
-# Lint-Gate: 0 Warnings über den ganzen Workspace (Fehler + Tests).
-# Bewusste Ausnahmen stehen als #[allow(...)] mit Begründung im Code.
+# Lint gate: 0 warnings across the whole workspace (bins + tests).
+# Deliberate exceptions are #[allow(...)] with a justification in the code.
 clippy:
 	cargo clippy --release --workspace --all-targets -- -D warnings
 
-# Rust-Unit-Tests (Lexer, Parser, Typecheck, Codegen, …)
+# Rust unit tests (lexer, parser, typecheck, codegen, …)
 test:
 	cargo test --release
 
-# End-to-End: Golden-Tests (tests/e2e/*.tnx) + generierte Kontext-Matrix
-# + Grenzwerte + Stdlib-Smoke-Gate (jedes tinox-core-Modul einmal benutzen)
+# End-to-end: golden tests (tests/e2e/*.tnx) + generated context matrix
+# + boundary cases + stdlib smoke gate (use every tinox-core module once)
 e2e:
 	cargo test --release -p tinox --test e2e --test matrix --test boundary --test stdlib_smoke
 
-# Dogfood: examples/ + benchmarks/ bauen, jgrep/ygrep bauen und testen
-# (jgrep-Checkout via DOGFOOD_DIR konfigurierbar)
+# Dogfood: build examples/ + benchmarks/, build and test jgrep/ygrep
+# (jgrep checkout configurable via DOGFOOD_DIR)
 dogfood:
 	cargo build --release
 	bash scripts/dogfood.sh
 
-# Sanitizer-Lauf (TESTPLAN 2.3): E2E-Suite mit AddressSanitizer-Runtime.
-# Plain malloc statt Boehm-GC (-DTINOX_NO_GC), damit ASan jede Allokation
-# sieht; Leaks sind dabei Absicht (detect_leaks=0), Ziel sind Overflows/UAF.
-# Nicht Teil von `make check` — wöchentlich/vor Releases laufen lassen.
+# Sanitizer run (TESTPLAN 2.3): e2e suite with the AddressSanitizer runtime.
+# Plain malloc instead of Boehm-GC (-DTINOX_NO_GC), so ASan sees every
+# allocation; leaks are deliberate here (detect_leaks=0), the target is
+# overflows/UAF. Not part of `make check` — run weekly/before releases.
 asan:
 	cargo build --release
 	TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" \
 	ASAN_OPTIONS="detect_leaks=0" \
 	cargo test --release -p tinox --test e2e --test boundary
 
-# Checked-Lauf (TESTPLAN Phase 4): E2E- + Grenzwert-Suite mit
-# Heap-Kind-Registry (-DTINOX_CHECKED, siehe `tinox build --checked`).
-# Array-/Map-Runtime-Funktionen prüfen ihre Pointer — Dispatch-Bugs
-# brechen laut ab. Grün = keine False Positives im gesamten Testbestand.
+# Checked run (TESTPLAN Phase 4): e2e + boundary suite with the
+# heap-kind registry (-DTINOX_CHECKED, see `tinox build --checked`).
+# Array/map runtime functions check their pointers — dispatch bugs
+# abort loudly. Green = no false positives across the whole test set.
 checked:
 	cargo build --release
 	TINOX_CFLAGS="-DTINOX_CHECKED" \
@@ -148,7 +148,7 @@ fuzz:
 		rm -rf fuzz/$$t/artifacts; \
 	done
 
-# Git-Hooks aktivieren (pre-push führt `make check` aus)
+# Activate git hooks (pre-push runs `make check`)
 install-hooks:
 	git config core.hooksPath .githooks
-	@echo "core.hooksPath = .githooks gesetzt (pre-push: make check)"
+	@echo "core.hooksPath = .githooks set (pre-push: make check)"

@@ -2,9 +2,9 @@ module tinox.core.zip;
 
 namespace tinox.core.zip
 {
-    // STORED-only ZIP (keine Kompression, nur Textinhalte). Die C-Runtime
-    // liefert skalare Zugriffe; die List<ZipEntry> wird hier in Tinox gebaut,
-    // damit C nicht von der Klassen-ABI abhängt.
+    // STORED-only ZIP (no compression, text content only). The C runtime
+    // provides scalar accessors; the List<ZipEntry> is built here in
+    // Tinox, so C doesn't depend on the class ABI.
     extern fn zipEntryCount(path: String) -> Int64;
     extern fn zipEntryName(path: String, idx: Int64) -> String;
     extern fn zipEntrySize(path: String, idx: Int64) -> Int64;

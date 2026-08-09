@@ -2,9 +2,10 @@ module tinox.core.http;
 
 namespace tinox.core.http
 {
-    // Blockierender HTTP/1.1-Client (nur http://, kein TLS). Antworten sind
-    // opake C-Structs (TinoxHttpResponse*), auf die HttpClientResponse durchgereicht
-    // wird. Request-Header werden thread-lokal via httpSetHeader gesammelt.
+    // Blocking HTTP/1.1 client (http:// only, no TLS). Responses are
+    // opaque C structs (TinoxHttpResponse*), which HttpClientResponse
+    // passes through. Request headers are collected thread-locally via
+    // httpSetHeader.
     //
     // Renamed from HttpResponse to HttpClientResponse (issue #139): this
     // class shared its bare name with tinox.core.http_server's own

@@ -125,8 +125,8 @@ struct EvaluatedReceiver<'a> {
     extra_args: &'a [(String, String)],
 }
 
-/// Bündelt die Annotation-Metadaten aus dem Typecheck für set_annotation_info —
-/// vermeidet eine 12-Parameter-Signatur (clippy::too_many_arguments).
+/// Bundles the annotation metadata from typecheck for set_annotation_info —
+/// avoids a 12-parameter signature (clippy::too_many_arguments).
 #[derive(Default)]
 pub struct AnnotationInfo {
     pub inline_fns: HashSet<String>,
@@ -296,8 +296,8 @@ pub struct CodeGen {
     spawn_counter: usize,
     /// Generic function AST nodes (not directly compiled, monomorphized on demand)
     generic_fns: HashMap<String, tinox_parser::Function>,
-    /// Generische Methoden nicht-generischer Klassen, Key "Class_method" —
-    /// werden am Call-Site monomorphisiert (Json::deserialize<User>).
+    /// Generic methods of non-generic classes, key "Class_method" —
+    /// monomorphized at the call site (Json::deserialize<User>).
     generic_methods: HashMap<String, tinox_parser::Method>,
     /// Own-type-param instance methods of a GENERIC class (`fn map<U>(...)`
     /// on `Option<T>`), Key "MangledClass_method" (same key shape as
@@ -325,8 +325,8 @@ pub struct CodeGen {
     /// keying can't collide this way since every call expression has its
     /// own id.
     methodcall_result_markers: HashMap<u32, String>,
-    /// Aktive Typparameter-Bindungen während der Emission einer
-    /// Spezialisierung: "T" -> "User" (löst T::fromJson auf).
+    /// Active type-parameter bindings while emitting a specialization:
+    /// "T" -> "User" (resolves T::fromJson).
     type_param_aliases: HashMap<String, String>,
     /// Generic class AST nodes (not directly compiled, monomorphized on demand)
     generic_classes: HashMap<String, tinox_parser::Class>,
@@ -1035,7 +1035,7 @@ impl CodeGen {
 
     fn extract_class_type_name(ty: &tinox_parser::Type) -> Option<String> {
         use tinox_parser::Type;
-        // Containers (List/Array/Map, auch verschachtelt) → Marker
+        // Containers (List/Array/Map, including nested) → marker
         if let Some(m) = Self::container_marker(ty) {
             return Some(m);
         }
@@ -1354,7 +1354,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @httpServerSendRaw(i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerCloseConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerClose(i64)").unwrap();
-        // HTTPS/TLS + connection-handle API (siehe runtime.c, TinoxConn)
+        // HTTPS/TLS + connection-handle API (see runtime.c, TinoxConn)
         writeln!(&mut self.ir, "declare i64 @httpServerCreateTls(i64, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptTls(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConnHandle(i64)").unwrap();
@@ -1660,8 +1660,8 @@ impl CodeGen {
                 for method in &c.methods {
                     let key = format!("{}_{}", c.name, method.name);
                     if !method.type_params.is_empty() {
-                        // Monomorphisierung am Call-Site; keine normale
-                        // Registrierung (die würde T als i64* einloggen)
+                        // Monomorphized at the call site; no normal
+                        // registration (that would log T as i64*)
                         self.generic_methods.insert(key, method.clone());
                         continue;
                     }
@@ -2653,7 +2653,7 @@ impl CodeGen {
     /// receives the whole `AmqpMessage091` pointer (not a decoded body) so
     /// no string-building loop needs to be hand-rolled in raw IR. Prefetch
     /// is hardcoded to 1 (mirrors amqp10's per-message `grantCredit(1)`) —
-    /// no annotation argument for it in v1, s. tasklist.md "Später".
+    /// no annotation argument for it in v1.
     ///
     /// Fires once per `@Amqp091Consumer` class found (no upper limit — each
     /// gets its own uniquely-named `__tinox_run_amqp091_<idx>()`, spawned on
@@ -5129,17 +5129,18 @@ impl CodeGen {
                 let mut llvm_ty = Self::type_to_llvm(ty.as_ref().unwrap_or(&Type::Int64));
                 let mut struct_name: Option<String> = None;
 
-                // Generische Klasse mit expliziter Annotation (`let o:
-                // Option<Int64> = …;`): eager spezialisieren und den lokalen
-                // Marker auf die mangled Klasse setzen — unabhängig davon,
-                // woher der Wert kommt (`Option::some(5)` direkt, oder z. B.
-                // `Cache::get(c, k)`, dessen Rückgabetyp `Option<V>` erst zur
-                // Aufrufzeit in der SPEZIALISIERTEN Cache-Methode aufgelöst
-                // wird). Ruft der Wert-Ausdruck direkt dieselbe Klasse auf,
-                // wird die Konstruktor-Call zusätzlich per Alias umgeleitet
-                // (Bug 20.2 — sonst wird nie eine Instanzmethode einer
-                // generischen Klasse emittiert, weil die Vorabregistrierung
-                // generische Klassen komplett ausklammert).
+                // Generic class with an explicit annotation (`let o:
+                // Option<Int64> = …;`): eagerly specialize and set the
+                // local marker to the mangled class — regardless of
+                // where the value comes from (`Option::some(5)`
+                // directly, or e.g. `Cache::get(c, k)`, whose return type
+                // `Option<V>` is only resolved at call time in the
+                // SPECIALIZED Cache method). If the value expression
+                // calls the same class directly, the constructor call is
+                // additionally redirected via an alias (Bug 20.2 —
+                // otherwise an instance method of a generic class is
+                // never emitted, because pre-registration skips generic
+                // classes entirely).
                 let mut generic_let_alias: Option<String> = None;
                 if let Some(Type::Generic { name: ann_name, args: ann_targs }) = ty.as_ref() {
                     if let Some(gc) = self.generic_classes.get(ann_name.as_str()).cloned() {
@@ -5233,7 +5234,7 @@ impl CodeGen {
                         }
                     } else if let Some(ann_ty) = ty {
                         // Container annotation → marker (Map, Array:String,
-                        // Array:Array:…, List:C, Array) aus der zentralen Quelle
+                        // Array:Array:…, List:C, Array) from the central source
                         if let Some(m) = Self::container_marker(ann_ty) {
                             if Self::is_map_marker(&m) {
                                 struct_name = Some(m);
@@ -5312,12 +5313,13 @@ impl CodeGen {
                             _ => None,
                         }
                     } else { struct_name.clone() };
-                    // Phase 2 der Typ-System-Vereinheitlichung: der reiche Export
-                    // übersteuert die lokale Inferenz genau dann, wenn sie nur die
-                    // ERASED generische Basis kennt ("Box") und der Checker die
-                    // Spezialisierung liefert ("Box__i64" — B2 Schritt 2:
-                    // `let bi = Box::make(42)`). Kennt die lokale Inferenz
-                    // nichts, greift der reiche Marker direkt.
+                    // Type-system unification phase 2: the rich export
+                    // overrides local inference exactly when it only
+                    // knows the ERASED generic base ("Box") and the
+                    // checker supplies the specialization ("Box__i64" —
+                    // B2 step 2: `let bi = Box::make(42)`). If local
+                    // inference knows nothing, the rich marker applies
+                    // directly.
                     let inferred_struct = match (local_inferred, self.rich_marker(val)) {
                         (Some(l), Some(r))
                             if self.generic_classes.contains_key(l.as_str())
@@ -5473,7 +5475,7 @@ impl CodeGen {
                         }
                     } else if let Some(ann_ty) = ty {
                         // Container annotation → marker (Map, Array:String,
-                        // Array:Array:…, List:C, Array) aus der zentralen Quelle
+                        // Array:Array:…, List:C, Array) from the central source
                         if let Some(m) = Self::container_marker(ann_ty) {
                             if Self::is_map_marker(&m) {
                                 struct_name = Some(m);
@@ -5543,9 +5545,10 @@ impl CodeGen {
                             _ => None,
                         }
                     } else { struct_name.clone() };
-                    // Phase 2 der Typ-System-Vereinheitlichung — wie im let-Pfad:
-                    // Spezialisierung aus dem reichen Export gewinnt über die
-                    // erased generische Basis; sonst bleibt die lokale Inferenz.
+                    // Type-system unification phase 2 — same as the let
+                    // path: a specialization from the rich export wins
+                    // over the erased generic base; otherwise local
+                    // inference stands.
                     let inferred_struct_var = match (local_inferred_var, self.rich_marker(val)) {
                         (Some(l), Some(r))
                             if self.generic_classes.contains_key(l.as_str())
@@ -5796,8 +5799,8 @@ impl CodeGen {
                 // inferred (fields, calls, literals, nested elements).
                 let iter_marker = if let ExprKind::Ident(n) = &iter.node {
                     ctx.local_types.get(n).cloned()
-                        // Fallback: reiche Brücke (ungestrippter Marker, deshalb
-                        // nicht infer_struct_type — das strippt List:)
+                        // Fallback: the rich bridge (unstripped marker, hence
+                        // not infer_struct_type — that strips List:)
                         .or_else(|| self.rich_marker(iter))
                 } else {
                     self.infer_struct_type(iter, ctx)
@@ -6628,9 +6631,10 @@ impl CodeGen {
                         "print" | "println" => {
                             if !args.is_empty() {
                                 let ty = &arg_types[0];
-                                // i32 ist auf LLVM-Ebene sowohl Char als auch
-                                // Int32 — nur echte Char-Literale drucken als
-                                // Zeichen, Int32-Werte numerisch (sext + int).
+                                // At the LLVM level, i32 is both Char and
+                                // Int32 — only real char literals print as
+                                // a character, Int32 values numerically
+                                // (sext + int).
                                 let is_char_lit =
                                     matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)));
                                 let llvm_fn = match ty.as_str() {
@@ -7047,11 +7051,12 @@ impl CodeGen {
                             return Ok(("0".to_string(), "void".to_string()));
                         }
                         "fromCharCode" => {
-                            // Bug 66: NICHT self.gen_expr(&args[0], ctx) erneut aufrufen —
-                            // args[0] wurde oben im generischen Call-Vorlauf (Zeile ~5163ff)
-                            // bereits einmal ausgewertet (arg_vals/arg_types). Ein zweiter
-                            // Aufruf würde ein seiteneffektbehaftetes Argument (z. B. eine
-                            // Methode, die internen State mutiert) doppelt ausführen. S. bugs.md.
+                            // Bug 66: do NOT call self.gen_expr(&args[0], ctx) again —
+                            // args[0] was already evaluated once above in the
+                            // generic call prelude (arg_vals/arg_types). A
+                            // second call would evaluate a side-effecting
+                            // argument (e.g. a method that mutates internal
+                            // state) twice.
                             let code = arg_vals[0].clone();
                             let code_ty = arg_types[0].clone();
                             let code_i64 = if code_ty == "i64" || code_ty.is_empty() { code } else {
@@ -7400,14 +7405,14 @@ impl CodeGen {
 
                 let declared_type = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
-                        // Fallback: reiche Brücke (ungestrippter Marker)
+                        // Fallback: the rich bridge (unstripped marker)
                         .or_else(|| self.rich_marker(obj)),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
                 };
 
-                // toJson auf List<C> (@JsonSerializable): Elemente über die
-                // generierte C_toJson serialisieren (Runtime-Helper mit fn-ptr).
+                // toJson on List<C> (@JsonSerializable): serialize elements
+                // via the generated C_toJson (a runtime helper taking an fn-ptr).
                 if method == "toJson" && args.is_empty() {
                     if let Some(cls) = declared_type.as_deref().and_then(|t| t.strip_prefix("List:")) {
                         if self.json_serializable_classes.iter().any(|c| c == cls) {
@@ -8349,9 +8354,9 @@ impl CodeGen {
                 // Find the struct type and field offset
                 let struct_name = match &obj.node {
                     ExprKind::Ident(name) => ctx.local_types.get(name).cloned()
-                        // Fallback: reiche Brücke — z. B. Klassen-Payloads
-                        // aus match-Bindungen, die bind_match_payload als
-                        // "Other" (ungetypt) bindet
+                        // Fallback: the rich bridge — e.g. class payloads
+                        // from match bindings, which bind_match_payload
+                        // binds as "Other" (untyped)
                         .or_else(|| self.rich_marker(obj)),
                     ExprKind::This => ctx.current_struct.clone(),
                     _ => self.infer_struct_type(obj, ctx),
@@ -8417,13 +8422,14 @@ impl CodeGen {
                 }
             }
             ExprKind::StructLiteral { name, fields } => {
-                // Effektiver Emissions-Name für generische Klassen: die
-                // SPEZIALISIERUNG statt der Basis. Quelle ist der Alias aus dem
-                // annotierten let-Pfad (Bug 20.2), sonst der reiche Export
-                // (`Box { value: "x" }` → Named("Box",[String]) → Box__i8P);
-                // ensure… registriert Layout/Feldtypen/named type on-demand.
-                // Ohne Typargumente bleibt es bei der Basis (bisheriges
-                // Verhalten, layout-identisch).
+                // Effective emission name for generic classes: the
+                // SPECIALIZATION instead of the base. The source is the
+                // alias from the annotated let path (Bug 20.2), otherwise
+                // the rich export (`Box { value: "x" }` →
+                // Named("Box",[String]) → Box__i8P); ensure… registers
+                // layout/field types/named type on demand. Without type
+                // arguments it stays with the base (previous behavior,
+                // layout-identical).
                 let resolved_name: String = if self.generic_classes.contains_key(name.as_str()) {
                     if let Some(alias) = self.type_param_aliases.get(name.as_str()) {
                         alias.clone()
@@ -8662,8 +8668,9 @@ impl CodeGen {
                 type_args,
                 args,
             } => {
-                // Typparameter-Alias auflösen: innerhalb einer Spezialisierung
-                // ist `T::fromJson` ein Call auf die gebundene Klasse.
+                // Resolve the type-parameter alias: inside a
+                // specialization, `T::fromJson` is a call on the bound
+                // class.
                 let enum_name = &self
                     .type_param_aliases
                     .get(enum_name)
@@ -8686,16 +8693,16 @@ impl CodeGen {
                     return self.emit_static_dispatch_call(&static_key, &ret_ty, args, ctx);
                 }
 
-                // Generische Klasse, deren Spezialisierung noch nicht (unter
-                // diesem Namen) bekannt ist — Bindungen ableiten und bei
-                // Bedarf jetzt spezialisieren (Bug 20.2). Deckt zwei Muster:
-                // Instanz-Stil-Aufrufe (`Cache::set(cache, …)` — K/V aus dem
-                // bereits spezialisierten Empfänger-Marker von `cache`) und
-                // Fabrikaufrufe tief in einer ANDEREN generischen Klasse
-                // (`Option::some(value)` in Cache::get — T nur aus dem
-                // tatsächlichen LLVM-Typ von `value` ableitbar, keine
-                // `let`-Annotation vorhanden). Argumente werden dafür einmalig
-                // generiert und für den eigentlichen Call wiederverwendet.
+                // A generic class whose specialization isn't known yet
+                // (under this name) — derive bindings and specialize now
+                // if needed (Bug 20.2). Covers two patterns:
+                // instance-style calls (`Cache::set(cache, …)` — K/V from
+                // `cache`'s already-specialized receiver marker) and
+                // factory calls deep inside ANOTHER generic class
+                // (`Option::some(value)` in Cache::get — T only
+                // derivable from `value`'s actual LLVM type, no `let`
+                // annotation present). Arguments are generated once for
+                // this and reused for the actual call.
                 if let Some(gc) = self.generic_classes.get(enum_name.as_str()).cloned() {
                     if let Some(method) = gc.methods.iter().find(|m| m.name == *variant).cloned() {
                         let mut arg_vals: Vec<(String, String)> = Vec::with_capacity(args.len());
@@ -8706,19 +8713,22 @@ impl CodeGen {
                         for (tp, ta) in gc.type_params.iter().zip(type_args.iter()) {
                             bindings.insert(tp.clone(), Self::type_to_llvm(ta));
                         }
-                        // Bei `Class::method(obj, args…)` (this-Stil, Bug 38) ist das
-                        // erste Arg das Empfänger-Objekt, NICHT der erste deklarierte
-                        // Param. Die Bindungsinferenz muss die Args entsprechend
-                        // versetzt zu den Params betrachten, sonst würde ein T-Param
-                        // gegen das Objekt (Zeigertyp, z.B. i64*) statt gegen sein
-                        // echtes Argument gebunden → falsche Spezialisierung (i64P).
+                        // For `Class::method(obj, args…)` (this-style, Bug
+                        // 38), the first arg is the receiver object, NOT
+                        // the first declared param. Binding inference
+                        // must look at the args offset accordingly
+                        // relative to the params, otherwise a T param
+                        // would get bound against the object (a pointer
+                        // type, e.g. i64*) instead of its real argument →
+                        // wrong specialization (i64P).
                         let arg_offset = if arg_vals.len() == method.params.len() + 1 { 1 } else { 0 };
-                        // this-Stil-Aufruf (`Box::get(bs)`, arg_offset==1): der
-                        // implizite Empfänger args[0] trägt die Klassen-Bindungen in
-                        // seinem Marker (`Box__i8P` → T=i8*). Für eine Methode OHNE
-                        // T-Parameter (`fn get() -> T`) ist das die EINZIGE Bindungs-
-                        // quelle — sonst fällt T auf den i64-Default und die falsche
-                        // Spezialisierung (Box__i64) wird gewählt (Bug 52).
+                        // A this-style call (`Box::get(bs)`, arg_offset==1):
+                        // the implicit receiver args[0] carries the class
+                        // bindings in its marker (`Box__i8P` → T=i8*). For
+                        // a method WITHOUT a T param (`fn get() -> T`),
+                        // this is the ONLY binding source — otherwise T
+                        // falls back to the i64 default and the wrong
+                        // specialization (Box__i64) gets picked (Bug 52).
                         if arg_offset == 1 {
                             if let Some(recv) = args.first() {
                                 if let Some(marker) = self.infer_struct_type(recv, ctx) {
@@ -8737,14 +8747,15 @@ impl CodeGen {
                             for (pi, param) in method.params.iter().enumerate() {
                                 let Some((_, arg_llvm)) = arg_vals.get(pi + arg_offset) else { continue };
                                 match &param.param_type {
-                                    // Direkt T-typisierter Param (Option::some(value: T))
+                                    // A param directly typed as T (Option::some(value: T))
                                     Type::Named(n) if n == tp => {
                                         bindings.insert(tp.clone(), arg_llvm.clone());
                                         break;
                                     }
-                                    // Empfänger-Stil-Param derselben Klasse (Cache::
-                                    // set(cache: Cache<K,V>, …)) — Marker des Arguments
-                                    // (mangled Klassenname) in Bindungen zurückzerlegen.
+                                    // A receiver-style param of the same class
+                                    // (Cache::set(cache: Cache<K,V>, …)) — decompose
+                                    // the argument's marker (mangled class name)
+                                    // back into bindings.
                                     Type::Generic { name: pname, .. } if pname == enum_name.as_str() => {
                                         if let Some(arg_expr) = args.get(pi + arg_offset) {
                                             if let Some(marker) = self.infer_struct_type(arg_expr, ctx) {
@@ -8769,12 +8780,14 @@ impl CodeGen {
                             let is_static = self.static_method_keys.contains(&mangled_key);
                             if !is_static {
                                 if let Some(declared) = self.method_param_types.get(&mangled_key).map(|v| v.len()) {
-                                    // Gleiche Arg-Zahl-Disambiguierung wie in
-                                    // emit_static_dispatch_call: args == declared+1
-                                    // heißt, das führende Arg ist das Empfänger-Objekt
-                                    // (self) — dann kein null-self voranstellen, sonst
-                                    // liest `this` den null-Zeiger (Segfault bei
-                                    // generischen Instanzmethoden).
+                                    // Same arg-count disambiguation as in
+                                    // emit_static_dispatch_call: args ==
+                                    // declared+1 means the leading arg is
+                                    // the receiver object (self) — then
+                                    // don't prepend a null-self, otherwise
+                                    // `this` reads the null pointer
+                                    // (segfault for generic instance
+                                    // methods).
                                     if arg_vals.len() != declared + 1 {
                                         args_parts.push("i64* null".to_string());
                                     }
@@ -9944,7 +9957,7 @@ impl CodeGen {
         // Detect Map type for map[key] = val → tinox_map_set
         let obj_declared_type = if let ExprKind::Ident(n) = &obj.node {
             ctx.local_types.get(n.as_str()).cloned()
-                // Fallback: reiche Brücke (ungestrippter Marker)
+                // Fallback: the rich bridge (unstripped marker)
                 .or_else(|| self.rich_marker(obj))
         } else {
             // Felder/verschachtelte Ziele (this.m[k] = v)
@@ -10267,14 +10280,15 @@ impl CodeGen {
         }
     }
 
-    /// Array `map`/`filter`/`forEach`/`reduce` mit Lambda-Argument: inline
-    /// IR-Loop über das {len,cap,data}-Handle, Lambda-Aufruf über den
-    /// Closure-Block {fn_ptr, env}. Der Env-Pointer wird immer als Trailing-
-    /// Param übergeben (nicht-capturende Lambdas ignorieren ihn — bestehende
-    /// Closure-Konvention). Elementtypisierung über das Marker-System bzw. die
-    /// typisierte Wertbrücke: das i64-Slot-Element wird vor dem Aufruf in den
-    /// Param-LLVM-Typ konvertiert (Float bitcast, Pointer inttoptr), der
-    /// map-Rückgabewert zurück in die i64-Slot-Repräsentation.
+    /// Array `map`/`filter`/`forEach`/`reduce` with a lambda argument:
+    /// an inline IR loop over the {len,cap,data} handle, the lambda call
+    /// via the closure block {fn_ptr, env}. The env pointer is always
+    /// passed as a trailing param (non-capturing lambdas ignore it —
+    /// the existing closure convention). Element typing via the marker
+    /// system or the typed value bridge: the i64 slot element is
+    /// converted to the param's LLVM type before the call (float
+    /// bitcast, pointer inttoptr), map's return value back into the
+    /// i64 slot representation.
     #[allow(clippy::too_many_arguments)]
     fn gen_array_lambda_method(
         &mut self,
@@ -10288,7 +10302,7 @@ impl CodeGen {
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         use tinox_typecheck::ValueType as VT;
-        // --- Elementtyp des Empfängers: deklarierter Marker vor reichem Export ---
+        // --- Receiver's element type: declared marker before rich export ---
         let elem_vt: Option<VT> = self.expr_value_types.get(&obj.id).and_then(|vt| match vt {
             VT::Array(e) => Some((**e).clone()),
             _ => None,
@@ -10314,7 +10328,7 @@ impl CodeGen {
                 _ => "i64".to_string(),
             },
         };
-        // --- Lambda-Literal: Parameterzahl hart prüfen (kein Silent-Garbage) ---
+        // --- Lambda literal: hard-check the parameter count (no silent garbage) ---
         let expected_params = if kind == "reduce" { 2 } else { 1 };
         if let ExprKind::Lambda { params, .. } = &lam.node {
             if params.len() != expected_params {
@@ -10331,7 +10345,7 @@ impl CodeGen {
                 return Err(bag);
             }
         }
-        // --- reduce: Startwert zuerst auswerten (Akku-Typ = Init-Typ) ---
+        // --- reduce: evaluate the start value first (acc type = init type) ---
         let init_acc: Option<(String, String)> = match init {
             Some(e) => Some(self.gen_expr(e, ctx)?),
             None => None,
@@ -10340,15 +10354,15 @@ impl CodeGen {
             .as_ref()
             .map(|(_, t)| if t.is_empty() { "i64".to_string() } else { t.clone() })
             .unwrap_or_else(|| "i64".to_string());
-        // --- Rückgabe-LLVM-Typ des Lambdas ---
+        // --- The lambda's return LLVM type ---
         let ret_llvm: String = match kind {
             "filter" => "i1".to_string(),
             "forEach" => "void".to_string(),
             "reduce" => acc_llvm.clone(),
             _ => {
-                // map: 1) deklarierter Lambda-Rückgabetyp, 2) Ergebnis-
-                // Elementtyp vom Typecheck (Array(e) am Call-Knoten),
-                // 3) Body-Typ, 4) i64.
+                // map: 1) the declared lambda return type, 2) the
+                // result element type from typecheck (Array(e) on the
+                // call node), 3) the body type, 4) i64.
                 let mut r: Option<String> = None;
                 if let ExprKind::Lambda { ret_type: Some(rt), .. } = &lam.node {
                     r = Some(Self::type_to_llvm(rt));
@@ -10372,7 +10386,7 @@ impl CodeGen {
                 r.unwrap_or_else(|| "i64".to_string())
             }
         };
-        // --- Lambda-/Closure-Wert erzeugen (Literal: mit Typ-Hints) ---
+        // --- Generate the lambda/closure value (literal: with type hints) ---
         let is_literal = matches!(&lam.node, ExprKind::Lambda { .. });
         if is_literal {
             self.pending_lambda_param_llvm = if kind == "reduce" {
@@ -10381,7 +10395,7 @@ impl CodeGen {
                 vec![Some(elem_llvm.clone())]
             };
             self.pending_lambda_ret_llvm = Some(ret_llvm.clone());
-            // Struktur-/Container-Marker fürs Dispatch im Lambda-Body
+            // Struct/container marker for dispatch inside the lambda body
             let lt_marker = elem_marker.clone().filter(|m| {
                 m.starts_with("Array")
                     || m.starts_with("List:")
@@ -10416,8 +10430,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_gep, block).unwrap();
         let env_val = self.temp();
         writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_gep).unwrap();
-        // Call-Param-Typen: ein deklarierter Lambda-Param gewinnt über den
-        // Elementtyp (die Definition wurde mit dem deklarierten Typ emittiert).
+        // Call param types: a declared lambda param wins over the
+        // element type (the definition was emitted with the declared type).
         let lam_param_llvm = |idx: usize, fallback: &str| -> String {
             if let ExprKind::Lambda { params, .. } = &lam.node {
                 params
@@ -10445,7 +10459,7 @@ impl CodeGen {
         };
         let casted = self.temp();
         writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}*", casted, fp, fn_sig).unwrap();
-        // --- Loop über das Handle ---
+        // --- Loop over the handle ---
         let len = self.emit_array_len(obj_ptr);
         let src_data = self.emit_array_data(obj_ptr);
         let (res_handle, res_data) = match kind {
@@ -10492,9 +10506,9 @@ impl CodeGen {
             .unwrap();
         let raw = self.temp();
         writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, ep).unwrap();
-        // i64-Slot → Param-Typ. Float-Slots sind bitcast-gespeicherte doubles;
-        // ein Int-Element vor einem double-Param wird dagegen numerisch
-        // konvertiert (sitofp).
+        // i64 slot → param type. Float slots are bitcast-stored doubles;
+        // an int element facing a double param, by contrast, gets
+        // converted numerically (sitofp).
         let arg = self.array_slot_to_typed(&raw, &call_param_llvm, elem_llvm == "double");
         match kind {
             "map" => {
@@ -10585,10 +10599,10 @@ impl CodeGen {
         }
     }
 
-    /// i64-Array-Slot → typisierter Wert (Gegenstück zur Slot-Speicherung:
-    /// Float-Slots sind bitcast-doubles, Pointer sind ptrtoint-i64).
-    /// `slot_is_float_bits`: der Slot enthält Float-Bits (Array:Float) — dann
-    /// bitcast statt numerischer Konvertierung.
+    /// i64 array slot → a typed value (the counterpart to slot storage:
+    /// float slots are bitcast doubles, pointers are ptrtoint-i64).
+    /// `slot_is_float_bits`: the slot holds float bits (Array:Float) —
+    /// then bitcast instead of numeric conversion.
     fn array_slot_to_typed(&mut self, raw: &str, target: &str, slot_is_float_bits: bool) -> String {
         match target {
             "i64" => raw.to_string(),
@@ -10755,8 +10769,8 @@ impl CodeGen {
                     .unwrap();
                     // Params live as direct SSA values (`%name`), locals in an
                     // alloca — mirror the Ident read: load only for allocas,
-                    // otherwise capture the value directly (sonst `load i64,
-                    // i64* %param` auf einem i64-SSA-Wert = ungültiges IR).
+                    // otherwise capture the value directly (otherwise `load
+                    // i64, i64* %param` on an i64 SSA value = invalid IR).
                     let val = if ctx.params.contains(name) {
                         format!("%{}", name)
                     } else {
@@ -11503,8 +11517,8 @@ impl CodeGen {
     /// Run the defer scopes opened SINCE `depth` (i.e. those pushed after
     /// entering a `try` body), innermost first — for a throw that is
     /// caught LOCALLY (jumps to this function's own catch_bb) rather than
-    /// escaping the frame (bugs.md, Bug 41 follow-up: "defer zwischen
-    /// throw und catch in derselben Funktion"). Like emit_unwind_defers,
+    /// escaping the frame (Bug 41 follow-up: "defer between throw and
+    /// catch in the same function"). Like emit_unwind_defers,
     /// defer_stack is left INTACT (not truncated) — this codegen walk
     /// keeps visiting the try body's remaining statements after emitting
     /// the `br` to catch_bb (they become unreachable IR at the LLVM level,
@@ -11592,8 +11606,8 @@ impl CodeGen {
     }
 
     /// Produce a mangled name like `identity__i64__double` for a generic instantiation.
-    /// Marker aus infer_struct_type zurück in einen Parser-Typ übersetzen
-    /// (für die Inferenz generischer Typargumente aus Call-Argumenten).
+    /// Translate a marker from infer_struct_type back into a parser
+    /// type (for inferring generic type arguments from call arguments).
     fn marker_to_type(marker: &str) -> tinox_parser::Type {
         use tinox_parser::Type;
         if let Some(cls) = marker.strip_prefix("List:") {
@@ -11618,8 +11632,8 @@ impl CodeGen {
         }
     }
 
-    /// Mangling-Suffix aus einem Parser-Typ (behält Klassennamen, anders als
-    /// mangle_generic_name, das über LLVM-Typen geht und Klassen verliert).
+    /// Mangling suffix from a parser type (keeps class names, unlike
+    /// mangle_generic_name, which goes via LLVM types and loses classes).
     fn type_suffix(ty: &tinox_parser::Type) -> String {
         use tinox_parser::Type;
         match ty {
@@ -11638,10 +11652,10 @@ impl CodeGen {
         }
     }
 
-    /// Monomorphisiert eine generische statische Methode am Call-Site und
-    /// ruft die Spezialisierung auf. Typargumente kommen explizit
-    /// (Json::deserialize<User>) oder werden aus den Argumenten inferiert
-    /// (Json::serialize(users) über infer_struct_type-Marker).
+    /// Monomorphizes a generic static method at the call site and calls
+    /// the specialization. Type arguments come explicitly
+    /// (Json::deserialize<User>) or are inferred from the arguments
+    /// (Json::serialize(users) via the infer_struct_type marker).
     fn gen_generic_method_call(
         &mut self,
         static_key: &str,
@@ -11657,15 +11671,15 @@ impl CodeGen {
             let bound = if let Some(t) = type_args.get(i) {
                 t.clone()
             } else {
-                // Inferenz: erstes Argument, dessen deklarierter Typ genau
-                // der Typparameter ist, liefert den Marker
+                // Inference: the first argument whose declared type is
+                // exactly the type parameter supplies the marker
                 let mut inferred = None;
                 for (pi, param) in gm.params.iter().enumerate() {
                     if matches!(&param.param_type, Type::Named(n) if n == tp) {
                         if let Some(arg) = args.get(pi) {
-                            // Roh-Marker: der Ident-Arm von infer_struct_type
-                            // strippt "List:" (Legacy) — hier brauchen wir den
-                            // Container-Typ selbst, nicht den Elementtyp.
+                            // Raw marker: infer_struct_type's Ident arm
+                            // strips "List:" (legacy) — here we need the
+                            // container type itself, not the element type.
                             let marker = if let ExprKind::Ident(n) = &arg.node {
                                 ctx.local_types.get(n.as_str()).cloned()
                             } else {
@@ -11716,7 +11730,7 @@ impl CodeGen {
                 annotations: vec![],
                 file: gm.file.clone(),
             };
-            // Signatur + Ret-Klasse registrieren, damit Inferenz am Call-Site greift
+            // Register the signature + return class so inference applies at the call site
             let param_llvm: Vec<String> = specialized
                 .params
                 .iter()
@@ -11730,8 +11744,8 @@ impl CodeGen {
             } else if let Some(m) = Self::container_marker(&ret_type) {
                 self.method_ret_class.insert(mangled.clone(), m);
             }
-            // Emission mit aktiven Aliassen (T::fromJson -> User_fromJson);
-            // in lambda_ir, damit die laufende Funktion nicht zerrissen wird.
+            // Emit with active aliases (T::fromJson -> User_fromJson);
+            // into lambda_ir, so the function being generated isn't torn apart.
             let saved_aliases = std::mem::take(&mut self.type_param_aliases);
             for (tp, ty) in &subst {
                 if let Type::Named(cls) = ty {
@@ -11749,12 +11763,13 @@ impl CodeGen {
             self.type_param_aliases = saved_aliases;
         }
 
-        // Aufruf der Spezialisierung. Die Definition entsteht über gen_fn (eine
-        // top-level Funktion OHNE impliziten self-Parameter), also darf auch
-        // der Call-Site kein self voranstellen — sonst verschieben sich alle
-        // Argumente um eins (Bug: `Iter::repeat(7,3)` band count=7, value=null).
-        // Dieser Pfad ist ausschließlich der statische `Class::method`-Aufruf;
-        // Instanzaufrufe generischer Methoden laufen woanders.
+        // Call the specialization. The definition is produced via gen_fn
+        // (a top-level function WITHOUT an implicit self parameter), so
+        // the call site must not prepend self either — otherwise every
+        // argument shifts by one (bug: `Iter::repeat(7,3)` bound
+        // count=7, value=null). This path is exclusively the static
+        // `Class::method` call; instance calls of generic methods run
+        // elsewhere.
         let mut args_parts: Vec<String> = Vec::new();
         for arg in args.iter() {
             let (v, t) = self.gen_expr(arg, ctx)?;
@@ -12239,13 +12254,13 @@ impl CodeGen {
         }
     }
 
-    /// Deep-substitute Type-Annotationen in einem Stmt-Baum (Bug 20.2):
-    /// `substitute_class`/`substitute_fn` ersetzten bisher nur Feld-/Param-/
-    /// Rückgabetypen, der Methoden-BODY wurde unverändert geklont. Ein
-    /// `let value: V = ...;` im Body (z. B. Cache::get) behielt so den
-    /// nackten Typparameter — `type_to_llvm(Named("V"))` fällt auf "i64*"
-    /// zurück, unabhängig davon, ob V tatsächlich Int64 ist. Wandert einmal
-    /// über den ganzen Baum, wenn eine generische Klasse monomorphisiert wird.
+    /// Deep-substitute type annotations in a stmt tree (Bug 20.2):
+    /// `substitute_class`/`substitute_fn` previously only replaced
+    /// field/param/return types, the method BODY was cloned unchanged. A
+    /// `let value: V = ...;` in the body (e.g. Cache::get) thereby kept
+    /// the bare type parameter — `type_to_llvm(Named("V"))` falls back
+    /// to "i64*" regardless of whether V is actually Int64. Walks the
+    /// whole tree once when a generic class is monomorphized.
     /// `self_rename` is (original class name, mangled name): generic-class
     /// methods often self-construct via `ClassName<T> { field: … }`
     /// (StructLiteral — the AST has no type_args there, so the class name
@@ -12332,7 +12347,7 @@ impl CodeGen {
         Spanned { node, span: stmt.span, id: stmt.id }
     }
 
-    /// Gegenstück zu `substitute_stmt` für Expr-Knoten (siehe dort für `self_rename`).
+    /// Counterpart to `substitute_stmt` for expr nodes (see there for `self_rename`).
     fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>, self_rename: (&str, &str)) -> Expr {
         let rename = |n: &String| -> String {
             if n == self_rename.0 { self_rename.1.to_string() } else { n.clone() }
@@ -12558,15 +12573,17 @@ impl CodeGen {
         let is_static = self.static_method_keys.contains(key);
         if !is_static {
             if let Some(declared) = self.method_param_types.get(key).map(|v| v.len()) {
-                // Instanzmethode via `Class::method(...)`. Zwei Aufrufstile kommen
-                // in der Stdlib vor, disambiguiert über die Arg-Zahl:
-                //  - args == declared: das Objekt wird nicht als self übergeben
-                //    (oder als expliziter erster *deklarierter* Param, wie
-                //    `config: IniConfig`); self ist ungenutzt → null-self.
-                //  - args == declared + 1: der Aufrufer hat das Empfänger-Objekt
-                //    als führendes Arg übergeben (`Class::method(obj, args…)`) —
-                //    es IST das self. Dann KEIN null-self voranstellen, sonst
-                //    liest `this` im Methodenrumpf den null-Zeiger (Segfault).
+                // An instance method via `Class::method(...)`. Two call
+                // styles occur in the stdlib, disambiguated by the arg
+                // count:
+                //  - args == declared: the object isn't passed as self
+                //    (or as an explicit first *declared* param, like
+                //    `config: IniConfig`); self is unused → null-self.
+                //  - args == declared + 1: the caller passed the receiver
+                //    object as the leading arg (`Class::method(obj,
+                //    args…)`) — it IS self. Then do NOT prepend a
+                //    null-self, otherwise `this` in the method body reads
+                //    the null pointer (segfault).
                 if args.len() != declared + 1 {
                     args_parts.push("i64* null".to_string());
                 }
@@ -12605,14 +12622,15 @@ impl CodeGen {
         self.ensure_generic_class_specialization_with_bindings(class, &bindings)
     }
 
-    /// Kern von `ensure_generic_class_specialization`, aber mit bereits
-    /// aufgelösten Typparameter-Bindungen (llvm-Typ-Strings statt Parser-
-    /// `Type`s) — Aufrufer sind `New`/explizite Typargumente (via der
-    /// öffentlichen Variante oben) und statische Instanzaufrufe generischer
-    /// Klassen (`Cache::set(cache, …)`, `Option::some(5)`), die Bindungen
-    /// aus Call-Site-Argumenten bzw. der `let`-Annotation ableiten (Bug 20.2
-    /// — Instanzmethoden generischer Klassen wurden nie emittiert, weil die
-    /// Klassen-Vorabregistrierung sie komplett überspringt).
+    /// Core of `ensure_generic_class_specialization`, but with
+    /// already-resolved type-parameter bindings (LLVM type strings
+    /// instead of parser `Type`s) — callers are `New`/explicit type
+    /// arguments (via the public variant above) and static instance
+    /// calls of generic classes (`Cache::set(cache, …)`,
+    /// `Option::some(5)`), which derive bindings from call-site
+    /// arguments or the `let` annotation (Bug 20.2 — instance methods of
+    /// generic classes were never emitted, because class
+    /// pre-registration skips them entirely).
     fn ensure_generic_class_specialization_with_bindings(
         &mut self,
         class: &str,
@@ -12681,13 +12699,13 @@ impl CodeGen {
                     }
                     continue;
                 }
-                // Methoden mit `fnc`-Parametern (`newWithFactory(f: fnc()->T)`)
-                // werden jetzt emittiert: seit der Closure-Repräsentation
-                // einheitlich ist (jedes Lambda ist ein Closure-Block
-                // {fn_ptr, env}), reicht die Signatur-Übersetzung von
-                // gen_class_method (fnc → i64, wie bei nicht-generischen
-                // Klassen). Method-eigene Typparameter (`fn map<U>(fnc(T)->U)`)
-                // sind oben (type_params) schon abgefangen.
+                // Methods with `fnc` parameters (`newWithFactory(f: fnc()->T)`)
+                // are now emitted: since the closure representation is
+                // uniform (every lambda is a closure block {fn_ptr,
+                // env}), gen_class_method's signature translation (fnc →
+                // i64, same as for non-generic classes) is sufficient.
+                // A method's own type parameters (`fn map<U>(fnc(T)->U)`)
+                // are already caught above (type_params).
                 let ret_ty = Self::type_to_llvm(&method.ret_type);
                 self.method_ret_types.insert(fn_name.clone(), ret_ty);
                 self.method_impl.insert(fn_name.clone(), fn_name.clone());
@@ -12723,15 +12741,17 @@ impl CodeGen {
         let subst: HashMap<String, tinox_parser::Type> = bindings.iter()
             .map(|(tp, llvm_ty)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm_ty)))
             .collect();
-        // (Klassenname, mangled Name) — Param-/Feld-/Rückgabetypen, die den
-        // eigenen generischen Klassennamen nennen (`cache: Cache<K,V>`,
-        // z. B. das Instanz-Pendant zu `this`), werden auf den konkreten
-        // mangled Named-Typ kollabiert. Sonst bleibt so ein Param nach der
-        // Substitution ein `Type::Generic{"Cache",[String,Int64]}` — dafür
-        // hat `gen_class_method`s Param-Typisierung (nur `Type::Named` setzt
-        // den local_types-Marker) keinen Fall, und Feldzugriffe/Methoden auf
-        // dem Parameter (`cache.accessOrder.removeAt(…)`) landen unmarkiert
-        // im Nirgendwo (Bug 20.2 — Folgefund nach dem StructLiteral-Rename).
+        // (class name, mangled name) — param/field/return types that
+        // name the class's own generic name (`cache: Cache<K,V>`, e.g.
+        // the instance counterpart to `this`) are collapsed onto the
+        // concrete mangled named type. Otherwise, such a param would
+        // stay a `Type::Generic{"Cache",[String,Int64]}` after
+        // substitution — `gen_class_method`'s param typing (only
+        // `Type::Named` sets the local_types marker) has no case for
+        // that, and field accesses/methods on the parameter
+        // (`cache.accessOrder.removeAt(…)`) end up unmarked, going
+        // nowhere (Bug 20.2 — a follow-up finding after the
+        // StructLiteral rename).
         let self_rename = (c.name.as_str(), mangled_name);
         tinox_parser::Class {
             name: mangled_name.to_string(),

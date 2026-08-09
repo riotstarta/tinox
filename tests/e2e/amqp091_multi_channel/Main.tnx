@@ -152,10 +152,10 @@ class Main
 
 
     /*
-     * Läuft nebenläufig zu channel 1's declareQueue() im main-Thread (s.
-     * main() unten) — genau das Szenario, das issue #123 kaputt gemacht
-     * hätte: unabhängiger Traffic auf einem zweiten Channel, während ein
-     * anderer Channel synchron auf seine eigene Antwort wartet.
+     * Runs concurrently with channel 1's declareQueue() in the main thread
+     * (see main() below) — exactly the scenario that issue #123 would have
+     * broken: independent traffic on a second channel while another channel
+     * is synchronously waiting for its own reply.
      */
     async fnc consumeChan2(ch2: AmqpChannel091) -> Int64 {
         ch2.consume("chan2-queue");
@@ -177,7 +177,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47642);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let brokerHandle = spawn fakeBroker(srv);

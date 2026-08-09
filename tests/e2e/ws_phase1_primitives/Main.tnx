@@ -1,9 +1,9 @@
-// WebSocket Phase 1 (tasklist.md 1.1–1.3): SHA-1 + wsAcceptKey + binärsichere
-// Conn-Primitiven. SHA-1-Vektoren aus RFC 3174 (leer, "abc") plus ein
-// Mehrblock-Input (128×"a"); wsAcceptKey gegen das RFC-6455-Beispiel
-// (dGhlIHNhbXBsZSBub25jZQ== → s3pPLMBiTxaQ9kYGzzhZRbK+xOo=). Danach Loopback:
-// Bytes MIT NUL (72,0,255,7,200) durch httpConnWriteBytes/httpConnReadN in
-// beide Richtungen — genau der Fall, an dem die C-String-Primitiven abreißen.
+// WebSocket phase 1 (tasklist.md 1.1–1.3): SHA-1 + wsAcceptKey + binary-safe
+// conn primitives. SHA-1 vectors from RFC 3174 (empty, "abc") plus a
+// multi-block input (128×"a"); wsAcceptKey against the RFC 6455 example
+// (dGhlIHNhbXBsZSBub25jZQ== → s3pPLMBiTxaQ9kYGzzhZRbK+xOo=). Then loopback:
+// bytes WITH NUL (72,0,255,7,200) through httpConnWriteBytes/httpConnReadN in
+// both directions — exactly the case where the C-string primitives break.
 // expect: da39a3ee5e6b4b0d3255bfef95601890afd80709
 // expect: a9993e364706816aba3e25717850c26c9cd0d89d
 // expect: ad5b3fdbcb526778c2839d2f151ea753995e26a0
@@ -19,7 +19,7 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        // SHA-1 Testvektoren
+        // SHA-1 test vectors
         println(Crypto::sha1(""));
         println(Crypto::sha1("abc"));
         var longInput: String = "";
@@ -28,32 +28,32 @@ class Main
         }
         println(Crypto::sha1(longInput));
 
-        // Sec-WebSocket-Accept (RFC 6455 §1.3 Beispiel)
+        // Sec-WebSocket-Accept (RFC 6455 §1.3 example)
         println(wsAcceptKey("dGhlIHNhbXBsZSBub25jZQ=="));
 
-        // Loopback: Server + Client im selben Prozess (Backlog hält die pending
-        // Connection, daher geht connect-vor-accept single-threaded).
+        // Loopback: server + client in the same process (the backlog holds the pending
+        // connection, so connect-before-accept works single-threaded).
         let srv = httpServerCreate(47613);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let cfd = socketCreateTcp();
         if !socketConnect(cfd, "127.0.0.1", 47613) {
-            println("connect fehlgeschlagen");
+            println("connect failed");
             return 1;
         }
         let sconn = httpServerAcceptConnHandle(srv);
         let cconn = httpConnFromFd(cfd);
 
-        // Client → Server: 5 Bytes inkl. NUL und 0xFF
+        // Client → server: 5 bytes incl. NUL and 0xFF
         let out = [72, 0, 255, 7, 200];
         httpConnWriteBytes(cconn, out);
         let got = httpConnReadN(sconn, 5);
         println(got.len().toString());
         println(got[0].toString() + " " + got[1].toString() + " " + got[2].toString() + " " + got[3].toString() + " " + got[4].toString());
 
-        // Server → Client: NUL am Anfang und Ende
+        // Server → client: NUL at the start and end
         let back = [0, 128, 0];
         httpConnWriteBytes(sconn, back);
         let got2 = httpConnReadN(cconn, 3);

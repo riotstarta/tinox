@@ -6,19 +6,21 @@ import tinox.core.base64;
 namespace tinox.core.websocket
 {
     /*
-     * WebSocket-CLIENT-Einstieg (issue #121): verbindet nach außen zu einem
-     * WS-Server, statt (wie WsServer) eingehende Verbindungen anzunehmen.
+     * WebSocket CLIENT entry point (issue #121): connects outward to a
+     * WS server, instead of accepting incoming connections like
+     * WsServer does.
      *
-     * Rollenumkehr ggü. Ws/WsServer (die den Server-Fall abdecken, RFC 6455
-     * §5.1): ausgehende Frames MÜSSEN maskiert sein, eingehende Frames vom
-     * Server MÜSSEN unmaskiert sein — beides über Ws::readFrameGeneric/
-     * writeFrameGeneric/readMessageGeneric/sendCloseGeneric mit vertauschten
-     * Rollen-Flags, keine Kopie der Frame-Codec-Logik. Ws::text/textToBytes
-     * (rollen-unabhängig) werden unverändert wiederverwendet.
+     * Role reversal compared to Ws/WsServer (which cover the server
+     * case, RFC 6455 §5.1): outgoing frames MUST be masked, incoming
+     * frames from the server MUST be unmasked — both handled via
+     * Ws::readFrameGeneric/writeFrameGeneric/readMessageGeneric/
+     * sendCloseGeneric with swapped role flags, no copy of the
+     * frame-codec logic. Ws::text/textToBytes (role-independent) are
+     * reused unchanged.
      *
-     * Verwendung (Echo-Client):
+     * Usage (echo client):
      *   let conn = WsClient::connect("example.org", 8080, "/chat");
-     *   if conn < 0 { ... Verbindung/Handshake fehlgeschlagen ... }
+     *   if conn < 0 { ... connection/handshake failed ... }
      *   WsClient::sendText(conn, "hello");
      *   let f = WsClient::readMessage(conn);
      *   println(WsClient::text(f));
@@ -27,14 +29,14 @@ namespace tinox.core.websocket
     class WsClient
     {
         /*
-         * Öffnet eine TCP-Verbindung zu host:port und führt den Client-
-         * seitigen Handshake durch (RFC 6455 §4.1): sendet den Upgrade-
-         * Request für path mit einem frisch erzeugten Sec-WebSocket-Key und
-         * prüft die 101-Antwort samt Sec-WebSocket-Accept gegen den selbst
-         * berechneten Erwartungswert (wsAcceptKey — dieselbe Runtime-
-         * Funktion, die der Server zum Erzeugen von Accept aus Key nutzt).
-         * Rückgabe: Conn-Handle (>0) oder -1 (Verbindungsaufbau/Handshake
-         * fehlgeschlagen — Verbindung ist dann bereits geschlossen).
+         * Opens a TCP connection to host:port and runs the client-side
+         * handshake (RFC 6455 §4.1): sends the upgrade request for path
+         * with a freshly generated Sec-WebSocket-Key and checks the 101
+         * response's Sec-WebSocket-Accept against the expected value
+         * computed locally (wsAcceptKey — the same runtime function the
+         * server uses to generate Accept from Key). Returns: conn handle
+         * (>0) or -1 (connection setup/handshake failed — the connection
+         * is already closed in that case).
          */
         fn connect(host: String, port: Int64, path: String) -> Int64
         {
@@ -74,11 +76,12 @@ namespace tinox.core.websocket
         }
 
         /*
-         * Liest die nächste DATEN-Nachricht vom Server (inkl. automatischem
-         * Ping->Pong, Close-Quittierung und Fragment-Zusammensetzung) — wie
-         * Ws::readMessage, nur mit vertauschter Maskierungsrichtung
-         * (eingehend unmaskiert erwartet, ausgehende Control-Antworten
-         * maskiert). Siehe Ws::readMessageGeneric für das volle Verhalten.
+         * Reads the next DATA message from the server (including
+         * automatic ping->pong, close acknowledgment, and fragment
+         * reassembly) — like Ws::readMessage, just with the masking
+         * direction swapped (incoming expected unmasked, outgoing
+         * control responses masked). See Ws::readMessageGeneric for the
+         * full behavior.
          */
         fn readMessage(conn: Int64) -> WsFrame
         {
@@ -86,10 +89,10 @@ namespace tinox.core.websocket
         }
 
         /*
-         * Liest genau EINEN rohen Frame vom Server (kein automatisches
-         * Ping/Pong/Close-Handling — dafür readMessage) — wie Ws::readFrame,
-         * nur mit vertauschter Maskierungsrichtung (Server->Client MUSS
-         * unmaskiert sein).
+         * Reads exactly ONE raw frame from the server (no automatic
+         * ping/pong/close handling — use readMessage for that) — like
+         * Ws::readFrame, just with the masking direction swapped
+         * (server->client MUST be unmasked).
          */
         fn readFrame(conn: Int64) -> WsFrame
         {

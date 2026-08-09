@@ -6,13 +6,12 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Ein Described-Type-Wert (§1.2 des Typsystems): Formatcode 0x00 +
-     * Descriptor + Wert. v1 beschränkt den Descriptor auf Int64 (numerisch,
-     * als smallulong kodiert) — deckt alle 9 Performatives, die 5
-     * SASL-Frame-Typen und die 9 Message-Section-Typen ab (alle nutzen
-     * numerische ulong-Descriptoren laut Spec, s. tasklist.md-Sondierung);
-     * symbol-Descriptoren (die andere von der Spec erlaubte Form) kommen
-     * im AMQP-Kernprotokoll nicht vor.
+     * A described-type value (type system §1.2): format code 0x00 +
+     * descriptor + value. v1 restricts the descriptor to Int64
+     * (numeric, encoded as smallulong) — covers all 9 performatives, the
+     * 5 SASL frame types, and the 9 message section types (all use
+     * numeric ulong descriptors per spec); symbol descriptors (the other
+     * form the spec allows) don't occur in the AMQP core protocol.
      */
     class Amqp10Described
     {

@@ -246,9 +246,9 @@ pub enum ValueType {
     Nothing,
     Never,
     Any,
-    /// Listen/Arrays mit Element-Typ (Any = unbekannt/typgelöscht)
+    /// Lists/arrays with an element type (Any = unknown/erased)
     Array(Box<ValueType>),
-    /// Maps mit Value-Typ (Keys sind immer String; Any = unbekannt)
+    /// Maps with a value type (keys are always String; Any = unknown)
     Map(Box<ValueType>),
     Ref,
     Fn,
@@ -288,12 +288,12 @@ impl PartialEq for ValueType {
 impl Eq for ValueType {}
 
 impl ValueType {
-    /// Typgelöschtes Array (Element unbekannt) — für Builtin-Signaturen.
+    /// An erased array (element unknown) — for builtin signatures.
     fn any_array() -> Self {
         ValueType::Array(Box::new(ValueType::Any))
     }
 
-    /// Typgelöschte Map (Value unbekannt) — für Builtin-Signaturen.
+    /// An erased map (value unknown) — for builtin signatures.
     fn any_map() -> Self {
         ValueType::Map(Box::new(ValueType::Any))
     }
@@ -339,14 +339,14 @@ impl ValueType {
         }
     }
 
-    /// Übersetzt einen ValueType in die Marker-Sprache des Codegen
-    /// (container_marker/elem_marker): "String", "Float", Klassenname,
-    /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Klasse",
-    /// "Map"/"Map:<marker>". None für Typen ohne Marker-Semantik
+    /// Translates a ValueType into codegen's marker language
+    /// (container_marker/elem_marker): "String", "Float", a class name,
+    /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Class",
+    /// "Map"/"Map:<marker>". None for types with no marker semantics
     /// (Int, Bool, Any, …).
-    /// Anzeige für Fehlermeldungen — zeigt Element-/Value-Typen
-    /// ("List<String>", "Map<String, Int64>"). Nicht für Dispatch-Keys
-    /// verwenden, dafür ist to_string() da.
+    /// A display for error messages — shows element/value types
+    /// ("List<String>", "Map<String, Int64>"). Don't use this for
+    /// dispatch keys, that's what to_string() is for.
     fn display(&self) -> String {
         match self {
             ValueType::Array(e) if **e != ValueType::Any => format!("List<{}>", e.display()),
@@ -361,8 +361,8 @@ impl ValueType {
 }
 
 impl std::fmt::Display for ValueType {
-    // Bewusst typgelöscht: liefert Dispatch-Keys ("Array_len", "Map_get") —
-    // niemals Element-Typen anhängen. Für Fehlermeldungen s. display().
+    // Deliberately erased: produces dispatch keys ("Array_len", "Map_get")
+    // — never append element types. For error messages see display().
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ValueType::Int => "Int64".to_string(),
@@ -421,7 +421,7 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
-    /// "Enum::Variant" -> Payload-Typen — für typisierte Match-Bindungen
+    /// "Enum::Variant" -> payload types — for typed match bindings
     enum_variant_payloads: HashMap<String, Vec<ValueType>>,
     interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
@@ -450,18 +450,18 @@ pub struct TypeChecker {
     /// disambiguates the two `Class::method(obj, …)` calling styles (Bug 38)
     /// deterministically, so the arg-count check can be exact (Bug 47).
     method_uses_this: HashSet<String>,
-    /// Inferierter Typ jeder besuchten Expression, gekeyed über die NodeId
-    /// (assign_node_ids; ID 0 = nicht vergeben, wird nicht eingetragen).
-    /// Export an den Codegen über expr_value_types() — seit Phase 3 der
-    /// EINZIGE Typ-Kanal Typecheck→Codegen (die verlustbehaftete Marker-
-    /// Tabelle expr_markers ist entfernt).
+    /// The inferred type of every visited expression, keyed by NodeId
+    /// (assign_node_ids; ID 0 = unassigned, not recorded). Exported to
+    /// codegen via expr_value_types() — since phase 3, the ONLY
+    /// typecheck→codegen type channel (the lossy marker table
+    /// expr_markers has been removed).
     expr_types: HashMap<u32, ValueType>,
-    /// B2 Schritt 2: `ClassName_method` einer generischen Methode → ihre
-    /// UNERASED Param-Typen (self als `Named(Class, [T-Params])` vorangestellt
-    /// bei Instanzmethoden) + die Typ-Param-Namen (Klasse + Methode). Die
-    /// registrierte `FunctionSignature` erased Params zu `Any` — für die
-    /// Typargument-Inferenz am Call-Site (`Box::make(42)` → T=Int) braucht es
-    /// die volle Form als Bindungsquelle.
+    /// B2 step 2: a generic method's `ClassName_method` → its UNERASED
+    /// param types (self prepended as `Named(Class, [T-params])` for
+    /// instance methods) + the type-param names (class + method). The
+    /// registered `FunctionSignature` erases params to `Any` — type-argument
+    /// inference at the call site (`Box::make(42)` → T=Int) needs the
+    /// full form as a binding source.
     generic_method_param_types: HashMap<String, (Vec<ValueType>, Vec<String>)>,
     /// class_name -> its own+inherited declared field names, in declaration
     /// order. Used by the `StructLiteral` check (Bug 130) to catch a
@@ -673,10 +673,11 @@ impl TypeChecker {
         symbols.functions.insert("Array_indexOf".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("v".to_string(), ValueType::Any)], return_type: ValueType::Int });
         symbols.functions.insert("Array_slice".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("from".to_string(), ValueType::Int), ("to".to_string(), ValueType::Int)], return_type: ValueType::any_array() });
         symbols.functions.insert("Array_insert".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int), ("v".to_string(), ValueType::Any)], return_type: ValueType::Nothing });
-        // Lambda-basierte Array-Methoden (map/filter/forEach/reduce). Die
-        // Signaturen sind bewusst permissiv (Fn-Arg, Any-Ergebnis) — der
-        // Ergebnis-Elementtyp wird im MethodCall-Arm aus dem Lambda verfeinert
-        // (map: Lambda-Rückgabetyp, filter: Eingabe-Elementtyp).
+        // Lambda-based array methods (map/filter/forEach/reduce). The
+        // signatures are deliberately permissive (Fn arg, Any result) —
+        // the result element type is refined from the lambda in the
+        // MethodCall arm (map: the lambda's return type, filter: the
+        // input element type).
         symbols.functions.insert("Array_map".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::any_array() });
         symbols.functions.insert("Array_filter".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::any_array() });
         symbols.functions.insert("Array_forEach".to_string(), FunctionSignature { params: vec![("arr".to_string(), ValueType::any_array()), ("f".to_string(), ValueType::Fn)], return_type: ValueType::Nothing });
@@ -811,7 +812,7 @@ impl TypeChecker {
         symbols.functions.insert("httpConnSendRaw".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
         symbols.functions.insert("httpConnFromFd".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpConnFromFdTls".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("host".to_string(), ValueType::String), ("verify".to_string(), ValueType::Bool)], return_type: ValueType::Int });
-        // Binärsichere Conn-Primitiven (WebSocket-Frames): Bytes als Array<Int64>
+        // Binary-safe conn primitives (WebSocket frames): bytes as Array<Int64>
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
@@ -895,9 +896,10 @@ impl TypeChecker {
         symbols.functions.insert("sleep".to_string(), FunctionSignature {
             params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
         });
-        // sleep_ms statt sleep im Runtime-Symbolnamen — libc exportiert
-        // bereits ein `sleep(unsigned int seconds)` mit anderer Signatur;
-        // ein eigenes `sleep` würde am Link-Symbol kollidieren.
+        // sleep_ms instead of sleep as the runtime symbol name — libc
+        // already exports a `sleep(unsigned int seconds)` with a
+        // different signature; our own `sleep` would collide at the
+        // link symbol.
         symbols.functions.insert("sleep_ms".to_string(), FunctionSignature {
             params: vec![("ms".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
         });
@@ -966,20 +968,20 @@ impl TypeChecker {
             params: vec![], return_type: ValueType::Float,
         });
         // Crypto / hashing
-        // wsAcceptKey: Sec-WebSocket-Accept aus dem Client-Key (sha1+base64 in C)
+        // wsAcceptKey: Sec-WebSocket-Accept from the client key (sha1+base64 in C)
         for name in &["sha256Hash", "md5Hash", "sha1Hash", "wsAcceptKey", "hmacSha256Hash", "base64Encode", "base64Decode", "base64EncodeChar"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("data".to_string(), ValueType::String)],
                 return_type: ValueType::String,
             });
         }
-        // AES-256-GCM (Issue 74). Zwei Argumente (Daten + Schlüssel), deshalb
-        // eigene Registrierung statt der Einzel-Param-Sammelschleife oben.
-        // "Raw"-Suffix, weil Crypto::aesEncrypt/aesDecrypt (.tnx) die
-        // eigentliche öffentliche API sind und diese bloßen Extern-Funktionen
-        // aufrufen — analog zu Crypto::md5 -> md5Hash, aber mit anderem Namen
-        // als die Klassenmethode, um eine rekursive Namenskollision zu
-        // vermeiden.
+        // AES-256-GCM (issue 74). Two arguments (data + key), hence its
+        // own registration instead of the single-param collection loop
+        // above. A "Raw" suffix, because Crypto::aesEncrypt/aesDecrypt
+        // (.tnx) are the actual public API and call these bare extern
+        // functions — analogous to Crypto::md5 -> md5Hash, but with a
+        // different name than the class method, to avoid a recursive
+        // name collision.
         for name in &["aesEncryptRaw", "aesDecryptRaw"] {
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![
@@ -989,10 +991,10 @@ impl TypeChecker {
                 return_type: ValueType::String,
             });
         }
-        // Bytes-sichere HMAC-SHA256/SHA256 (Issue 77, SCRAM-SHA-256 fuer
-        // AMQP-1.0-SASL) — im Gegensatz zu hmacSha256Hash/sha256Hash
-        // (String, C-String-basiert) NUL-sicher, weil SCRAM Salts/Nonces/
-        // Digests als echte Binaerdaten durch HMAC/SHA256-Ketten jagt.
+        // Byte-safe HMAC-SHA256/SHA256 (issue 77, SCRAM-SHA-256 for
+        // AMQP-1.0 SASL) — unlike hmacSha256Hash/sha256Hash (String,
+        // C-string-based), NUL-safe, because SCRAM pushes salts/nonces/
+        // digests as real binary data through HMAC/SHA256 chains.
         symbols.functions.insert("hmacSha256Bytes".to_string(), FunctionSignature {
             params: vec![
                 ("data".to_string(), ValueType::Array(Box::new(ValueType::Int))),
@@ -1435,10 +1437,11 @@ impl TypeChecker {
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
                             self.method_uses_this.insert(key.clone());
                         }
-                        // B2 Schritt 2: für generische Methoden zusätzlich die
-                        // UNERASED Param-Typen ablegen (self trägt die Klassen-
-                        // Typ-Params: `Named("Box", [Named("T")])`), damit der
-                        // Call-Site Typargumente aus den Args unifizieren kann.
+                        // B2 step 2: for generic methods, additionally
+                        // store the UNERASED param types (self carries
+                        // the class type params: `Named("Box",
+                        // [Named("T")])`), so the call site can unify
+                        // type arguments from the args.
                         if !erase_params.is_empty() {
                             let mut unerased: Vec<ValueType> = if method.static_ {
                                 vec![]
@@ -2002,9 +2005,10 @@ impl TypeChecker {
                     self.errors
                         .push(TypeError::DuplicateDefinition(name.clone(), stmt.span).to_error());
                 }
-                // Wie bei Let: Annotation ist der Vertrag — sie gewinnt und
-                // wird gegen den Wert geprüft (vorher wurde sie bei
-                // vorhandenem Wert komplett ignoriert, ungeprüft).
+                // Same as for Let: the annotation is the contract — it
+                // wins and gets checked against the value (previously it
+                // was completely ignored, unchecked, whenever a value
+                // was present).
                 let inferred_type = match (value, ty) {
                     (Some(v), Some(t)) => {
                         let val_ty = self.infer_type(v);
@@ -2356,11 +2360,12 @@ impl TypeChecker {
                 let func_expr = Spanned::new(ExprKind::Ident(method_name.clone()), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().cloned());
-                // map/filter/forEach/reduce mit Lambda-Argument: den Lambda-
-                // Param VOR check_call an den Element-Typ des Arrays binden.
-                // infer_type memoisiert per Node-Id — check_call würde den
-                // Body sonst zuerst mit Any-Params inferieren und die arme
-                // Typisierung festschreiben (auch für den Codegen-Export).
+                // map/filter/forEach/reduce with a lambda argument: bind
+                // the lambda param to the array's element type BEFORE
+                // check_call. infer_type memoizes per node ID —
+                // otherwise check_call would first infer the body with
+                // Any params and lock in the poor typing (including for
+                // the codegen export).
                 let mut array_lambda_ret: Option<ValueType> = None;
                 if let ValueType::Array(elem) = &obj_ty {
                     let lam = match method.as_str() {
@@ -2428,9 +2433,9 @@ impl TypeChecker {
                     .cloned()
                     .and_then(|sig| self.unify_generic_return(&method_name, &sig.return_type, &call_args, &[]))
                     .unwrap_or(generic_ret);
-                // Receiver-abhängige Ergebnistypen, die statische Signaturen
-                // nicht ausdrücken können: erst check_call (validiert die
-                // Argumente), dann nur das Ergebnis verfeinern.
+                // Receiver-dependent result types that static signatures
+                // can't express: run check_call first (validates the
+                // arguments), then only refine the result.
                 match (&obj_ty, method.as_str()) {
                     (ValueType::Map(v), "get") => (**v).clone(),
                     (ValueType::Map(v), "values") => ValueType::Array(v.clone()),
@@ -2445,8 +2450,8 @@ impl TypeChecker {
                     {
                         ValueType::Array(e.clone())
                     }
-                    // map: Ergebnis-Elementtyp aus dem Lambda-Rückgabetyp;
-                    // ohne verwertbare Inferenz permissiv Array(Any).
+                    // map: the result element type comes from the lambda's
+                    // return type; without usable inference, permissive Array(Any).
                     (ValueType::Array(_), "map") => {
                         let ret_elem = match array_lambda_ret {
                             Some(ValueType::Nothing) | Some(ValueType::Never) | None => {
@@ -2456,10 +2461,10 @@ impl TypeChecker {
                         };
                         ValueType::Array(Box::new(ret_elem))
                     }
-                    // filter behält den Eingabe-Elementtyp.
+                    // filter keeps the input element type.
                     (ValueType::Array(e), "filter") => ValueType::Array(e.clone()),
                     (ValueType::Array(_), "forEach") => ValueType::Nothing,
-                    // reduce: Ergebnis = Typ des Startwerts; Fallback Elementtyp.
+                    // reduce: the result = the start value's type; falls back to the element type.
                     (ValueType::Array(e), "reduce") => {
                         match args.first().map(|a| self.infer_type(a)) {
                             Some(ValueType::Any) | None => (**e).clone(),
@@ -2612,13 +2617,13 @@ impl TypeChecker {
                 ValueType::Named(class.clone(), vec![])
             }
             ExprKind::StructLiteral { name, fields } => {
-                // B2: für generische Klassen die Typargumente aus den Feld-
-                // Initialisierern unifizieren (`Box { value: "x" }` →
-                // `Named("Box", [String])`). Bindungsquelle sind die UNERASED
-                // Feld-Deklarationstypen (`"Box.value"` → `Named("T")` in
-                // symbols.variables). Nur wenn ALLE Typ-Params gebunden werden,
-                // trägt das Ergebnis Args — sonst exakt das bisherige Verhalten
-                // (leere Args, permissiv).
+                // B2: for generic classes, unify the type arguments from
+                // the field initializers (`Box { value: "x" }` →
+                // `Named("Box", [String])`). The binding source is the
+                // UNERASED field declaration types (`"Box.value"` →
+                // `Named("T")` in symbols.variables). The result only
+                // carries args if ALL type params get bound — otherwise
+                // exactly the previous behavior (empty args, permissive).
                 let tparams = self.class_type_params.get(name).cloned();
                 let mut bindings: HashMap<String, ValueType> = HashMap::new();
                 for (fname, field_expr) in fields {
@@ -2930,8 +2935,8 @@ impl TypeChecker {
                 // not a known class, not a type parameter. Previously this silently
                 // returned Any (with args) or Named(enum_name) (without) and let
                 // codegen build garbage — the "silent-garbage" failure mode. Now a
-                // hard error (typischer Auslöser: fehlender `import` der Klasse,
-                // s. Strings::/Mathf::).
+                // hard error (a typical trigger: a missing `import` of the
+                // class, e.g. Strings::/Mathf::).
                 if !is_known_enum && !is_known_class && !is_type_param {
                     self.errors.push(
                         TypeError::UnresolvedStaticPath {
@@ -2982,7 +2987,7 @@ impl TypeChecker {
                 ValueType::Named(enum_name.clone(), vec![])
             }
             ExprKind::ArrayLiteral(elements) => {
-                // Element-Typ als lub über alle Elemente (leer → Any)
+                // Element type as the lub over all elements (empty → Any)
                 let mut elem: Option<ValueType> = None;
                 for e in elements {
                     let t = self.infer_type(e);
@@ -2994,7 +2999,7 @@ impl TypeChecker {
                 ValueType::Array(Box::new(elem.unwrap_or(ValueType::Any)))
             }
             ExprKind::MapLiteral(entries) => {
-                // Value-Typ als lub über alle Values (leer → Any)
+                // Value type as the lub over all values (empty → Any)
                 let mut val: Option<ValueType> = None;
                 for (k, v) in entries {
                     self.infer_type(k);
@@ -3067,10 +3072,10 @@ impl TypeChecker {
                 .to_error(),
             );
         }
-        // B2 Schritt 2 / #158 — Typargument-Inferenz für nicht-annotierte
-        // Bindungen: `let bi = Box::make(42)` leitet T=Int aus den
-        // Args ab → Rückgabetyp `Named("Box", [Int])` statt der
-        // registrierten Form mit unaufgelöstem `Named("T")`-Arg.
+        // B2 step 2 / #158 — type-argument inference for unannotated
+        // bindings: `let bi = Box::make(42)` derives T=Int from the args
+        // → return type `Named("Box", [Int])` instead of the registered
+        // form with an unresolved `Named("T")` arg.
         if let Some(resolved) = self.unify_generic_return(&static_key, &sig.return_type, args, type_args) {
             return Some(resolved);
         }
@@ -3282,10 +3287,10 @@ impl TypeChecker {
         ValueType::Any
     }
 
-    /// Bindet Pattern-Variablen mit dem Typ des gematchten Werts:
-    /// Enum-Payload-Argumente bekommen die deklarierten Payload-Typen
-    /// (aus enum_variant_payloads), Top-Level-Idents den Scrutinee-Typ.
-    /// Unbekanntes bleibt Any.
+    /// Binds pattern variables with the type of the matched value:
+    /// enum-payload arguments get the declared payload types (from
+    /// enum_variant_payloads), top-level idents get the scrutinee type.
+    /// Unknowns stay Any.
     fn bind_pattern_vars(&mut self, pattern: &Pattern, scrutinee: &ValueType) {
         match pattern {
             Pattern::Ident(name, inner, _) => {
@@ -3467,11 +3472,11 @@ impl TypeChecker {
         ValueType::from_parser_type(ty)
     }
 
-    /// Rückgabetyp eines Lambda-Literals mit Param-Typ-Hints inferieren
-    /// (Array map/filter/forEach/reduce): jeder unannotierte Param wird an
-    /// seinen Hint gebunden, dann wird der Body inferiert (memoisiert per
-    /// Node-Id — die reiche Typisierung bleibt für spätere Inferenz und den
-    /// Codegen-Export erhalten). None, wenn der Ausdruck kein Lambda ist.
+    /// Infers a lambda literal's return type with param-type hints
+    /// (Array map/filter/forEach/reduce): every unannotated param is
+    /// bound to its hint, then the body is inferred (memoized per node
+    /// ID — the rich typing is preserved for later inference and the
+    /// codegen export). None if the expression isn't a lambda.
     fn infer_lambda_with_param_hints(
         &mut self,
         expr: &Expr,
@@ -3490,8 +3495,8 @@ impl TypeChecker {
             };
             self.symbols.variables.insert(p.name.clone(), (bound, false));
         }
-        // Return-Statements im Body gehören zum Lambda (wie im Lambda-Arm
-        // von infer_type_inner), nicht zur umgebenden Funktion.
+        // Return statements in the body belong to the lambda (same as
+        // in infer_type_inner's Lambda arm), not to the enclosing function.
         let lambda_ret = ret_type.as_ref().map(Self::type_to_value);
         let saved_ret = std::mem::replace(&mut self.current_return_type, lambda_ret.clone());
         let body_ty = self.infer_type(body);
@@ -3542,12 +3547,13 @@ impl TypeChecker {
     }
 
     /// Used during registration to erase type parameters to `Any`.
-    /// B2 Schritt 2 — Typargument-Inferenz am Call-Site: unifiziert einen
-    /// UNERASED Param-Typ gegen den inferierten Arg-Typ und sammelt Bindungen
-    /// für Typ-Params (`v: T` gegen `42: Int` → T=Int). `Any` als Arg trägt
-    /// keine Information und bindet nicht (Fallback bleibt permissiv). Die
-    /// erste Bindung gewinnt (kein Konflikt-Check — bei widersprüchlichen Args
-    /// meldet der normale Check den Fehler an anderer Stelle).
+    /// B2 step 2 — type-argument inference at the call site: unifies an
+    /// UNERASED param type against the inferred arg type and collects
+    /// bindings for type params (`v: T` against `42: Int` → T=Int).
+    /// `Any` as an arg carries no information and doesn't bind (the
+    /// fallback stays permissive). The first binding wins (no conflict
+    /// check — for contradictory args, the normal check reports the
+    /// error elsewhere).
     fn unify_param(
         param: &ValueType,
         arg: &ValueType,
@@ -3600,7 +3606,7 @@ impl TypeChecker {
         }
     }
 
-    /// Enthält der Typ noch einen unaufgelösten Typ-Param?
+    /// Does the type still contain an unresolved type param?
     fn contains_type_param(ty: &ValueType, tparams: &[String]) -> bool {
         match ty {
             ValueType::Named(n, args) => {
@@ -3613,10 +3619,11 @@ impl TypeChecker {
         }
     }
 
-    /// Enthält der Typ einen Typ-Param des UMGEBENDEN Scopes (`Named("U")` im
-    /// Rumpf von `Holder<U>`)? Solche Bindungen sind erst nach Monomorphisierung
-    /// konkret — als „aufgelöst" weitergereicht würde der Codegen daraus eine
-    /// stille Falsch-Spezialisierung mangeln (U → i64*).
+    /// Does the type contain a type param of the ENCLOSING scope
+    /// (`Named("U")` inside `Holder<U>`'s body)? Such bindings only
+    /// become concrete after monomorphization — if passed along as
+    /// "resolved", codegen would mangle a silent wrong specialization
+    /// out of it (U → i64*).
     fn contains_scoped_type_param(&self, ty: &ValueType) -> bool {
         match ty {
             ValueType::Named(n, args) => {
@@ -3785,8 +3792,8 @@ impl TypeChecker {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
-            // Container: kompatibel wenn Element-/Value-Typen kompatibel
-            // (Any-Elemente bleiben Wildcards — typgelöschte Quellen erlauben alles)
+            // Containers: compatible if the element/value types are compatible
+            // (Any elements stay wildcards — erased sources allow anything)
             (ValueType::Array(a), ValueType::Array(b)) => self.types_compatible(a, b),
             (ValueType::Map(a), ValueType::Map(b)) => self.types_compatible(a, b),
             // Null safety: null can only go into nullable types
@@ -3935,9 +3942,9 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Element-typisierte Container (TESTPLAN Phase 4): ValueType::Array/Map
-    // tragen Element-/Value-Typen; Mismatches werden elementgenau gefangen,
-    // typgelöschte Quellen (Any-Element) bleiben Wildcards.
+    // Element-typed containers: ValueType::Array/Map carry element/value
+    // types; mismatches are caught element-precisely, erased sources
+    // (Any element) stay wildcards.
 
     #[test]
     fn test_list_element_mismatch() {
@@ -3970,8 +3977,8 @@ mod tests {
 
     #[test]
     fn test_empty_list_stays_wildcard() {
-        // Leere Literale und typgelöschte Quellen (Any-Element) sind mit
-        // jedem Element-Typ kompatibel
+        // Empty literals and erased sources (Any element) are compatible
+        // with any element type
         ok("fn main() -> Int32 { let xs: List<String> = []; let m: Map<String, Int64> = @{}; return 0; }");
     }
 
@@ -3994,14 +4001,14 @@ mod tests {
 
     #[test]
     fn test_int_float_lists_compatible() {
-        // Int/Float-Koerzion gilt auch elementweise
+        // Int/Float coercion applies element-wise too
         ok("fn main() -> Int32 { let xs: List<Float64> = [1, 2]; return 0; }");
     }
 
     #[test]
     fn test_var_annotation_checked() {
-        // var ignorierte die Annotation bei vorhandenem Wert komplett —
-        // seit Phase 4 gilt die Let-Regel auch hier
+        // var used to ignore the annotation completely whenever a value
+        // was present — the let rule now applies here too
         err_contains(
             "fn main() -> Int32 { var x: String = 5; return 0; }",
             "expected String, found Int64",
@@ -4010,8 +4017,8 @@ mod tests {
 
     #[test]
     fn test_var_annotation_wins_over_erased_value() {
-        // Annotation ist der Vertrag: Map<String, List<String>> bleibt
-        // erhalten, auch wenn Map::new() nur Map(Any) liefert
+        // The annotation is the contract: Map<String, List<String>>
+        // is preserved, even though Map::new() only returns Map(Any)
         ok("fn main() -> Int32 { var m: Map<String, List<String>> = Map::new(); m.insert(\"k\", [\"a\"]); let v: List<String> = m.get(\"k\"); return 0; }");
     }
 

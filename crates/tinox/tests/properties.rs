@@ -1,11 +1,11 @@
-//! Property-Tests auf Laufzeitebene (TESTPLAN Phase 2.1).
+//! Property tests at the runtime level (TESTPLAN Phase 2.1).
 //!
-//! Zufällige Eingaben (deterministisch geseedet, kein Dependency), daraus
-//! generierte .tnx-Programme, deren erwartete Ausgabe der Rust-Host rechnet.
-//! Pro Property eine Datei mit mehreren Instanzen — die Compile-Zeit
-//! dominiert, also viele Checks pro Programm statt vieler Programme.
+//! Random inputs (deterministically seeded, no dependency), from which
+//! .tnx programs are generated whose expected output is computed by the
+//! Rust host. One file per property with multiple instances — compile
+//! time dominates, so many checks per program instead of many programs.
 //!
-//! Reproduzieren: Seed steht im Fehlerreport; `TINOX_PROP_SEED=<n>` setzt ihn.
+//! To reproduce: the seed is in the failure report; `TINOX_PROP_SEED=<n>` sets it.
 
 mod common;
 use common::{parse_case, run_case};
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 const INSTANCES_PER_PROPERTY: usize = 12;
 
-/// xorshift64* — reicht als deterministische Quelle völlig.
+/// xorshift64* — plenty for a deterministic source.
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -28,7 +28,7 @@ impl Rng {
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n.max(1)
     }
-    /// ASCII ohne Escape-Bedarf (keine Quotes/Backslashes)
+    /// ASCII without escaping needs (no quotes/backslashes)
     fn ident_string(&mut self, max_len: u64) -> String {
         const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _.,!?#=+-*";
         let len = self.below(max_len + 1);
@@ -49,12 +49,12 @@ fn seed() -> u64 {
         .unwrap_or(0x7451_0709_2026_0001)
 }
 
-/// Eine Property: Name + Generator, der pro Instanz (Statements, erwartete
-/// Zeilen) liefert. Die Statements dürfen v{i}-präfixte Variablen anlegen.
+/// A property: name + generator that yields (statements, expected lines)
+/// per instance. Statements may create v{i}-prefixed variables.
 type Instance = (String, Vec<String>);
 
 fn prop_join_split(rng: &mut Rng, i: usize) -> Instance {
-    // split(join(xs, "|"), "|") == xs — Elemente ohne '|'
+    // split(join(xs, "|"), "|") == xs — elements without '|'
     let n = rng.below(5) + 1;
     let xs: Vec<String> = (0..n).map(|_| rng.ident_string(9)).collect();
     let lit = xs
@@ -73,7 +73,7 @@ fn prop_join_split(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_substring(rng: &mut Rng, i: usize) -> Instance {
-    // s.substring(a, b) == Host-Slice; substring(0, len) == s
+    // s.substring(a, b) == host slice; substring(0, len) == s
     let s = rng.ident_string(24);
     let len = s.len() as u64;
     let a = rng.below(len + 1);
@@ -86,7 +86,7 @@ fn prop_substring(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_concat(rng: &mut Rng, i: usize) -> Instance {
-    // (a + b).len() == a.len() + b.len(); Inhalt stimmt
+    // (a + b).len() == a.len() + b.len(); content matches
     let a = rng.ident_string(12);
     let b = rng.ident_string(12);
     let stmts = format!(
@@ -96,7 +96,7 @@ fn prop_concat(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_sort(rng: &mut Rng, i: usize) -> Instance {
-    // sort() == Host-sortiert; Original unverändert (sort liefert frisch)
+    // sort() == host-sorted; original unchanged (sort returns fresh)
     let xs = rng.int_list(8);
     let lit = xs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
     let mut sorted = xs.clone();
@@ -111,7 +111,7 @@ fn prop_sort(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_reverse(rng: &mut Rng, i: usize) -> Instance {
-    // reverse(reverse(xs)) == xs und reverse == Host-reverse
+    // reverse(reverse(xs)) == xs and reverse == host reverse
     let xs = rng.int_list(8);
     let lit = xs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
     let mut stmts = format!("    let xs{i}: List<Int64> = [{lit}];\n");
@@ -125,7 +125,7 @@ fn prop_reverse(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_push_pop(rng: &mut Rng, i: usize) -> Instance {
-    // Modellvergleich: Folge von push/pop gegen Vec<i64>
+    // Model comparison: sequence of push/pop against Vec<i64>
     let mut model: Vec<i64> = Vec::new();
     let mut stmts = format!("    var xs{i}: List<Int64> = [];\n");
     for _ in 0..rng.below(12) + 3 {
@@ -146,12 +146,12 @@ fn prop_push_pop(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_contains_index_of(rng: &mut Rng, i: usize) -> Instance {
-    // contains/indexOf konsistent mit Host für Treffer und Nicht-Treffer
+    // contains/indexOf consistent with the host for hits and misses
     let mut xs = rng.int_list(7);
     xs.push(rng.next() as i64 % 1000); // nie leer
     let lit = xs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
     let hit = xs[rng.below(xs.len() as u64) as usize];
-    let miss = 5000 + (rng.next() as i64 % 1000).abs(); // außerhalb des Wertebereichs
+    let miss = 5000 + (rng.next() as i64 % 1000).abs(); // outside the value range
     let hit_idx = xs.iter().position(|&v| v == hit).unwrap();
     let stmts = format!(
         "    let xs{i}: List<Int64> = [{lit}];\n\
@@ -167,11 +167,11 @@ fn prop_contains_index_of(rng: &mut Rng, i: usize) -> Instance {
 }
 
 fn prop_replace(rng: &mut Rng, i: usize) -> Instance {
-    // s.replace(from, to) == Host-replace (alle Vorkommen)
+    // s.replace(from, to) == host replace (all occurrences)
     let base = rng.ident_string(10);
     let from = rng.ident_string(3);
     let to = rng.ident_string(4);
-    // from darf nicht leer sein (Tinox: leeres from → unverändert, wie Host-Sonderfall vermeiden)
+    // from must not be empty (Tinox: empty from → unchanged, avoid the host special case)
     let from = if from.is_empty() { "q".to_string() } else { from };
     let s = format!("{base}{from}{base}");
     let expected = s.replace(&from, &to);
@@ -199,7 +199,7 @@ fn generate(shard: usize) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir props dir");
     for (name, gen) in PROPERTIES {
-        // Pro Property eigener, vom Namen abhängiger Seed-Strom
+        // Separate, name-dependent seed stream per property
         let mut rng = Rng(seed() ^ name.bytes().map(u64::from).sum::<u64>().wrapping_mul(0x9E3779B9));
         // Issue #149 stage 3: no top-level `fn` allowed anymore -- wrap in
         // the fixed `class Main { fnc main() -> Int32 }` entry-point shape.
@@ -250,12 +250,12 @@ fn run_shard(shard: usize, num_shards: usize) {
         let mut case = parse_case(&dir.join(name).join("Main.tnx"));
         case.name = name.clone();
         if let Err(msg) = run_case(&case) {
-            failures.push(format!("== {name} (Seed {}) ==\n{msg}", seed()));
+            failures.push(format!("== {name} (seed {}) ==\n{msg}", seed()));
         }
     }
     assert!(
         failures.is_empty(),
-        "{} Property-Fälle verletzt (reproduzieren: TINOX_PROP_SEED={}):\n\n{}",
+        "{} property cases violated (reproduce: TINOX_PROP_SEED={}):\n\n{}",
         failures.len(),
         seed(),
         failures.join("\n\n")

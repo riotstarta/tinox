@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pre-push-Gate: kein Push ohne grünes `make check` (TESTPLAN 0.1/Phase 3).
-# Installieren mit: make install-hooks    Umgehen (Notfall): git push --no-verify
+# Pre-push gate: no push without a green `make check` (TESTPLAN 0.1/Phase 3).
+# Install with: make install-hooks    Bypass (emergency): git push --no-verify
 set -e
 cd "$(git rev-parse --show-toplevel)"
-echo "pre-push: make check läuft (Umgehen: git push --no-verify) …"
+echo "pre-push: running make check (bypass: git push --no-verify) …"
 make check

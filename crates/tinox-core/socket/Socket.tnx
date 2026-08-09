@@ -2,9 +2,9 @@ module tinox.core.socket;
 
 namespace tinox.core.socket
 {
-    // Rohe BSD-Socket-Primitiven (blockierend). Handles sind fds als Int64,
-    // -1 = Fehler. Für einen kompletten HTTP-Server siehe
-    // tinox.core.http_server (eigene epoll-Maschinerie).
+    // Raw BSD socket primitives (blocking). Handles are fds as Int64,
+    // -1 = error. For a complete HTTP server see tinox.core.http_server
+    // (its own epoll machinery).
     extern fn socketCreateTcp() -> Int64;
     extern fn socketCreateUdp() -> Int64;
     extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;

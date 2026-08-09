@@ -5,11 +5,11 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Byte-Builder für die AMQP-0-9-1-Low-Level-Kodierung (Big-Endian,
-     * wie das Protokoll es verlangt). Sammelt in `bytes`; wird für
-     * Methoden-Argumente UND für verschachtelte Field-Tables/-Arrays
-     * genutzt (letztere kodieren erst in einen eigenen Writer, um die
-     * vorangestellte Byte-Länge zu kennen, s. fieldTable/fieldArray).
+     * Byte builder for the AMQP-0-9-1 low-level encoding (big-endian, as
+     * the protocol requires). Collects into `bytes`; used for method
+     * arguments AND for nested field tables/arrays (the latter encode
+     * into their own writer first, to know the leading byte length, see
+     * fieldTable/fieldArray).
      */
     class AmqpWriter091
     {
@@ -21,11 +21,10 @@ namespace tinox.core.amqp091
             return AmqpWriter091 { bytes: [], tooLong: false };
         }
 
-        /* true, wenn ein `shortstr()`-Aufruf einen String > 255 Byte
-         * bekam (siehe shortstr() unten) — Aufrufer MUESSEN das vor dem
-         * Versenden pruefen, sonst wuerde ein falscher Laengen-Praefix
-         * (octet() maskiert mit `& 0xFF`) den Frame stillschweigend
-         * korrumpieren statt hart zu fehlschlagen. */
+        /* true if a `shortstr()` call received a string > 255 bytes (see
+         * shortstr() below) — callers MUST check this before sending,
+         * otherwise a wrong length prefix (octet() masks with `& 0xFF`)
+         * would silently corrupt the frame instead of failing hard. */
         fn hasError() -> Bool
         {
             return this.tooLong;
@@ -73,8 +72,8 @@ namespace tinox.core.amqp091
             }
         }
 
-        /* Kurzstring: 1-Byte-Länge (max. 255) + Bytes — nur für Feldnamen/
-         * Methodenargumente, die die Spec als shortstr deklariert. */
+        /* Short string: 1-byte length (max. 255) + bytes — only for
+         * field names/method arguments the spec declares as shortstr. */
         fn shortstr(s: String) -> Nothing
         {
             if s.len() > 255 {
@@ -85,16 +84,16 @@ namespace tinox.core.amqp091
             this.rawStr(s);
         }
 
-        /* Langstring: 4-Byte-Länge (Big-Endian) + Bytes. */
+        /* Long string: 4-byte length (big-endian) + bytes. */
         fn longstr(s: String) -> Nothing
         {
             this.long(s.len());
             this.rawStr(s);
         }
 
-        /* Langstring aus rohen Bytes statt String — für Inhalte mit
-         * eingebetteten NUL-Bytes (z. B. SASL-PLAIN-Response), wo eine
-         * Tinox-String-Concatenation riskant wäre. */
+        /* Long string from raw bytes instead of a String — for content
+         * with embedded NUL bytes (e.g. SASL PLAIN response), where a
+         * Tinox string concatenation would be risky. */
         fn longstrBytes(data: List<Int64>) -> Nothing
         {
             this.long(data.len());
@@ -141,16 +140,16 @@ namespace tinox.core.amqp091
                     this.octet(86); // 'V'
                 }
                 ErrorVal(_msg) => {
-                    // Ein ErrorVal wird nie gesendet (nur Decode-Ergebnis) —
-                    // kein Silent-Garbage: harter Marker statt Schweigen,
-                    // falls doch versehentlich re-encodiert wird.
+                    // An ErrorVal is never sent (decode result only) —
+                    // no silent garbage: a hard marker instead of
+                    // staying quiet if it's ever accidentally re-encoded.
                     this.octet(0);
                 }
             }
         }
 
-        /* Field-Table: 4-Byte-Länge (der folgenden Bytes) + wiederholt
-         * { shortstr Schlüssel, getaggter Field-Value }. */
+        /* Field table: 4-byte length (of the following bytes) + repeated
+         * { shortstr key, tagged field value }. */
         fn fieldTable(t: Map<String, AmqpFieldValue091>) -> Nothing
         {
             let inner = AmqpWriter091::new();
@@ -164,8 +163,8 @@ namespace tinox.core.amqp091
             this.rawBytes(inner.bytes);
         }
 
-        /* Field-Array: 4-Byte-Länge (der folgenden Bytes) + wiederholt
-         * getaggter Field-Value (ohne Schlüssel). */
+        /* Field array: 4-byte length (of the following bytes) + repeated
+         * tagged field value (no key). */
         fn fieldArray(a: List<AmqpFieldValue091>) -> Nothing
         {
             let inner = AmqpWriter091::new();

@@ -14,8 +14,8 @@ namespace tinox.core.pool
             return Pool<T> { available: [], inUse: [], maxSize: maxSize };
         }
 
-        // Erzeugt einen Pool mit Factory-Callback. acquire() ruft
-        // pool.factory() auf, wenn kein freies Objekt vorrätig ist.
+        // Creates a pool with a factory callback. acquire() calls
+        // pool.factory() when no free object is available.
         fn newWithFactory(maxSize: Int64, factory: fnc() -> T) -> Pool<T>
         {
             return Pool<T> { available: [], inUse: [], maxSize: maxSize, factory: factory };

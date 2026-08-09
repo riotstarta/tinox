@@ -9,13 +9,13 @@ public class TinoxPreferenceInitializer extends AbstractPreferenceInitializer {
     public void initializeDefaultPreferences() {
         IPreferenceStore store = Activator.getDefault().getPreferenceStore();
 
-        // Default: tinox-lsp im PATH, falls installiert
+        // Default: tinox-lsp on the PATH, if installed
         String defaultPath = findDefaultBinaryPath();
         store.setDefault(TinoxLanguageServer.PREF_BINARY_PATH, defaultPath);
     }
 
     private String findDefaultBinaryPath() {
-        // Versuche gängige Pfade
+        // Try common paths
         String home = System.getProperty("user.home");
         String[] candidates = {
             home + "/.cargo/bin/tinox-lsp",

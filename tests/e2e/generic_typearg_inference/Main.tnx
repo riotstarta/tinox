@@ -1,12 +1,12 @@
 import Box;
 import Pair;
 
-// B2 Schritt 2: Typargument-Inferenz für nicht-annotierte Bindungen.
-// `let bi = Box::make(42)` leitet T=Int aus den Args ab (Typecheck-Unifikation
-// unerased Params × Arg-Typen) und der Codegen trägt die Spezialisierung
-// (Box__i64) über die typisierte Wertbrücke bis zum let/var-Marker — die in
-// Bug 53 sondierte Verbindung der zwei Typ-Systeme. Deckt let + var, Int64/
-// String/Float64, zwei Typ-Params und Kettenzugriff ohne Binding ab.
+// B2 step 2: type-argument inference for unannotated bindings.
+// `let bi = Box::make(42)` derives T=Int from the args (typecheck unification
+// of unerased params × arg types) and codegen carries the specialization
+// (Box__i64) through the typed-value bridge up to the let/var marker — the
+// connection between the two type systems probed in Bug 53. Covers let + var,
+// Int64/String/Float64, two type params, and chained access without a binding.
 // expect: 42
 // expect: hi
 // expect: 2
@@ -19,11 +19,11 @@ import Pair;
 class Main
 {
     fnc main() -> Int32 {
-        // let ohne Annotation: T=Int64 aus dem Argument
+        // let without annotation: T=Int64 from the argument
         let bi = Box::make(42);
         println(bi.value.toString());        // 42
 
-        // T=String: direkter Feld-Read + Methode auf dem aufgelösten T
+        // T=String: direct field read + method on the resolved T
         let bs = Box::make("hi");
         println(bs.value);                    // hi
         println(bs.value.len().toString());  // 2
@@ -32,16 +32,16 @@ class Main
         let bf = Box::make(3.5);
         println(bf.value.toString());        // 3.5
 
-        // var-Pfad nutzt dieselbe Brücke
+        // var path uses the same bridge
         var vi = Box::make(7);
         println(vi.value.toString());        // 7
 
-        // Zwei Typ-Params unabhängig gebunden (A=Int64, B=String)
+        // Two type params bound independently (A=Int64, B=String)
         let p = Pair::make(1, "x");
         println(p.a.toString());             // 1
         println(p.b);                         // x
 
-        // Kettenzugriff ohne Binding: Marker direkt am Call-Ausdruck
+        // Chained access without a binding: marker directly on the call expression
         println(Box::make(9).value.toString()); // 9
         return 0;
     }

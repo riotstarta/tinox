@@ -5,12 +5,12 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Ein per `waitForConfirm()` empfangenes Publisher-Confirm
-     * (`basic.ack`/`basic.nack` vom Broker nach `confirmSelect()`).
-     * `ok == false` bei jedem Fehler (Aufrufer MUSS prüfen, kein
-     * Silent-Garbage) — `errorMessage` beschreibt dann die Ursache.
-     * `multiple == true` bedeutet: alle Delivery-Tags bis einschließlich
-     * `deliveryTag` sind (n)acked, nicht nur dieser eine.
+     * A publisher confirm received via `waitForConfirm()`
+     * (`basic.ack`/`basic.nack` from the broker after `confirmSelect()`).
+     * `ok == false` on any error (caller MUST check, no silent garbage)
+     * — `errorMessage` then describes the cause. `multiple == true`
+     * means: every delivery tag up to and including `deliveryTag` is
+     * (n)acked, not just this one.
      */
     class AmqpConfirmResult091
     {

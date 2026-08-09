@@ -1,11 +1,11 @@
-// AMQP-1.0 Phase 4 (tasklist.md): SASL-Negotiation. Ein per `spawn`
-// gestarteter simulierter Broker (async fn) spielt sasl-mechanisms ->
-// sasl-init -> sasl-outcome gegen den echten Client-Code aus (Muster wie
-// amqp_connection_negotiation.tnx bei 0-9-1). Deckt Erfolgspfad UND
-// abgelehnte Auth (sasl-outcome code != 0) ab.
+// AMQP-1.0 Phase 4 (tasklist.md): SASL negotiation. A simulated broker
+// started via `spawn` (async fn) plays out sasl-mechanisms ->
+// sasl-init -> sasl-outcome against the real client code (same pattern
+// as amqp_connection_negotiation.tnx for 0-9-1). Covers the success
+// path AND rejected auth (sasl-outcome code != 0).
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker* gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses its return type):
+// fakeBroker* returns Int64 (0/1) instead of Bool.
 // expect: ok-sasl-success
 // expect: ok-broker-saw-plain
 // expect: ok-sasl-rejected
@@ -18,16 +18,16 @@ class Main
 
     async fnc fakeBrokerAccept(srv: Int64, outcomeCode: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // SASL-Protokoll-Header, schon in Phase 1 getestet
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]); // Header-Echo
+        httpConnReadN(sconn, 8); // SASL protocol header, already tested in Phase 1
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]); // header echo
 
-        // sasl-mechanisms: bietet ANONYMOUS + PLAIN an (Liste statt echtem
-        // Array-Formatcode -- decodiert identisch als ListVal, s. amqp10.tnx).
+        // sasl-mechanisms: offers ANONYMOUS + PLAIN (a list instead of a real
+        // array format code -- decodes identically as ListVal, see amqp10.tnx).
         var mechs: List<Amqp10Value> = [Amqp10Value::SymbolVal("ANONYMOUS"), Amqp10Value::SymbolVal("PLAIN")];
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
 
-        // sasl-init empfangen und pruefen, dass PLAIN gewaehlt wurde
+        // Receive sasl-init and check that PLAIN was chosen
         let f1 = Amqp10::readFrame(sconn);
         let p1 = Amqp10::decodePerformative(f1.body);
         var sawPlain: Int64 = 0;
@@ -48,10 +48,10 @@ class Main
 
 
     fnc main() -> Int32 {
-        // --- Erfolgspfad ---
+        // --- Success path ---
         let srv1 = httpServerCreate(47626);
         if srv1 < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle1 = spawn fakeBrokerAccept(srv1, 0);
@@ -73,10 +73,10 @@ class Main
         httpConnClose(conn1);
         httpServerClose(srv1);
 
-        // --- Abgelehnte Auth (sasl-outcome code = 1) ---
+        // --- Rejected auth (sasl-outcome code = 1) ---
         let srv2 = httpServerCreate(47627);
         if srv2 < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle2 = spawn fakeBrokerAccept(srv2, 1);

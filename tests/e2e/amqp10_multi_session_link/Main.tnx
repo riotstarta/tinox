@@ -1,10 +1,10 @@
-// Issue 76: mehrere Sessions/Links pro Connection. Zwei Sessions auf
-// derselben Connection (jede mit eigenem Kanal), Session 1 mit ZWEI
-// Sender-Links (eigene, pro-Session fortlaufende Handles), Session 2 mit
-// einem weiteren Sender-Link (eigener, bei 0 neu startender Handle-Zaehler)
-// — verifiziert per simuliertem Broker, dass Kanal/Handle-Werte korrekt
-// zugewiesen UND in den tatsaechlichen Wire-Frames (attach/transfer)
-// ankommen, nicht nur in den lokalen Client-Objekten.
+// Issue 76: multiple sessions/links per connection. Two sessions on the
+// same connection (each with its own channel), session 1 with TWO
+// sender links (their own, per-session consecutive handles), session 2
+// with another sender link (its own handle counter, restarting at 0)
+// — verified via a simulated broker that channel/handle values are
+// correctly assigned AND arrive in the actual wire frames
+// (attach/transfer), not just in the local client objects.
 // expect: ok-connect
 // expect: broker-chan1:1
 // expect: broker-chan2:2
@@ -47,7 +47,7 @@ class Main
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation ---
+        // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
@@ -56,7 +56,7 @@ class Main
         let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -68,7 +68,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
 
-        // --- begin (Session 1) / begin-ok ---
+        // --- begin (session 1) / begin-ok ---
         let fBegin1 = Amqp10::readFrame(sconn);
         var begin1Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin1.chanId), Amqp10Value::UIntVal(0),
@@ -76,7 +76,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin1.chanId, Amqp10::encodePerformative(0x11, begin1Fields));
 
-        // --- begin (Session 2) / begin-ok ---
+        // --- begin (session 2) / begin-ok ---
         let fBegin2 = Amqp10::readFrame(sconn);
         var begin2Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin2.chanId), Amqp10Value::UIntVal(0),
@@ -84,21 +84,21 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin2.chanId, Amqp10::encodePerformative(0x11, begin2Fields));
 
-        // --- attach 1a (Session 1) / flow ---
+        // --- attach 1a (session 1) / flow ---
         let handle1a = attachOkAndGrantFlow(sconn, fBegin1.chanId);
         let f1a = Amqp10::readFrame(sconn);
         let p1a = Amqp10::decodePerformative(f1a.body);
         var t1aHandle: Int64 = -1;
         if p1a.fields.len() > 0 { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n; } _ => {} } }
 
-        // --- attach 1b (Session 1, zweiter Link) / flow ---
+        // --- attach 1b (session 1, second link) / flow ---
         let handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId);
         let f1b = Amqp10::readFrame(sconn);
         let p1b = Amqp10::decodePerformative(f1b.body);
         var t1bHandle: Int64 = -1;
         if p1b.fields.len() > 0 { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n; } _ => {} } }
 
-        // --- attach 2a (Session 2) / flow ---
+        // --- attach 2a (session 2) / flow ---
         let handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId);
         let f2a = Amqp10::readFrame(sconn);
         let p2a = Amqp10::decodePerformative(f2a.body);
@@ -138,14 +138,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47714);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47714, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");

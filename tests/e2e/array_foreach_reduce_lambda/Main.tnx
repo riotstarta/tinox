@@ -1,6 +1,7 @@
-// Array.forEach(lambda) und Array.reduce(init, lambda): forEach ruft die
-// Closure als void auf (Wert wird verworfen), reduce führt einen Akku vom
-// Typ des Startwerts durch den Loop (Int64, Float64 und String gedeckt).
+// Array.forEach(lambda) and Array.reduce(init, lambda): forEach calls the
+// closure as void (the value is discarded), reduce carries an accumulator
+// of the start value's type through the loop (Int64, Float64, and String
+// covered).
 // expect: 1
 // expect: 2
 // expect: 3
@@ -13,19 +14,19 @@ class Main
     fnc main() -> Int32 {
         let xs = [1, 2, 3];
 
-        // forEach (auch capturing wäre erlaubt; hier plain print)
+        // forEach (capturing would also be allowed; plain print here)
         xs.forEach(x => println(x.toString()));
 
         // reduce Int64
         let total = xs.reduce(0, (acc, x) => acc + x);
         println(total.toString());
 
-        // reduce Float64 (Akku-Typ = Init-Typ double)
+        // reduce Float64 (accumulator type = init type double)
         let fs = [1.0, 2.5, 3.0];
         let fsum = fs.reduce(0.0, (a, x) => a + x);
         println(fsum.toString());
 
-        // reduce String (Akku i8*, capturing Separator)
+        // reduce String (accumulator i8*, capturing separator)
         let sep = "|";
         let joined = ["a", "bb", "ccc"].reduce("", (acc, w) => {
             if (acc.len() == 0) {
@@ -35,7 +36,7 @@ class Main
         });
         println(joined);
 
-        // reduce mit capturing Faktor
+        // reduce with a capturing factor
         let factor = 10;
         let scaled = xs.reduce(0, (acc, x) => acc + x * factor);
         println(scaled.toString());

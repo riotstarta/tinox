@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Dogfood-Gate (TESTPLAN Phase 3): examples/ + benchmarks/ bauen (mit
-# Smoke-Runs, wo deterministisch) und jgrep-tinox bauen + Tests fahren.
-# Aufruf über `make dogfood`; erwartet ein frisches target/release/tinox.
+# Dogfood gate (TESTPLAN Phase 3): build examples/ + benchmarks/ (with
+# smoke runs where deterministic) and build + run jgrep-tinox's tests.
+# Invoked via `make dogfood`; expects a fresh target/release/tinox.
 #
-# Alle Jobs sind voneinander unabhängig (jeder eigene tinox-Prozess, eigener
-# Output-Pfad) und laufen deshalb parallel im Hintergrund; nur das
-# Einsammeln/Ausgeben der Ergebnisse passiert danach sequenziell in der
-# ursprünglichen, stabilen Reihenfolge. jgrep-tinox' `tinox test` schreibt
-# PID-gescopte Temp-Dateien (.tinox_test_{pid}_{n}, s. main.rs), mehrere
-# gleichzeitige Läufe im selben Checkout sind daher sicher. Vorher: ~4:45min
-# fast rein sequenziell auf einer 32-Kern-Maschine.
+# All jobs are independent of each other (each its own tinox process, its
+# own output path) and therefore run in parallel in the background; only
+# collecting/printing the results happens afterward, sequentially, in the
+# original, stable order. jgrep-tinox's `tinox test` writes PID-scoped
+# temp files (.tinox_test_{pid}_{n}, see main.rs), so multiple concurrent
+# runs in the same checkout are safe. Before: ~4:45min, almost purely
+# sequential on a 32-core machine.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -112,22 +112,22 @@ fi
 
 wait
 
-echo "== Dogfood: examples bauen =="
+echo "== Dogfood: building examples =="
 for f in "${GOOD_EXAMPLES[@]}"; do
     report "$f" "$(job_id "build_$f")"
 done
 
-echo "== Dogfood: examples Smoke-Runs =="
+echo "== Dogfood: example smoke runs =="
 report examples/simple_test/Main.tnx "$(job_id smoke_simple)"
 report examples/vtable_dispatch/Main.tnx "$(job_id smoke_vtable)"
 report examples/modules/main_example/Main.tnx "$(job_id smoke_modules)"
 report examples/modules/multi_import_example/Main.tnx "$(job_id smoke_multiimport)"
 report examples/interface_extends/Main.tnx "$(job_id smoke_ifaceext)"
 
-echo "== Dogfood: Library-Beispiele typechecken =="
+echo "== Dogfood: typechecking library examples =="
 report "examples/mini_http/HttpServer.tnx (check)" "$(job_id mini_http_check)"
 
-echo "== Dogfood: benchmarks kompilieren =="
+echo "== Dogfood: compiling benchmarks =="
 for f in benchmarks/*/Main.tnx; do
     report "$f" "$(job_id "bench_$f")"
 done
@@ -139,12 +139,12 @@ if [ -d "$DOGFOOD_DIR" ]; then
         report "$(basename "$t")" "$(job_id "jgrep_test_$t")"
     done
 else
-    echo "  übersprungen ($DOGFOOD_DIR nicht gefunden)"
+    echo "  skipped ($DOGFOOD_DIR not found)"
 fi
 
 if [ "$FAIL" -ne 0 ]; then
     echo
-    echo "Dogfood FAILED — Details: Kommando von Hand wiederholen."
+    echo "Dogfood FAILED — details: rerun the command by hand."
     exit 1
 fi
 echo

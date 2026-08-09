@@ -1,45 +1,45 @@
-// throw-Effekt-Analyse (Bug 48): der per-Statement-throw-Check (Bug 40) wird nur
-// nach Aufrufen von Funktionen emittiert, die transitiv werfen KÖNNEN. Dieser
-// Test prüft die Korrektheit beider Seiten: eine nicht-werfende Funktion (die
-// keine Checks bekommt) läuft normal durch, und eine werfende Funktion propagiert
-// weiterhin korrekt über mehrere Frames bis zum catch — die Analyse darf keinen
-// throw übersehen.
+// throw effect analysis (Bug 48): the per-statement throw check (Bug 40) is only
+// emitted after calls to functions that transitively CAN throw. This
+// test checks the correctness of both sides: a non-throwing function (which
+// gets no checks) runs through normally, and a throwing function still propagates
+// correctly across multiple frames up to the catch — the analysis must not miss
+// any throw.
 // expect: pure: 28
-// expect: c wirft, gefangen: tief
+// expect: c throws, caught: deep
 // expect: pure in mixed: 10
-// expect: nach mixed
-// expect: ende
+// expect: after mixed
+// expect: end
 
 class Main
 {
     fnc pure(n: Int64) -> Int64 {
-        // wirft nie → Aufrufer bekommt keinen throw-Check
+        // never throws → caller gets no throw check
         if n <= 0 { return 0; }
         return n + pure(n - 1);
     }
 
 
-    fnc c() -> Nothing { throw "tief"; }
+    fnc c() -> Nothing { throw "deep"; }
 
-    fnc b() -> Nothing { c(); println("b (nie)"); }
+    fnc b() -> Nothing { c(); println("b (never)"); }
 
-    fnc a() -> Nothing { b(); println("a (nie)"); }
+    fnc a() -> Nothing { b(); println("a (never)"); }
 
 
     fnc mixed() -> Nothing {
-        // ruft BEIDES: eine nicht-werfende (pure) und eine werfende Kette (a)
-        let s: Int64 = pure(4);            // 0+1+2+3+4 = 10, kein Check noetig
+        // calls BOTH: a non-throwing (pure) and a throwing chain (a)
+        let s: Int64 = pure(4);            // 0+1+2+3+4 = 10, no check needed
         println("pure in mixed: " + s.toString());
-        a();                               // wirft → muss propagieren
-        println("nach a in mixed (nie)");
+        a();                               // throws → must propagate
+        println("after a in mixed (never)");
     }
 
 
     fnc main() -> Int32 {
-        println("pure: " + pure(7).toString());    // 0..7 = 28, reiner Pfad, kein throw
-        try { a(); } catch e: String { println("c wirft, gefangen: " + e); }
-        try { mixed(); } catch e: String { println("nach mixed"); }
-        println("ende");
+        println("pure: " + pure(7).toString());    // 0..7 = 28, pure path, no throw
+        try { a(); } catch e: String { println("c throws, caught: " + e); }
+        try { mixed(); } catch e: String { println("after mixed"); }
+        println("end");
         return 0;
     }
 }

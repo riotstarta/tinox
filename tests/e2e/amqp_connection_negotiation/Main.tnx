@@ -1,16 +1,16 @@
-// AMQP-0-9-1 Phase 3 (tasklist.md): Connection/Channel-Handshake.
-// Ein per `spawn` gestarteter simulierter Broker (async fn) laeuft parallel
-// zum blockierenden `AmqpConnection091::connect`/`AmqpChannel091::open` und
-// spielt den kompletten Negotiation-Ablauf per Hand aus: connection.start ->
-// start-ok -> tune -> tune-ok -> open -> open-ok, dann channel.open ->
-// open-ok. Deckt den Erfolgspfad der State-Machine ab, ohne einen echten
-// Broker zu brauchen (der wurde live gegen RabbitMQ 3-management manuell
-// verifiziert, s. bugs.md/tasklist.md — inkl. SASL-Fehler und
-// Unknown-Vhost-Fehlerpfad über echtes connection.close).
+// AMQP-0-9-1 Phase 3 (tasklist.md): connection/channel handshake.
+// A simulated broker started via `spawn` (async fn) runs in parallel to
+// the blocking `AmqpConnection091::connect`/`AmqpChannel091::open` and
+// plays out the complete negotiation flow by hand: connection.start ->
+// start-ok -> tune -> tune-ok -> open -> open-ok, then channel.open ->
+// open-ok. Covers the success path of the state machine without
+// needing a real broker (that was verified live and manually against
+// RabbitMQ 3-management, see bugs.md/tasklist.md — including the SASL
+// error and unknown-vhost error path via a real connection.close).
 //
-// Workaround fuer Bug 67 (bugs.md): `async fn -> Bool` + `await` verliert
-// den Rueckgabetyp (Typechecker fuehrt das Ergebnis als Int64) -- fakeBroker
-// gibt deshalb Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md): `async fn -> Bool` + `await` loses
+// the return type (the typechecker carries the result as Int64) --
+// fakeBroker therefore returns Int64 (0/1) instead of Bool.
 // expect: ok-connect
 // expect: ok-framemax
 // expect: ok-channel
@@ -24,10 +24,10 @@ class Main
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // Protokoll-Header, schon in Phase 1 getestet
+        httpConnReadN(sconn, 8); // protocol header, already tested in Phase 1
 
         // connection.start (10,10): version-major/minor, server-properties
-        // (leere Table reicht - v1 wertet sie nicht aus), mechanisms, locales.
+        // (an empty table is enough - v1 doesn't evaluate it), mechanisms, locales.
         let w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
@@ -64,7 +64,7 @@ class Main
             }
         }
 
-        // connection.open (10,40) erwarten, dann open-ok (10,41) senden.
+        // Expect connection.open (10,40), then send open-ok (10,41).
         let f3 = Amqp091::readFrame(sconn);
         let openM = Amqp091::decodeMethodPayload(f3.payload);
         var ok3: Bool = false;
@@ -79,7 +79,7 @@ class Main
         let openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
         Amqp091::writeFrame(sconn, 1, 0, openOkPayload);
 
-        // channel.open (20,10) auf Channel 1 erwarten, dann open-ok (20,11).
+        // Expect channel.open (20,10) on channel 1, then open-ok (20,11).
         let f4 = Amqp091::readFrame(sconn);
         let chanOpenM = Amqp091::decodeMethodPayload(f4.payload);
         var ok4: Bool = false;
@@ -115,7 +115,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47621);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);

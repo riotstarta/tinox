@@ -1,14 +1,14 @@
-// Regressionstest fuer den in bugs.md (Bug-24-Fund, "Wichtiger Fund dabei")
-// dokumentierten JSON-Arena-Lifetime-Bug: Json::parse() lieferte JsonValue-
-// Zeiger in einen `__thread`-lokalen Arena-Puffer, dessen "used"-Zaehler
-// bei JEDEM Json::parse()-Aufruf auf 0 zurueckgesetzt wurde -- ein Wert aus
-// einem FRUEHEREN parse()-Aufruf, dessen Referenz laenger lebte (z. B. ein
-// Payload, der aus mehreren einzelnen parse()-Aufrufen zusammengebaut
-// wird, ein Feld pro Aufruf), wurde beim naechsten parse() auf demselben
-// Thread durch neue Allokationen ueberschrieben -- Silent-Garbage
-// (beobachtet als leerer String). Gefixt: JsonValue-Knoten/Map-/String-
-// Daten leben jetzt individuell auf dem normalen GC-Heap statt in einem
-// rewindbaren Arena-Puffer (runtime.c, json_arena_alloc).
+// Regression test for the JSON arena lifetime bug documented in bugs.md
+// (Bug 24 finding, "important find along the way"): Json::parse() returned
+// JsonValue pointers into a `__thread`-local arena buffer, whose "used"
+// counter was reset to 0 on EVERY Json::parse() call -- a value from an
+// EARLIER parse() call, whose reference lived longer (e.g. a
+// payload assembled from several individual parse() calls, one field
+// per call), was overwritten by new allocations on the next parse() on the
+// same thread -- silent garbage
+// (observed as an empty string). Fixed: JsonValue node/map/string
+// data now each live individually on the normal GC heap instead of in a
+// rewindable arena buffer (runtime.c, json_arena_alloc).
 // expect: exp=9999999999
 // expect: sub=hello-world-value-1234567890
 // expect: ok-not-corrupted-string
@@ -22,9 +22,9 @@ import tinox.core.json;
 class Main
 {
     fnc main() -> Int32 {
-        // Fall 1: einfacher String-Wert, dessen getString() erst NACH einem
-        // zweiten, unabhaengigen parse()-Aufruf gelesen wird -- exakt das
-        // "decoded[\"sub\"].getString()"-Muster aus dem Originalbefund.
+        // Case 1: simple string value, whose getString() is only read AFTER a
+        // second, independent parse() call -- exactly the
+        // "decoded[\"sub\"].getString()" pattern from the original finding.
         let subVal = Json::parse("\"hello-world-value-1234567890\"");
         let expVal = Json::parse("9999999999");
         println("exp=" + expVal.getInt().toString());
@@ -34,8 +34,8 @@ class Main
             println("ok-not-corrupted-string");
         }
 
-        // Fall 2: ein Objekt (Map-Knoten + Keys), dessen verschachtelte Felder
-        // erst nach MEHREREN weiteren parse()-Aufrufen gelesen werden.
+        // Case 2: an object (map node + keys), whose nested fields
+        // are only read after SEVERAL further parse() calls.
         let objVal = Json::parse("{\"inner\": 42, \"tag\": \"keep-me\"}");
         Json::parse("1");
         Json::parse("[1,2,3,4,5]");
@@ -45,9 +45,9 @@ class Main
             println("ok-not-corrupted-object");
         }
 
-        // Fall 3: ein Int-Array (JSON_INT_ARRAY-Fastpath, ebenfalls
-        // arena-basiert), dessen Werte erst nach einem weiteren
-        // parse()-Aufruf gelesen werden.
+        // Case 3: an int array (JSON_INT_ARRAY fast path, also
+        // arena-based), whose values are only read after a further
+        // parse() call.
         let arrVal = Json::parse("[1, 2, 3]");
         Json::parse("{\"a\": 1, \"b\": 2, \"c\": 3}");
         let arr = Json::intArrayFromJson(arrVal);

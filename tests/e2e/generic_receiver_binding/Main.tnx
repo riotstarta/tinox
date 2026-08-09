@@ -1,8 +1,9 @@
-// Bug 52: eine generische Instanzmethode OHNE T-Parameter (fn get() -> T),
-// aufgerufen als Class::get(obj), muss ihre Spezialisierung aus dem Empfänger-
-// Marker ableiten (bs: generic_receiver_binding<String> -> Box__i8P), nicht auf den i64-Default fallen.
-// Zuvor rief generic_receiver_binding::get(bs) fälschlich Box__i64_get und gab den String-Zeiger als
-// Zahl aus (silent garbage). Deckt String-, Int64- und Float64-Empfänger ab.
+// Bug 52: a generic instance method WITHOUT a T parameter (fn get() -> T),
+// called as Class::get(obj), must derive its specialization from the
+// receiver marker (bs: generic_receiver_binding<String> -> Box__i8P), not fall back to the i64
+// default. Previously generic_receiver_binding::get(bs) incorrectly called Box__i64_get and
+// printed the String pointer as a number (silent garbage). Covers String,
+// Int64, and Float64 receivers.
 // expect: hi
 // expect: 42
 // expect: 3.5
@@ -13,7 +14,7 @@ class Main
 {
     fnc main() -> Int32 {
         let bs: generic_receiver_binding<String> = generic_receiver_binding::make("hi");
-        println(generic_receiver_binding::get(bs));               // hi — Box__i8P (Empfänger-Bindung)
+        println(generic_receiver_binding::get(bs));               // hi — Box__i8P (receiver binding)
 
         let bi: generic_receiver_binding<Int64> = generic_receiver_binding::make(42);
         println(generic_receiver_binding::get(bi).toString());    // 42 — Box__i64

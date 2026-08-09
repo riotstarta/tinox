@@ -1,6 +1,6 @@
-//! Pseudo-Fuzzing für Lexer + Parser (TESTPLAN Phase 2.2, ohne cargo-fuzz):
-//! zufällige Eingaben dürfen Fehler liefern, aber niemals panicken oder
-//! hängen. Deterministisch geseedet; TINOX_FUZZ_SEED überschreibt.
+//! Pseudo-fuzzing for the lexer + parser (without cargo-fuzz): random
+//! inputs may produce errors, but must never panic or hang.
+//! Deterministically seeded; TINOX_FUZZ_SEED overrides.
 
 use tinox_lexer::Lexer;
 use tinox_parser::Parser;
@@ -35,9 +35,9 @@ fn lex_and_parse(src: &str) {
     }
 }
 
-/// Watchdog: ein hängender Input soll den Test laut und schnell scheitern
-/// lassen, nicht die Suite stundenlang blockieren. (Der hängende Thread
-/// leakt — für einen scheiternden Testlauf ist das egal.)
+/// Watchdog: a hanging input should make the test fail loudly and
+/// quickly, not block the suite for hours. (The hanging thread leaks —
+/// irrelevant for a failing test run.)
 fn check_no_hang(src: &str) {
     use std::sync::mpsc::channel;
     use std::time::Duration;
@@ -48,11 +48,11 @@ fn check_no_hang(src: &str) {
         let _ = tx.send(());
     });
     if rx.recv_timeout(Duration::from_secs(10)).is_err() {
-        panic!("Lexer/Parser hängt auf Input ({} Zeichen):\n{src}", src.len());
+        panic!("Lexer/parser hangs on input ({} chars):\n{src}", src.len());
     }
 }
 
-/// Ein valides Programm, das alle Sprachkonstrukte anreißt — Basis für Mutationen.
+/// A valid program that touches on every language construct — the basis for mutations.
 const VALID_BASE: &str = r#"
 import tinox.core.json;
 
@@ -94,7 +94,7 @@ fn random_bytes_never_panic() {
         let len = rng.below(300);
         let s: String = (0..len)
             .map(|_| {
-                // Mix aus ASCII (häufig) und beliebigen Unicode-Zeichen (selten)
+                // A mix of ASCII (common) and arbitrary Unicode characters (rare)
                 if rng.below(10) < 9 {
                     (rng.below(95) as u8 + 32) as char
                 } else {
@@ -112,7 +112,7 @@ fn mutated_programs_never_panic() {
     let base: Vec<char> = VALID_BASE.chars().collect();
     for _ in 0..1500 {
         let mut prog = base.clone();
-        // 1–8 zufällige Mutationen: löschen, duplizieren, ersetzen
+        // 1–8 random mutations: delete, duplicate, replace
         for _ in 0..rng.below(8) + 1 {
             if prog.is_empty() {
                 break;
@@ -140,7 +140,7 @@ fn mutated_programs_never_panic() {
 
 #[test]
 fn truncated_programs_never_panic() {
-    // Jedes Präfix des validen Programms (EOF mitten in jedem Konstrukt)
+    // Every prefix of the valid program (EOF in the middle of every construct)
     for end in 0..VALID_BASE.len() {
         if VALID_BASE.is_char_boundary(end) {
             check_no_hang(&VALID_BASE[..end]);

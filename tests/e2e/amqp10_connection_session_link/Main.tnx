@@ -1,12 +1,12 @@
-// AMQP-1.0 Phase 5 (tasklist.md): Connection/Session/Link-Handshake. Ein
-// per `spawn` gestarteter simulierter Broker (async fn) spielt den
-// kompletten Ablauf gegen den echten Client-Code aus: SASL-Header +
-// Negotiation (Phase 4) -> AMQP-Header -> open/open-ok -> begin/begin-ok ->
+// AMQP-1.0 Phase 5 (tasklist.md): connection/session/link handshake. A
+// simulated broker started via `spawn` (async fn) plays out the complete
+// flow against the real client code: SASL header +
+// negotiation (Phase 4) -> AMQP header -> open/open-ok -> begin/begin-ok ->
 // attach/attach-ok -> detach/detach-ok -> end/end-ok -> close/close-ok.
-// Muster wie amqp_connection_negotiation.tnx (0-9-1).
+// Same pattern as amqp_connection_negotiation.tnx (0-9-1).
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses its return type):
+// fakeBroker returns Int64 (0/1) instead of Bool.
 // expect: ok-broker-saw-role
 // expect: ok-connect
 // expect: ok-framemax
@@ -23,16 +23,16 @@ class Main
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation ---
+        // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
-        Amqp10::readFrame(sconn); // sasl-init, v1 ungeprueft (s. Phase-4-Test)
+        Amqp10::readFrame(sconn); // sasl-init, v1 not checked (see Phase-4 test)
         let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -70,7 +70,7 @@ class Main
         var linkName: String = "";
         if pAttach.fields.len() >= 3 {
             match pAttach.fields[0] { StrVal(s) => { linkName = s; } _ => {} }
-            match pAttach.fields[2] { BoolVal(b) => { sawRole = !b; } _ => {} } // Client haengt als Sender an (role=false)
+            match pAttach.fields[2] { BoolVal(b) => { sawRole = !b; } _ => {} } // client attaches as sender (role=false)
         }
         let attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, attachOkBody);
@@ -115,26 +115,26 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47628);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47628, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
         let session = Amqp10Session::begin(conn);
         if session.chanId <= 0 {
-            println("begin fehlgeschlagen: " + session.errorMessage);
+            println("begin failed: " + session.errorMessage);
             return 1;
         }
 
         let link = Amqp10Link::attach(session, "test-link", false, "test-queue");
         if link.handle < 0 {
-            println("attach fehlgeschlagen: " + link.errorMessage);
+            println("attach failed: " + link.errorMessage);
             return 1;
         }
 

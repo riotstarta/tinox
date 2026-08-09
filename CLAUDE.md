@@ -1,71 +1,70 @@
-# Projektkonventionen für Claude Code
+# Project Conventions for Claude Code
 
-## Bug-/Feature-Tracking läuft über GitHub Issues
+## Bug/Feature Tracking Runs Through GitHub Issues
 
-Seit 2026-07-25 werden **alle** Bugs und abgeschlossenen Feature-
-Implementierungen als [GitHub Issues](https://github.com/subnix-work/tinox/issues)
-auf `subnix-work/tinox` erfasst — nicht mehr in lokalen Markdown-Dateien
-(`bugs.md`/`bugs_fixed.md` wurden entfernt, ihr kompletter Inhalt liegt
-1:1 in den Issues #1–74).
+Since 2026-07-25, **all** bugs and completed feature implementations are
+tracked as [GitHub Issues](https://github.com/subnix-work/tinox/issues)
+on `subnix-work/tinox` — no longer in local Markdown files
+(`bugs.md`/`bugs_fixed.md` were removed, their full content lives 1:1
+in issues #1–74).
 
-**Verbindliche Regel für jeden neuen Fund/Fix ab jetzt:**
+**Binding rule for every new find/fix from now on:**
 
-- **Neuer Bug gefunden** (egal ob sofort gefixt oder nicht): direkt ein
-  GitHub Issue anlegen (`gh issue create --repo subnix-work/tinox`).
-  Titel im Stil `Bug NN — Kurzbeschreibung` (fortlaufende Nummer, an die
-  letzte vergebene Issue-Nummer anschließen) oder `Feature: Name` für
-  abgeschlossene Feature-Arbeit. Label `bug` bzw. `enhancement`.
-- **Bug ist gefixt:** Issue-Body enthält (wie bisher in bugs.md/
-  bugs_fixed.md üblich) Status/Root-Cause/Fix/Verifiziert — dann Issue
-  schließen (`gh issue close <NR> --reason completed`).
-- **Bug ist noch offen** (bewusst zurückgestellt oder ungelöst): Issue
-  bleibt offen, Body beschreibt den Stand + warum er offen ist.
-- **Sprache: Englisch** (Titel + Body) — die Issues wurden bewusst ins
-  Englische übersetzt und sollen es bleiben (seit 2026-07-26 gilt das
-  ohnehin projektweit auch für Commit-Messages und Code, s. u.).
-- Cross-Referenzen zwischen verwandten Issues wie bisher zwischen
-  Bug-Einträgen üblich (z. B. „closes what Bug 40 left open" mit Link
-  auf die Issue-Nummer).
+- **New bug found** (whether fixed immediately or not): open a GitHub
+  issue directly (`gh issue create --repo subnix-work/tinox`).
+  Title in the style `Bug NN — short description` (sequential number,
+  continuing from the last assigned issue number) or `Feature: Name`
+  for completed feature work. Label `bug` or `enhancement`.
+- **Bug is fixed:** the issue body contains (as previously used in
+  bugs.md/bugs_fixed.md) Status/Root Cause/Fix/Verified — then close the
+  issue (`gh issue close <NR> --reason completed`).
+- **Bug is still open** (deliberately deferred or unresolved): the issue
+  stays open, the body describes the current state + why it's open.
+- **Language: English** (title + body) — the issues were deliberately
+  translated to English and are meant to stay that way (since
+  2026-07-26 this applies project-wide to commit messages and code too,
+  see below anyway).
+- Cross-references between related issues as previously used between
+  bug entries (e.g. "closes what Bug 40 left open" with a link to the
+  issue number).
 
-**Historie nachschlagen:** in den GitHub Issues suchen/filtern (offen vs.
-geschlossen, Label, Volltext), nicht in einer lokalen Datei. **Achtung:**
-die alte „Bug NN"-Nummer aus der Zeit vor der Migration entspricht
-**NICHT** zuverlässig derselben Issue-Nummer (z. B. ist „Bug 40"
-tatsächlich Issue #41 — eine dazwischenliegende Notiz-Überschrift ohne
-Bug-Nummer hat die Zählung verschoben, und mehrere Bugs wurden teils zu
-einem einzigen Issue zusammengefasst, z. B. „Bugs 64–65" inkl. der darin
-eingebetteten Bugs 66–71 als EIN Issue). Immer per Titel suchen
-(`gh issue list --repo subnix-work/tinox --state all --search "Bug 40"`),
-nicht per angenommener Nummer.
+**Looking up history:** search/filter in the GitHub issues (open vs.
+closed, label, full text), not in a local file. **Careful:** the old
+"Bug NN" number from before the migration does **NOT** reliably match
+the same issue number (e.g. "Bug 40" is actually issue #41 — an
+in-between note heading without a bug number shifted the count, and
+several bugs were sometimes merged into a single issue, e.g. "Bugs
+64–65" including the embedded bugs 66–71 as ONE issue). Always search
+by title (`gh issue list --repo subnix-work/tinox --state all --search
+"Bug 40"`), not by assumed number.
 
-## Kernphilosophie (aus 70+ dokumentierten Bugs destilliert)
+## Core Philosophy (distilled from 70+ documented bugs)
 
-- **Kein Silent-Garbage.** Jeder Fehlerfall bekommt einen harten,
-  sichtbaren Fehler statt stiller Datenkorruption oder eines leisen
-  Default-Werts. Im Zweifel: hart abbrechen mit klarer Meldung statt
-  „funktioniert meistens schon irgendwie". Das ist die mit Abstand
-  häufigste Root-Cause-Kategorie im gesamten Bug-Log.
-- **Gegen echte, unabhängige Systeme verifizieren, nicht nur
-  selbstkonsistent testen.** Simulierte Broker/Server-Tests (via
-  `spawn`/`await`) sind nötig und gut, finden aber strukturell KEINE
-  Bugs, bei denen die eigene Implementierung mit sich selbst konsistent,
-  aber falsch ist (z. B. Bug 70/71: `initial-delivery-count`-Pflichtfeld
-  und `amqp-value`-vs-`data`-Kodierung wurden nur durch Live-Tests gegen
-  echtes RabbitMQ bzw. einen unabhängigen Python-Client gefunden). Bei
-  Netzwerk-/Protokoll-Features: wenn irgend möglich, zusätzlich gegen
-  eine echte, fremde Implementierung verifizieren.
-- **Gezielt statt pauschal fixen.** Bei einem gefundenen Bug den
-  kleinstmöglichen, gut abgegrenzten Fix wählen statt einen größeren,
-  riskanteren Umbau zu erzwingen — auch wenn der „saubere" Umbau
-  theoretisch reizvoll wäre. Bekannte, dokumentierte Design-Grenzen
-  (offene Issues) sind ein akzeptables Ergebnis, wenn der vollständige
-  Fix unverhältnismäßig invasiv wäre.
-- **Bevor ein „offener" Punkt angegangen wird: prüfen, ob nicht schon
-  ein SPÄTERER Fix ihn geschlossen hat.** Mehrfach in der Historie stand
-  „noch offen" in einem Eintrag, der bereits durch den direkt folgenden
-  Eintrag im selben Log erledigt war (z. B. Bug 35s Restschwäche →
-  gefixt in Bug 40; ein `.toString()`-Fund bei Bug 38 → gefixt in Bug
-  39). Erst per Repro nachstellen, dann Zeit investieren.
+- **No silent garbage.** Every error case gets a hard, visible failure
+  instead of silent data corruption or a quiet default value. When in
+  doubt: abort hard with a clear message instead of "mostly works
+  somehow". This is by far the most common root-cause category across
+  the whole bug log.
+- **Verify against real, independent systems, not just
+  self-consistent tests.** Simulated broker/server tests (via
+  `spawn`/`await`) are necessary and good, but structurally find NO
+  bugs where the implementation is self-consistent but wrong (e.g. bug
+  70/71: the `initial-delivery-count` mandatory field and the
+  `amqp-value`-vs-`data` encoding were only found through live tests
+  against real RabbitMQ and an independent Python client). For
+  network/protocol features: whenever at all possible, additionally
+  verify against a real, third-party implementation.
+- **Fix narrowly, not broadly.** For a found bug, choose the smallest,
+  well-scoped fix instead of forcing a larger, riskier rewrite — even
+  if the "clean" rewrite would be theoretically appealing. Known,
+  documented design limits (open issues) are an acceptable outcome
+  when the full fix would be disproportionately invasive.
+- **Before tackling an "open" item: check whether a LATER fix already
+  closed it.** Several times in the history, an entry said "still
+  open" when it had already been resolved by the very next entry in
+  the same log (e.g. Bug 35's remaining weakness → fixed in Bug 40; a
+  `.toString()` finding in Bug 38 → fixed in Bug 39). Reproduce first,
+  then invest time.
 
 ## Design preference: annotations over manual boilerplate
 
@@ -92,190 +91,191 @@ whole point is to show the manual/low-level mechanism itself.
 
 ## Build & Test
 
-- `make check` (clippy + Unit-Tests + e2e/matrix/boundary/stdlib_smoke
-  doppelt + Dogfood inkl. `jgrep-tinox`) muss vor jedem Commit komplett
-  grün sein — dauert 15–25 Minuten. Im Hintergrund laufen lassen
-  (`nohup ... & disown`, Log-Datei pollen), nicht blockierend abwarten.
-  Ein Fehlschlag ist erstmal eine ECHTE Regression, keine angenommene
-  Flakiness — aber: reine Bind-/Port-Fehler in E2E-Tests können durch
-  Port-Kollisionen zwischen zwei Testdateien entstehen (schon einmal
-  passiert), das lohnt einen kurzen `grep -rn "httpServerCreate(4" tests/`
-  Check, bevor man es als „nur flaky" abtut.
-- `make asan` (AddressSanitizer, `-DTINOX_NO_GC`) und `make checked`
-  (Heap-Kind-Registry, `-DTINOX_CHECKED`) sind NICHT Teil von
-  `make check`, aber sinnvoll bei Verdacht auf Speicherfehler/Dispatch-
-  Bugs auf falschem Heap-Objekt-Typ — laut Makefile-Kommentar für
-  wöchentliche/Vor-Release-Läufe gedacht.
-- Neue e2e-Tests unter `tests/e2e/*.tnx` mit `// expect:`-Direktiven
-  (Zeile-für-Zeile-Abgleich der stdout-Ausgabe). Bei Tests, die einen
-  Port binden: einen tatsächlich freien Port wählen (`grep -rn
-  "httpServerCreate(4" tests/e2e/*.tnx examples/*.tnx` zeigt belegte).
-- Tests, die `spawn`/`await` nutzen (simulierter Broker/Server via
-  Loopback), 15–40× stabil wiederholen, bevor sie als grün gelten — die
-  Async-Runtime hatte mehrere zeitabhängige Bugs (Bug 68 u. a.), die nur
-  bei wiederholten Läufen auffielen.
-- **Seit 2026-07-26: Commit-Messages UND Code (inkl. Kommentare, Bezeichner,
-  Doc-Strings) sind auf Englisch** — sowohl in diesem Repo als auch in
-  Downstream-Projekten wie jgrep-tinox. Ältere Commits/Kommentare bleiben
-  auf Deutsch (nicht rückwirkend ändern, nur neue Arbeit betrifft das).
-  Vorherige Konvention (Commit-Messages auf Deutsch im Stil der alten
-  bugs.md-Einträge: Root Cause, Fix, Verifiziert) ist damit abgelöst —
-  Struktur/Inhalt der Commit-Message bleibt gleich, nur die Sprache wechselt.
-- **`docs.html` (Deutsch) und `docs_en.html` (Englisch) sind bewusst
-  parallel gepflegte Dubletten** — bei jeder neuen `<div class="mod-
-  section">` in `docs.html` (neues Stdlib-Modul) IMMER auch
-  `docs_en.html` ergänzen (Nav-Link, Übersichts-Karte falls vorhanden,
-  Modul-Sektion übersetzt). War schon einmal seit Mai wochenlang out of
-  sync (WebSocket/AMQP-091/AMQP-1.0 fehlten in der EN-Version bis
-  2026-07-25) — nicht wieder passieren lassen. Quick-Check bei Zweifel:
-  `grep -oE 'id="mod-[a-z0-9_]+"' docs.html | sort -u` gegen dieselbe
-  Zeile für `docs_en.html` diffen, muss leer sein.
+- `make check` (clippy + unit tests + e2e/matrix/boundary/stdlib_smoke
+  twice + dogfood incl. `jgrep-tinox`) must be fully green before every
+  commit — takes 15–25 minutes. Run it in the background (`nohup ... &
+  disown`, poll the log file), don't wait on it blockingly. A failure is
+  a REAL regression by default, not assumed flakiness — but: plain
+  bind/port errors in e2e tests can arise from port collisions between
+  two test files (has happened before), a quick `grep -rn
+  "httpServerCreate(4" tests/` check is worth it before writing it off
+  as "just flaky".
+- `make asan` (AddressSanitizer, `-DTINOX_NO_GC`) and `make checked`
+  (heap-kind registry, `-DTINOX_CHECKED`) are NOT part of `make check`,
+  but useful when memory errors/dispatch bugs on the wrong heap-object
+  type are suspected — per the Makefile comment, intended for
+  weekly/pre-release runs.
+- New e2e tests under `tests/e2e/*.tnx` with `// expect:` directives
+  (line-by-line comparison of stdout output). For tests that bind a
+  port: pick an actually free port (`grep -rn "httpServerCreate(4"
+  tests/e2e/*.tnx examples/*.tnx` shows the ones already in use).
+- Tests that use `spawn`/`await` (simulated broker/server via loopback)
+  should be run 15–40× repeatedly before being trusted as green — the
+  async runtime has had several timing-dependent bugs (Bug 68 among
+  others) that only showed up on repeated runs.
+- **Since 2026-07-26: commit messages AND code (incl. comments,
+  identifiers, doc strings) are in English** — both in this repo and in
+  downstream projects like jgrep-tinox. Older commits/comments stay in
+  German (not changed retroactively, only new work is affected). The
+  previous convention (commit messages in German in the style of the
+  old bugs.md entries: Root Cause, Fix, Verified) is thereby replaced —
+  the structure/content of the commit message stays the same, only the
+  language changes.
+- **`docs.html` (German) and `docs_en.html` (English) are deliberately
+  maintained as parallel duplicates** — whenever a new `<div
+  class="mod-section">` is added to `docs.html` (a new stdlib module),
+  ALWAYS also add it to `docs_en.html` (nav link, overview card if
+  present, translated module section). This was already out of sync
+  for weeks since May once (WebSocket/AMQP-091/AMQP-1.0 were missing
+  from the EN version until 2026-07-25) — don't let it happen again.
+  Quick check when in doubt: `grep -oE 'id="mod-[a-z0-9_]+"' docs.html
+  | sort -u` diffed against the same line for `docs_en.html`, must be
+  empty.
 
-## Dateistruktur: eine Klasse/Interface/Enum pro Datei
+## File Structure: One Class/Interface/Enum per File
 
-Seit 2026-07-26 gilt hart compilerseitig erzwungen (harter Compile-Fehler,
-kein Lint/Warning): **jede `.tnx`-Datei enthält höchstens EINE
-Top-Level-`class`/`interface`/`enum`-Deklaration**, und falls sie eine
-enthält, MUSS der Dateiname exakt (case-sensitive) dem Typnamen entsprechen
-(`class Player` → zwingend `Player.tnx`). Dateien ganz ohne Typ (reine
-`fn`/`main`-Skripte, z. B. die meisten `tests/e2e/*.tnx`) sind davon
-unberührt — die Regel ist „höchstens eine", nicht „genau eine".
+Since 2026-07-26 this is hard-enforced at the compiler level (a hard
+compile error, not a lint/warning): **every `.tnx` file contains at
+most ONE top-level `class`/`interface`/`enum` declaration**, and if it
+contains one, the file name MUST exactly (case-sensitively) match the
+type name (`class Player` → must be `Player.tnx`). Files with no type
+at all (plain `fn`/`main` scripts, e.g. most `tests/e2e/*.tnx`) are
+unaffected — the rule is "at most one", not "exactly one".
 
-- **Module mit mehreren Typen werden zu Verzeichnissen.** `import
-  tinox.core.amqp10;` (Namespace-Segment bleibt unverändert, z. B.
-  weiterhin klein geschrieben) löst jetzt auf ein Verzeichnis
-  `crates/tinox-core/amqp10/` auf, das pro Typ genau eine
-  `<TypeName>.tnx`-Datei enthält (`Amqp10Connection.tnx`,
-  `Amqp10Session.tnx`, …) — EIN `import`-Statement zieht weiterhin alle
-  Dateien im Verzeichnis rein, für Aufrufer ändert sich nichts. Das gilt
-  einheitlich für Stdlib- UND projektlokale Imports (`import
-  mymodule.foo;` funktioniert identisch mit einem `foo/`-Verzeichnis statt
-  einer `foo.tnx`-Datei) — resolution in `resolve_imports()`
-  (`crates/tinox/src/main.rs`): erst `<name>.tnx` (Legacy-Einzeldatei-Fall),
-  sonst `<name>/*.tnx` (alle Dateien im Verzeichnis gemergt).
-- **Treiber-/Entry-Point-Dateien (mit `main()` oder `// expect:`-
-  Direktiven) behalten ihren Namen.** Ihre eingebetteten Typen wandern in
-  Geschwister-Dateien (flach im selben Verzeichnis oder in einem
-  Unterverzeichnis `<original-name>/`, falls Typnamen mit einer anderen
-  Datei kollidieren würden), der Treiber bekommt stattdessen
-  `import <TypeName>;`-Zeilen. So bleiben `scripts/dogfood.sh`- und
-  e2e-Harness-Pfade stabil (siehe Migration examples 2026-07-26:
-  `examples/vtable_dispatch.tnx` blieb Entry-Point, seine drei Typen
-  wanderten nach `examples/vtable_dispatch/*.tnx`).
-- **Achtung Geschwister-Imports innerhalb desselben (Unter-)Verzeichnisses:
-  IMMER der kurze, unqualifizierte Name** (`import IDrawable;`), NIEMALS
-  der volle gepunktete Pfad wie ihn der AUSSENSTEHENDE Treiber benutzt
-  (`import vtable_dispatch.IDrawable;`) — der volle Pfad ist relativ zum
-  Verzeichnis der IMPORTIERENDEN Datei, würde also aus dem Verzeichnis
-  selbst heraus eine nicht existierende doppelt verschachtelte
-  Unterordnerebene suchen (`vtable_dispatch/vtable_dispatch/IDrawable.tnx`)
-  und mit „file not found" fehlschlagen.
-- **Fund bei der Migration (2026-07-26, betraf faktisch jedes Programm mit
-  `main()`, das eine importierte Klasse gegen ein ebenfalls importiertes
-  Interface hochcastet):** `resolve_imports()` hängte importierte
-  Deklarationen ans ENDE der Decl-Liste an, aber der Typechecker füllt
-  `interface_implementations` erst lazy beim sequenziellen Durchlauf
-  (`check_class` in `tinox-typecheck/src/lib.rs`) — stand `main()` (aus der
-  Treiber-Datei) vor den importierten Interface-/Klassen-Deklarationen,
-  war die Implements-Tabelle beim Prüfen von `main()`s Body noch leer
-  („expected IDrawable, found Circle"). Fix: importierte Deklarationen
-  werden jetzt VOR die eigenen Top-Level-Deklarationen der importierenden
-  Datei gestellt (`resolve_imports` sammelt sie separat und prependt statt
-  zu appenden). Bei jedem künftigen Umbau der Import-Merge-Logik: dieses
-  Ordering-Invariant nicht brechen, sonst bricht genau dieses Muster
-  wieder lautlos (Silent-Garbage-Falle: kompiliert bei Single-File-
-  Programmen unverändert weiter, nur Mehrdatei-Programme mit
-  Interface-Upcast sind betroffen).
+- **Modules with multiple types become directories.** `import
+  tinox.core.amqp10;` (the namespace segment stays unchanged, e.g.
+  still lowercase) now resolves to a directory
+  `crates/tinox-core/amqp10/` that contains exactly one
+  `<TypeName>.tnx` file per type (`Amqp10Connection.tnx`,
+  `Amqp10Session.tnx`, …) — ONE `import` statement still pulls in every
+  file in the directory, nothing changes for callers. This applies
+  uniformly to both stdlib AND project-local imports (`import
+  mymodule.foo;` works identically with a `foo/` directory instead of a
+  `foo.tnx` file) — resolved in `resolve_imports()`
+  (`crates/tinox/src/main.rs`): first `<name>.tnx` (legacy single-file
+  case), otherwise `<name>/*.tnx` (all files in the directory merged).
+- **Driver/entry-point files (with `main()` or `// expect:`
+  directives) keep their name.** Their embedded types move into sibling
+  files (flat in the same directory, or in a subdirectory
+  `<original-name>/` if type names would collide with another file),
+  the driver instead gets `import <TypeName>;` lines. This keeps
+  `scripts/dogfood.sh` and e2e-harness paths stable (see the 2026-07-26
+  migration example: `examples/vtable_dispatch.tnx` stayed the entry
+  point, its three types moved to `examples/vtable_dispatch/*.tnx`).
+- **Watch out for sibling imports within the same (sub)directory:
+  ALWAYS use the short, unqualified name** (`import IDrawable;`),
+  NEVER the full dotted path the OUTER driver uses (`import
+  vtable_dispatch.IDrawable;`) — the full path is relative to the
+  directory of the IMPORTING file, so from inside the directory itself
+  it would look for a non-existent, doubly-nested subfolder level
+  (`vtable_dispatch/vtable_dispatch/IDrawable.tnx`) and fail with "file
+  not found".
+- **Finding from the migration (2026-07-26, affected effectively every
+  program with a `main()` that upcasts an imported class against an
+  equally imported interface):** `resolve_imports()` appended imported
+  declarations to the END of the decl list, but the typechecker only
+  fills `interface_implementations` lazily during the sequential pass
+  (`check_class` in `tinox-typecheck/src/lib.rs`) — if `main()` (from
+  the driver file) came before the imported interface/class
+  declarations, the implements table was still empty when checking
+  `main()`'s body ("expected IDrawable, found Circle"). Fix: imported
+  declarations are now placed BEFORE the importing file's own
+  top-level declarations (`resolve_imports` collects them separately
+  and prepends instead of appending). For any future rework of the
+  import-merge logic: don't break this ordering invariant, or this
+  exact pattern breaks again silently (a silent-garbage trap: compiles
+  unchanged for single-file programs, only multi-file programs with an
+  interface upcast are affected).
 
-## Pflicht-Entry-Point: `class Main` + CDI-artiger Bootstrap (seit 2026-08-09)
+## Mandatory Entry Point: `class Main` + CDI-Style Bootstrap (since 2026-08-09)
 
-Seit 2026-08-09 gilt hart compilerseitig erzwungen (`compile_file` in
-`crates/tinox/src/main.rs`, `has_class_named_main`): **jedes über `tinox
-build`/`tinox run` gebaute Programm braucht `class Main { fnc main() ->
-Int32 }`** in der Entry-Datei — sonst harter Compile-Fehler statt des
-alten, verwirrenden „undefined reference to tinox_main"-Linker-Fehlers.
-Ausgenommen sind `@Command`-CLI-Programme (eigenes Argv-Dispatch, eigenes
-generiertes `main`) und `tinox test` (eigener Test-Runner-Entry) — beide
-unverändert. `tinox check` prüft nur Typen, ruft nie Codegen auf, ist also
-ebenfalls nicht betroffen.
+Since 2026-08-09 this is hard-enforced at the compiler level
+(`compile_file` in `crates/tinox/src/main.rs`, `has_class_named_main`):
+**every program built via `tinox build`/`tinox run` needs `class Main {
+fnc main() -> Int32 }`** in the entry file — otherwise a hard compile
+error instead of the old, confusing "undefined reference to
+tinox_main" linker error. Exempt are `@Command` CLI programs (their
+own argv dispatch, their own generated `main`) and `tinox test` (its
+own test-runner entry) — both unchanged. `tinox check` only checks
+types and never invokes codegen, so it's unaffected too.
 
-**Warum:** Vorher generierte jede Auto-Run-Annotation (`@Http3RestController`/
+**Why:** previously, every auto-run annotation (`@Http3RestController`/
 `@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`/plain `@GET`/
-`@Path`) ihr eigenes `@tinox_main` — „wer zuerst dran ist, gewinnt"
-(`has_main`-Flag), und `class Main` gewann dabei IMMER zuerst (lief als
-erstes in `gen()`), wodurch andere Annotationen im selben Programm
-stillschweigend NICHT verdrahtet wurden — keine Fehlermeldung, die Routen
-liefen einfach nie. Jetzt läuft dafür ein einziger, immer gleich
-aufgebauter Bootstrap (`emit_tinox_main_bootstrap` in
-`crates/tinox-codegen/src/codegen.rs`): spawnt jede im Programm gefundene
-Auto-Run-Komponente auf einem eigenen echten Thread (`tinox_task_spawn`,
-derselbe Mechanismus wie `spawn`), ruft dann `Main.main()` auf und joint
-danach alle gespawnten Threads (blockt für immer, falls welche laufen —
-genau wie ein einzelner direkter `.listen()`-Aufruf das vorher tat).
+`@Path`) generated its own `@tinox_main` — "whoever runs first wins"
+(the `has_main` flag), and `class Main` ALWAYS won first (it ran first
+in `gen()`), which meant other annotations in the same program were
+silently NOT wired up — no error message, the routes simply never ran.
+Now there's a single, uniformly structured bootstrap
+(`emit_tinox_main_bootstrap` in `crates/tinox-codegen/src/codegen.rs`)
+instead: it spawns every auto-run component found in the program on its
+own real thread (`tinox_task_spawn`, the same mechanism `spawn` uses),
+then calls `Main.main()`, and afterward joins every spawned thread
+(blocks forever if any are running — exactly like a single, direct
+`.listen()` call did before).
 
-- **Cross-Kind-Kombinationen sind jetzt erlaubt** (vorher hart in
-  `main.rs` blockiert): `@Http3RestController` + `@WebsocketEndpoint`/
-  `@Amqp10Consumer`/`@Amqp091Consumer` im selben Programm, oder eine
-  beliebige Kombination davon zusammen mit `class Main` — sie konkurrieren
-  nicht mehr um dasselbe `@tinox_main`-Symbol.
-- **Seit 2026-08-09 (Phase 4) auch mehrere Instanzen DERSELBEN Art
-  erlaubt** für `@WebsocketEndpoint`/`@Amqp10Consumer`/`@Amqp091Consumer`
-  (nicht für `@Http3RestController` — der routet weiterhin ALLE `@GET`/…
-  im Programm auf einen einzigen Server, mehrere Instanzen wären
-  architektonisch mehrdeutig, bewusst out of scope). `emit_ws_code`/
-  `emit_amqp10_consumer_code`/`emit_amqp091_consumer_code` iterieren jetzt
-  über alle gefundenen Klassen statt hart `[0]` zu lesen und erzeugen pro
-  Instanz ein eindeutig benanntes `__tinox_run_<kind>_<idx>()`. Für
-  `@WebsocketEndpoint` prüft `compile_file` zusätzlich auf doppelt
-  belegte Ports (jeder bindet einen eigenen Listening-Socket — zwei auf
-  demselben Port wäre sonst ein stiller Bind-Fehlschlag erst zur
-  Laufzeit); für die beiden AMQP-Consumer-Arten gibt es KEINEN
-  Port-Kollisions-Check, da mehrere Consumer gegen denselben Broker/Port
-  mit unterschiedlichen Queues/Adressen der normale, erwartete Fall ist.
-- **Neue Concurrency-Falle, die es vorher strukturell nicht geben
-  konnte:** Lief vorher immer nur EINE Auto-Run-Art pro Prozess, war ein
-  über `@ApplicationComponent` geteiltes Singleton implizit sicher (nur
-  eine Event-Loop fasste es je an). Laufen jetzt z. B. ein REST-Controller
-  UND ein WebSocket-Endpoint gleichzeitig auf echten, unabhängigen
-  Threads, wird ein zwischen beiden geteiltes Singleton-Feld zum ersten
-  Mal echt nebenläufig zugegriffen. Der Compiler synchronisiert das NICHT
-  automatisch (unverhältnismäßig invasiv für v1) — bei geteiltem
-  veränderlichem Zustand über Komponenten-Arten hinweg manuell
-  synchronisieren (`tinox.core.semaphore`).
-- **Migration der Beispiele (2026-08-09):** Annotation-only-Dateien ohne
-  eigenes `class Main` (`examples/rest_minimal`, `examples/rest_with_mini`)
-  haben ein triviales `Main.tnx` bekommen; flach in `examples/` liegende
-  Einzeldatei-Demos ohne Verzeichnis (`UserController.tnx`,
-  `EchoEndpoint.tnx`, `DemoConsumer.tnx`, `DemoConsumer091.tnx`) sind je in
-  ein eigenes Verzeichnis mit `Main.tnx` gewandert (`examples/rest_auto/`,
-  `examples/ws_echo_annotated/`, `examples/amqp10_consumer_annotated/`,
-  `examples/amqp091_consumer_annotated/`). `examples/http3_rest_api/src/
-  TaskController.tnx` konnte kein eigenes `Main.tnx` neben dem
-  bestehenden imperativen `src/Main.tnx` bekommen (Namenskollision) und
-  wurde stattdessen in ein eigenes Geschwister-Beispiel
-  `examples/http3_rest_api_annotated/` verschoben. `scripts/dogfood.sh`
-  und die betroffenen `crates/tinox/tests/*.rs`-Pfade wurden entsprechend
-  angepasst.
+- **Cross-kind combinations are now allowed** (previously hard-blocked
+  in `main.rs`): `@Http3RestController` + `@WebsocketEndpoint`/
+  `@Amqp10Consumer`/`@Amqp091Consumer` in the same program, or any
+  combination of those together with `class Main` — they no longer
+  compete for the same `@tinox_main` symbol.
+- **Since 2026-08-09 (phase 4), multiple instances of the SAME kind are
+  also allowed** for `@WebsocketEndpoint`/`@Amqp10Consumer`/
+  `@Amqp091Consumer` (not for `@Http3RestController` — it still routes
+  ALL `@GET`/… in the program to a single server, multiple instances
+  would be architecturally ambiguous, deliberately out of scope).
+  `emit_ws_code`/`emit_amqp10_consumer_code`/
+  `emit_amqp091_consumer_code` now iterate over every class found
+  instead of hard-reading `[0]`, and generate a uniquely named
+  `__tinox_run_<kind>_<idx>()` per instance. For `@WebsocketEndpoint`,
+  `compile_file` additionally checks for duplicate ports (each one
+  binds its own listening socket — two on the same port would
+  otherwise be a silent bind failure only surfacing at runtime); for
+  the two AMQP consumer kinds there is NO port-collision check, since
+  multiple consumers against the same broker/port with different
+  queues/addresses is the normal, expected case.
+- **New concurrency trap that couldn't structurally exist before:**
+  previously, only ONE auto-run kind ever ran per process, so a
+  singleton shared via `@ApplicationComponent` was implicitly safe
+  (only one event loop ever touched it). Now that, say, a REST
+  controller AND a WebSocket endpoint can run at the same time on
+  real, independent threads, a singleton field shared between the two
+  is accessed genuinely concurrently for the first time. The compiler
+  does NOT synchronize this automatically (disproportionately invasive
+  for v1) — synchronize manually (`tinox.core.semaphore`) when sharing
+  mutable state across component kinds.
+- **Example migration (2026-08-09):** annotation-only files without
+  their own `class Main` (`examples/rest_minimal`,
+  `examples/rest_with_mini`) got a trivial `Main.tnx`; single-file
+  demos sitting flat in `examples/` with no directory
+  (`UserController.tnx`, `EchoEndpoint.tnx`, `DemoConsumer.tnx`,
+  `DemoConsumer091.tnx`) each moved into their own directory with a
+  `Main.tnx` (`examples/rest_auto/`, `examples/ws_echo_annotated/`,
+  `examples/amqp10_consumer_annotated/`,
+  `examples/amqp091_consumer_annotated/`). `examples/http3_rest_api/
+  src/TaskController.tnx` couldn't get its own `Main.tnx` next to the
+  existing imperative `src/Main.tnx` (name collision), so it moved
+  into its own sibling example instead,
+  `examples/http3_rest_api_annotated/`. `scripts/dogfood.sh` and the
+  affected `crates/tinox/tests/*.rs` paths were updated accordingly.
 
-## Runtime-Eigenheiten (nicht offensichtlich aus dem Code)
+## Runtime Quirks (not obvious from the code)
 
-- **`spawn` startet einen echten POSIX-Thread** (`pthread_create` in
-  `tinox_task_spawn`, runtime.c), keine kompilierte Coroutine-State-
-  Machine — echte Parallelität, kein kooperatives Scheduling.
-- **Der Boehm-GC nutzt `SIGPWR` als „Stop the world"-Signal** auf diesem
-  System (per `gdb` verifiziert, nicht das oft angenommene `SIGRTMIN`).
-  Jeder blockierende Syscall (`recv`/`send`/…) in Runtime-Code, der
-  während einer GC-Kollision laufen könnte, MUSS auf `EINTR` mit Retry
-  reagieren (bereits so in `conn_recv`/`conn_send` — Vorbild für neuen
-  blockierenden I/O-Code).
-- **Debugging-Technik für schwer reproduzierbare Runtime-Bugs:**
-  `coredumpctl` liefert in dieser Umgebung keine Dumps (Sandbox-
-  Restriktion). `gdb` mit conditional breakpoints auf heiße Pfade
-  (z. B. `tinox_array_get`, wird pro Byte-Zugriff aufgerufen) ist
-  unbrauchbar langsam; `gdb` muss außerdem `handle SIGPWR nostop
-  noprint pass` bekommen, sonst stoppt es ständig am harmlosen
-  GC-Suspend-Signal. Stattdessen: temporären `errno`-Debug-Print bzw.
-  einen minimalen `signal(SIGSEGV, handler)` mit `backtrace()`/
-  `backtrace_symbols_fd()` in `runtime.c` einbauen, dann die rohen
-  `[0x...]`-Adressen aus dem Log mit `addr2line -f -C -e <binary>
-  <adresse>` auflösen. Nach dem Debuggen wieder entfernen.
+- **`spawn` starts a real POSIX thread** (`pthread_create` in
+  `tinox_task_spawn`, runtime.c), not a compiled coroutine state
+  machine — real parallelism, no cooperative scheduling.
+- **The Boehm GC uses `SIGPWR` as its "stop the world" signal** on this
+  system (verified via `gdb`, not the often-assumed `SIGRTMIN`). Every
+  blocking syscall (`recv`/`send`/…) in runtime code that could run
+  during a GC collision MUST retry on `EINTR` (already done this way in
+  `conn_recv`/`conn_send` — the template for new blocking I/O code).
+- **Debugging technique for hard-to-reproduce runtime bugs:**
+  `coredumpctl` doesn't produce dumps in this environment (sandbox
+  restriction). `gdb` with conditional breakpoints on hot paths (e.g.
+  `tinox_array_get`, called on every byte access) is unusably slow;
+  `gdb` also needs `handle SIGPWR nostop noprint pass`, otherwise it
+  keeps stopping on the harmless GC-suspend signal. Instead: add a
+  temporary `errno` debug print, or a minimal `signal(SIGSEGV,
+  handler)` with `backtrace()`/`backtrace_symbols_fd()` in `runtime.c`,
+  then resolve the raw `[0x...]` addresses from the log with
+  `addr2line -f -C -e <binary> <address>`. Remove again after
+  debugging.

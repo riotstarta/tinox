@@ -5,10 +5,10 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Generische Hülle eines METHOD-Frame-Payloads (§4.2.4): class-id +
-     * method-id + Argument-Bytes. Die konkrete Argument-Reihenfolge pro
-     * Methode (z. B. connection.start-ok) baut/liest Phase 3 über einen
-     * frischen AmqpWriter091/AmqpReader091 auf `args`.
+     * Generic wrapper for a METHOD frame payload (§4.2.4): class-id +
+     * method-id + argument bytes. The concrete argument order per
+     * method (e.g. connection.start-ok) is built/read via a fresh
+     * AmqpWriter091/AmqpReader091 over `args`.
      */
     class AmqpMethodFrame091
     {

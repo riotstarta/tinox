@@ -1,15 +1,15 @@
-// amqps:// (AMQP-0-9-1 über TLS) — TLS-Variante von amqp_publish_consume.tnx.
-// Braucht einen Broker mit aktiviertem TLS-Listener (Port 5671), z. B. eine
-// RabbitMQ-Instanz mit RABBITMQ_SSL_CERTFILE/KEYFILE/CACERTFILE konfiguriert.
-// OpenSSL ist standardmäßig gelinkt, kein Extra-Build-Flag nötig.
+// amqps:// (AMQP-0-9-1 over TLS) -- TLS variant of amqp_publish_consume.
+// Needs a broker with a TLS listener enabled (port 5671), e.g. a RabbitMQ
+// instance configured with RABBITMQ_SSL_CERTFILE/KEYFILE/CACERTFILE.
+// OpenSSL is linked by default, no extra build flag needed.
 //
-// verify=true (unten) prüft die Broker-Zertifikatskette + den Hostnamen
-// gegen die System-CA-Stores — für ein selbstsigniertes Testzertifikat
-// (ohne eigene CA im System-Trust-Store) auf false setzen, sonst schlägt
-// der Handshake mit "certificate verify failed" fehl (das ist beabsichtigt,
-// kein Bug — s. bugs.md).
+// verify=true (below) checks the broker's certificate chain + hostname
+// against the system CA stores -- set it to false for a self-signed test
+// certificate (without its own CA in the system trust store), otherwise
+// the handshake fails with "certificate verify failed" (that's intended,
+// not a bug).
 //
-// Start:  tinox run examples/amqps_publish_consume.tnx
+// Start:  tinox run examples/amqps_publish_consume/Main.tnx
 
 import tinox.core.amqp091;
 
@@ -18,40 +18,40 @@ class Main
     fnc main() -> Int32 {
         let conn = AmqpConnection091::connectTls("127.0.0.1", 5671, "/", "guest", "guest", true);
         if conn.conn <= 0 {
-            println("Verbindung fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
         let ch = AmqpChannel091::open(conn);
         if ch.chanId <= 0 {
-            println("Channel fehlgeschlagen: " + ch.errorMessage);
+            println("channel failed: " + ch.errorMessage);
             return 1;
         }
 
         let queueName = ch.declareQueue("tinox-tls-demo-queue", true, false, false);
         if queueName.len() == 0 {
-            println("queue.declare fehlgeschlagen: " + ch.errorMessage);
+            println("queue.declare failed: " + ch.errorMessage);
             return 1;
         }
-        println("Queue: " + queueName);
+        println("queue: " + queueName);
 
         ch.qos(10);
 
         var i: Int64 = 0;
         while i < 3 {
             var body: List<Int64> = [];
-            let text = "Nachricht ueber TLS #" + i.toString();
+            let text = "message over TLS #" + i.toString();
             for j in 0..text.len() {
                 body.push(text.charCodeAt(j) & 0xFF);
             }
             ch.publish("", queueName, body, "text/plain");
-            println("gesendet: " + text);
+            println("sent: " + text);
             i = i + 1;
         }
 
         let consumerTag = ch.consume(queueName);
         if consumerTag.len() == 0 {
-            println("basic.consume fehlgeschlagen: " + ch.errorMessage);
+            println("basic.consume failed: " + ch.errorMessage);
             return 1;
         }
 
@@ -59,20 +59,20 @@ class Main
         while received < 3 {
             let m = ch.nextMessage();
             if !m.ok {
-                println("Empfang fehlgeschlagen: " + m.errorMessage);
+                println("receive failed: " + m.errorMessage);
                 return 1;
             }
             var text: String = "";
             for j in 0..m.body.len() {
                 text = text + fromCharCode(m.body[j]);
             }
-            println("empfangen: " + text + " (Tag " + m.deliveryTag.toString() + ")");
+            println("received: " + text + " (tag " + m.deliveryTag.toString() + ")");
             ch.ack(m.deliveryTag);
             received = received + 1;
         }
 
         conn.close();
-        println("fertig");
+        println("done");
         return 0;
     }
 }

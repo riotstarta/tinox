@@ -10,23 +10,23 @@ namespace tinox.core.crypto
     class Crypto
     {
         /*
-         * Kryptografisch sichere Zufallsbytes via OpenSSL RAND_bytes —
-         * issue #131 (OAuth2 `state`/PKCE `code_verifier`). Bewusst
-         * getrennt von `Random`/`Crypto::generateKey` (beide letztlich
-         * `randomInt` -> `srandom(time^getpid)`, vorhersagbar): ein
-         * vorhersagbarer `state`-Wert bricht die CSRF-Absicherung des
-         * OAuth2-Handshakes, ein vorhersagbarer PKCE-`code_verifier`
-         * bricht PKCE komplett. Wirft hart statt eines stillen zu
-         * kurzen/leeren Ergebnisses (Runtime ohne TLS/OpenSSL gebaut,
-         * oder RAND_bytes selbst fehlgeschlagen) — kein Silent-Garbage
-         * bei einer sicherheitskritischen Zufallsquelle.
+         * Cryptographically secure random bytes via OpenSSL RAND_bytes —
+         * issue #131 (OAuth2 `state`/PKCE `code_verifier`). Deliberately
+         * separate from `Random`/`Crypto::generateKey` (both ultimately
+         * `randomInt` -> `srandom(time^getpid)`, predictable): a
+         * predictable `state` value breaks the CSRF protection of the
+         * OAuth2 handshake, a predictable PKCE `code_verifier` breaks
+         * PKCE entirely. Throws hard instead of silently returning a
+         * too-short/empty result (runtime built without TLS/OpenSSL, or
+         * RAND_bytes itself failed) — no silent garbage for a
+         * security-critical randomness source.
          */
         fn secureRandomBytes(n: Int64) -> List<Int64>
         {
             let result = secureRandomBytesRaw(n);
             if result.len() != n
             {
-                throw "Crypto::secureRandomBytes fehlgeschlagen (Runtime ohne TLS/OpenSSL gebaut, oder RAND_bytes fehlgeschlagen)";
+                throw "Crypto::secureRandomBytes failed (runtime built without TLS/OpenSSL, or RAND_bytes failed)";
             }
             return result;
         }
@@ -41,8 +41,8 @@ namespace tinox.core.crypto
             return sha256Hash(data);
         }
 
-        // Nur fuer Protokoll-Kompatibilitaet (z. B. WebSocket-Handshake),
-        // nicht fuer neue kryptografische Zwecke — SHA-1 gilt als gebrochen.
+        // Only for protocol compatibility (e.g. WebSocket handshake),
+        // not for new cryptographic purposes — SHA-1 is considered broken.
         fn sha1(data: String) -> String
         {
             return sha1Hash(data);
@@ -53,36 +53,36 @@ namespace tinox.core.crypto
             return hmacSha256Hash(data, key);
         }
 
-        // AES-256-GCM (authentifizierte Verschluesselung). key ist ein
-        // beliebig langer String, wird intern per SHA-256 zu einem echten
-        // 256-Bit-Schluessel abgeleitet. Rueckgabe ist Hex-kodiert (Nonce +
-        // Ciphertext + Auth-Tag) — direkt an aesDecrypt uebergebbar.
-        // Wirft bei jedem Fehler (Runtime ohne OpenSSL gebaut) statt eines
-        // stillen leeren/falschen Ergebnisses.
+        // AES-256-GCM (authenticated encryption). key is an
+        // arbitrary-length string, internally derived into a real
+        // 256-bit key via SHA-256. The return value is hex-encoded
+        // (nonce + ciphertext + auth tag) — can be passed directly to
+        // aesDecrypt. Throws on any error (runtime built without
+        // OpenSSL) instead of a silent empty/wrong result.
         fn aesEncrypt(data: String, key: String) -> String
         {
             let result: String = aesEncryptRaw(data, key);
             if result.len() == 0
             {
-                throw "Crypto::aesEncrypt fehlgeschlagen (Runtime ohne TLS/OpenSSL gebaut?)";
+                throw "Crypto::aesEncrypt failed (runtime built without TLS/OpenSSL?)";
             }
             return result;
         }
 
-        // Wirft bei falschem Schluessel oder manipulierten/beschaedigten
-        // Daten (GCM-Authentifizierung schlaegt fehl) statt stillschweigend
-        // falschen Klartext zurueckzugeben.
+        // Throws on the wrong key or tampered/corrupted data (GCM
+        // authentication fails) instead of silently returning wrong
+        // plaintext.
         //
-        // aesDecryptRaw stellt einem echten Ergebnis ein "1" voran (auch bei
-        // leerem Klartext, z. B. aesDecrypt(aesEncrypt("", key), key)) —
-        // sonst waere ein legitim LEERER Klartext von "" als Fehler-Sentinel
-        // nicht unterscheidbar.
+        // aesDecryptRaw prepends a "1" to a real result (even for empty
+        // plaintext, e.g. aesDecrypt(aesEncrypt("", key), key)) —
+        // otherwise a legitimately EMPTY plaintext would be
+        // indistinguishable from "" as an error sentinel.
         fn aesDecrypt(data: String, key: String) -> String
         {
             let result: String = aesDecryptRaw(data, key);
             if result.len() == 0
             {
-                throw "Crypto::aesDecrypt fehlgeschlagen (falscher Schluessel, manipulierte Daten, oder Runtime ohne TLS/OpenSSL gebaut)";
+                throw "Crypto::aesDecrypt failed (wrong key, tampered data, or runtime built without TLS/OpenSSL)";
             }
             return result.substring(1, result.len());
         }

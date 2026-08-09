@@ -1,5 +1,5 @@
-// Generische statische Methoden: explizite Typargumente (deserialize<generic_static_methods>,
-// T::fromJson-Substitution) und Inferenz aus Argumenten (serialize, auch List<T>)
+// Generic static methods: explicit type arguments (deserialize<generic_static_methods>,
+// T::fromJson substitution) and inference from arguments (serialize, also List<T>)
 // expect: {"id":7,"name":"Alice"}
 // expect: 7
 // expect: Alice

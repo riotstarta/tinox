@@ -119,7 +119,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47829);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeServer(srv);

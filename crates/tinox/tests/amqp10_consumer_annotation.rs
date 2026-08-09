@@ -43,7 +43,7 @@ class Main
 fnc main() -> Int32 {
     let srv = httpServerCreate(5873);
     if srv < 0 {
-        println("bind fehlgeschlagen");
+        println("bind failed");
         return 1;
     }
     let sconn = httpServerAcceptConnHandle(srv);
@@ -83,7 +83,7 @@ fnc main() -> Int32 {
     }
     Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
 
-    // flow vom Client (Credit-Vergabe fuer grantCredit(1))
+    // flow from the client (credit grant for grantCredit(1))
     Amqp10::readFrame(sconn);
 
     let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain");

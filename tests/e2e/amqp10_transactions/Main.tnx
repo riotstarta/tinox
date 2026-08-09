@@ -1,10 +1,10 @@
-// Issue 79: AMQP 1.0 Transaktionen (txn-id, declare/discharge, §4 der
-// Transaktions-Erweiterung). Simulierter Broker (spawn) implementiert einen
-// minimalen Transaction-Coordinator: declare -> declared(txn-id), publish
-// mit TransactionalState markiert (der Broker verifiziert Deskriptor +
-// txn-id im transfer-state-Feld), discharge -> accepted. Deckt beide
-// Discharge-Ausgaenge ab (commit UND rollback) sowie ackTransactional() auf
-// der Empfangsseite.
+// Issue 79: AMQP 1.0 transactions (txn-id, declare/discharge, §4 of the
+// transactions extension). A simulated broker (spawn) implements a
+// minimal transaction coordinator: declare -> declared(txn-id), publish
+// marked with a TransactionalState (the broker verifies the descriptor +
+// txn-id in the transfer-state field), discharge -> accepted. Covers
+// both discharge outcomes (commit AND rollback) as well as
+// ackTransactional() on the receiving side.
 // expect: ok-connect
 // expect: broker-saw-declare:true
 // expect: ok-declared
@@ -25,14 +25,14 @@ class Main
     async fnc txnBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation (PLAIN) ---
+        // --- SASL header + negotiation (PLAIN) ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]));
         Amqp10::readFrame(sconn);
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]));
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -52,32 +52,33 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
-        // --- attach (Coordinator-Link) / attach-ok ---
+        // --- attach (coordinator link) / attach-ok ---
         let fAttachCoord = Amqp10::readFrame(sconn);
         let pAttachCoord = Amqp10::decodePerformative(fAttachCoord.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachCoord.fields));
 
-        // --- attach (normaler Sender-Link fuer die transaktionale Nachricht) / attach-ok + flow ---
+        // --- attach (normal sender link for the transactional message) / attach-ok + flow ---
         let fAttachPub = Amqp10::readFrame(sconn);
         let pAttachPub = Amqp10::decodePerformative(fAttachPub.body);
         var pubHandle: Int64 = -1;
         if pAttachPub.fields.len() > 1 { match pAttachPub.fields[1] { UIntVal(n) => { pubHandle = n; } _ => {} } }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachPub.fields));
-        // flow fuer pubLink wird bewusst NICHT hier, direkt nach dem attach-ok,
-        // gesendet: der Client liest ihn erst beim spaeteren publishTransactional()
-        // (awaitFlow() intern) — waere er schon jetzt unterwegs, laege er beim
-        // naechsten readFrame() (declare()s Antwort erwarten) noch unGELESEN im
-        // Socket-Puffer und wuerde faelschlich ALS die declared-disposition
-        // gelesen (dieselbe Falle wie schon bei Issue 78s Test gefunden — hier
-        // vorab vermieden statt erst durch einen Fehlschlag entdeckt).
+        // The flow for pubLink is deliberately NOT sent here, right after the
+        // attach-ok: the client only reads it later, during
+        // publishTransactional() (awaitFlow() internally) — if it were sent
+        // now already, it would still be UNREAD in the socket buffer at the
+        // next readFrame() (expecting declare()'s response) and would be
+        // wrongly read AS the declared disposition (the same trap already
+        // found in Issue 78's test — avoided here proactively instead of
+        // being discovered only through a failure).
 
-        // --- declare (transfer auf Coordinator-Link) empfangen ---
+        // --- Receive declare (transfer on the coordinator link) ---
         let fDeclare = Amqp10::readFrame(sconn);
         let pDeclareXfer = Amqp10::decodePerformative(fDeclare.body);
         var declareDeliveryId: Int64 = -1;
         if pDeclareXfer.fields.len() > 1 { match pDeclareXfer.fields[1] { UIntVal(n) => { declareDeliveryId = n; } _ => {} } }
         let rDeclare = Amqp10Reader::new(fDeclare.body);
-        rDeclare.readValue(); // transfer-Performative ueberspringen (schon dekodiert)
+        rDeclare.readValue(); // skip the transfer performative (already decoded)
         let declareSection = rDeclare.readValue();
         var sawDeclare: Bool = false;
         match declareSection {
@@ -93,7 +94,7 @@ class Main
         }
         println("broker-saw-declare:" + sawDeclare.toString());
 
-        // --- declared(txn-id) als disposition antworten ---
+        // --- Reply with declared(txn-id) as a disposition ---
         let txnId: List<Int64> = [1, 2, 3, 4];
         let declaredDesc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId)]) };
         var declaredDispFields: List<Amqp10Value> = [
@@ -102,7 +103,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, declaredDispFields));
 
-        // --- jetzt (nicht frueher, s. o.) flow fuer pubLink senden ---
+        // --- Send flow for pubLink now (not earlier, see above) ---
         var flowFields: List<Amqp10Value> = [
             Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(pubHandle), Amqp10Value::UIntVal(0),
@@ -110,7 +111,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flowFields));
 
-        // --- transaktionalen Transfer (echte Nachricht) empfangen, state-Feld pruefen ---
+        // --- Receive the transactional transfer (real message), check the state field ---
         let fTxnXfer = Amqp10::readFrame(sconn);
         let pTxnXfer = Amqp10::decodePerformative(fTxnXfer.body);
         var sawTxnTransfer: Bool = false;
@@ -142,7 +143,7 @@ class Main
         }
         println("broker-saw-txn-transfer:" + sawTxnTransfer.toString());
 
-        // --- discharge (commit, fail=false) empfangen ---
+        // --- Receive discharge (commit, fail=false) ---
         let fDischarge1 = Amqp10::readFrame(sconn);
         let pDischarge1Xfer = Amqp10::decodePerformative(fDischarge1.body);
         var discharge1DeliveryId: Int64 = -1;
@@ -181,7 +182,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge1DispFields));
 
-        // --- zweite Runde: declare -> discharge(fail=true, Rollback) ---
+        // --- Second round: declare -> discharge(fail=true, rollback) ---
         let fDeclare2 = Amqp10::readFrame(sconn);
         let pDeclare2Xfer = Amqp10::decodePerformative(fDeclare2.body);
         var declare2DeliveryId: Int64 = -1;
@@ -232,13 +233,13 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge2DispFields));
 
-        // --- Receiver-Link fuer ackTransactional() ---
+        // --- Receiver link for ackTransactional() ---
         let fAttachSub = Amqp10::readFrame(sconn);
         let pAttachSub = Amqp10::decodePerformative(fAttachSub.body);
         var subHandle: Int64 = -1;
         if pAttachSub.fields.len() > 1 { match pAttachSub.fields[1] { UIntVal(n) => { subHandle = n; } _ => {} } }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachSub.fields));
-        Amqp10::readFrame(sconn); // flow vom Client (Credit)
+        Amqp10::readFrame(sconn); // flow from the client (credit)
 
         let msgBody = Amqp10::encodeMessageBody([88], "text/plain");
         var subTransferFields: List<Amqp10Value> = [
@@ -303,14 +304,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47718);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn txnBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47718, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
@@ -319,12 +320,12 @@ class Main
         let coordinator = Amqp10Link::attachCoordinator(session, "txn-coordinator");
         let pubLink = Amqp10Link::attach(session, "txn-pub-link", false, "txn-target");
 
-        // --- Runde 1: declare -> transaktionaler Publish -> commit ---
+        // --- Round 1: declare -> transactional publish -> commit ---
         let txn1 = coordinator.declare();
         if txn1.ok {
             println("ok-declared");
         } else {
-            println("declare fehlgeschlagen: " + txn1.errorMessage);
+            println("declare failed: " + txn1.errorMessage);
         }
         pubLink.publishTransactional([42], "text/plain", txn1.txnId);
         let commitOk = coordinator.discharge(txn1.txnId, false);
@@ -332,14 +333,14 @@ class Main
             println("ok-commit-discharge");
         }
 
-        // --- Runde 2: declare -> discharge(fail=true), Rollback ---
+        // --- Round 2: declare -> discharge(fail=true), rollback ---
         let txn2 = coordinator.declare();
         let rollbackOk = coordinator.discharge(txn2.txnId, true);
         if rollbackOk {
             println("ok-rollback-discharge");
         }
 
-        // --- ackTransactional() auf einem Receiver-Link ---
+        // --- ackTransactional() on a receiver link ---
         let subLink = Amqp10Link::attach(session, "txn-sub-link", true, "txn-source");
         subLink.grantCredit(5);
         let msg = subLink.nextMessage();

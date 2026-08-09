@@ -1,16 +1,16 @@
-// AMQP-1.0 Phase 6 (tasklist.md): Transfer/Flow/Disposition. Ein per
-// `spawn` gestarteter simulierter Broker (async fn) spielt gegen den
-// echten Client-Code: Sender-Link publiziert EINE grosse Nachricht (wird
-// wegen kleinem max-frame-size auf mehrere Transfer-Frames mit more=true
-// gesplittet, der Broker setzt sie manuell wieder zusammen) UND eine
-// zweite, kleine Nachricht NACHDEM das anfaengliche Credit (1) erschoepft
-// ist -- testet, dass Amqp10Link::publish() korrekt auf ein neues `flow`
-// wartet, statt einfach durchzulaufen. Danach haengt derselbe Client als
-// Receiver an, vergibt Credit, empfaengt eine vom Broker zurueckgespiegelte
-// Nachricht und bestaetigt sie per ack().
+// AMQP-1.0 Phase 6 (tasklist.md): transfer/flow/disposition. A simulated
+// broker started via `spawn` (async fn) plays against the real client
+// code: the sender link publishes ONE large message (split into multiple
+// transfer frames with more=true because of the small max-frame-size,
+// the broker manually reassembles them) AND a second, small message
+// AFTER the initial credit (1) is exhausted -- tests that
+// Amqp10Link::publish() correctly waits for a new `flow` instead of just
+// proceeding. Afterward the same client attaches as a receiver, grants
+// credit, receives a message mirrored back by the broker and
+// acknowledges it via ack().
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses its return type):
+// fakeBroker returns Int64 (0/1) instead of Bool.
 // expect: ok-connect
 // expect: ok-publish1
 // expect: ok-publish2
@@ -30,7 +30,7 @@ class Main
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation ---
+        // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
@@ -39,11 +39,11 @@ class Main
         let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
-        // --- open / open-ok: kleines max-frame-size erzwingt Splitting ---
+        // --- open / open-ok: a small max-frame-size forces splitting ---
         Amqp10::readFrame(sconn);
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"),
@@ -61,7 +61,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
-        // --- attach (Sender) / attach-ok + flow(credit=1) ---
+        // --- attach (sender) / attach-ok + flow(credit=1) ---
         let fAttach1 = Amqp10::readFrame(sconn);
         let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
         var okAttach1: Bool = pAttach1.descriptor == 0x12;
@@ -73,7 +73,7 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flow1Fields));
 
-        // --- Transfer(s) fuer Nachricht 1 lesen, bis more=false ---
+        // --- Read transfer(s) for message 1, until more=false ---
         var msg1Bytes: List<Int64> = [];
         var more1: Bool = true;
         var frameCount1: Int64 = 0;
@@ -101,18 +101,18 @@ class Main
         }
         var okReassembled: Bool = frameCount1 > 1;
 
-        // --- Credit erschoepft: neues flow(credit=1) senden, dann Transfer 2 lesen ---
+        // --- Credit exhausted: send a new flow(credit=1), then read transfer 2 ---
         var flow2Fields: List<Amqp10Value> = [
             Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0), Amqp10Value::UIntVal(1),
             Amqp10Value::UIntVal(1)
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flow2Fields));
-        // Nachricht 2 ist zwar ein kurzer 3-Byte-Body, aber die properties-
-        // Section (Content-Type "text/plain" + 6 Platzhalter-Felder) traegt
-        // selbst schon ueber 30 Byte Overhead -- bei max-frame-size=100
-        // splittet der Client sie deshalb ebenfalls, dieselbe
-        // Reassembly-Schleife wie bei Nachricht 1 wird gebraucht.
+        // Message 2 has a short 3-byte body, but the properties section
+        // (content-type "text/plain" + 6 placeholder fields) alone already
+        // carries over 30 bytes of overhead -- at max-frame-size=100 the
+        // client therefore splits it too, requiring the same reassembly
+        // loop as message 1.
         var okSecondFlow: Bool = true;
         var more2: Bool = true;
         while more2 {
@@ -136,30 +136,30 @@ class Main
             }
         }
 
-        // --- detach / detach-ok (Sender-Link) ---
+        // --- detach / detach-ok (sender link) ---
         let fDetach1 = Amqp10::readFrame(sconn);
         let pDetach1 = Amqp10::decodePerformative(fDetach1.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
 
-        // --- attach (Receiver) / attach-ok ---
+        // --- attach (receiver) / attach-ok ---
         let fAttach2 = Amqp10::readFrame(sconn);
         let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
         var okAttach2: Bool = pAttach2.descriptor == 0x12;
-        // Issue 76: der Client vergibt Link-Handles jetzt fortlaufend statt
-        // immer 0 (pub-link=0, sub-link=1 hier) — das im Reply-Transfer
-        // hartkodierte handle=0 waere jetzt ein echter Mismatch gegen
-        // Amqp10Link::nextMessage()s neue Handle-Pruefung. Echtes Handle aus
-        // dem Attach uebernehmen statt es zu erraten.
+        // Issue 76: the client now assigns link handles consecutively
+        // instead of always 0 (pub-link=0, sub-link=1 here) — a
+        // hardcoded handle=0 in the reply transfer would now be a real
+        // mismatch against Amqp10Link::nextMessage()'s new handle check.
+        // Take the real handle from the attach instead of guessing it.
         var subLinkHandle: Int64 = 0;
         if pAttach2.fields.len() > 1 {
             match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
         }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
 
-        // --- flow vom Client (Credit-Vergabe) lesen ---
+        // --- Read flow from the client (credit grant) ---
         Amqp10::readFrame(sconn);
 
-        // --- Broker "published" eine kleine Antwort-Nachricht an den Client ---
+        // --- The broker "publishes" a small reply message to the client ---
         let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain"); // "ABC"
         var replyTransferFields: List<Amqp10Value> = [
             Amqp10Value::UIntVal(subLinkHandle), Amqp10Value::UIntVal(0),
@@ -172,7 +172,7 @@ class Main
         for i in 0..replyMsg.len() { replyFrame.push(replyMsg[i]); }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, replyFrame);
 
-        // --- disposition (ack) vom Client lesen ---
+        // --- Read the disposition (ack) from the client ---
         let fDisp = Amqp10::readFrame(sconn);
         let pDisp = Amqp10::decodePerformative(fDisp.body);
         var okAck: Bool = pDisp.descriptor == 0x15;
@@ -208,14 +208,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47629);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47629, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
@@ -223,7 +223,7 @@ class Main
         let session = Amqp10Session::begin(conn);
         var link = Amqp10Link::attach(session, "pub-link", false, "test-target");
 
-        // Nachricht 1: groesser als max-frame-size(100)-64 -> Multi-Frame-Split.
+        // Message 1: larger than max-frame-size(100)-64 -> multi-frame split.
         var bigBody: List<Int64> = [];
         for i in 0..60 { bigBody.push(65); }
         link.publish(bigBody, "text/plain");
@@ -231,8 +231,8 @@ class Main
             println("ok-publish1");
         }
 
-        // Nachricht 2: Credit ist jetzt erschoepft (nur 1 vergeben) -> publish()
-        // MUSS intern auf ein neues flow warten, bevor sie rausgeht.
+        // Message 2: credit is now exhausted (only 1 was granted) -> publish()
+        // MUST internally wait for a new flow before it goes out.
         link.publish([1, 2, 3], "text/plain");
         if link.errorMessage.len() == 0 {
             println("ok-publish2");

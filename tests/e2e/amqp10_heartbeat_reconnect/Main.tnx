@@ -1,5 +1,5 @@
-// Issue 82: AMQP 1.0 heartbeat (empty frame) / auto-reconnect. Muster wie
-// amqp10_connection_session_link.tnx (simulierter Broker per spawn).
+// Issue 82: AMQP 1.0 heartbeat (empty frame) / auto-reconnect. Same pattern
+// as amqp10_connection_session_link.tnx (simulated broker via spawn).
 // expect: ok-idletimeout
 // expect: ok-heartbeat-tolerant-nextmessage
 // expect: ok-client-proposed-idletimeout-and-sent-heartbeats
@@ -134,14 +134,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47711);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn heartbeatBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47711, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         if conn.idleTimeoutMs == 4000 {
@@ -161,7 +161,7 @@ class Main
                 println("ok-heartbeat-tolerant-nextmessage");
             }
         } else {
-            println("nextMessage fehlgeschlagen: " + msg.errorMessage);
+            println("nextMessage failed: " + msg.errorMessage);
         }
 
         let brokerOk = await handle;
@@ -178,7 +178,7 @@ class Main
         // port immediately). ---
         let srv2 = httpServerCreate(47711);
         if srv2 < 0 {
-            println("srv2 bind fehlgeschlagen");
+            println("srv2 bind failed");
             return 1;
         }
         let handle2 = spawn reconnectBroker(srv2);

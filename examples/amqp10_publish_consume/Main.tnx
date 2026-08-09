@@ -1,13 +1,13 @@
-// AMQP-1.0-Publish/Consume-Beispiel (tasklist.md Phase 7.2).
-// Braucht einen laufenden Broker mit nativer AMQP-1.0-Unterstuetzung, z. B.:
+// AMQP-1.0 publish/consume example.
+// Needs a running broker with native AMQP-1.0 support, e.g.:
 //   docker run -d --name rabbitmq -p 5672:5672 rabbitmq:4-management
-// (RabbitMQ 4.x kann AMQP 1.0 direkt im Core-Broker, kein Plugin noetig.
-// Fuer Queues gilt "AMQP Address v2": /queues/<name>.)
-// Start:  tinox run examples/amqp10_publish_consume.tnx
+// (RabbitMQ 4.x speaks AMQP 1.0 directly in the core broker, no plugin
+// needed. For queues, "AMQP Address v2" applies: /queues/<name>.)
+// Start:  tinox run examples/amqp10_publish_consume/Main.tnx
 //
-// Verbindet sich per SASL PLAIN, oeffnet Session + Sender-Link, published 3
-// Nachrichten kreditbasiert, haengt danach als Receiver-Link an dieselbe
-// Queue, konsumiert sie zurueck und acked jede einzeln.
+// Connects via SASL PLAIN, opens a session + sender link, publishes 3
+// credit-based messages, then attaches a receiver link to the same queue,
+// consumes them back, and acks each one individually.
 
 import tinox.core.amqp10;
 
@@ -16,42 +16,42 @@ class Main
     fnc main() -> Int32 {
         let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
         if conn.conn <= 0 {
-            println("Verbindung fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
         let session = Amqp10Session::begin(conn);
         if session.errorMessage.len() > 0 {
-            println("begin fehlgeschlagen: " + session.errorMessage);
+            println("begin failed: " + session.errorMessage);
             return 1;
         }
 
         var sender = Amqp10Link::attach(session, "tinox-demo-sender", false, "/queues/tinox-demo-queue");
         if sender.errorMessage.len() > 0 {
-            println("attach (Sender) fehlgeschlagen: " + sender.errorMessage);
+            println("attach (sender) failed: " + sender.errorMessage);
             return 1;
         }
 
         var i: Int64 = 0;
         while i < 3 {
             var body: List<Int64> = [];
-            let text = "Nachricht #" + i.toString();
+            let text = "message #" + i.toString();
             for j in 0..text.len() {
                 body.push(text.charCodeAt(j) & 0xFF);
             }
             sender.publish(body, "text/plain");
             if sender.errorMessage.len() > 0 {
-                println("publish fehlgeschlagen: " + sender.errorMessage);
+                println("publish failed: " + sender.errorMessage);
                 return 1;
             }
-            println("gesendet: " + text);
+            println("sent: " + text);
             i = i + 1;
         }
         sender.detach();
 
         var receiver = Amqp10Link::attach(session, "tinox-demo-receiver", true, "/queues/tinox-demo-queue");
         if receiver.errorMessage.len() > 0 {
-            println("attach (Receiver) fehlgeschlagen: " + receiver.errorMessage);
+            println("attach (receiver) failed: " + receiver.errorMessage);
             return 1;
         }
         receiver.grantCredit(10);
@@ -60,14 +60,14 @@ class Main
         while received < 3 {
             let m = receiver.nextMessage();
             if !m.ok {
-                println("Empfang fehlgeschlagen: " + m.errorMessage);
+                println("receive failed: " + m.errorMessage);
                 return 1;
             }
             var text: String = "";
             for j in 0..m.body.len() {
                 text = text + fromCharCode(m.body[j]);
             }
-            println("empfangen: " + text + " (Delivery " + m.deliveryId.toString() + ")");
+            println("received: " + text + " (delivery " + m.deliveryId.toString() + ")");
             receiver.ack(m.deliveryId);
             received = received + 1;
         }
@@ -75,7 +75,7 @@ class Main
 
         session.end();
         conn.close();
-        println("fertig");
+        println("done");
         return 0;
     }
 }

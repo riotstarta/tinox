@@ -1,18 +1,18 @@
-//! Stdlib-Smoke-Gate: jedes Modul in crates/tinox-core einmal benutzen.
+//! Stdlib smoke gate: use every module in crates/tinox-core once.
 //!
-//! Anlass (2026-07-17): mehrere Stdlib-Module riefen Builtins auf, die weder
-//! in der Runtime noch im Codegen existieren (httpGet, base64Decode,
-//! uuidGenerate, …) — sie kompilierten nie, weil kein Test sie je importiert
-//! hat. Da ein Import das ganze Modul codegen't, reicht ein minimaler
-//! Aufruf pro Modul, um Ghost-Builtins und Codegen-Brüche im gesamten
-//! Modul zu fangen (der IR-Verifier meldet jede unreferenzierte Deklaration).
+//! Motivation (2026-07-17): several stdlib modules called builtins that
+//! exist neither in the runtime nor in codegen (httpGet, base64Decode,
+//! uuidGenerate, …) — they never compiled, because no test ever imported
+//! them. Since an import codegens the entire module, a minimal call per
+//! module is enough to catch ghost builtins and codegen breakage across
+//! the whole module (the IR verifier reports every unreferenced
+//! declaration).
 //!
-//! Die .tnx-Fälle werden zur Laufzeit generiert (nichts eingecheckt).
-//! Bekannte Brüche stehen in KNOWN_BROKEN: ein gelistetes Modul MUSS
-//! fehlschlagen (sonst „stale entry" → Liste pflegen), ein nicht gelistetes
-//! MUSS bestehen. Ein Vollständigkeits-Test erzwingt, dass jedes neue
-//! Stdlib-Modul hier einen Smoke-Fall bekommt (oder begründet in EXCLUDED
-//! steht).
+//! The .tnx cases are generated at runtime (nothing checked in).
+//! Known breakages live in KNOWN_BROKEN: a listed module MUST fail
+//! (otherwise "stale entry" → keep the list up to date), an unlisted one
+//! MUST pass. A completeness test enforces that every new stdlib module
+//! gets a smoke case here (or a justification in EXCLUDED).
 
 mod common;
 use common::{parse_case, run_case};
@@ -20,35 +20,34 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-/// Module, die heute nicht kompilieren/laufen — jeder Eintrag ist ein
-/// offener Bug (siehe bugs.md Bug 20, dort nach Fehlerklasse gruppiert).
-/// Beim Fixen: Eintrag entfernen, sonst schlägt der Test mit "stale entry"
-/// fehl.
+/// Modules that don't compile/run today — each entry is an open bug
+/// (see bugs.md Bug 20, grouped there by error class). When fixed:
+/// remove the entry, otherwise the test fails with "stale entry".
 ///
-/// Seit 2026-07-18 leer: alle tinox-core-Module kompilieren und laufen
-/// (Bug 20 vollständig abgearbeitet, Bugs 21-32). Neu kaputte Module hier
-/// mit Begründung + bugs.md-Verweis eintragen.
+/// Empty since 2026-07-18: all tinox-core modules compile and run
+/// (Bug 20 fully resolved, Bugs 21-32). Add newly broken modules here
+/// with a justification + bugs.md reference.
 const KNOWN_BROKEN: &[&str] = &[];
 
-/// Module ohne Smoke-Fall, mit Begründung.
+/// Modules without a smoke case, with a justification.
 const EXCLUDED: &[(&str, &str)] = &[
-    ("db", "braucht [database]-Config; von den orm_sqlite_* E2E-Fällen abgedeckt"),
+    ("db", "needs [database] config; covered by the orm_sqlite_* e2e cases"),
     (
         "http3_server",
-        "braucht TINOX_HTTP3=1 (Opt-in, Default AUS -- ngtcp2/nghttp3 sind anders als OpenSSL nicht überall installiert); ein Smoke-Fall ohne dieses Flag würde beim Linken scheitern. Von crates/tinox/tests/http3_server_curl.rs abgedeckt (eigener Prozess, echtes curl --http3-only, skipt sauber statt zu failen wenn ngtcp2/nghttp3/HTTP3-curl auf der Build-Maschine fehlen).",
+        "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",
     ),
 ];
 
 struct Smoke {
-    /// Dateistamm in crates/tinox-core (= Testname stdlib_smoke_<key>)
+    /// File stem in crates/tinox-core (= test name stdlib_smoke_<key>)
     key: &'static str,
-    /// Import-Zeilen (meist nur das Modul selbst)
+    /// Import lines (usually just the module itself)
     imports: &'static [&'static str],
-    /// Statements im main-Rumpf
+    /// Statements in the main body
     body: &'static str,
-    /// Erwartete stdout-Zeilen (exakt, geordnet)
+    /// Expected stdout lines (exact, ordered)
     expects: &'static [&'static str],
-    /// Alternativ/zusätzlich: Substrings, die die Ausgabe enthalten muss
+    /// Alternative/additional: substrings the output must contain
     contains: &'static [&'static str],
 }
 
@@ -506,10 +505,10 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "amqp091",
         imports: &["tinox.core.amqp091"],
-        // Kein echter Broker im Smoke-Gate — 127.0.0.1 auf einem Port ohne
-        // Listener liefert ein schnelles "connection refused" (kein DNS,
-        // keine Latenz), deckt aber den kompletten Codegen-Pfad des Moduls
-        // ab (dial -> socketCreateTcp/socketConnect/httpConnFromFd).
+        // No real broker in the smoke gate — 127.0.0.1 on a port with no
+        // listener gives a fast "connection refused" (no DNS, no latency),
+        // but still covers the module's full codegen path (dial ->
+        // socketCreateTcp/socketConnect/httpConnFromFd).
         body: "println(Amqp091::dial(\"127.0.0.1\", 39217));",
         expects: &["-1"],
         contains: &[],
@@ -517,8 +516,8 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "amqp10",
         imports: &["tinox.core.amqp10"],
-        // Analog zu amqp091 oben: kein echter Broker im Smoke-Gate, deckt
-        // aber den Codegen-Pfad des Moduls ab.
+        // Same as amqp091 above: no real broker in the smoke gate, but
+        // still covers the module's codegen path.
         body: "println(Amqp10::dial(\"127.0.0.1\", 39220));",
         expects: &["-1"],
         contains: &[],
@@ -526,8 +525,8 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "websocket",
         imports: &["tinox.core.websocket"],
-        // Reine Codec-Logik ohne Socket (die volle Strecke inkl. Handshake
-        // deckt tests/e2e/ws_handshake_frames.tnx ab).
+        // Pure codec logic without a socket (the full path including the
+        // handshake is covered by tests/e2e/ws_handshake_frames.tnx).
         body: "let f: WsFrame = WsFrame { fin: true, opcode: 1, payload: Ws::textToBytes(\"hi\"), rsv1: false };\n    println(Ws::text(f));",
         expects: &["hi"],
         contains: &[],
@@ -589,7 +588,7 @@ fn emit_case(s: &Smoke) -> (String, String) {
     (name, src)
 }
 
-/// Jedes Stdlib-Modul hat einen Smoke-Fall oder steht begründet in EXCLUDED.
+/// Every stdlib module has a smoke case or a justification in EXCLUDED.
 #[test]
 fn stdlib_smoke_completeness() {
     // A module is either a legacy single `<name>.tnx` file (not yet migrated),
@@ -601,7 +600,7 @@ fn stdlib_smoke_completeness() {
     // level and key each child as `"<name>.<child>"`, matching the import
     // path (`tinox.core.rest.client`) rather than the directory name.
     let modules: BTreeSet<String> = fs::read_dir(stdlib_dir())
-        .expect("crates/tinox-core lesbar")
+        .expect("crates/tinox-core readable")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .flat_map(|p| -> Vec<String> {
@@ -646,7 +645,7 @@ fn stdlib_smoke_completeness() {
         .collect();
     assert!(
         missing.is_empty(),
-        "Stdlib-Module ohne Smoke-Fall (Eintrag in SMOKES ergänzen oder mit Begründung in EXCLUDED): {missing:?}"
+        "stdlib modules without a smoke case (add an entry in SMOKES or a justification in EXCLUDED): {missing:?}"
     );
 
     let stale: Vec<&String> = covered
@@ -656,13 +655,13 @@ fn stdlib_smoke_completeness() {
         .collect();
     assert!(
         stale.is_empty(),
-        "SMOKES/EXCLUDED-Einträge ohne Modul-Datei (gelöschtes Modul? Eintrag entfernen): {stale:?}"
+        "SMOKES/EXCLUDED entries without a module file (deleted module? remove the entry): {stale:?}"
     );
 
     for k in KNOWN_BROKEN {
         assert!(
             covered.contains(*k),
-            "KNOWN_BROKEN-Eintrag {k:?} hat keinen Smoke-Fall"
+            "KNOWN_BROKEN entry {k:?} has no smoke case"
         );
     }
 }
@@ -716,14 +715,14 @@ fn run_shard(shard: usize, num_shards: usize) {
     let mut problems = Vec::new();
     if !unexpected_failures.is_empty() {
         problems.push(format!(
-            "{} Stdlib-Smoke-Fälle schlagen fehl (Modul kaputt → fixen oder in KNOWN_BROKEN + bugs.md eintragen):\n\n{}",
+            "{} stdlib smoke cases fail (module broken → fix it or add to KNOWN_BROKEN + bugs.md):\n\n{}",
             unexpected_failures.len(),
             unexpected_failures.join("\n\n")
         ));
     }
     if !stale_entries.is_empty() {
         problems.push(format!(
-            "stale KNOWN_BROKEN (bestehen inzwischen — Eintrag entfernen): {}",
+            "stale KNOWN_BROKEN (now passing — remove the entry): {}",
             stale_entries.join(", ")
         ));
     }

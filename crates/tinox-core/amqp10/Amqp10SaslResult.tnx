@@ -6,10 +6,10 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Ergebnis von Amqp10::negotiateSasl (Phase 4). ok == false bei jedem
-     * Fehlschlag (falscher Frame-Typ, unerwartete Performative, PLAIN nicht
-     * angeboten, sasl-outcome-code != 0) — errorMessage beschreibt dann die
-     * Ursache, analog zu 0-9-1s errorMessage-Feld-Konvention.
+     * Result of Amqp10::negotiateSasl. ok == false on any failure (wrong
+     * frame type, unexpected performative, PLAIN not offered,
+     * sasl-outcome-code != 0) — errorMessage then describes the cause,
+     * analogous to 0-9-1's errorMessage field convention.
      */
     class Amqp10SaslResult
     {

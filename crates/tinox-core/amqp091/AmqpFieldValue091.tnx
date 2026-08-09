@@ -5,12 +5,12 @@ import tinox.core.socket;
 namespace tinox.core.amqp091
 {
     /*
-     * Ein getaggter AMQP-Field-Value (Field-Table-/Field-Array-Elemente).
-     * Typmarker folgen der RabbitMQ-Konvention (t/I/L/S/T/F/A/V) — s.
-     * AmqpWriter091::fieldValue/AmqpReader091::fieldValue für die Bytes.
-     * ErrorVal transportiert einen Decode-Fehler (unbekannter Typmarker)
-     * als Wert statt einer Exception — Aufrufer MUSS prüfen (kein
-     * Silent-Garbage), analog zu WsFrame.opcode -1/-2 bei WebSocket.
+     * A tagged AMQP field value (field-table/field-array elements).
+     * Type markers follow the RabbitMQ convention (t/I/L/S/T/F/A/V) —
+     * see AmqpWriter091::fieldValue/AmqpReader091::fieldValue for the
+     * bytes. ErrorVal carries a decode error (unknown type marker) as a
+     * value instead of an exception — caller MUST check (no silent
+     * garbage), analogous to WsFrame.opcode -1/-2 for WebSocket.
      */
     enum AmqpFieldValue091
     {

@@ -1,39 +1,39 @@
-// try-finally OHNE catch (Bug 42): finally läuft, dann wird der Fehler
-// re-geworfen (propagiert) statt still geschluckt. Zuvor kompilierte dieser Fall
-// gar nicht (fehlender Terminator im leeren-catches-Zweig -> ungültiges IR).
-// Deckt ab: re-throw in aeusseren catch, normaler Pfad ohne Fehler (kein
-// re-throw), und dass try-catch-finally mit gefangenem Fehler NICHT re-wirft.
-// expect: vor throw
+// try-finally WITHOUT catch (Bug 42): finally runs, then the error is
+// re-thrown (propagated) instead of being silently swallowed. Previously this
+// case didn't compile at all (missing terminator in the empty-catches branch -> invalid IR).
+// Covers: re-throw into an outer catch, the normal path without an error (no
+// re-throw), and that try-catch-finally with a caught error does NOT re-throw.
+// expect: before throw
 // expect: finally A
-// expect: aeusserer catch: fehler
-// expect: im try
+// expect: outer catch: error
+// expect: in try
 // expect: finally B
-// expect: nach try normal
-// expect: gefangen: x
+// expect: after try normal
+// expect: caught: x
 // expect: finally C
-// expect: nach catch
+// expect: after catch
 
 class Main
 {
     fnc risky() -> Nothing {
         try {
-            println("vor throw");
-            throw "fehler";
-            println("nach throw (nie)");
+            println("before throw");
+            throw "error";
+            println("after throw (never)");
         } finally {
             println("finally A");
         }
-        println("nach try (nie — re-propagiert)");
+        println("after try (never — re-propagated)");
     }
 
 
     fnc noError() -> Nothing {
         try {
-            println("im try");
+            println("in try");
         } finally {
             println("finally B");
         }
-        println("nach try normal");
+        println("after try normal");
     }
 
 
@@ -41,16 +41,16 @@ class Main
         try {
             throw "x";
         } catch e: String {
-            println("gefangen: " + e);
+            println("caught: " + e);
         } finally {
             println("finally C");
         }
-        println("nach catch");
+        println("after catch");
     }
 
 
     fnc main() -> Int32 {
-        try { risky(); } catch e: String { println("aeusserer catch: " + e); }
+        try { risky(); } catch e: String { println("outer catch: " + e); }
         noError();
         caught();
         return 0;

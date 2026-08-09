@@ -1,20 +1,20 @@
-// Bug 65: ein Lambda innerhalb eines Lambdas verlor seine Definition — das äußere
-// gen_lambda setzte self.lambda_ir auf den Zustand VOR dem äußeren Lambda zurück
-// und verwarf das während der Body-Generierung emittierte innere Lambda → dessen
-// @__lambda_N-Referenz war undefiniert (ICE). Fix bewahrt die inneren Lambdas.
+// Bug 65: a lambda nested inside a lambda lost its definition — the outer
+// gen_lambda reset self.lambda_ir to the state BEFORE the outer lambda
+// and discarded the inner lambda emitted during body generation → its
+// @__lambda_N reference was undefined (ICE). Fix preserves the inner lambdas.
 // expect: 21
 // expect: 117
 class Main
 {
     fnc main() -> Int32 {
-        // zweifach verschachtelt
+        // doubly nested
         let outer: fnc(Int64) -> Int64 = fnc(x: Int64) -> Int64 {
             let inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2; };
             return inner(x) + 1;
         };
         println(outer(10).toString());   // inner(10)=20, +1 = 21
 
-        // dreifach verschachtelt
+        // triply nested
         let a: fnc() -> Int64 = fnc() -> Int64 {
             let b: fnc() -> Int64 = fnc() -> Int64 {
                 let c: fnc() -> Int64 = fnc() -> Int64 { return 7; };

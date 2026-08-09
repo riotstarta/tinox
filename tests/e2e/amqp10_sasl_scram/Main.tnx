@@ -1,14 +1,15 @@
-// Issue 77: SASL SCRAM-SHA-256 als AMQP-1.0-Mechanismus. Simulierter Broker
-// (spawn) bietet PLAIN UND SCRAM-SHA-256 an — Amqp10Connection::connect()
-// muss SCRAM automatisch bevorzugen (kein API-Bruch, negotiateSasl()
-// entscheidet intern). Positivpfad: echter Challenge-Response-Roundtrip mit
-// korrektem Passwort, inkl. Server-Signature-Verifikation. Negativpfad:
-// falsches Passwort -> Broker lehnt ab -> Connection::connect() liefert
-// einen sauberen Fehler statt eine falsche Verbindung als "erfolgreich" zu
-// melden. Die Kryptografie selbst ist unabhaengig gegen Python hashlib/hmac
-// geprueft (tests/e2e/amqp10_scram_crypto.tnx) — hier geht es um den
-// Wire-Protokoll-Ablauf (Descriptor-Codes, Feld-Reihenfolge, Mechanismus-
-// Praeferenz).
+// Issue 77: SASL SCRAM-SHA-256 as an AMQP-1.0 mechanism. A simulated
+// broker (spawn) offers both PLAIN AND SCRAM-SHA-256 —
+// Amqp10Connection::connect() must automatically prefer SCRAM (no API
+// break, negotiateSasl() decides internally). Success path: a real
+// challenge-response round trip with the correct password, including
+// server-signature verification. Failure path: wrong password -> the
+// broker rejects it -> Connection::connect() returns a clean error
+// instead of reporting a bad connection as "successful". The
+// cryptography itself is independently verified against Python
+// hashlib/hmac (tests/e2e/amqp10_scram_crypto.tnx) — this test is about
+// the wire-protocol flow (descriptor codes, field order, mechanism
+// preference).
 // expect: ok-scram-connect
 // expect: ok-broker-verified-proof
 // expect: ok-wrong-password-rejected
@@ -20,23 +21,24 @@ import tinox.core.socket;
 class Main
 {
 
-    // Simulierter Broker: kennt `brokerPassword` als "das echte Passwort" und
-    // verifiziert den Client-Proof selbst dagegen (mirroring derselben
-    // SCRAM-Formeln wie der Client — die Kryptografie-KORREKTHEIT ist bereits
-    // unabhaengig verifiziert, hier zaehlt der Protokollablauf).
+    // Simulated broker: knows `brokerPassword` as "the real password" and
+    // verifies the client proof against it itself (mirroring the same
+    // SCRAM formulas as the client — the cryptographic CORRECTNESS is
+    // already independently verified, here it's the protocol flow that
+    // counts).
     async fnc scramBroker(srv: Int64, brokerPassword: String) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header ---
+        // --- SASL header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
 
-        // --- sasl-mechanisms: PLAIN UND SCRAM-SHA-256 anbieten ---
+        // --- sasl-mechanisms: offer PLAIN AND SCRAM-SHA-256 ---
         var mechs: List<Amqp10Value> = [Amqp10Value::SymbolVal("PLAIN"), Amqp10Value::SymbolVal("SCRAM-SHA-256")];
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
 
-        // --- sasl-init empfangen ---
+        // --- Receive sasl-init ---
         let fInit = Amqp10::readFrame(sconn);
         let pInit = Amqp10::decodePerformative(fInit.body);
         var mechanismOk: Bool = false;
@@ -44,7 +46,7 @@ class Main
         match pInit.fields[0] { SymbolVal(m) => { if m == "SCRAM-SHA-256" { mechanismOk = true; } } _ => {} }
         match pInit.fields[1] { BinaryVal(b) => { clientFirstMessage = Amqp10::bytesToString(b); } _ => {} }
 
-        // gs2-Header "n,," ist fix 3 Zeichen lang.
+        // gs2 header "n,," is a fixed 3 characters long.
         let bare = clientFirstMessage.substring(3, clientFirstMessage.len());
         let bareParts = bare.split(",");
         var clientNonce: String = "";
@@ -57,15 +59,15 @@ class Main
 
         let combinedNonce = clientNonce + "fixedserverpart789";
         let salt: List<Int64> = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
-        let iterations = 1000; // klein gehalten fuer schnelle Testlaufzeit
+        let iterations = 1000; // kept small for fast test runtime
         let saltB64 = Base64::encodeBytes(salt);
         let serverFirstMessage = "r=" + combinedNonce + ",s=" + saltB64 + ",i=" + iterations.toString();
 
-        // --- sasl-challenge senden ---
+        // --- Send sasl-challenge ---
         var challengeFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(serverFirstMessage))];
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x42, challengeFields));
 
-        // --- sasl-response empfangen ---
+        // --- Receive sasl-response ---
         let fResp = Amqp10::readFrame(sconn);
         let pResp = Amqp10::decodePerformative(fResp.body);
         var clientFinalMessage: String = "";
@@ -84,7 +86,7 @@ class Main
         let clientFinalMessageWithoutProof = "c=" + cField + ",r=" + recvNonce;
         let authMessage = bare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
 
-        // --- Broker berechnet den erwarteten Proof mit SEINEM bekannten Passwort ---
+        // --- The broker computes the expected proof using ITS known password ---
         let passwordBytes = Amqp10::stringToBytes(brokerPassword);
         let saltedPassword = Amqp10::pbkdf2HmacSha256(passwordBytes, salt, iterations);
         let clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
@@ -109,7 +111,7 @@ class Main
         var okFields: List<Amqp10Value> = [Amqp10Value::UByteVal(0), Amqp10Value::BinaryVal(Amqp10::stringToBytes(serverFinalMessage))];
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, okFields));
 
-        // --- AMQP-Header + open/open-ok (nur bei erfolgreicher Auth erreicht) ---
+        // --- AMQP header + open/open-ok (only reached on successful auth) ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
         Amqp10::readFrame(sconn);
@@ -127,10 +129,10 @@ class Main
 
 
     fnc main() -> Int32 {
-        // --- Positivpfad: korrektes Passwort ---
+        // --- Success path: correct password ---
         let srv1 = httpServerCreate(47715);
         if srv1 < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle1 = spawn scramBroker(srv1, "correctpass");
@@ -139,7 +141,7 @@ class Main
         if conn1.conn > 0 {
             println("ok-scram-connect");
         } else {
-            println("connect fehlgeschlagen: " + conn1.errorMessage);
+            println("connect failed: " + conn1.errorMessage);
         }
         if broker1Ok == 1 {
             println("ok-broker-verified-proof");
@@ -149,7 +151,7 @@ class Main
         }
         httpServerClose(srv1);
 
-        // --- Negativpfad: falsches Passwort ---
+        // --- Failure path: wrong password ---
         let srv2 = httpServerCreate(47716);
         let handle2 = spawn scramBroker(srv2, "correctpass");
         let conn2 = Amqp10Connection::connect("127.0.0.1", 47716, "testuser", "wrongpass");

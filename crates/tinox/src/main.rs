@@ -267,10 +267,10 @@ fn resolve_entry_file(args: &[String]) -> Option<String> {
     None
 }
 
-/// `--checked` (TESTPLAN Phase 4): Runtime mit Heap-Kind-Registry bauen —
-/// Array-/Map-Funktionen prüfen ihre Pointer und brechen bei
-/// Dispatch-Bugs laut ab, statt still Müll zu lesen. Implementiert über
-/// TINOX_CFLAGS, das compile_ll_to_exe an beide cc-Aufrufe durchreicht.
+/// `--checked`: build the runtime with the heap-kind registry — array/map
+/// functions check their pointers and abort loudly on dispatch bugs
+/// instead of silently reading garbage. Implemented via TINOX_CFLAGS,
+/// which compile_ll_to_exe passes through to both cc invocations.
 fn apply_checked_flag(args: &[String]) {
     if args.iter().any(|a| a == "--checked") {
         let mut flags = std::env::var("TINOX_CFLAGS").unwrap_or_default();
@@ -2264,7 +2264,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     let dep_dirs = load_dep_dirs();
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs)
         .map_err(|e| format!("Import error: {}", e))?;
-    // NodeIds für die Typ-Tabelle (Typecheck → Codegen, TESTPLAN Phase 4)
+    // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 
     let mut typechecker = tinox_typecheck::TypeChecker::new();
@@ -2637,15 +2637,15 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     let db_cfg = read_database_config();
     let db_driver = db_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
 
-    // Zusätzliche C-Flags aus der Umgebung, z. B. für Sanitizer-Läufe:
-    // TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" (siehe make asan)
+    // Extra C flags from the environment, e.g. for sanitizer runs:
+    // TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" (see make asan)
     let extra_cflags: Vec<String> = std::env::var("TINOX_CFLAGS")
         .map(|v| v.split_whitespace().map(String::from).collect())
         .unwrap_or_default();
 
-    // HTTPS/TLS-Server: standardmäßig an. Aktiviert den TLS-Code in runtime.c
-    // (-DTINOX_TLS) und linkt OpenSSL (-lssl -lcrypto). Opt-out per
-    // TINOX_TLS=0, falls z.B. kein OpenSSL zum Bauen verfügbar ist.
+    // HTTPS/TLS server: on by default. Enables the TLS code in runtime.c
+    // (-DTINOX_TLS) and links OpenSSL (-lssl -lcrypto). Opt out via
+    // TINOX_TLS=0, e.g. if no OpenSSL is available to build with.
     let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
 
     // HTTP/3 (QUIC) server: opt-in, default OFF -- unlike TLS (OpenSSL is

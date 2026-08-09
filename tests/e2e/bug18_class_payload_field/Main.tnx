@@ -1,12 +1,12 @@
 import User;
 import Res;
 
-// Bug 18: Klassen-Payloads aus match-Bindungen waren ungetypt ("Other") —
-// Feldzugriff las immer Offset 0 mit i64-Typisierung (u.name druckte die id)
+// Bug 18: class payloads from match bindings were untyped ("Other") —
+// field access always read offset 0 with i64 typing (u.name printed the id)
 // expect: Alice
 // expect: 7
 // expect: Hi Alice
-// expect: err: kaputt
+// expect: err: broken
 
 class Main
 {
@@ -20,7 +20,7 @@ class Main
             }
             Err(m) => println(m);
         }
-        let e = Res::Err("kaputt");
+        let e = Res::Err("broken");
         match e {
             Ok(u) => println(u.name);
             Err(m) => println("err: " + m);

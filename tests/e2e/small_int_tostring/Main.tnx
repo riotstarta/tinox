@@ -1,7 +1,7 @@
-// Bug 61: .toString() auf einem i32/i16/i8-Wert (nach `x as Int32`, auf einem
-// Int32-Feld oder einer Int32-Variable) erzeugte ungültiges IR (undefined
-// @toString) → ICE. Der Dispatch-Guard schloss kleine Int-Breiten aus; jetzt
-// eingeschlossen + sext zu i64 vor tinox_int_to_string. Drei Codegen-Stellen.
+// Bug 61: .toString() on an i32/i16/i8 value (after `x as Int32`, on an
+// Int32 field or an Int32 variable) produced invalid IR (undefined
+// @toString) → ICE. The dispatch guard excluded small int widths; now
+// included + sext to i64 before tinox_int_to_string. Three codegen sites.
 // expect: 705032704
 // expect: 3
 // expect: 42
@@ -15,9 +15,9 @@ class Main
         println((5000000000 as Int32).toString());   // Int64->Int32 wrap
         println((3.5 as Int32).toString());           // Float->Int32 trunc
         let a: Int32 = 42;
-        println(a.toString());                         // Int32-Variable
+        println(a.toString());                         // Int32 variable
         let c: small_int_tostring = small_int_tostring { n: 7 };
-        println(c.n.toString());                       // Int32-Feld read
+        println(c.n.toString());                       // Int32 field read
         return 0;
     }
 }

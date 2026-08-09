@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Baut tinox-lsp und installiert es nach ~/.cargo/bin/
+# Builds tinox-lsp and installs it to ~/.cargo/bin/
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

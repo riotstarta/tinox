@@ -1,6 +1,6 @@
-// Cross-Funktions-Throw: throw ohne lokales try propagiert zum
-// nächsten try im Aufrufer (via @__tinox_err)
-// expect: caught: kaputt
+// Cross-function throw: throw without a local try propagates to the
+// next try in the caller (via @__tinox_err)
+// expect: caught: broken
 // expect: cleanup
 // expect: ok: 5
 // expect: done
@@ -8,7 +8,7 @@ class Main
 {
     fnc divide(a: Int64, b: Int64) -> Int64 {
         if b == 0 {
-            throw "kaputt";
+            throw "broken";
         }
         return a / b;
     }

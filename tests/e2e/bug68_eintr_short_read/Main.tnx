@@ -1,20 +1,20 @@
-// Regressionstest fuer Bug 68 (bugs.md): `spawn`-Tasks laufen als echte
-// POSIX-Threads. Der Boehm-GC haelt bei einer Kollision ALLE Threads per
-// Signal an ("Stop the world", auf diesem System SIGPWR). Blockiert ein
-// Thread gerade in einem recv()/send() ueber die binaersicheren
-// Conn-Primitiven (httpConnReadN/httpConnWriteBytes), wird der Syscall
-// durch dieses Signal unterbrochen (errno=EINTR) -- OHNE Retry-Schleife
-// sah conn_recv/conn_send das faelschlich als abgebrochene Verbindung an,
-// der Frame wurde vorzeitig (leer) abgeschnitten, und die Silent-Garbage
-// lief bis zu einem spaeter voellig unzusammenhaengend wirkenden
-// Bounds-Check-Crash weiter.
+// Regression test for Bug 68 (bugs.md): `spawn` tasks run as real
+// POSIX threads. On a collision, the Boehm GC stops ALL threads via
+// signal ("stop the world", on this system SIGPWR). If a
+// thread is currently blocked in a recv()/send() via the binary-safe
+// conn primitives (httpConnReadN/httpConnWriteBytes), the syscall
+// gets interrupted by this signal (errno=EINTR) -- WITHOUT a retry loop
+// conn_recv/conn_send incorrectly treated this as a dropped connection,
+// the frame was truncated prematurely (empty), and the silent garbage
+// propagated onward until a later, seemingly completely unrelated
+// bounds-check crash.
 //
-// Reproduktion: eine 240-Byte-`shortstr` (Queue-Name) in queue.declare,
-// gefolgt von einem clientseitig verworfenen 300-Byte-Aufruf (kein
-// Netzwerk-I/O, aber Allokations-Druck -- erhoeht die Chance, dass eine
-// GC-Kollision GENAU waehrend des naechsten blockierenden Lese-Aufrufs
-// des simulierten Brokers laeuft), dann queue.bind -- dort crashte es im
-// Originalbefund deterministisch. Fix: EINTR-Retry-Schleife in
+// Reproduction: a 240-byte `shortstr` (queue name) in queue.declare,
+// followed by a client-side rejected 300-byte call (no
+// network I/O, but allocation pressure -- increases the chance that a
+// GC collision runs EXACTLY during the next blocking read call
+// of the simulated broker), then queue.bind -- that's where it crashed
+// deterministically in the original finding. Fix: EINTR retry loop in
 // conn_recv/conn_send (runtime.c).
 // expect: ok-connect
 // expect: ok-declare1
@@ -60,7 +60,7 @@ class Main
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
-        // queue.declare (240-Byte-Name) -> declare-ok
+        // queue.declare (240-byte name) -> declare-ok
         let fDecl = Amqp091::readFrame(sconn);
         let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10;
@@ -74,7 +74,7 @@ class Main
         w5.long(0);
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, w5.bytes));
 
-        // queue.bind -> bind-ok (der Aufruf, der im Originalbefund crashte)
+        // queue.bind -> bind-ok (the call that crashed in the original finding)
         let fBind = Amqp091::readFrame(sconn);
         let mBind = Amqp091::decodeMethodPayload(fBind.payload);
         var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20;
@@ -103,7 +103,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47641);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
@@ -119,9 +119,9 @@ class Main
             println("ok-declare1");
         }
 
-        // Verworfen ohne Netzwerk-I/O (>255 Byte) -- der zusaetzliche
-        // Allokations-Druck (300 Ein-Zeichen-Konkatenationen) ist Teil der
-        // urspruenglichen Reproduktion.
+        // Rejected without network I/O (>255 bytes) -- the additional
+        // allocation pressure (300 single-character concatenations) is part
+        // of the original reproduction.
         let skipped = ch.declareQueue(makeName(300), true, false, false);
         if skipped.len() == 0 {
             if ch.errorMessage.len() > 0 {

@@ -560,7 +560,7 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Import)?;
         let mut path = vec![self.parse_ident()?];
-        // Beide Separatoren erlaubt: `import a.b;` und `import a::b;`
+        // Both separators allowed: `import a.b;` and `import a::b;`
         while self.consume(TokenKind::Dot) || self.consume(TokenKind::ColonColon) {
             path.push(self.parse_ident()?);
         }
@@ -697,7 +697,7 @@ impl Parser {
         while self.check(TokenKind::LBracket) {
             self.bump();
             while !self.check(TokenKind::RBracket) {
-                // EOF ohne ']' — bump() käme nicht mehr voran (Endlosschleife)
+                // EOF without ']' — bump() would no longer advance (infinite loop)
                 if self.is_at_end() {
                     return Err(self.error("expected ']' in array type"));
                 }
@@ -3455,7 +3455,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::approx_constant)] // 3.14 testet Float-Parsing, nicht PI
+    #[allow(clippy::approx_constant)] // 3.14 tests float parsing, not PI
     fn test_expr_float_literal() {
         let d = first_decl("fn f() { let x = 3.14; }");
         let DeclKind::Function(f) = d else { panic!() };
@@ -4362,7 +4362,7 @@ mod tests {
 
     #[test]
     fn test_type_nested_generic_three_levels() {
-        // `>>>` wird beim Schließen generischer Typen gesplittet (expect_generic_close)
+        // `>>>` is split when closing generic types (expect_generic_close)
         let d = first_decl("fn f(x: Array<Array<Array<Int64>>>) -> Nothing {}");
         let DeclKind::Function(f) = d else { panic!() };
         let Type::Generic { name, args } = &f.params[0].param_type else { panic!() };

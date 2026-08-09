@@ -1,15 +1,15 @@
-// AMQP-0-9-1 Phase 4 (tasklist.md): Publish/Consume-API.
-// Wie amqp_connection_negotiation.tnx: ein per `spawn` gestarteter
-// simulierter Broker (async fn) spielt queue.declare/-ok, queue.bind/-ok,
-// basic.qos/-ok, basic.publish (Methode+Content-Header+Body),
-// basic.consume/-ok, basic.deliver (Methode+Content-Header+Body, spiegelt
-// den empfangenen Publish-Body zurueck) und basic.ack gegen den echten
-// Client-Code aus. Voller Live-Rundtrip (inkl. amq.direct-Bind, zwei
-// Nachrichten über verschiedene Exchanges) wurde manuell gegen einen echten
-// RabbitMQ-Container verifiziert, s. bugs.md/tasklist.md.
+// AMQP-0-9-1 phase 4 (tasklist.md): publish/consume API.
+// Like amqp_connection_negotiation.tnx: a simulated broker started via
+// `spawn` (async fn) plays out queue.declare/-ok, queue.bind/-ok,
+// basic.qos/-ok, basic.publish (method+content header+body),
+// basic.consume/-ok, basic.deliver (method+content header+body, mirrors
+// the received publish body back) and basic.ack against the real
+// client code. A full live round-trip (including amq.direct bind, two
+// messages across different exchanges) was manually verified against a
+// real RabbitMQ container, see bugs.md/tasklist.md.
 //
-// Workaround fuer Bug 67 (bugs.md, async fn -> Bool verliert Rueckgabetyp):
-// fakeBroker gibt Int64 (0/1) zurueck statt Bool.
+// Workaround for Bug 67 (bugs.md, async fn -> Bool loses the return type):
+// fakeBroker returns Int64 (0/1) instead of Bool.
 // expect: ok-declare
 // expect: ok-bind
 // expect: ok-qos
@@ -25,9 +25,9 @@ class Main
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // Protokoll-Header
+        httpConnReadN(sconn, 8); // protocol header
 
-        // --- Negotiation (wie amqp_connection_negotiation.tnx) ---
+        // --- Negotiation (like amqp_connection_negotiation.tnx) ---
         let w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
@@ -55,7 +55,7 @@ class Main
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
-        // --- queue.declare -> declare-ok (spiegelt den angefragten Namen) ---
+        // --- queue.declare -> declare-ok (mirrors the requested name) ---
         let fDecl = Amqp091::readFrame(sconn);
         let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         let declArgs = AmqpReader091::new(mDecl.args);
@@ -81,7 +81,7 @@ class Main
         var ok3: Bool = mQos.classId == 60 && mQos.methodId == 10;
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 11, []));
 
-        // --- basic.publish (Methode) + Content-Header + Body ---
+        // --- basic.publish (method) + content header + body ---
         let fPub = Amqp091::readFrame(sconn);
         let mPub = Amqp091::decodeMethodPayload(fPub.payload);
         var ok4: Bool = mPub.classId == 60 && mPub.methodId == 40;
@@ -109,8 +109,8 @@ class Main
         wConsOk.shortstr("fake-consumer-tag");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes));
 
-        // --- basic.deliver (Methode) + Content-Header + Body, spiegelt den
-        // vorher empfangenen Publish-Body zurueck ---
+        // --- basic.deliver (method) + content header + body, mirrors the
+        // previously received publish body back ---
         let wDeliver = AmqpWriter091::new();
         wDeliver.shortstr("fake-consumer-tag");
         wDeliver.longlong(1); // delivery-tag
@@ -123,12 +123,12 @@ class Main
         wDeliverHdr.short(60);
         wDeliverHdr.short(0);
         wDeliverHdr.longlong(body.len());
-        wDeliverHdr.short(32768); // nur content-type
+        wDeliverHdr.short(32768); // content-type only
         wDeliverHdr.shortstr("text/plain");
         Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr.bytes);
         Amqp091::writeFrame(sconn, 3, 1, body);
 
-        // --- basic.ack erwarten ---
+        // --- expect basic.ack ---
         let fAck = Amqp091::readFrame(sconn);
         let mAck = Amqp091::decodeMethodPayload(fAck.payload);
         var ok7: Bool = mAck.classId == 60 && mAck.methodId == 80;
@@ -158,7 +158,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47623);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);

@@ -1,14 +1,14 @@
 import Box;
 import Pair;
 
-// B2 Schritt 2 (Fortsetzung): Typargument-Inferenz für generische
-// StructLiterale. Der Typecheck unifiziert die Feld-Initialisierer gegen die
-// unerased Feld-Deklarationstypen (`Box { value: "x" }` → Named("Box",[String]))
-// und der Codegen emittiert das Literal als Spezialisierung (Box__i8P) statt
-// als generische Basis. Deckt den unannotierten UND den zuvor ebenfalls
-// kaputten annotierten Fall ab (die Annotation wurde vom Literal-Pfad
-// überschrieben), plus zwei Typ-Params. Bindungen an Scope-Typ-Params
-// (T→U im generischen Rumpf) bleiben bewusst außen vor (Wache).
+// B2 step 2 (continued): type-argument inference for generic struct
+// literals. The typecheck unifies the field initializers against the
+// unerased field declaration types (`Box { value: "x" }` → Named("Box",[String]))
+// and codegen emits the literal as a specialization (Box__i8P) instead
+// of the generic base. Covers the unannotated AND the previously equally
+// broken annotated case (the annotation was overwritten by the literal
+// path), plus two type params. Bindings to scope type params
+// (T→U in the generic body) are deliberately excluded (guard).
 // expect: hallo
 // expect: 5
 // expect: 42
@@ -21,25 +21,25 @@ import Pair;
 class Main
 {
     fnc main() -> Int32 {
-        // Unannotiert: T=String aus dem Initialisierer
+        // Unannotated: T=String from the initializer
         let bs = Box { value: "hallo" };
         println(bs.value);                    // hallo
         println(bs.value.len().toString());  // 5
 
-        // Unannotiert: T=Int64
+        // Unannotated: T=Int64
         let bi = Box { value: 42 };
         println(bi.value.toString());        // 42
 
-        // Annotiert (war ebenfalls kaputt: Literal-Pfad überschrieb die Annotation)
+        // Annotated (was also broken: literal path overwrote the annotation)
         let ba: Box<String> = Box { value: "hi" };
         println(ba.value);                    // hi
         println(ba.value.len().toString());  // 2
 
-        // var-Pfad
+        // var path
         var bv = Box { value: 7 };
         println(bv.value.toString());        // 7
 
-        // Zwei Typ-Params unabhängig gebunden
+        // Two type params bound independently
         let p = Pair { a: "eins", b: 2.5 };
         println(p.a);                         // eins
         println(p.b.toString());             // 2.5

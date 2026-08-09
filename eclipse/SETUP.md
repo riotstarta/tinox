@@ -1,12 +1,12 @@
-# Tinox Eclipse Plugin — Setup-Anleitung
+# Tinox Eclipse Plugin — Setup Guide
 
-Diese Anleitung erklärt Schritt für Schritt, wie du das Tinox Eclipse Plugin einrichtest und verwendest.
+This guide explains step by step how to set up and use the Tinox Eclipse Plugin.
 
 ---
 
-## Voraussetzungen
+## Prerequisites
 
-| Was | Version |
+| What | Version |
 |-----|---------|
 | Eclipse IDE for Plugin Development | ≥ 2023-09 |
 | Java | ≥ 17 |
@@ -14,18 +14,18 @@ Diese Anleitung erklärt Schritt für Schritt, wie du das Tinox Eclipse Plugin e
 
 ---
 
-## Schritt 1: tinox-lsp Binary installieren
+## Step 1: Install the tinox-lsp binary
 
-Das Eclipse-Plugin kommuniziert mit dem `tinox-lsp` Language Server. Dieser muss zuerst gebaut und installiert werden.
+The Eclipse plugin communicates with the `tinox-lsp` language server. It must be built and installed first.
 
 ```bash
-# Im Wurzelverzeichnis des Repos:
+# In the repo's root directory:
 ./eclipse/install-lsp.sh
 ```
 
-Das Skript baut `tinox-lsp` im Release-Modus und kopiert die Binary nach `~/.cargo/bin/tinox-lsp`.
+The script builds `tinox-lsp` in release mode and copies the binary to `~/.cargo/bin/tinox-lsp`.
 
-**Manuell (alternativ):**
+**Manually (alternative):**
 ```bash
 cargo build --release -p tinox-lsp
 cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp
@@ -33,45 +33,45 @@ cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp
 
 ---
 
-## Schritt 2: LSP4E in Eclipse installieren
+## Step 2: Install LSP4E in Eclipse
 
-LSP4E ist das Framework das Eclipse mit Language Servern verbindet.
+LSP4E is the framework that connects Eclipse to language servers.
 
-1. Eclipse öffnen
+1. Open Eclipse
 2. **Help → Install New Software…**
-3. Bei "Work with" eintragen:
+3. Enter under "Work with":
    ```
    https://download.eclipse.org/lsp4e/releases/latest/
    ```
-4. **"Language Server Protocol client for Eclipse"** auswählen
-5. Next → Finish → Eclipse neu starten
+4. Select **"Language Server Protocol client for Eclipse"**
+5. Next → Finish → restart Eclipse
 
 ---
 
-## Schritt 3: Plugin in Eclipse importieren
+## Step 3: Import the plugin into Eclipse
 
 1. **File → Import…**
 2. **General → Existing Projects into Workspace** → Next
-3. Root directory: Pfad zum `eclipse/tinox-eclipse` Ordner im Repo wählen
-4. `tinox-eclipse` sollte in der Liste erscheinen → **Finish**
+3. Root directory: choose the path to the `eclipse/tinox-eclipse` folder in the repo
+4. `tinox-eclipse` should appear in the list → **Finish**
 
 ---
 
-## Schritt 4: Plugin starten
+## Step 4: Start the plugin
 
-1. Im Package Explorer: Rechtsklick auf `tinox-eclipse`
+1. In the Package Explorer: right-click `tinox-eclipse`
 2. **Run As → Eclipse Application**
-3. Ein zweites Eclipse-Fenster öffnet sich — das ist die Test-Instanz mit dem Plugin
+3. A second Eclipse window opens — that's the test instance with the plugin
 
 ---
 
-## Schritt 5: Testen
+## Step 5: Testing
 
-Im zweiten Eclipse-Fenster:
+In the second Eclipse window:
 
 1. **File → New → Project → General → Project** → Finish
-2. Neue Datei anlegen: Rechtsklick auf Projekt → **New → File**, Name: `test.tnx`
-3. Folgendes eingeben:
+2. Create a new file: right-click the project → **New → File**, name: `test.tnx`
+3. Enter the following:
 
 ```tinox
 fn add(a: Int64, b: Int64) -> Int64 {
@@ -84,50 +84,50 @@ fn main() -> Int64 {
 }
 ```
 
-**Was du jetzt siehst:**
+**What you'll see now:**
 
-| Aktion | Ergebnis |
+| Action | Result |
 |--------|----------|
-| Tippfehler einbauen | Rote Unterstreichung erscheint |
-| Cursor auf `add` in Zeile 6 | **Hover** zeigt `fn add(a: Int64, b: Int64) -> Int64` |
-| Ctrl+Space | **Autocomplete** öffnet sich mit Keywords, Builtins, Funktionen |
-| F3 auf `add` | **Go to Definition** springt zur Funktionsdeklaration |
-| Window → Show View → Outline | **Outline-View** zeigt alle Funktionen und Klassen |
+| Introduce a typo | Red underline appears |
+| Cursor on `add` in line 6 | **Hover** shows `fn add(a: Int64, b: Int64) -> Int64` |
+| Ctrl+Space | **Autocomplete** opens with keywords, builtins, functions |
+| F3 on `add` | **Go to Definition** jumps to the function declaration |
+| Window → Show View → Outline | **Outline view** shows all functions and classes |
 
 ---
 
-## Schritt 6 (Optional): Binary-Pfad konfigurieren
+## Step 6 (optional): Configure the binary path
 
-Falls `tinox-lsp` nicht unter `~/.cargo/bin/tinox-lsp` liegt:
+If `tinox-lsp` isn't located at `~/.cargo/bin/tinox-lsp`:
 
 1. **Window → Preferences → Tinox**
-2. Pfad zur `tinox-lsp` Binary eintragen
-3. OK → Eclipse neu starten
+2. Enter the path to the `tinox-lsp` binary
+3. OK → restart Eclipse
 
 ---
 
 ## Troubleshooting
 
-**Language Server startet nicht**
-- Prüfe ob die Binary ausführbar ist: `ls -la ~/.cargo/bin/tinox-lsp`
-- Prüfe den Pfad in den Preferences (Schritt 6)
-- Schau in **Window → Show View → Other → Language Servers** nach Fehlern
+**Language server doesn't start**
+- Check whether the binary is executable: `ls -la ~/.cargo/bin/tinox-lsp`
+- Check the path in Preferences (step 6)
+- Look in **Window → Show View → Other → Language Servers** for errors
 
-**Keine Fehler-Unterstreichungen**
-- Dateiendung muss `.tnx` sein (nicht `.tnx`)
-- Kurz warten — der Server braucht beim ersten Start 1-2 Sekunden
+**No error underlines**
+- The file extension must be `.tnx` (not `.tnx`)
+- Wait a moment — the server needs 1-2 seconds on its first start
 
-**`install-lsp.sh` schlägt fehl**
-- Stelle sicher dass `cargo` im PATH ist: `which cargo`
-- Baue manuell: `cargo build --release -p tinox-lsp`
+**`install-lsp.sh` fails**
+- Make sure `cargo` is on the PATH: `which cargo`
+- Build manually: `cargo build --release -p tinox-lsp`
 
 ---
 
-## Plugin als `.jar` exportieren (für Weitergabe)
+## Exporting the plugin as a `.jar` (for distribution)
 
-Um das Plugin ohne Eclipse-Entwicklungsumgebung zu verteilen:
+To distribute the plugin without an Eclipse development environment:
 
-1. Rechtsklick auf `tinox-eclipse` → **Export…**
+1. Right-click `tinox-eclipse` → **Export…**
 2. **Plug-in Development → Deployable plug-ins and fragments**
-3. Destination: Verzeichnis wählen → Finish
-4. Die erzeugte `.jar` in den `dropins/`-Ordner einer Eclipse-Installation kopieren
+3. Destination: choose a directory → Finish
+4. Copy the generated `.jar` into the `dropins/` folder of an Eclipse installation

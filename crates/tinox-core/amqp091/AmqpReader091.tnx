@@ -7,10 +7,11 @@ namespace tinox.core.amqp091
     extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
 
     /*
-     * Gegenstück zu AmqpWriter091: liest big-endian aus `bytes` ab einer
-     * internen Cursor-Position `pos`. Kein Bounds-Check auf Array-Ebene
-     * (Aufrufer MUSS die Frame-Größe vorher kennen, s. AmqpFrame091.payload
-     * — die Länge kommt immer aus dem äußeren Frame-Header).
+     * Counterpart to AmqpWriter091: reads big-endian from `bytes` starting
+     * at an internal cursor position `pos`. No array-level bounds check
+     * (caller MUST know the frame size beforehand, see
+     * AmqpFrame091.payload — the length always comes from the outer
+     * frame header).
      */
     class AmqpReader091
     {
@@ -53,9 +54,9 @@ namespace tinox.core.amqp091
             return (hi << 8) | lo;
         }
 
-        /* Liest 4 Bytes als VORZEICHENLOSER 32-Bit-Wert (0..2^32-1) — für
-         * Größenfelder (Table-/Array-/Longstr-Länge). Für den signierten
-         * `long-int`-Field-Value-Typ ('I') s. longSigned(). */
+        /* Reads 4 bytes as an UNSIGNED 32-bit value (0..2^32-1) — for
+         * size fields (table/array/longstr length). For the signed
+         * `long-int` field-value type ('I') see longSigned(). */
         fn long() -> Int64
         {
             var v: Int64 = 0;
@@ -65,11 +66,11 @@ namespace tinox.core.amqp091
             return v;
         }
 
-        /* Liest 4 Bytes als VORZEICHENBEHAFTETER 32-Bit-Wert (Two's
-         * Complement) — für den Field-Value-Typ 'I' (long-int). long()
-         * baut den Wert unsigned auf; ohne Korrektur würde ein gesetztes
-         * Bit 31 (jeder negative Int32) als riesiger positiver Int64
-         * fehlinterpretiert (z. B. -42 -> 4294967254). */
+        /* Reads 4 bytes as a SIGNED 32-bit value (two's complement) — for
+         * the field-value type 'I' (long-int). long() builds the value
+         * unsigned; without the correction, a set bit 31 (any negative
+         * Int32) would be misinterpreted as a huge positive Int64 (e.g.
+         * -42 -> 4294967254). */
         fn longSigned() -> Int64
         {
             let v = this.long();
@@ -95,11 +96,11 @@ namespace tinox.core.amqp091
             // in the loop, which is O(n^2) over the string length (issue #167).
             var bytes: List<Int64> = [];
             for i in 0..n {
-                // Bug 66 (gefixt): fromCharCode(this.octet()) direkt wertete
-                // das seiteneffektbehaftete Argument doppelt aus. Fix liegt
-                // in codegen.rs, aber andere Builtin-Argumente sind
-                // vermutlich analog betroffen (s. bugs.md) — hier trotzdem
-                // vorsichtshalber über eine lokale Variable.
+                // Bug 66 (fixed): fromCharCode(this.octet()) directly used
+                // to evaluate the side-effecting argument twice. The fix
+                // is in codegen.rs, but other builtin arguments are
+                // presumably affected the same way — done via a local
+                // variable here regardless, just to be safe.
                 let b = this.octet();
                 bytes.push(b);
             }
@@ -118,9 +119,9 @@ namespace tinox.core.amqp091
             return this.rawStr(n);
         }
 
-        /* Kein Silent-Garbage: ein unbekannter Typmarker liefert
-         * ErrorVal(Beschreibung) statt zu raten oder abzubrechen — der
-         * Aufrufer entscheidet, ob das fatal ist. */
+        /* No silent garbage: an unknown type marker returns
+         * ErrorVal(description) instead of guessing or aborting — the
+         * caller decides whether that's fatal. */
         fn fieldValue() -> AmqpFieldValue091
         {
             let tag = this.octet();
@@ -149,7 +150,7 @@ namespace tinox.core.amqp091
             if tag == 86 { // 'V'
                 return AmqpFieldValue091::VoidVal;
             }
-            return AmqpFieldValue091::ErrorVal("unbekannter Field-Value-Typ: " + tag.toString());
+            return AmqpFieldValue091::ErrorVal("unknown field-value type: " + tag.toString());
         }
 
         fn fieldTable() -> Map<String, AmqpFieldValue091>

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Java vs. Kotlin vs. Tinox vs. TypeScript — Sprachvergleich</title>
+  <title>Java vs. Kotlin vs. Tinox vs. TypeScript — Language Comparison</title>
   <style>
     :root {
       --java:   #e86100;
@@ -224,157 +224,157 @@
     <span class="tinox">Tinox</span> vs.
     <span class="ts">TypeScript</span>
   </h1>
-  <p>Detaillierter Sprachvergleich · Syntax, Performance, Ökosystem, Ergonomie</p>
+  <p>Detailed language comparison · syntax, performance, ecosystem, ergonomics</p>
 </header>
 
 <nav>
-  <a href="#overview">Übersicht</a>
+  <a href="#overview">Overview</a>
   <a href="#syntax">Syntax</a>
-  <a href="#types">Typen &amp; Generics</a>
-  <a href="#oop">OOP &amp; Vererbung</a>
-  <a href="#functional">Funktional</a>
+  <a href="#types">Types &amp; Generics</a>
+  <a href="#oop">OOP &amp; Inheritance</a>
+  <a href="#functional">Functional</a>
   <a href="#concurrency">Concurrency</a>
   <a href="#memory">Memory &amp; Performance</a>
-  <a href="#stdlib">Standardbibliothek</a>
+  <a href="#stdlib">Standard Library</a>
   <a href="#tooling">Tooling</a>
-  <a href="#packages">Paket-Manager</a>
+  <a href="#packages">Package Manager</a>
   <a href="#web">Web &amp; REST</a>
-  <a href="#logging">Logging &amp; Datenschutz</a>
-  <a href="#errorhandling">Fehlerbehandlung</a>
-  <a href="#verdict">Fazit</a>
+  <a href="#logging">Logging &amp; Privacy</a>
+  <a href="#errorhandling">Error Handling</a>
+  <a href="#verdict">Verdict</a>
 </nav>
 
 <main>
 
   <!-- ══════════════════════════════════════════════════════ OVERVIEW -->
   <section id="overview">
-    <h2><span class="icon">⚖️</span> Schnellvergleich</h2>
+    <h2><span class="icon">⚖️</span> Quick Comparison</h2>
     <div class="overview-grid">
-      <div class="header">Merkmal</div>
+      <div class="header">Feature</div>
       <div class="header hj">Java</div>
       <div class="header hk">Kotlin</div>
       <div class="header ht">Tinox</div>
       <div class="header hts">TypeScript</div>
 
-      <div>Erstveröffentlichung</div>
+      <div>First release</div>
       <div>1995 (Sun Microsystems)</div>
       <div>2016 (JetBrains)</div>
-      <div>2025 (Tino, Open Source)</div>
+      <div>2025 (Tino, open source)</div>
       <div>2012 (Microsoft)</div>
 
-      <div>Paradigma</div>
-      <div>OOP, funktional (seit Java 8)</div>
-      <div>OOP, funktional, multi-paradigm</div>
-      <div>OOP, funktional, systemah</div>
-      <div>OOP, funktional, multi-paradigm</div>
+      <div>Paradigm</div>
+      <div>OOP, functional (since Java 8)</div>
+      <div>OOP, functional, multi-paradigm</div>
+      <div>OOP, functional, systems-level</div>
+      <div>OOP, functional, multi-paradigm</div>
 
-      <div>Typsystem</div>
-      <div>Statisch, nominell</div>
-      <div>Statisch, nominell, Inferenz</div>
-      <div>Statisch, nominell, Inferenz</div>
-      <div>Statisch, strukturell, Inferenz</div>
+      <div>Type system</div>
+      <div>Static, nominal</div>
+      <div>Static, nominal, inference</div>
+      <div>Static, nominal, inference</div>
+      <div>Static, structural, inference</div>
 
-      <div>Ausführung</div>
-      <div>JVM (Bytecode → JIT)</div>
+      <div>Execution</div>
+      <div>JVM (bytecode → JIT)</div>
       <div>JVM / Native (LLVM) / JS</div>
-      <div>Nativ (LLVM IR → Maschinencode)</div>
-      <div>Node.js / Deno / Bun (JS-Runtime)</div>
+      <div>Native (LLVM IR → machine code)</div>
+      <div>Node.js / Deno / Bun (JS runtime)</div>
 
       <div>GC</div>
-      <div><span class="badge yes">JA</span> (G1, ZGC, Shenandoah…)</div>
-      <div><span class="badge yes">JA</span> (JVM GC / Kotlin/Native ARC)</div>
-      <div><span class="badge yes">JA</span> (eigene Tinox Runtime)</div>
-      <div><span class="badge yes">JA</span> (V8 GC)</div>
+      <div><span class="badge yes">YES</span> (G1, ZGC, Shenandoah…)</div>
+      <div><span class="badge yes">YES</span> (JVM GC / Kotlin/Native ARC)</div>
+      <div><span class="badge yes">YES</span> (own Tinox runtime)</div>
+      <div><span class="badge yes">YES</span> (V8 GC)</div>
 
-      <div>Immutability per default</div>
-      <div><span class="badge no">NEIN</span> (final explizit)</div>
-      <div><span class="badge yes">JA</span> (val/var)</div>
-      <div><span class="badge yes">JA</span> (let/var)</div>
-      <div><span class="badge part">TEIL</span> (const / let)</div>
+      <div>Immutability by default</div>
+      <div><span class="badge no">NO</span> (final explicit)</div>
+      <div><span class="badge yes">YES</span> (val/var)</div>
+      <div><span class="badge yes">YES</span> (let/var)</div>
+      <div><span class="badge part">PARTIAL</span> (const / let)</div>
 
-      <div>Typ-Inferenz</div>
-      <div><span class="badge part">TEIL</span> (var seit Java 10)</div>
-      <div><span class="badge yes">JA</span> (vollständig)</div>
-      <div><span class="badge yes">JA</span> (vollständig)</div>
-      <div><span class="badge yes">JA</span> (sehr stark)</div>
+      <div>Type inference</div>
+      <div><span class="badge part">PARTIAL</span> (var since Java 10)</div>
+      <div><span class="badge yes">YES</span> (full)</div>
+      <div><span class="badge yes">YES</span> (full)</div>
+      <div><span class="badge yes">YES</span> (very strong)</div>
 
-      <div>Null Safety</div>
-      <div><span class="badge no">NEIN</span> (NullPointerException)</div>
-      <div><span class="badge yes">JA</span> (T? im Typsystem)</div>
-      <div><span class="badge no">NEIN</span> (null passiert Typechecker; Option&lt;T&gt; in Stdlib)</div>
-      <div><span class="badge yes">JA</span> (strictNullChecks)</div>
+      <div>Null safety</div>
+      <div><span class="badge no">NO</span> (NullPointerException)</div>
+      <div><span class="badge yes">YES</span> (T? in the type system)</div>
+      <div><span class="badge no">NO</span> (null passes the typechecker; Option&lt;T&gt; in stdlib)</div>
+      <div><span class="badge yes">YES</span> (strictNullChecks)</div>
 
-      <div>String-Interpolation</div>
-      <div><span class="badge part">TEIL</span> (Text Blocks, kein ${expr})</div>
-      <div><span class="badge yes">JA</span> ("Hi $name!")</div>
-      <div><span class="badge yes">JA</span> ("Hi ${name}!")</div>
-      <div><span class="badge yes">JA</span> (`Hi ${name}!`)</div>
+      <div>String interpolation</div>
+      <div><span class="badge part">PARTIAL</span> (text blocks, no ${expr})</div>
+      <div><span class="badge yes">YES</span> ("Hi $name!")</div>
+      <div><span class="badge yes">YES</span> ("Hi ${name}!")</div>
+      <div><span class="badge yes">YES</span> (`Hi ${name}!`)</div>
 
       <div>Generics</div>
-      <div><span class="badge yes">JA</span> (Type Erasure)</div>
-      <div><span class="badge yes">JA</span> (Type Erasure + reified)</div>
-      <div><span class="badge yes">JA</span> (Monomorphisierung)</div>
-      <div><span class="badge yes">JA</span> (strukturell, Compile-Zeit)</div>
+      <div><span class="badge yes">YES</span> (type erasure)</div>
+      <div><span class="badge yes">YES</span> (type erasure + reified)</div>
+      <div><span class="badge yes">YES</span> (monomorphization)</div>
+      <div><span class="badge yes">YES</span> (structural, compile time)</div>
 
       <div>Lambdas</div>
-      <div><span class="badge yes">JA</span> (seit Java 8)</div>
-      <div><span class="badge yes">JA</span> ({ x -&gt; x * 2 })</div>
-      <div><span class="badge yes">JA</span> (n =&gt; n * 2)</div>
-      <div><span class="badge yes">JA</span> (n =&gt; n * 2)</div>
+      <div><span class="badge yes">YES</span> (since Java 8)</div>
+      <div><span class="badge yes">YES</span> ({ x -&gt; x * 2 })</div>
+      <div><span class="badge yes">YES</span> (n =&gt; n * 2)</div>
+      <div><span class="badge yes">YES</span> (n =&gt; n * 2)</div>
 
-      <div>Pattern Matching</div>
-      <div><span class="badge part">TEIL</span> (switch expr., Sealed Classes)</div>
-      <div><span class="badge yes">JA</span> (when, sealed classes, exhaustiv)</div>
-      <div><span class="badge yes">JA</span> (match statement)</div>
-      <div><span class="badge no">NEIN</span> (switch, kein echtes match)</div>
+      <div>Pattern matching</div>
+      <div><span class="badge part">PARTIAL</span> (switch expr., sealed classes)</div>
+      <div><span class="badge yes">YES</span> (when, sealed classes, exhaustive)</div>
+      <div><span class="badge yes">YES</span> (match statement)</div>
+      <div><span class="badge no">NO</span> (switch, no real match)</div>
 
-      <div>Extension Functions</div>
-      <div><span class="badge no">NEIN</span></div>
-      <div><span class="badge yes">JA</span> (first-class)</div>
-      <div><span class="badge no">NEIN</span></div>
-      <div><span class="badge no">NEIN</span> (Prototype-Hacks)</div>
+      <div>Extension functions</div>
+      <div><span class="badge no">NO</span></div>
+      <div><span class="badge yes">YES</span> (first-class)</div>
+      <div><span class="badge no">NO</span></div>
+      <div><span class="badge no">NO</span> (prototype hacks)</div>
 
-      <div>Async / Concurrency</div>
-      <div><span class="badge yes">JA</span> (CompletableFuture, Virtual Threads)</div>
-      <div><span class="badge yes">JA</span> (Coroutines, Flow, Channels)</div>
-      <div><span class="badge yes">JA</span> (async/await, spawn, channels)</div>
-      <div><span class="badge yes">JA</span> (async/await, Promises)</div>
+      <div>Async / concurrency</div>
+      <div><span class="badge yes">YES</span> (CompletableFuture, virtual threads)</div>
+      <div><span class="badge yes">YES</span> (coroutines, flow, channels)</div>
+      <div><span class="badge yes">YES</span> (async/await, spawn, channels)</div>
+      <div><span class="badge yes">YES</span> (async/await, promises)</div>
 
       <div>Defer</div>
-      <div><span class="badge no">NEIN</span> (try-with-resources)</div>
-      <div><span class="badge no">NEIN</span> (use { } als Alternative)</div>
-      <div><span class="badge yes">JA</span> (defer {})</div>
-      <div><span class="badge no">NEIN</span> (try/finally)</div>
+      <div><span class="badge no">NO</span> (try-with-resources)</div>
+      <div><span class="badge no">NO</span> (use { } as an alternative)</div>
+      <div><span class="badge yes">YES</span> (defer {})</div>
+      <div><span class="badge no">NO</span> (try/finally)</div>
 
-      <div>Annotations / Decorators</div>
-      <div><span class="badge yes">JA</span> (Laufzeit + Compiler)</div>
-      <div><span class="badge yes">JA</span> (@annotation, ksp, kapt)</div>
-      <div><span class="badge yes">JA</span> (@inline, @deprecated, REST…)</div>
-      <div><span class="badge part">TEIL</span> (Decorators, Stage 3)</div>
+      <div>Annotations / decorators</div>
+      <div><span class="badge yes">YES</span> (runtime + compiler)</div>
+      <div><span class="badge yes">YES</span> (@annotation, ksp, kapt)</div>
+      <div><span class="badge yes">YES</span> (@inline, @deprecated, REST…)</div>
+      <div><span class="badge part">PARTIAL</span> (decorators, stage 3)</div>
 
-      <div>Startup-Zeit</div>
-      <div>Langsam (JVM-Start)</div>
-      <div>Langsam (JVM) / Schnell (Native)</div>
-      <div>Instant (native Binary)</div>
-      <div>Schnell (Node.js / Bun)</div>
+      <div>Startup time</div>
+      <div>Slow (JVM start)</div>
+      <div>Slow (JVM) / fast (native)</div>
+      <div>Instant (native binary)</div>
+      <div>Fast (Node.js / Bun)</div>
 
-      <div>Paket-Manager</div>
+      <div>Package manager</div>
       <div>Maven / Gradle</div>
       <div>Gradle (Kotlin DSL) / Maven</div>
       <div>tinox install / add / package</div>
       <div>npm / yarn / pnpm</div>
 
-      <div>Ökosystem</div>
-      <div>Riesig (30 Jahre Bibliotheken)</div>
-      <div>Sehr groß (JVM + Kotlin-spezifisch)</div>
-      <div>Wächst (50+ Stdlib-Module)</div>
-      <div>Gigantisch (npm: 2M+ Pakete)</div>
+      <div>Ecosystem</div>
+      <div>Huge (30 years of libraries)</div>
+      <div>Very large (JVM + Kotlin-specific)</div>
+      <div>Growing (50+ stdlib modules)</div>
+      <div>Gigantic (npm: 2M+ packages)</div>
     </div>
   </section>
 
   <!-- ══════════════════════════════════════════════════════ SYNTAX -->
   <section id="syntax">
-    <h2><span class="icon">📝</span> Syntax &amp; Grundkonstrukte</h2>
+    <h2><span class="icon">📝</span> Syntax &amp; Basic Constructs</h2>
 
     <p class="subsection-label">Hello World</p>
     <div class="compare">
@@ -406,40 +406,40 @@
       </div>
     </div>
 
-    <p class="subsection-label">Variablen &amp; Inferenz</p>
+    <p class="subsection-label">Variables &amp; Inference</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
         <pre><code>final int x = 42;           // immutable
 int y = 10;                  // mutable
-var name = "Alice";          // Inferenz (Java 10+)
-String msg = "Hi " + name + "!"; // kein Interpolation</code></pre>
+var name = "Alice";          // inference (Java 10+)
+String msg = "Hi " + name + "!"; // no interpolation</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
         <pre><code>val x: Int = 42              // immutable
 var y: Int = 10              // mutable
-val name = "Alice"           // Inferenz überall
-val msg = "Hi $name!"        // String-Interpolation
-val expr = "2+2=${2 + 2}"    // Ausdruck in ${}</code></pre>
+val name = "Alice"           // inference everywhere
+val msg = "Hi $name!"        // string interpolation
+val expr = "2+2=${2 + 2}"    // expression in ${}</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
         <pre><code>let x: Int64 = 42;           // immutable
 var y: Int64 = 10;           // mutable
-let name = "Alice";          // Inferenz überall
-let msg = "Hi ${name}!";     // String-Interpolation</code></pre>
+let name = "Alice";          // inference everywhere
+let msg = "Hi ${name}!";     // string interpolation</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
         <pre><code>const x: number = 42;        // immutable
 let y: number = 10;          // mutable
-const name = "Alice";        // Inferenz
-const msg = `Hi ${name}!`;   // Template Literal</code></pre>
+const name = "Alice";        // inference
+const msg = `Hi ${name}!`;   // template literal</code></pre>
       </div>
     </div>
 
-    <p class="subsection-label">Schleifen &amp; Ranges</p>
+    <p class="subsection-label">Loops &amp; Ranges</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
@@ -463,15 +463,15 @@ for (s in list) println(s)
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>for i in 0..5        // exklusiv: 0,1,2,3,4
+        <pre><code>for i in 0..5        // exclusive: 0,1,2,3,4
 {
     println(i);
 }
-for i in 0...5       // inklusiv: 0,1,2,3,4,5
+for i in 0...5       // inclusive: 0,1,2,3,4,5
 {
     println(i);
 }
-for ch in "hello"    // Zeichen-Iteration
+for ch in "hello"    // character iteration
 {
     print(ch);
 }</code></pre>
@@ -491,22 +491,22 @@ for (const s of list) {
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox — Syntax-Vorteile</h4>
+        <h4>Tinox — Syntax Advantages</h4>
         <ul>
-          <li>Weniger Boilerplate als Java (kein public class Wrapper)</li>
-          <li>let/var macht Mutability sofort sichtbar</li>
-          <li>String-Interpolation direkt in der Sprache</li>
-          <li>Ranges (0..5, 0...5) — kein Iterator-API nötig</li>
-          <li>Allman-Style Formatter erzwingt einheitlichen Stil</li>
+          <li>Less boilerplate than Java (no public class wrapper)</li>
+          <li>let/var makes mutability immediately visible</li>
+          <li>String interpolation built into the language</li>
+          <li>Ranges (0..5, 0...5) — no iterator API needed</li>
+          <li>Allman-style formatter enforces a consistent style</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox — Syntax-Nachteile</h4>
+        <h4>Tinox — Syntax Disadvantages</h4>
         <ul>
-          <li>Kotlin hat kürzere Lambdas und weniger Zeremonie</li>
-          <li>Kein REPL (noch in Planung)</li>
-          <li>Allman-Style kann polarisieren</li>
-          <li>Kleinere Community, weniger Tutorials</li>
+          <li>Kotlin has shorter lambdas and less ceremony</li>
+          <li>No REPL (still planned)</li>
+          <li>Allman style can be polarizing</li>
+          <li>Smaller community, fewer tutorials</li>
         </ul>
       </div>
     </div>
@@ -514,13 +514,13 @@ for (const s of list) {
 
   <!-- ══════════════════════════════════════════════════════ TYPES -->
   <section id="types">
-    <h2><span class="icon">🧬</span> Typen &amp; Generics</h2>
+    <h2><span class="icon">🧬</span> Types &amp; Generics</h2>
 
     <p class="subsection-label">Generics</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Type Erasure: T → Object zur Laufzeit
+        <pre><code>// Type erasure: T → Object at runtime
 public class Box&lt;T&gt; {
     private T value;
     public Box(T value) { this.value = value; }
@@ -529,24 +529,24 @@ public class Box&lt;T&gt; {
 
 Box&lt;Integer&gt; b = new Box&lt;&gt;(42);
 // Wildcards: Box&lt;? extends Number&gt;
-// Kein Box&lt;int&gt;, nur Box&lt;Integer&gt;</code></pre>
+// No Box&lt;int&gt;, only Box&lt;Integer&gt;</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// Type Erasure + reified für Inline-Funktionen
+        <pre><code>// Type erasure + reified for inline functions
 class Box&lt;T&gt;(val value: T)
 
 val b = Box(42)
 println(b.value)
 
-// Variance-Annotations:
+// Variance annotations:
 // out T (covariant), in T (contravariant)
-// reified bei inline fun:
+// reified with inline fun:
 inline fun &lt;reified T&gt; isType(x: Any) = x is T</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>// Monomorphisierung: echter Typ bleibt erhalten
+        <pre><code>// Monomorphization: real type is preserved
 class Box&lt;T&gt;
 {
     value: T;
@@ -558,11 +558,11 @@ class Box&lt;T&gt;
 }
 
 let b = new Box&lt;Int64&gt;(42);
-// Primitive direkt verwendbar (kein Boxing)</code></pre>
+// Primitives usable directly (no boxing)</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
-        <pre><code>// Strukturelles Typsystem, Compile-Zeit gelöscht
+        <pre><code>// Structural type system, erased at compile time
 class Box&lt;T&gt; {
     constructor(private value: T) {}
     get(): T { return this.value; }
@@ -570,7 +570,7 @@ class Box&lt;T&gt; {
 
 const b = new Box&lt;number&gt;(42);
 // Constraints: Box&lt;T extends number&gt;
-// Conditional Types: T extends U ? X : Y</code></pre>
+// Conditional types: T extends U ? X : Y</code></pre>
       </div>
     </div>
 
@@ -611,7 +611,7 @@ arr[0];
 let m = @{"a" => 1};
 m.insert("b", 2);
 m.get("a");
-// typisiert:
+// typed:
 let m: Map&lt;String, Int64&gt; = Map::new();</code></pre>
       </div>
       <div class="compare-col typescript">
@@ -631,21 +631,21 @@ const obj: Record&lt;string, number&gt; = { a: 1 };</code></pre>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Generics — Vorteile</h4>
+        <h4>Tinox Generics — Advantages</h4>
         <ul>
-          <li>Monomorphisierung: kein Overhead durch Type Erasure</li>
-          <li>Primitive direkt als Typparameter (kein Integer vs. int)</li>
-          <li>Map-Literal-Syntax (@{"k" =&gt; v}) kompakter</li>
-          <li>Array-Builtins (first, last, join) ohne Import</li>
+          <li>Monomorphization: no type-erasure overhead</li>
+          <li>Primitives directly as type parameters (no Integer vs. int)</li>
+          <li>Map literal syntax (@{"k" =&gt; v}) is more compact</li>
+          <li>Array builtins (first, last, join) without imports</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Generics — Nachteile</h4>
+        <h4>Tinox Generics — Disadvantages</h4>
         <ul>
-          <li>Monomorphisierung kann Binärgröße erhöhen</li>
-          <li>Wildcards (? extends T) und Variance-Annotations fehlen</li>
-          <li>Kein reified / Reflection-Zugriff auf Typinformation</li>
-          <li>Bounded Type Parameters noch eingeschränkt</li>
+          <li>Monomorphization can increase binary size</li>
+          <li>Wildcards (? extends T) and variance annotations are missing</li>
+          <li>No reified / reflection access to type information</li>
+          <li>Bounded type parameters still limited</li>
         </ul>
       </div>
     </div>
@@ -653,9 +653,9 @@ const obj: Record&lt;string, number&gt; = { a: 1 };</code></pre>
 
   <!-- ══════════════════════════════════════════════════════ OOP -->
   <section id="oop">
-    <h2><span class="icon">🏗️</span> OOP, Klassen &amp; Vererbung</h2>
+    <h2><span class="icon">🏗️</span> OOP, Classes &amp; Inheritance</h2>
 
-    <p class="subsection-label">Vererbung</p>
+    <p class="subsection-label">Inheritance</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
@@ -736,11 +736,11 @@ console.log(a.speak());</code></pre>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Java 16+: Records
+        <pre><code>// Java 16+: records
 public record Point(int x, int y) {}
 
-// auto-generiert: equals, hashCode,
-// toString, Accessor-Methoden x(), y()
+// auto-generated: equals, hashCode,
+// toString, accessor methods x(), y()
 
 Point p = new Point(3, 4);
 System.out.println(p.x()); // 3</code></pre>
@@ -748,36 +748,36 @@ System.out.println(p.x()); // 3</code></pre>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
         <pre><code>// data class: equals, hashCode,
-// toString, copy() auto-generiert
+// toString, copy() auto-generated
 data class Point(val x: Int, val y: Int)
 
 val p = Point(3, 4)
 println(p.x) // 3
 
-// Kopieren mit Änderung:
+// Copy with change:
 val p2 = p.copy(y = 10)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>// immutable: unveränderliches Wertobjekt
-// new() wird auto-generiert
+        <pre><code>// immutable: unchangeable value object
+// new() is auto-generated
 immutable Point(x: Int64, y: Int64)
 
 let p = new Point(3, 4);
 println(p.x); // 3
 
-// Felder via FieldAccess (read-only)</code></pre>
+// Fields via field access (read-only)</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
-        <pre><code>// Kein eingebautes Record-Konzept
-// Interface + Object als Workaround:
+        <pre><code>// No built-in record concept
+// Interface + object as a workaround:
 interface Point { readonly x: number; readonly y: number; }
 
 const p: Point = { x: 3, y: 4 };
 console.log(p.x); // 3
 
-// Klassen-Alternative mit readonly:
+// Class alternative with readonly:
 class Point {
     constructor(readonly x: number, readonly y: number) {}
 }</code></pre>
@@ -790,7 +790,7 @@ class Point {
         <h3>Java</h3>
         <pre><code>public interface Printable {
     String toString();
-    // Default-Methoden möglich:
+    // Default methods possible:
     default void print() {
         System.out.println(toString());
     }
@@ -808,7 +808,7 @@ public class Point implements Printable {
         <h3>Kotlin</h3>
         <pre><code>interface Printable {
     fun label(): String
-    // Default-Implementierung möglich:
+    // Default implementation possible:
     fun print() = println(label())
 }
 
@@ -816,7 +816,7 @@ data class Point(val x: Int, val y: Int) : Printable {
     override fun label() = "($x, $y)"
 }
 
-// Extension Function (ohne Interface):
+// Extension function (without an interface):
 fun Point.describe() = "x=$x y=$y"</code></pre>
       </div>
       <div class="compare-col tinox">
@@ -858,28 +858,28 @@ class Point implements Printable {
         return `(${this.x}, ${this.y})`;
     }
 }
-// Strukturelles Typing: Duck Typing</code></pre>
+// Structural typing: duck typing</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Kotlin OOP — Vorteile</h4>
+        <h4>Kotlin OOP — Advantages</h4>
         <ul>
-          <li>data class generiert equals/hashCode/copy automatisch</li>
-          <li>Extension Functions ohne Vererbung oder Wrapper</li>
-          <li>Sealed Classes für exhaustives Pattern Matching</li>
-          <li>Kein Boilerplate für Konstruktoren (primary constructor)</li>
-          <li>Volle Java-Interoperabilität</li>
+          <li>data class auto-generates equals/hashCode/copy</li>
+          <li>Extension functions without inheritance or wrappers</li>
+          <li>Sealed classes for exhaustive pattern matching</li>
+          <li>No constructor boilerplate (primary constructor)</li>
+          <li>Full Java interoperability</li>
         </ul>
       </div>
       <div class="procon-box pros">
-        <h4>Tinox OOP — Vorteile</h4>
+        <h4>Tinox OOP — Advantages</h4>
         <ul>
-          <li>fn (Instanz) vs. fnc (statisch) sofort sichtbar</li>
-          <li>immutable für unveränderliche Wertobjekte</li>
-          <li>Vtable-basierter Interface-Dispatch</li>
-          <li>Weniger Boilerplate als Java</li>
+          <li>fn (instance) vs. fnc (static) immediately visible</li>
+          <li>immutable for unchangeable value objects</li>
+          <li>Vtable-based interface dispatch</li>
+          <li>Less boilerplate than Java</li>
         </ul>
       </div>
     </div>
@@ -887,13 +887,13 @@ class Point implements Printable {
 
   <!-- ══════════════════════════════════════════════════════ FUNCTIONAL -->
   <section id="functional">
-    <h2><span class="icon">λ</span> Funktionales Programmieren</h2>
+    <h2><span class="icon">λ</span> Functional Programming</h2>
 
-    <p class="subsection-label">Lambdas &amp; Higher-Order-Funktionen</p>
+    <p class="subsection-label">Lambdas &amp; Higher-Order Functions</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Funktionstypen via java.util.function.*
+        <pre><code>// Function types via java.util.function.*
 Function&lt;Integer, Integer&gt; doubled = n -> n * 2;
 
 static int apply(int x,
@@ -909,9 +909,9 @@ List.of(1,2,3).stream()
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// Funktionstypen nativ: (Int) -> Int
+        <pre><code>// Function types natively: (Int) -> Int
 val doubled: (Int) -> Int = { n -> n * 2 }
-// oder Kurzform mit it:
+// or short form with it:
 val doubled2: (Int) -> Int = { it * 2 }
 
 fun apply(x: Int, f: (Int) -> Int) = f(x)
@@ -931,7 +931,7 @@ listOf(1, 2, 3)
 
 let result = apply(21, n => n * 2); // 42
 
-// Lambda als Wert
+// Lambda as a value
 let square: fnc(Int64) -> Int64
     = fn(x: Int64) -> Int64
 {
@@ -958,7 +958,7 @@ apply(21, n => n * 2); // 42
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Java 21: Pattern Matching switch
+        <pre><code>// Java 21: pattern matching switch
 Object obj = ...;
 String result = switch (obj) {
     case Integer i -> "int: " + i;
@@ -971,12 +971,12 @@ Direction d = Direction.NORTH;
 switch (d) {
     case NORTH -> System.out.println("N");
     case SOUTH -> System.out.println("S");
-    default    -> {} // nötig
+    default    -> {} // required
 }</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// when als Ausdruck (exhaustiv bei sealed)
+        <pre><code>// when as an expression (exhaustive with sealed)
 sealed class Shape
 class Circle(val r: Double) : Shape()
 class Rect(val w: Double, val h: Double) : Shape()
@@ -984,14 +984,14 @@ class Rect(val w: Double, val h: Double) : Shape()
 fun area(s: Shape) = when (s) {
     is Circle -> Math.PI * s.r * s.r
     is Rect   -> s.w * s.h
-    // kein else nötig — sealed ist exhaustiv
+    // no else needed — sealed is exhaustive
 }
 
-// when ohne Argument als if-Kette:
+// when without an argument as an if-chain:
 when {
-    x &lt; 0  -> println("negativ")
-    x == 0 -> println("null")
-    else   -> println("positiv")
+    x &lt; 0  -> println("negative")
+    x == 0 -> println("zero")
+    else   -> println("positive")
 }</code></pre>
       </div>
       <div class="compare-col tinox">
@@ -1011,7 +1011,7 @@ fnc turn(d: Direction) -> Direction
         West  => return North;
     }
 }
-// Exhaustiveness wird geprüft</code></pre>
+// Exhaustiveness is checked</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
@@ -1026,7 +1026,7 @@ function turn(d: Direction): Direction {
     }
 }
 
-// Discriminated Unions:
+// Discriminated unions:
 type Shape =
     | { kind: "circle"; r: number }
     | { kind: "rect"; w: number; h: number };</code></pre>
@@ -1035,21 +1035,21 @@ type Shape =
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Kotlin Funktional — Vorteile</h4>
+        <h4>Kotlin Functional — Advantages</h4>
         <ul>
-          <li>Trailing-Lambda-Syntax: f(x) { it * 2 } sehr lesbar</li>
-          <li>scope functions: let, run, with, apply, also</li>
-          <li>Sealed Classes + when = vollständiges Pattern Matching</li>
-          <li>Sequence für lazy evaluation (kein Stream nötig)</li>
+          <li>Trailing-lambda syntax: f(x) { it * 2 } is very readable</li>
+          <li>Scope functions: let, run, with, apply, also</li>
+          <li>Sealed classes + when = complete pattern matching</li>
+          <li>Sequence for lazy evaluation (no Stream needed)</li>
         </ul>
       </div>
       <div class="procon-box pros">
-        <h4>Tinox Funktional — Vorteile</h4>
+        <h4>Tinox Functional — Advantages</h4>
         <ul>
-          <li>Funktionstypen direkt (kein java.util.function Import)</li>
-          <li>match ist exhaustiv bei Enums</li>
-          <li>Kompakte Lambda-Syntax (n =&gt; n * 2)</li>
-          <li>defer für sauberes Resource-Management</li>
+          <li>Function types directly (no java.util.function import)</li>
+          <li>match is exhaustive over enums</li>
+          <li>Compact lambda syntax (n =&gt; n * 2)</li>
+          <li>defer for clean resource management</li>
         </ul>
       </div>
     </div>
@@ -1062,7 +1062,7 @@ type Shape =
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Virtual Threads (Java 21)
+        <pre><code>// Virtual threads (Java 21)
 try (var exec =
     Executors.newVirtualThreadPerTaskExecutor()) {
     exec.submit(() -> process());
@@ -1073,7 +1073,7 @@ CompletableFuture&lt;Integer&gt; f =
     CompletableFuture
         .supplyAsync(() -> fetchData(21))
         .thenApply(n -> n * 2);
-int result = f.get(); // blockiert
+int result = f.get(); // blocks
 
 // Channel: BlockingQueue
 BlockingQueue&lt;Integer&gt; ch =
@@ -1083,7 +1083,7 @@ int v = ch.take();</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// Coroutines: leichtgewichtige Threads
+        <pre><code>// Coroutines: lightweight threads
 suspend fun fetchData(id: Int): Int {
     delay(100) // non-blocking
     return id * 2
@@ -1093,12 +1093,12 @@ fun main() = runBlocking {
     val result = async { fetchData(21) }
     println(result.await()) // 42
 
-    // Channels (Go-ähnlich)
+    // Channels (Go-like)
     val ch = Channel&lt;Int&gt;()
     launch { ch.send(99) }
     println(ch.receive()) // 99
 
-    // Flow für reaktive Streams
+    // Flow for reactive streams
     flow { emit(1); emit(2) }
         .collect { println(it) }
 }</code></pre>
@@ -1116,7 +1116,7 @@ fn main() -> Int64
     let result = await handle; // 42
     println(result);
 
-    // Channels (Go-inspiriert)
+    // Channels (Go-inspired)
     let ch = channel;
     send ch -> 99;
     let v = recv ch;
@@ -1136,34 +1136,34 @@ async function main() {
     const result = await fetchData(21); // 42
     console.log(result);
 
-    // Parallele Ausführung
+    // Parallel execution
     const [a, b] = await Promise.all([
         fetchData(1),
         fetchData(2),
     ]);
 
-    // Kein nativer Channel
+    // No native channel
 }</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Kotlin Concurrency — Vorteile</h4>
+        <h4>Kotlin Concurrency — Advantages</h4>
         <ul>
-          <li>Coroutines: leichtgewichtig, kein Thread-Overhead</li>
-          <li>structured concurrency (CoroutineScope)</li>
-          <li>Flow für reaktive Datenströme</li>
-          <li>Channels und Select nativ verfügbar</li>
+          <li>Coroutines: lightweight, no thread overhead</li>
+          <li>Structured concurrency (CoroutineScope)</li>
+          <li>Flow for reactive data streams</li>
+          <li>Channels and select natively available</li>
         </ul>
       </div>
       <div class="procon-box pros">
-        <h4>Tinox Concurrency — Vorteile</h4>
+        <h4>Tinox Concurrency — Advantages</h4>
         <ul>
-          <li>async/await direkt in der Sprache (kein Framework nötig)</li>
-          <li>Channels als First-Class-Konzept</li>
-          <li>spawn ist intuitiver als CompletableFuture-Ketten</li>
-          <li>Kein Import aus java.util.concurrent</li>
+          <li>async/await built into the language (no framework needed)</li>
+          <li>Channels as a first-class concept</li>
+          <li>spawn is more intuitive than CompletableFuture chains</li>
+          <li>No import from java.util.concurrent</li>
         </ul>
       </div>
     </div>
@@ -1176,62 +1176,62 @@ async function main() {
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// JVM-basiert: alles auf dem Heap
+        <pre><code>// JVM-based: everything on the heap
 // GC: G1, ZGC, Shenandoah
-// Startup: ~100–500ms (JVM-Start)
-// Peak-Performance: sehr hoch (JIT)
-// Memory: JVM-Heap + MetaSpace
-// GraalVM native-image als Option</code></pre>
+// Startup: ~100–500ms (JVM start)
+// Peak performance: very high (JIT)
+// Memory: JVM heap + MetaSpace
+// GraalVM native-image as an option</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// JVM: identisch zu Java (gleicher GC)
-// Kotlin/Native: LLVM-Backend, kein GC (ARC)
-// Kotlin/JS: transpiliert zu JavaScript
+        <pre><code>// JVM: identical to Java (same GC)
+// Kotlin/Native: LLVM backend, no GC (ARC)
+// Kotlin/JS: transpiles to JavaScript
 
-// JVM-Startup: ~150–500ms
-// Native-Startup: instant
-// Native: kein JVM-Overhead
-// Native GC: ARC (Automatic Reference Counting)</code></pre>
+// JVM startup: ~150–500ms
+// Native startup: instant
+// Native: no JVM overhead
+// Native GC: ARC (automatic reference counting)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>// LLVM-Backend: AOT zu Maschinencode
-// GC: eigene Tinox Runtime (C, pthread)
-// Startup: instant (native Binary)
-// Performance: vergleichbar mit C
-// Memory: kein JVM-Overhead
-// Kein GraalVM nötig</code></pre>
+        <pre><code>// LLVM backend: AOT to machine code
+// GC: own Tinox runtime (C, pthread)
+// Startup: instant (native binary)
+// Performance: comparable to C
+// Memory: no JVM overhead
+// No GraalVM needed</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
-        <pre><code>// Transpiliert zu JS → V8 (Node.js)
+        <pre><code>// Transpiles to JS → V8 (Node.js)
 // GC: V8 generational GC
 // Startup: ~50–200ms (Node.js)
-//          sehr schnell mit Bun
-// Performance: gut für I/O-Workloads
-// Memory: V8-Heap-Overhead</code></pre>
+//          very fast with Bun
+// Performance: good for I/O workloads
+// Memory: V8 heap overhead</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox — Performance-Vorteile</h4>
+        <h4>Tinox — Performance Advantages</h4>
         <ul>
-          <li>Kein JVM-Start-Overhead (instant startup)</li>
-          <li>LLVM O2/O3 direkt anwendbar</li>
-          <li>Kein Boxing/Unboxing bei Primitiven in Generics</li>
-          <li>Kein MetaSpace-Overhead</li>
-          <li>Ideal für CLI-Tools, Microservices, Embedded</li>
+          <li>No JVM start overhead (instant startup)</li>
+          <li>LLVM O2/O3 directly applicable</li>
+          <li>No boxing/unboxing for primitives in generics</li>
+          <li>No MetaSpace overhead</li>
+          <li>Ideal for CLI tools, microservices, embedded</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox — Performance-Nachteile</h4>
+        <h4>Tinox — Performance Disadvantages</h4>
         <ul>
-          <li>JVM-JIT nach Warmup oft sehr hoch (Java/Kotlin)</li>
-          <li>Kotlin/Native bietet ebenfalls instant startup</li>
-          <li>Tinox GC noch nicht so ausgereift wie G1/ZGC</li>
-          <li>Kein Profiling-Tooling wie Java Flight Recorder</li>
+          <li>JVM JIT after warmup is often very high (Java/Kotlin)</li>
+          <li>Kotlin/Native also offers instant startup</li>
+          <li>Tinox GC not yet as mature as G1/ZGC</li>
+          <li>No profiling tooling like Java Flight Recorder</li>
         </ul>
       </div>
     </div>
@@ -1239,7 +1239,7 @@ async function main() {
 
   <!-- ══════════════════════════════════════════════════════ STDLIB -->
   <section id="stdlib">
-    <h2><span class="icon">📦</span> Standardbibliothek</h2>
+    <h2><span class="icon">📦</span> Standard Library</h2>
 
     <div class="compare">
       <div class="compare-col java">
@@ -1247,66 +1247,66 @@ async function main() {
         <pre><code>// Collections: java.util.*
 // I/O: java.io, java.nio
 // Networking: java.net, java.net.http
-// Time: java.time (seit Java 8)
+// Time: java.time (since Java 8)
 // Security: java.security
 // Regex: java.util.regex
 // Math: java.lang.Math
-// JSON: kein Standard (Jackson, Gson)
-// HTTP Client: java.net.http (Java 11+)</code></pre>
+// JSON: no standard (Jackson, Gson)
+// HTTP client: java.net.http (Java 11+)</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin (stdlib + kotlinx)</h3>
         <pre><code>// kotlin.collections: List, Map, Set
-// kotlin.io: Datei-Utilities
-// kotlin.text: String-Erweiterungen
+// kotlin.io: file utilities
+// kotlin.text: string extensions
 // kotlinx.coroutines: async/await, Flow
 // kotlinx.serialization: JSON, CBOR, Proto
-// kotlinx.datetime: Datum/Zeit
-// ktor: HTTP Client + Server (Multi-Platform)
-// Exposed: SQL-ORM
-// Arrow: funktionale Typen (Option, Either)</code></pre>
+// kotlinx.datetime: date/time
+// ktor: HTTP client + server (multi-platform)
+// Exposed: SQL ORM
+// Arrow: functional types (Option, Either)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox (tinox-core)</h3>
         <pre><code>// HTTP:     http_server, rest_framework
-// Daten:    json, csv, xml, regex
+// Data:     json, csv, xml, regex
 // Security: crypto, jwt, bcrypt
 // Collections: collections, queue, set
 // System:   fs, io, env, process
 // Utils:    math, string_utils, uuid, date
 // Async:    cron, events, pool, cache, pubsub
-// 50+ Module als .tnx-Dateien</code></pre>
+// 50+ modules as .tnx files</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript / Node.js</h3>
         <pre><code>// HTTP:     express, fastify, hono
-// Daten:    JSON nativ, csv-parse, xml2js
+// Data:     JSON native, csv-parse, xml2js
 // Security: jsonwebtoken, bcrypt, node:crypto
-// Collections: native Arrays, Maps, Sets
+// Collections: native arrays, maps, sets
 // System:   node:fs, node:path, node:process
 // Utils:    date-fns, uuid, zod, lodash
 // Async:    rxjs, bullmq
-// npm: 2M+ Pakete verfügbar</code></pre>
+// npm: 2M+ packages available</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Stdlib — Vorteile</h4>
+        <h4>Tinox Stdlib — Advantages</h4>
         <ul>
-          <li>JSON, HTTP-Server, JWT, bcrypt ohne externe Dependencies</li>
-          <li>REST-Framework in der Stdlib (annotationsbasiert)</li>
-          <li>Cron, PubSub, Cache out-of-the-box</li>
-          <li>Stdlib in Tinox selbst geschrieben (kein Paradigmenwechsel)</li>
+          <li>JSON, HTTP server, JWT, bcrypt without external dependencies</li>
+          <li>REST framework in the stdlib (annotation-based)</li>
+          <li>Cron, pubsub, cache out of the box</li>
+          <li>Stdlib written in Tinox itself (no paradigm switch)</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Stdlib — Nachteile</h4>
+        <h4>Tinox Stdlib — Disadvantages</h4>
         <ul>
-          <li>Kein Datenbankzugriff (kein JDBC/ORM-Äquivalent)</li>
-          <li>Kein Spring/Ktor-Ökosystem</li>
-          <li>Kein zentrales Repository für Third-Party-Libraries</li>
-          <li>Kein Multi-Platform-Target wie Kotlin</li>
+          <li>No database access (no JDBC/ORM equivalent)</li>
+          <li>No Spring/Ktor ecosystem</li>
+          <li>No central repository for third-party libraries</li>
+          <li>No multi-platform target like Kotlin</li>
         </ul>
       </div>
     </div>
@@ -1314,7 +1314,7 @@ async function main() {
 
   <!-- ══════════════════════════════════════════════════════ TOOLING -->
   <section id="tooling">
-    <h2><span class="icon">🛠️</span> Tooling &amp; Entwicklungsumgebung</h2>
+    <h2><span class="icon">🛠️</span> Tooling &amp; Development Environment</h2>
 
     <div class="compare">
       <div class="compare-col java">
@@ -1349,7 +1349,7 @@ docker / GraalVM native-image</code></pre>
 ktlint, detekt
 
 # LSP / IDE
-IntelliJ IDEA (erste Klasse)
+IntelliJ IDEA (first class)
 VS Code + Kotlin Language Server
 
 # Deployment
@@ -1358,23 +1358,23 @@ kotlinc → native binary (Kotlin/Native)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code># Alles in einem CLI
+        <pre><code># Everything in one CLI
 tinox build program.tnx   # → a.out
 tinox run   program.tnx
 tinox check program.tnx
 tinox fmt   program.tnx
-tinox test                # Unit-Tests (Rust-basiert)
+tinox test                # unit tests (Rust-based)
 
-# Paket-Manager
-tinox install             # aus tinox.yaml
+# Package manager
+tinox install             # from tinox.yaml
 tinox add io.ex lib 1.0 https://...
 tinox package             # → app-1.0.0.tar.gz
 
 # LSP
-tinox-lsp  (Eclipse Plugin)
+tinox-lsp  (Eclipse plugin)
 
 # Deployment
-./a.out   (direkte native Binary)</code></pre>
+./a.out   (direct native binary)</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
@@ -1390,34 +1390,34 @@ bun run src/main.ts
 prettier --write src/
 eslint src/
 
-# Paket-Manager
+# Package manager
 npm install / npm run build
 
 # LSP
 tsserver (VS Code, IntelliJ, Neovim)
 
 # Deployment
-node dist/ oder Docker-Container</code></pre>
+node dist/ or Docker container</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Tooling — Vorteile</h4>
+        <h4>Tinox Tooling — Advantages</h4>
         <ul>
-          <li>Alles in einem CLI (build, run, check, fmt, install, package)</li>
-          <li>Kein Build-Tool-Konfigurationschaos</li>
-          <li>Native Binary = kein JRE-Deployment nötig</li>
-          <li>Formatter ist Bestandteil der Sprache</li>
+          <li>Everything in one CLI (build, run, check, fmt, install, package)</li>
+          <li>No build-tool configuration chaos</li>
+          <li>Native binary = no JRE deployment needed</li>
+          <li>Formatter is part of the language</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Tooling — Nachteile</h4>
+        <h4>Tinox Tooling — Disadvantages</h4>
         <ul>
-          <li>Kein IntelliJ/VS Code Plugin (nur Eclipse LSP)</li>
-          <li>Kein Debugger (GDB-Integration fehlt)</li>
-          <li>Kein REPL (geplant)</li>
-          <li>Kein zentrales Package-Repository</li>
+          <li>No IntelliJ/VS Code plugin (Eclipse LSP only)</li>
+          <li>No debugger (GDB integration missing)</li>
+          <li>No REPL (planned)</li>
+          <li>No central package repository</li>
         </ul>
       </div>
     </div>
@@ -1425,9 +1425,9 @@ node dist/ oder Docker-Container</code></pre>
 
   <!-- ══════════════════════════════════════════════════════ PACKAGES -->
   <section id="packages">
-    <h2><span class="icon">📦</span> Paket-Manager</h2>
+    <h2><span class="icon">📦</span> Package Manager</h2>
 
-    <p class="subsection-label">Abhängigkeiten deklarieren</p>
+    <p class="subsection-label">Declaring Dependencies</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java (Maven pom.xml)</h3>
@@ -1439,7 +1439,7 @@ node dist/ oder Docker-Container</code></pre>
   &lt;/dependency&gt;
 &lt;/dependencies&gt;
 
-# Installieren
+# Install
 mvn install</code></pre>
       </div>
       <div class="compare-col kotlin">
@@ -1451,7 +1451,7 @@ mvn install</code></pre>
     testImplementation(kotlin("test"))
 }
 
-# Installieren
+# Install
 ./gradlew build</code></pre>
       </div>
       <div class="compare-col tinox">
@@ -1466,7 +1466,7 @@ dependencies:
     version: "2.1.0"
     url: https://example.com/mylib-2.1.0.tar.gz
 
-# Installieren
+# Install
 tinox install</code></pre>
       </div>
       <div class="compare-col typescript">
@@ -1483,67 +1483,67 @@ tinox install</code></pre>
   }
 }
 
-# Installieren
+# Install
 npm install</code></pre>
       </div>
     </div>
 
-    <p class="subsection-label">Dependency hinzufügen &amp; paketieren</p>
+    <p class="subsection-label">Adding a Dependency &amp; Packaging</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java (Maven)</h3>
-        <pre><code># Dep hinzufügen (manuell in pom.xml)
-# oder via Maven Wrapper
+        <pre><code># Add a dep (manually in pom.xml)
+# or via Maven Wrapper
 mvn dependency:get \
   -Dartifact=com.example:mylib:1.0.0
 
-# Paketieren
+# Package
 mvn package
 # → target/myapp-1.0.0.jar
 
-# Deploy zu Maven Central
-mvn deploy  # (GPG + Sonatype nötig)</code></pre>
+# Deploy to Maven Central
+mvn deploy  # (GPG + Sonatype required)</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin (Gradle)</h3>
-        <pre><code># Dep in build.gradle.kts eintragen,
-# dann:
+        <pre><code># Add the dep in build.gradle.kts,
+# then:
 ./gradlew build
 
-# Paketieren
+# Package
 ./gradlew jar          # → build/libs/*.jar
-./gradlew shadowJar    # fat jar (Shadow Plugin)
+./gradlew shadowJar    # fat jar (Shadow plugin)
 
 # Kotlin/Native binary
 ./gradlew linkReleaseExecutableNative
 
-# Publish zu Maven Central
+# Publish to Maven Central
 ./gradlew publish</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code># Dep direkt per CLI hinzufügen
+        <pre><code># Add a dep directly via the CLI
 tinox add io.example mylib 1.0.0 \
   https://example.com/mylib-1.0.0.tar.gz
 
-# Paketieren
+# Package
 tinox package
 # → myapp-1.0.0.tar.gz
 
-# Import im Code
+# Import in code
 import mylib.MyClass</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript (npm)</h3>
-        <pre><code># Dep hinzufügen
+        <pre><code># Add a dep
 npm install express
 npm install --save-dev @types/express
 
-# Paketieren
+# Package
 npm run build    # tsc → dist/
 npm pack         # → myapp-1.0.0.tgz
 
-# Publishen
+# Publish
 npm publish
 
 # Import
@@ -1553,22 +1553,22 @@ import express from "express";</code></pre>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Paket-Manager — Vorteile</h4>
+        <h4>Tinox Package Manager — Advantages</h4>
         <ul>
-          <li>YAML statt XML — deutlich lesbarer und kompakter</li>
-          <li>URL-basiert: kein zentrales Repository nötig (self-hosted)</li>
-          <li>Alles im selben CLI (kein separates mvn/gradle)</li>
-          <li>tinox package erzeugt verteilbares tar.gz direkt</li>
-          <li>Deps projekt-lokal (.tinox/deps/) — kein globaler Cache-Konflikt</li>
+          <li>YAML instead of XML — noticeably more readable and compact</li>
+          <li>URL-based: no central repository needed (self-hosted)</li>
+          <li>Everything in the same CLI (no separate mvn/gradle)</li>
+          <li>tinox package produces a distributable tar.gz directly</li>
+          <li>Deps are project-local (.tinox/deps/) — no global cache conflicts</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Paket-Manager — Nachteile</h4>
+        <h4>Tinox Package Manager — Disadvantages</h4>
         <ul>
-          <li>Kein zentrales Repository (kein tinox search)</li>
-          <li>Keine transitive Dependency-Auflösung</li>
-          <li>Keine Checksum-/Signaturverifikation (noch)</li>
-          <li>Keine Version-Conflict-Resolution</li>
+          <li>No central repository (no tinox search)</li>
+          <li>No transitive dependency resolution</li>
+          <li>No checksum/signature verification (yet)</li>
+          <li>No version-conflict resolution</li>
         </ul>
       </div>
     </div>
@@ -1576,9 +1576,9 @@ import express from "express";</code></pre>
 
   <!-- ══════════════════════════════════════════════════════ WEB -->
   <section id="web">
-    <h2><span class="icon">🌐</span> Web &amp; REST-APIs</h2>
+    <h2><span class="icon">🌐</span> Web &amp; REST APIs</h2>
 
-    <p class="subsection-label">REST-Endpunkte definieren</p>
+    <p class="subsection-label">Defining REST Endpoints</p>
     <div class="compare">
       <div class="compare-col java">
         <h3>Java (Spring Boot)</h3>
@@ -1685,21 +1685,21 @@ router.get("/users/:id", (req, res) => {
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Web — Vorteile</h4>
+        <h4>Tinox Web — Advantages</h4>
         <ul>
-          <li>Identische Annotation-Syntax wie Spring (leicht erlernbar)</li>
-          <li>HTTP-Server direkt in Stdlib — kein Framework-Download</li>
-          <li>Native Binary startet instant (kein JVM-Warmup)</li>
-          <li>Path-Parameter, Middleware, Routing out-of-the-box</li>
+          <li>Annotation syntax identical to Spring (easy to learn)</li>
+          <li>HTTP server directly in the stdlib — no framework download</li>
+          <li>Native binary starts instantly (no JVM warmup)</li>
+          <li>Path parameters, middleware, routing out of the box</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Web — Nachteile</h4>
+        <h4>Tinox Web — Disadvantages</h4>
         <ul>
-          <li>Kein Spring/Ktor-Ökosystem (Security, Data, Actuator…)</li>
-          <li>Kein ORM / Datenbankanbindung</li>
-          <li>Kein API-Dokumentationsgenerator (Swagger/OpenAPI)</li>
-          <li>Weniger battle-tested bei Produktions-Workloads</li>
+          <li>No Spring/Ktor ecosystem (security, data, actuator…)</li>
+          <li>No ORM / database connectivity</li>
+          <li>No API documentation generator (Swagger/OpenAPI)</li>
+          <li>Less battle-tested for production workloads</li>
         </ul>
       </div>
     </div>
@@ -1707,7 +1707,7 @@ router.get("/users/:id", (req, res) => {
 
   <!-- ══════════════════════════════════════════════════════ LOGGING -->
   <section id="logging">
-    <h2><span class="icon">🔐</span> Logging &amp; Datenschutz</h2>
+    <h2><span class="icon">🔐</span> Logging &amp; Privacy</h2>
 
     <div class="compare">
       <div class="compare-col java">
@@ -1715,15 +1715,15 @@ router.get("/users/:id", (req, res) => {
         <pre><code>import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-// Logback PatternLayout mit Masking-Filter
-// oder manuelle toString()-Überschreibung
+// Logback PatternLayout with a masking filter
+// or manual toString() override
 
 public class User {
     private static final Logger log =
         LoggerFactory.getLogger(User.class);
 
     private String name;
-    // Sensibles Feld: manuell maskieren
+    // Sensitive field: mask manually
     private String password;
 
     @Override
@@ -1733,8 +1733,8 @@ public class User {
     }
 
     public void doSomething() {
-        // Explizites toString() nötig oder
-        // eigene Masking-Logik implementieren
+        // Explicit toString() needed, or
+        // implement your own masking logic
         log.info("User: {}", this);
     }
 }</code></pre>
@@ -1745,12 +1745,12 @@ public class User {
 
 class User(
     val name: String,
-    val password: String  // Kein Sprachsupport
+    val password: String  // no language support
 ) {
     private val log = LoggerFactory
         .getLogger(User::class.java)
 
-    // Manuell: toString überschreiben
+    // Manual: override toString
     override fun toString() =
         "User(name=$name, password=***)"
 
@@ -1759,9 +1759,9 @@ class User(
     }
 }
 
-// Oder: data class mit custom toString
-// Kein Annotation-Support in der Sprache
-// → externe Libs (Jackson @JsonIgnore etc.)</code></pre>
+// Or: data class with a custom toString
+// No annotation support in the language
+// → external libs (Jackson @JsonIgnore etc.)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
@@ -1773,29 +1773,29 @@ class User
     var name: String;
 
     @Sensitive
-    var password: String;   // → immer "***"
+    var password: String;   // → always "***"
 
     @Masked
     var email: String;      // → "al***ce" (2+2)
 
     fn doSomething() -> Nothing
     {
-        // toString() wird automatisch generiert
-        // und berücksichtigt @Sensitive/@Masked
+        // toString() is generated automatically
+        // and honors @Sensitive/@Masked
         Logger::info(this.log, "User: " + this);
-        // gibt aus: User{name=Alice, password=***, email=al***ce}
+        // prints: User{name=Alice, password=***, email=al***ce}
 
-        // Auch bei direktem String-Ausdruck:
+        // Also for direct string expressions:
         let s: String = this.email;
-        Logger::info(this.log, s); // unveränderter Wert
-        // Nur toString()-Konvertierung ist maskiert
+        Logger::info(this.log, s); // unmasked value
+        // Only the toString() conversion is masked
     }
 }</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
-        <pre><code>// Kein nativer Logger in Node.js
-// Manuelle Maskierung oder externe Libs
+        <pre><code>// No native logger in Node.js
+// Manual masking or external libs
 import pino from "pino";
 
 class User {
@@ -1819,28 +1819,28 @@ class User {
             + ` password=***, email=${masked}}`;
     }
 }
-// Keine Annotation-Unterstützung in JS/TS
-// Decorators (@) sind experimentell / Stage 3</code></pre>
+// No annotation support in JS/TS
+// Decorators (@) are experimental / stage 3</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Tinox Logging — Vorteile</h4>
+        <h4>Tinox Logging — Advantages</h4>
         <ul>
-          <li><code>@Log</code> injiziert automatisch ein <code>log: Logger</code>-Feld — kein Boilerplate</li>
-          <li><code>@Sensitive</code> und <code>@Masked</code> maskieren Felder automatisch bei <code>toString()</code></li>
-          <li>Masking greift bei String-Konkatenation (<code>"User: " + this</code>) ohne expliziten Aufruf</li>
-          <li>Datenschutz ist Teil der Sprache — kein externes Framework nötig</li>
-          <li>Kein manuelles Überschreiben von <code>toString()</code> erforderlich</li>
+          <li><code>@Log</code> automatically injects a <code>log: Logger</code> field — no boilerplate</li>
+          <li><code>@Sensitive</code> and <code>@Masked</code> mask fields automatically in <code>toString()</code></li>
+          <li>Masking applies to string concatenation (<code>"User: " + this</code>) with no explicit call</li>
+          <li>Privacy is part of the language — no external framework needed</li>
+          <li>No manual <code>toString()</code> override required</li>
         </ul>
       </div>
       <div class="procon-box cons">
-        <h4>Tinox Logging — Nachteile</h4>
+        <h4>Tinox Logging — Disadvantages</h4>
         <ul>
-          <li>Kein konfigurierbares Masking-Pattern (Länge, Zeichen)</li>
-          <li>Kein strukturiertes Logging (JSON-Format) out-of-the-box</li>
-          <li>Kein Log-Level-Filter zur Laufzeit</li>
+          <li>No configurable masking pattern (length, characters)</li>
+          <li>No structured logging (JSON format) out of the box</li>
+          <li>No runtime log-level filter</li>
         </ul>
       </div>
     </div>
@@ -1848,12 +1848,12 @@ class User {
 
   <!-- ══════════════════════════════════════════════════════ ERROR -->
   <section id="errorhandling">
-    <h2><span class="icon">🔒</span> Fehlerbehandlung &amp; Null Safety</h2>
+    <h2><span class="icon">🔒</span> Error Handling &amp; Null Safety</h2>
 
     <div class="compare">
       <div class="compare-col java">
         <h3>Java</h3>
-        <pre><code>// Checked vs. Unchecked Exceptions
+        <pre><code>// Checked vs. unchecked exceptions
 int divide(int a, int b)
     throws ArithmeticException {
     if (b == 0)
@@ -1867,13 +1867,13 @@ try {
     System.err.println(e.getMessage());
 } finally { cleanup(); }
 
-// Null Safety: fehlt
+// Null safety: missing
 Optional&lt;String&gt; opt = Optional.ofNullable(s);
 opt.ifPresent(System.out::println);</code></pre>
       </div>
       <div class="compare-col kotlin">
         <h3>Kotlin</h3>
-        <pre><code>// Keine Checked Exceptions
+        <pre><code>// No checked exceptions
 fun divide(a: Int, b: Int): Int {
     if (b == 0) throw ArithmeticException("Div/0")
     return a / b
@@ -1885,11 +1885,11 @@ try {
     println(e.message)
 } finally { cleanup() }
 
-// Null Safety im Typsystem:
+// Null safety in the type system:
 var s: String? = null
 println(s?.length)   // safe call → null
-println(s ?: "leer") // Elvis-Operator
-s!!.length           // force unwrap (NPE möglich)</code></pre>
+println(s ?: "empty") // Elvis operator
+s!!.length            // force unwrap (NPE possible)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
@@ -1908,11 +1908,11 @@ try
 }
 catch e: RuntimeError
 {
-    println("Fehler: ${e}");
+    println("Error: ${e}");
 }
 finally { cleanup(); }
 
-// defer für automatisches Cleanup
+// defer for automatic cleanup
 fn readFile(path: String) -> String
 {
     let f = open(path);
@@ -1930,37 +1930,37 @@ fn readFile(path: String) -> String
 try {
     const r = divide(10, 0);
 } catch (e) {
-    // e ist unknown — Typ-Guard nötig
+    // e is unknown — needs a type guard
     if (e instanceof Error)
         console.error(e.message);
 } finally { cleanup(); }
 
-// Null Safety via strictNullChecks:
+// Null safety via strictNullChecks:
 let s: string | null = null;
 console.log(s?.length); // undefined
 
-// Result-Pattern (neverthrow):
+// Result pattern (neverthrow):
 type Result&lt;T, E&gt; = Ok&lt;T&gt; | Err&lt;E&gt;;</code></pre>
       </div>
     </div>
 
     <div class="procon">
       <div class="procon-box pros">
-        <h4>Kotlin Fehlerbehandlung — Vorteile</h4>
+        <h4>Kotlin Error Handling — Advantages</h4>
         <ul>
-          <li>Null Safety direkt im Typsystem (T?)</li>
-          <li>Elvis-Operator (?:) für kompakte Fallbacks</li>
-          <li>Keine Checked Exceptions (kein throws-Chaos)</li>
-          <li>runCatching { } als funktionaler Wrapper</li>
+          <li>Null safety built into the type system (T?)</li>
+          <li>Elvis operator (?:) for compact fallbacks</li>
+          <li>No checked exceptions (no throws chaos)</li>
+          <li>runCatching { } as a functional wrapper</li>
         </ul>
       </div>
       <div class="procon-box pros">
-        <h4>Tinox Fehlerbehandlung — Vorteile</h4>
+        <h4>Tinox Error Handling — Advantages</h4>
         <ul>
-          <li>defer ist eleganter als try-with-resources</li>
-          <li>Kein Checked-Exception-Chaos</li>
-          <li>Option&lt;T&gt; / Result&lt;T&gt; in Stdlib verfügbar</li>
-          <li>LIFO-Reihenfolge mehrerer defers ist intuitiv</li>
+          <li>defer is more elegant than try-with-resources</li>
+          <li>No checked-exception chaos</li>
+          <li>Option&lt;T&gt; / Result&lt;T&gt; available in the stdlib</li>
+          <li>LIFO order of multiple defers is intuitive</li>
         </ul>
       </div>
     </div>
@@ -1968,34 +1968,34 @@ type Result&lt;T, E&gt; = Ok&lt;T&gt; | Err&lt;E&gt;;</code></pre>
 
   <!-- ══════════════════════════════════════════════════════ VERDICT -->
   <section id="verdict">
-    <h2><span class="icon">🏆</span> Fazit &amp; Empfehlung</h2>
+    <h2><span class="icon">🏆</span> Verdict &amp; Recommendation</h2>
 
     <div class="verdict">
-      <h3>Wann ist was die bessere Wahl?</h3>
+      <h3>When Is Which the Better Choice?</h3>
       <div class="verdict-grid">
         <div class="verdict-item java-win">
-          <div class="lang">Java verwenden, wenn…</div>
-          <p>du ein großes Team, ein riesiges Ökosystem (Spring, Hibernate, JEE) oder Unternehmens-Software mit langfristigem Support brauchst. Datenbankintegration, Microservices-Orchestrierung (Kubernetes, Spring Cloud) und breites Tooling (IntelliJ, APM) sind entscheidend.</p>
+          <div class="lang">Use Java when…</div>
+          <p>you need a large team, a huge ecosystem (Spring, Hibernate, JEE), or enterprise software with long-term support. Database integration, microservice orchestration (Kubernetes, Spring Cloud), and broad tooling (IntelliJ, APM) are decisive.</p>
         </div>
         <div class="verdict-item kotlin-win">
-          <div class="lang">Kotlin verwenden, wenn…</div>
-          <p>du die JVM-Plattform willst, aber moderne Sprachfeatures schätzt: Null Safety, Coroutines, data classes, Extension Functions. Ideal für Android-Entwicklung, Server-Side mit Ktor, und Teams die von Java migrieren. Volle Java-Interop inklusive.</p>
+          <div class="lang">Use Kotlin when…</div>
+          <p>you want the JVM platform but value modern language features: null safety, coroutines, data classes, extension functions. Ideal for Android development, server-side with Ktor, and teams migrating from Java. Full Java interop included.</p>
         </div>
         <div class="verdict-item tinox-win">
-          <div class="lang">Tinox verwenden, wenn…</div>
-          <p>du native Performance ohne JVM-Overhead willst, kleine bis mittlere Services oder CLI-Tools baust, oder die Java-ähnliche Syntax mit weniger Boilerplate schätzt. Ideal für instant-startup-Szenarien, Eigenentwicklungen und Lernprojekte.</p>
+          <div class="lang">Use Tinox when…</div>
+          <p>you want native performance without JVM overhead, are building small to medium services or CLI tools, or value Java-like syntax with less boilerplate. Ideal for instant-startup scenarios, in-house development, and learning projects.</p>
         </div>
         <div class="verdict-item ts-win">
-          <div class="lang">TypeScript verwenden, wenn…</div>
-          <p>du Web-Apps, APIs oder Full-Stack-Projekte mit dem riesigen npm-Ökosystem baust. Frontend und Backend teilen dieselbe Sprache, IDE-Support ist exzellent, und das Team hat JavaScript-Background.</p>
+          <div class="lang">Use TypeScript when…</div>
+          <p>you're building web apps, APIs, or full-stack projects with the huge npm ecosystem. Frontend and backend share the same language, IDE support is excellent, and the team has a JavaScript background.</p>
         </div>
       </div>
     </div>
 
     <p style="margin-top:1.5rem;color:var(--muted);font-size:.85rem;text-align:center;">
-      Tinox ist eine moderne Sprache in aktiver Entwicklung — Paket-Manager, LSP, REST-Framework und 50+ Stdlib-Module sind verfügbar.
-      Der Compiler (Lexer, Parser, Typechecker, Codegen) ist durch ~980 Unit-Tests abgedeckt.
-      Weitere Features (Debugger, REPL, zentrales Repository) werden in zukünftigen Versionen ergänzt.
+      Tinox is a modern language under active development — package manager, LSP, REST framework, and 50+ stdlib modules are available.
+      The compiler (lexer, parser, typechecker, codegen) is covered by ~980 unit tests.
+      Further features (debugger, REPL, central repository) will be added in future versions.
     </p>
   </section>
 

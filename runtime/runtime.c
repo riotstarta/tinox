@@ -7,7 +7,7 @@
 // glibc/ELF target. Failing here with one clear message beats the reader
 // hitting a cascade of "sys/epoll.h: No such file or directory" and
 // similar errors scattered across this file with no indication of why —
-// see CLAUDE.md's "kein Silent-Garbage" principle and
+// see CLAUDE.md's "no silent garbage" principle and
 // https://github.com/subnix-work/tinox/issues/113 for what porting this
 // to another OS would actually require.
 #ifndef __linux__
@@ -40,9 +40,9 @@
 #endif
 
 #ifdef TINOX_NO_GC
-// Sanitizer-Modus (make asan): plain malloc statt Boehm-GC, damit ASan
-// jede Allokation sieht (GC-Heap ist für ASan unsichtbar). Nichts wird
-// freigegeben — Leaks sind hier Absicht, Overflows/UAF das Ziel.
+// Sanitizer mode (make asan): plain malloc instead of Boehm GC, so ASan
+// sees every allocation (the GC heap is invisible to ASan). Nothing gets
+// freed — leaks are intentional here, overflows/UAF are the target.
 #include <string.h>
 #define GC_malloc(s)     calloc(1, (s))
 #define GC_realloc(p, s) realloc((p), (s))
@@ -159,16 +159,15 @@ typedef struct {
     int64_t* data;
 } TinoxArray;
 
-// ---- --checked: Heap-Kind-Registry (TESTPLAN Phase 4) ----
-// Arrays/Maps entstehen ausschließlich über ihre Konstruktoren; in
-// checked-Builds (-DTINOX_CHECKED, via `tinox build --checked`)
-// registrieren die den Pointer, und jede Array-/Map-Runtime-Funktion
-// prüft ihn. Ein Dispatch-Bug (map_len auf einem String, array_push auf
-// einer Map) bricht dann laut ab, statt still Heap-Müll zu lesen
-// (Bug-15-Klasse). Kein ABI-/Layout-Unterschied zum normalen Build —
-// die Registry ist eine Seitentabelle (plain malloc, GC-unsichtbar;
-// Adress-Wiederverwendung wird durch Neuregistrierung im Konstruktor
-// aktualisiert).
+// ---- --checked: heap-kind registry (TESTPLAN phase 4) ----
+// Arrays/maps are created exclusively through their constructors; in
+// checked builds (-DTINOX_CHECKED, via `tinox build --checked`) those
+// constructors register the pointer, and every array/map runtime function
+// checks it. A dispatch bug (map_len on a string, array_push on a map)
+// then aborts loudly instead of silently reading heap garbage
+// (Bug-15 class). No ABI/layout difference from a normal build —
+// the registry is a side table (plain malloc, invisible to the GC;
+// address reuse is handled by re-registering in the constructor).
 #ifdef TINOX_CHECKED
 #define TINOX_KIND_ARRAY 1
 #define TINOX_KIND_MAP 2
@@ -1163,9 +1162,9 @@ void fileClose(void* handle) {
 }
 
 // ---- Socket builtins (tinox.core.socket) ----
-// Handles sind rohe fds als i64; -1 = Fehler. Blockierende BSD-Sockets —
-// bewusst einfach gehalten (kein epoll hier; der HTTP-Server weiter unten
-// hat seine eigene epoll-Maschinerie).
+// Handles are raw fds as i64; -1 = error. Blocking BSD sockets —
+// deliberately kept simple (no epoll here; the HTTP server further down
+// has its own epoll machinery).
 
 #include <netdb.h>
 
@@ -1184,8 +1183,9 @@ bool socketConnect(int64_t fd, const char* host, int64_t port) {
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
-    // Der Socket-Typ steht schon fest (fd existiert) — getaddrinfo nur zur
-    // Namensauflösung, SOCK_STREAM als Filter reicht für A-Records.
+    // The socket type is already fixed (fd exists) — getaddrinfo is only
+    // used for name resolution here, SOCK_STREAM as a filter is enough for
+    // A records.
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) return false;
     int r = connect((int)fd, res->ai_addr, res->ai_addrlen);
@@ -1231,9 +1231,9 @@ char* socketReceive(int64_t fd, int64_t size) {
     return buf;
 }
 
-// Roh-Bytes von einem fd lesen (HTTP/2-Server-Framing). Liest GENAU count
-// Bytes (blockierend, loop ueber kurze reads) und liefert sie als String
-// zurueck; kuerzer als count bedeutet EOF/Fehler mittendrin.
+// Read raw bytes from an fd (HTTP/2 server framing). Reads EXACTLY count
+// bytes (blocking, loops over short reads) and returns them as a string;
+// fewer than count means EOF/error midway through.
 //
 // Bug 94: used to be a single non-retrying read() call, so a frame whose
 // payload arrived across more than one TCP segment (routine for anything
@@ -1287,18 +1287,18 @@ void socketClose(int64_t fd) {
 }
 
 // ---- HTTP/1.1 client builtins (tinox.core.http) ----
-// Plaintext http:// only (kein TLS). Baut auf denselben blockierenden
-// BSD-Sockets auf wie oben. Request-Header sind thread-lokaler Zustand
-// (httpSetHeader/httpClearHeaders), gespiegelt auf die C-Globals-Konvention
-// der db/metrics-Module.
+// Plaintext http:// only (no TLS). Builds on the same blocking
+// BSD sockets as above. Request headers are thread-local state
+// (httpSetHeader/httpClearHeaders), mirroring the C-globals convention
+// of the db/metrics modules.
 
 typedef struct {
     int64_t status;
     char*   body;
-    char*   headers; // roher Header-Block (ohne Statuszeile) für httpHeader()
+    char*   headers; // raw header block (without the status line) for httpHeader()
 } TinoxHttpResponse;
 
-static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n"-Kette
+static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n" chain
 
 void httpSetHeader(const char* name, const char* value) {
     size_t old_len = _tinox_http_req_headers ? strlen(_tinox_http_req_headers) : 0;
@@ -1314,8 +1314,8 @@ void httpClearHeaders(void) {
 }
 
 // http_parse_url/http_request/httpGet/httpPost/httpPut/httpDelete/httpPatch
-// moved below (after the TLS connection-handle section, ~"---- Binärsichere
-// Conn-Primitiven ----") so http_request can use g_tls_client_ctx for
+// moved below (after the TLS connection-handle section, ~"---- Binary-safe
+// conn primitives ----") so http_request can use g_tls_client_ctx for
 // https:// -- that global (and the openssl headers it needs) aren't
 // declared yet at this point in the file, and TINOX_TLS=0 opt-out builds
 // must not require <openssl/ssl.h> unconditionally at the top of the file.
@@ -1330,7 +1330,7 @@ char* httpBody(int64_t* resp) {
     return b ? b : GC_strdup("");
 }
 
-// Case-insensitive Header-Lookup im rohen Header-Block. "" wenn nicht da.
+// Case-insensitive header lookup in the raw header block. "" if not present.
 char* httpHeader(int64_t* resp, const char* name) {
     if (!resp) return GC_strdup("");
     const char* hdrs = ((TinoxHttpResponse*)resp)->headers;
@@ -1355,13 +1355,13 @@ char* httpHeader(int64_t* resp, const char* name) {
     return GC_strdup("");
 }
 
-// ---- ZIP builtins (STORED/Methode 0, Textinhalte) ---------------------------
-// Minimaler, aber echter ZIP-Reader/-Writer: schreibt gültige .zip-Dateien
-// (von `unzip` lesbar), unterstützt beim Lesen nur unkomprimierte Einträge
-// (Methode 0). Binärinhalte mit Nullbytes sind nicht darstellbar, da Tinox-
-// Strings nullterminiert sind. Die Tinox-Seite (Zip::listEntries) baut die
-// List<ZipEntry> selbst aus zipEntryCount/zipEntryName/zipEntrySize — so bleibt
-// C von der Klassen-ABI entkoppelt.
+// ---- ZIP builtins (STORED/method 0, text contents) ---------------------------
+// Minimal but genuine ZIP reader/writer: writes valid .zip files
+// (readable by `unzip`), on the read side only supports uncompressed
+// entries (method 0). Binary contents with null bytes aren't representable,
+// since Tinox strings are null-terminated. The Tinox side (Zip::listEntries)
+// builds the List<ZipEntry> itself from zipEntryCount/zipEntryName/zipEntrySize —
+// that keeps C decoupled from the class ABI.
 
 typedef struct {
     char*          name;
@@ -1402,7 +1402,7 @@ static void tinox_zip_wr32(unsigned char* p, uint32_t v) {
     p[2] = (unsigned char)((v >> 16) & 0xFF); p[3] = (unsigned char)((v >> 24) & 0xFF);
 }
 
-// Ganze Datei in einen Puffer lesen; NULL + *out_len=0 wenn nicht öffenbar.
+// Read the whole file into a buffer; NULL + *out_len=0 if it can't be opened.
 static unsigned char* tinox_zip_read_file(const char* path, size_t* out_len) {
     *out_len = 0;
     FILE* f = fopen(path, "rb");
@@ -1419,7 +1419,7 @@ static unsigned char* tinox_zip_read_file(const char* path, size_t* out_len) {
     return buf;
 }
 
-// Alle STORED-Einträge parsen. Rückgabe = Anzahl, *out = Array (GC-alloziert).
+// Parse all STORED entries. Return value = count, *out = array (GC-allocated).
 static int tinox_zip_parse(const char* path, TinoxZipMember** out) {
     *out = NULL;
     size_t len;
@@ -1464,12 +1464,12 @@ static int tinox_zip_parse(const char* path, TinoxZipMember** out) {
     return n;
 }
 
-// Einträge als gültige STORED-.zip schreiben.
+// Write entries as a valid STORED .zip.
 static void tinox_zip_write(const char* path, TinoxZipMember* mem, int n) {
     FILE* f = fopen(path, "wb");
     if (!f) return;
 
-    // Lokale Header + Daten; Offsets für Central Directory merken.
+    // Local headers + data; remember offsets for the central directory.
     uint32_t* offsets = (uint32_t*)malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
     uint32_t* crcs    = (uint32_t*)malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
     uint32_t cursor = 0;
@@ -1497,7 +1497,7 @@ static void tinox_zip_write(const char* path, TinoxZipMember* mem, int n) {
         cursor += (uint32_t)sizeof(lh) + nlen + mem[i].size;
     }
 
-    // Central Directory.
+    // Central directory.
     uint32_t cd_start = cursor;
     unsigned char ch[46];
     for (int i = 0; i < n; i++) {
@@ -1559,7 +1559,7 @@ int64_t zipEntrySize(const char* path, int64_t idx) {
     return (int64_t)mem[idx].size;
 }
 
-// Inhalt eines Eintrags als String; "" wenn nicht gefunden.
+// An entry's content as a string; "" if not found.
 char* zipExtractFile(const char* path, const char* name) {
     TinoxZipMember* mem;
     int n = tinox_zip_parse(path, &mem);
@@ -1570,14 +1570,14 @@ char* zipExtractFile(const char* path, const char* name) {
     return GC_strdup("");
 }
 
-// Datei hinzufügen/ersetzen (legt die .zip bei Bedarf an).
+// Add/replace a file (creates the .zip if needed).
 void zipAddFile(const char* path, const char* name, const char* content) {
     TinoxZipMember* old;
     int n = tinox_zip_parse(path, &old);
     TinoxZipMember* mem = (TinoxZipMember*)malloc((size_t)(n + 1) * sizeof(TinoxZipMember));
     int m = 0;
     for (int i = 0; i < n; i++) {
-        if (strcmp(old[i].name, name) == 0) continue; // ersetzen
+        if (strcmp(old[i].name, name) == 0) continue; // replace
         mem[m++] = old[i];
     }
     mem[m].name = (char*)name;
@@ -1587,7 +1587,7 @@ void zipAddFile(const char* path, const char* name, const char* content) {
     tinox_zip_write(path, mem, m);
 }
 
-// Datei entfernen (kein Fehler, wenn nicht vorhanden).
+// Remove a file (no error if it doesn't exist).
 void zipRemoveFile(const char* path, const char* name) {
     TinoxZipMember* old;
     int n = tinox_zip_parse(path, &old);
@@ -1852,7 +1852,7 @@ static char* tinox_bytes_to_hex(const unsigned char* bytes, size_t n) {
     return hex;
 }
 
-// -1 = ungueltiges Hex-Zeichen (Aufrufer MUSS das pruefen statt still 0 zu lesen).
+// -1 = invalid hex character (caller MUST check this instead of silently reading 0).
 static int tinox_hex_nibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -1872,10 +1872,10 @@ char* sha256Hash(const char* data) {
     return tinox_bytes_to_hex(out, 32);
 }
 
-// RFC 2104. Geteilter Kern fuer die String- (NUL-terminiert, hex-kodierte
-// Rueckgabe) UND die Bytes-Variante (Issue 77, SCRAM braucht HMAC ueber
-// echte Binaerdaten — Salt/Nonce/Digests koennen Null-Bytes enthalten,
-// die eine C-String-basierte Variante stillschweigend abschneiden wuerde).
+// RFC 2104. Shared core for both the string variant (NUL-terminated,
+// hex-encoded return) AND the bytes variant (issue 77, SCRAM needs HMAC over
+// genuine binary data — salt/nonce/digests can contain null bytes,
+// which a C-string-based variant would silently truncate).
 static void hmac_sha256_raw(const unsigned char* data, size_t data_len,
                              const unsigned char* key, size_t key_len,
                              unsigned char out[32]) {
@@ -1915,8 +1915,8 @@ char* hmacSha256Hash(const char* data, const char* key) {
     return tinox_bytes_to_hex(final_hash, 32);
 }
 
-// Bytes-Varianten (Issue 77 / SCRAM-SHA-256): Tinox-Arrays rein, Tinox-
-// Arrays raus, keine C-String-Konvertierung an irgendeiner Stelle.
+// Bytes variants (issue 77 / SCRAM-SHA-256): Tinox arrays in, Tinox
+// arrays out, no C-string conversion anywhere.
 int64_t* hmacSha256Bytes(int64_t* dataArr, int64_t* keyArr) {
     TinoxArray* da = (TinoxArray*)dataArr;
     TinoxArray* ka = (TinoxArray*)keyArr;
@@ -1951,9 +1951,9 @@ int64_t* sha256Bytes(int64_t* dataArr) {
     return result;
 }
 
-// ---- SHA-1 (RFC 3174) — gebraucht für den WebSocket-Handshake ----
-// Sicherheitshinweis wie bei MD5: nur für Protokoll-Kompatibilität
-// (Sec-WebSocket-Accept), nicht für neue kryptografische Zwecke.
+// ---- SHA-1 (RFC 3174) — needed for the WebSocket handshake ----
+// Same security note as for MD5: only for protocol compatibility
+// (Sec-WebSocket-Accept), not for new cryptographic purposes.
 
 static uint32_t sha1_rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
@@ -2007,8 +2007,8 @@ char* sha1Hash(const char* data) {
     return tinox_bytes_to_hex(out, 20);
 }
 
-// Base64 über Rohbytes (die Tinox-Seite base64.tnx arbeitet auf Strings und
-// kann keine NUL-Bytes tragen — der SHA-1-Digest schon).
+// Base64 over raw bytes (the Tinox-side base64.tnx works on strings and
+// can't carry NUL bytes — the SHA-1 digest can).
 static char* tinox_b64_encode(const unsigned char* in, size_t n) {
     static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t out_len = 4 * ((n + 2) / 3);
@@ -2027,8 +2027,8 @@ static char* tinox_b64_encode(const unsigned char* in, size_t n) {
     return out;
 }
 
-// Sec-WebSocket-Accept (RFC 6455 §4.2.2): base64(sha1(key + GUID)). Komplett
-// in C, damit der binäre SHA-1-Digest nie durch einen Tinox-String muss.
+// Sec-WebSocket-Accept (RFC 6455 §4.2.2): base64(sha1(key + GUID)). Entirely
+// in C, so the binary SHA-1 digest never has to pass through a Tinox string.
 char* wsAcceptKey(const char* client_key) {
     static const char* guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     size_t klen = strlen(client_key), glen = strlen(guid);
@@ -2522,25 +2522,25 @@ static size_t fast_i64_write(int64_t val, char* buf);
 
 // ---- TLS / Connection handles ----
 //
-// Bei TLS reicht ein roher fd nicht mehr: jede Verbindung braucht ein eigenes
-// SSL*-Objekt. Deshalb kapseln wir {fd, ssl} in einem GC-allozierten TinoxConn
-// und geben dessen Zeiger als opakes int64-Handle zurück (Userspace-Adresse ist
-// stets > 0, Fehler sind -1). ssl==NULL bedeutet Plaintext — damit teilen sich
-// http:// und https:// exakt denselben Lese-/Schreib-Code (conn_recv/conn_send).
+// With TLS, a raw fd is no longer enough: every connection needs its own
+// SSL* object. So we wrap {fd, ssl} in a GC-allocated TinoxConn and
+// return its pointer as an opaque int64 handle (a userspace address is
+// always > 0, errors are -1). ssl==NULL means plaintext — that way
+// http:// and https:// share exactly the same read/write code (conn_recv/conn_send).
 //
-// TLS ist hinter -DTINOX_TLS + -lssl -lcrypto geschaltet; der Default-Build
-// bleibt bewusst OpenSSL-frei. Ohne das Flag liefern die *Tls-Funktionen -1,
-// sodass es einen sauberen Laufzeitfehler statt eines Linkfehlers gibt.
+// TLS is gated behind -DTINOX_TLS + -lssl -lcrypto; the default build
+// deliberately stays OpenSSL-free. Without that flag, the *Tls functions
+// return -1, giving a clean runtime error instead of a link error.
 
-// writeLock (Issue 82): AMQP-1.0-Heartbeats laufen in einem eigenen
-// gespawnten Hintergrund-Thread parallel zu den App-seitigen Frame-Writes
-// auf DERSELBEN Connection (nötig, weil das App-Thread lange blockierend in
-// nextMessage() hängen kann). conn_send_all schleift bei kurzen Writes
-// (Bug-68-ähnlich, aber hier Nebenläufigkeit statt EINTR): ohne Lock könnten
-// zwei Threads ihre Bytes mitten in einem Frame verschränkt aufs Wire
-// schreiben. Betrifft nur MEHRFACH schreibende Verbindungen (AMQP 1.0
-// Heartbeat-Feature); alle anderen Nutzer zahlen nur den Lock/Unlock-Preis
-// eines unkontendierten Mutex.
+// writeLock (issue 82): AMQP 1.0 heartbeats run on their own spawned
+// background thread in parallel with the app-side frame writes on the
+// SAME connection (necessary because the app thread can be blocked for
+// a long time inside nextMessage()). conn_send_all loops on short writes
+// (similar to bug 68, but here it's concurrency rather than EINTR): without
+// a lock, two threads could interleave their bytes mid-frame on the
+// wire. Only affects connections that write from MULTIPLE places (the
+// AMQP 1.0 heartbeat feature); all other users just pay the lock/unlock
+// cost of an uncontended mutex.
 // wsCompressed (issue #122): set by Ws::handshake() when the peer
 // negotiated permessage-deflate (RFC 7692) for this connection. Lives on
 // TinoxConn -- the per-connection struct that already exists for
@@ -2550,29 +2550,28 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // that happens to reuse the same fd number. Every construction site
 // below sets it to false explicitly (malloc doesn't zero); it becomes
 // true only if handshake() actually negotiates the extension.
-typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => Plaintext
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => plaintext
 
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-static SSL_CTX* g_tls_ctx = NULL;        // Server-Seite (listenTls)
-static SSL_CTX* g_tls_client_ctx = NULL; // Client-Seite (dialTls, z.B. amqps://)
+static SSL_CTX* g_tls_ctx = NULL;        // server side (listenTls)
+static SSL_CTX* g_tls_client_ctx = NULL; // client side (dialTls, e.g. amqps://)
 
-// EINTR-Retry (Bug 68): jeder blockierende recv/send kann durch EIN
-// beliebiges Signal unterbrochen werden (errno=EINTR), nicht nur durch
-// eigene Handler -- insbesondere das interne "Stop the world"-Signal, mit
-// dem der Boehm-GC alle Threads waehrend einer Kollision anhaelt (per
-// `gdb` bestaetigt: SIGPWR). Sobald ein `spawn`-Task auf einem zweiten
-// echten Thread (pthread_create, s. tinox_task_spawn) parallel genug
-// alloziert, um eine Kollision auszuloesen, WAEHREND ein anderer Thread in
-// httpConnReadN/httpConnWriteBytes blockiert liest/schreibt, wird dieser
-// Read/Write per Signal unterbrochen. Ohne Retry-Schleife sah der
-// Aufrufer das als abgebrochene Verbindung (got<=0) und brach den Frame
-// vorzeitig ab -- ein leerer/unvollstaendiger Payload lief dann still bis
-// zu einem spaeteren, voellig unzusammenhaengend wirkenden
-// Bounds-Check-Crash weiter (Silent-Garbage bis zum Absturz).
-// Deterministisch reproduzierbar bei ausreichend Allokations-Druck neben
-// einem `spawn`-Task, s. bugs.md.
+// EINTR retry (bug 68): any blocking recv/send can be interrupted by ANY
+// signal (errno=EINTR), not just our own handlers -- in particular the
+// internal "stop the world" signal the Boehm GC uses to pause all threads
+// during a collection (confirmed via `gdb`: SIGPWR). As soon as a `spawn`
+// task on a second real thread (pthread_create, see tinox_task_spawn)
+// allocates enough in parallel to trigger a collection WHILE another
+// thread is blocked reading/writing in httpConnReadN/httpConnWriteBytes,
+// that read/write gets interrupted by the signal. Without a retry loop,
+// the caller saw this as a dropped connection (got<=0) and aborted the
+// frame prematurely -- an empty/incomplete payload then silently
+// propagated until a later, seemingly completely unrelated
+// bounds-check crash (silent garbage until the crash).
+// Deterministically reproducible under sufficient allocation pressure
+// alongside a `spawn` task; see the GitHub issue history.
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
     if (c->ssl) {
         int r;
@@ -2601,8 +2600,8 @@ static void conn_close(TinoxConn* c) {
     pthread_mutex_destroy(&c->writeLock);
 }
 #else
-// Plaintext-only Fallback — identische Semantik ohne OpenSSL. Zum
-// EINTR-Retry s. Kommentar bei der TLS-Variante oben (Bug 68).
+// Plaintext-only fallback — identical semantics without OpenSSL. For the
+// EINTR retry, see the comment on the TLS variant above (bug 68).
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
     ssize_t r;
     do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
@@ -2754,12 +2753,12 @@ void httpServerCloseConn(int64_t client_fd) {
 
 // ---- TLS server entry points + connection-handle API ----
 //
-// Diese Funktionen bilden die getypte extern-fn-Schnittstelle für die
-// Tinox-Seite (siehe http_server.tnx: listenTls). Das zurückgegebene Handle
-// ist der Zeiger auf einen GC-allozierten TinoxConn.
+// These functions form the typed extern-fn interface for the
+// Tinox side (see http_server.tnx: listenTls). The returned handle
+// is the pointer to a GC-allocated TinoxConn.
 
-// Richtet einen TLS-Server ein: lädt Cert-Chain + Private Key (beide PEM) und
-// bindet/lauscht wie httpServerCreate. Rückgabe: server-fd (>=0) oder -1.
+// Sets up a TLS server: loads the cert chain + private key (both PEM) and
+// binds/listens like httpServerCreate. Return value: server fd (>=0) or -1.
 int64_t httpServerCreateTls(int64_t port, const char* cert_path, const char* key_path) {
 #ifdef TINOX_TLS
     if (!g_tls_ctx) {
@@ -2785,13 +2784,13 @@ int64_t httpServerCreateTls(int64_t port, const char* cert_path, const char* key
     return httpServerCreate(port);
 #else
     (void)port; (void)cert_path; (void)key_path;
-    fprintf(stderr, "httpServerCreateTls: runtime ohne TLS gebaut (-DTINOX_TLS fehlt)\n");
+    fprintf(stderr, "httpServerCreateTls: runtime built without TLS (-DTINOX_TLS missing)\n");
     return -1;
 #endif
 }
 
-// Akzeptiert eine Verbindung und führt den TLS-Handshake durch. Rückgabe:
-// opakes Connection-Handle (>0) oder -1. Der Handshake ist blockierend.
+// Accepts a connection and performs the TLS handshake. Return value:
+// opaque connection handle (>0) or -1. The handshake is blocking.
 int64_t httpServerAcceptTls(int64_t server_fd) {
 #ifdef TINOX_TLS
     if (!g_tls_ctx) return -1;
@@ -2832,8 +2831,8 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
 #endif
 }
 
-// Akzeptiert eine Plaintext-Verbindung und liefert ebenfalls ein Conn-Handle,
-// sodass der Tinox-Code EINEN Loop (httpConn*) für http und https nutzen kann.
+// Accepts a plaintext connection and likewise returns a conn handle,
+// so the Tinox code can use a SINGLE loop (httpConn*) for both http and https.
 int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     int64_t fd = httpServerAcceptConn(server_fd);
     if (fd < 0) return -1;
@@ -2845,21 +2844,21 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     return (int64_t)(intptr_t)c;
 }
 
-// Liest einen Request über ein Conn-Handle (TLS oder Plaintext).
+// Reads a request over a conn handle (TLS or plaintext).
 char* httpConnReadRequest(int64_t conn) {
     if (conn <= 0) return (char*)"";
     return conn_read_request((TinoxConn*)(intptr_t)conn);
 }
 
-// Sendet eine rohe Antwort über ein Conn-Handle.
+// Sends a raw response over a conn handle.
 void httpConnSendRaw(int64_t conn, const char* data) {
     if (conn <= 0 || !data) return;
     conn_send_all((TinoxConn*)(intptr_t)conn, data, strlen(data));
 }
 
-// Wickelt einen nackten Socket-fd (z. B. Client-Seite via socketConnect) in
-// ein Plaintext-Conn-Handle, damit die httpConn*-Primitiven beidseitig
-// nutzbar sind (Tests, später WsClient).
+// Wraps a bare socket fd (e.g. client side via socketConnect) in
+// a plaintext conn handle, so the httpConn* primitives can be used on
+// both sides (tests, later WsClient).
 int64_t httpConnFromFd(int64_t fd) {
     if (fd < 0) return -1;
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
@@ -2883,14 +2882,14 @@ bool wsIsCompressed(int64_t conn) {
     return ((TinoxConn*)(intptr_t)conn)->wsCompressed;
 }
 
-// Wickelt einen bereits verbundenen Socket-fd (Client-Seite, z.B. via
-// socketConnect) in ein TLS-Conn-Handle: fuehrt den Handshake als TLS-CLIENT
-// durch (Gegenstueck zu httpServerAcceptTls, das Server-seitig akzeptiert).
-// Fuer ausgehende Verbindungen wie amqps:// (s. amqp091.tnx: Amqp091::dialTls).
-// host wird immer als SNI gesendet; verify=true prueft zusaetzlich die
-// Zertifikatskette UND den Hostnamen gegen die System-CA-Stores (Standardfall
-// fuer echte Broker-Zertifikate) -- verify=false ist ein bewusster,
-// explizit benannter Opt-out fuer selbstsignierte Testzertifikate.
+// Wraps an already-connected socket fd (client side, e.g. via
+// socketConnect) in a TLS conn handle: performs the handshake as a TLS
+// CLIENT (the counterpart to httpServerAcceptTls, which accepts server-side).
+// For outgoing connections like amqps:// (see amqp091.tnx: Amqp091::dialTls).
+// host is always sent as SNI; verify=true additionally checks the
+// certificate chain AND the hostname against the system CA stores (the
+// default case for real broker certificates) -- verify=false is a
+// deliberate, explicitly named opt-out for self-signed test certificates.
 int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 #ifdef TINOX_TLS
     if (fd < 0) return -1;
@@ -2908,7 +2907,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     SSL_set_tlsext_host_name(ssl, host); // SNI
     if (verify) {
         SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-        SSL_set1_host(ssl, host); // Hostname muss zum Peer-Zertifikat passen
+        SSL_set1_host(ssl, host); // hostname must match the peer certificate
     } else {
         SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
     }
@@ -2930,7 +2929,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     // this fallback used to just ignore it and leak the fd on every call.
     (void)host; (void)verify;
     if (fd >= 0) close((int)fd);
-    fprintf(stderr, "httpConnFromFdTls: runtime ohne TLS gebaut (TINOX_TLS=0)\n");
+    fprintf(stderr, "httpConnFromFdTls: runtime built without TLS (TINOX_TLS=0)\n");
     return -1;
 #endif
 }
@@ -3129,30 +3128,29 @@ int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_req
 int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
 int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
 
-// ---- Binärsichere Conn-Primitiven (WebSocket-Frames u.ä.) ----
-// httpConnReadRequest/httpConnSendRaw sind C-String-basiert und reißen am
-// ersten NUL-Byte ab — Frame-Daten sind binär (Masking!). Diese Varianten
-// tragen die Länge explizit; Bytes laufen als Tinox-Array (ein Byte pro
-// i64-Slot, 0..255). Funktioniert auf Plain- UND TLS-Handles via conn_recv/
+// ---- Binary-safe conn primitives (WebSocket frames etc.) ----
+// httpConnReadRequest/httpConnSendRaw are C-string-based and cut off at
+// the first NUL byte — frame data is binary (masking!). These variants
+// carry the length explicitly; bytes travel as a Tinox array (one byte per
+// i64 slot, 0..255). Works on both plain AND TLS handles via conn_recv/
 // conn_send_all.
 
-// Liest EXAKT n Bytes (blockierend, loop über kurze reads). Rückgabe: Array
-// der gelesenen Bytes; Länge < n bedeutet EOF/Fehler mittendrin — der
-// Aufrufer MUSS die Länge prüfen (kein stilles Auffüllen).
+// Reads EXACTLY n bytes (blocking, loops over short reads). Return value:
+// array of the bytes read; a length < n means EOF/error midway through — the
+// caller MUST check the length (no silent padding).
 //
-// `n` ist oft ein direkt von der Gegenseite deklarierter Wert (AMQP-0-9-1/
-// 1.0 Frame-Größe, WS Payload-Länge, ...), BEVOR feststeht, ob überhaupt so
-// viele Bytes tatsächlich ankommen. Vorallozieren auf die volle deklarierte
-// `n` (statt auf tatsächlich empfangene Bytes) erlaubt einem böswilligen/
-// gestörten Peer, mit einem winzigen, nie vollständig gelieferten Header
-// eine unverhältnismäßig große Allokation auszulösen (gefunden von
-// fuzz/amqp091, Issue #111: ein 7-Byte-AMQP-Frame-Header, der ~16MB
-// deklariert, löst eine ~128MB-Array-Allokation aus, auch wenn die
-// Verbindung danach ohne jeden Payload-Byte geschlossen wird). Vorallozieren
-// nur bis zur Chunk-Größe unten (4096) und tinox_array_push()s vorhandenes
-// amortisiertes Verdoppeln den Rest übernehmen lassen begrenzt den
-// Worst-Case auf tatsächlich empfangene Bytes statt auf die bloße Behauptung
-// der Gegenseite.
+// `n` is often a value declared directly by the peer (AMQP 0-9-1/
+// 1.0 frame size, WS payload length, ...), BEFORE it's known whether that
+// many bytes will actually arrive at all. Pre-allocating to the full
+// declared `n` (instead of to the bytes actually received) lets a
+// malicious/broken peer trigger a disproportionately large allocation
+// with a tiny, never-fully-delivered header (found by
+// fuzz/amqp091, issue #111: a 7-byte AMQP frame header declaring ~16MB
+// triggers a ~128MB array allocation, even if the connection is then
+// closed without a single payload byte). Pre-allocating only up to the
+// chunk size below (4096) and letting tinox_array_push()'s existing
+// amortized doubling handle the rest bounds the worst case to bytes
+// actually received instead of to the peer's mere claim.
 int64_t* httpConnReadN(int64_t conn, int64_t n) {
     int64_t initial_cap = n > 0 ? (n < 4096 ? n : 4096) : 4;
     int64_t* nh = tinox_array_new(0, initial_cap);
@@ -3172,8 +3170,8 @@ int64_t* httpConnReadN(int64_t conn, int64_t n) {
     return nh;
 }
 
-// Schreibt ein Byte-Array (Werte 0..255 je Slot) vollständig auf die Conn.
-// Rückgabe: geschriebene Bytes (== len) oder -1 bei ungültigem Handle.
+// Writes a byte array (values 0..255 per slot) completely to the conn.
+// Return value: bytes written (== len) or -1 for an invalid handle.
 int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
     if (conn <= 0 || !arr) return -1;
     TinoxConn* c = (TinoxConn*)(intptr_t)conn;
@@ -3188,7 +3186,7 @@ int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
     return a->len;
 }
 
-// Schließt eine Verbindung (TLS-shutdown + free + close).
+// Closes a connection (TLS shutdown + free + close).
 void httpConnClose(int64_t conn) {
     if (conn <= 0) return;
     conn_close((TinoxConn*)(intptr_t)conn);
@@ -4288,23 +4286,23 @@ void http3ServerClose(int64_t serverHandle) {
 
 // ---- AES-256-GCM (Issue 74) ----
 //
-// Hinter demselben TINOX_TLS-Schalter wie der Rest von OpenSSL (kein neuer
-// Build-Dependency) -- ohne das Flag liefern aesEncryptRaw/aesDecryptRaw ""
-// statt eines Linkfehlers, analog zu httpConnFromFdTls & Co.
+// Behind the same TINOX_TLS switch as the rest of OpenSSL (no new
+// build dependency) -- without the flag, aesEncryptRaw/aesDecryptRaw return ""
+// instead of a link error, analogous to httpConnFromFdTls & co.
 //
-// AES-GCM statt CBC: authentifizierte Verschluesselung (Integritaet +
-// Vertraulichkeit in einem), kein Padding-Oracle-Risiko. Schluessel wird
-// per SHA-256 aus dem beliebig langen `key`-String abgeleitet (derselbe
-// Kniff wie in hmacSha256Hash fuer > 64 Byte Keys) -- IMMER ein gueltiger
-// 256-Bit-Schluessel, kein stilles Abschneiden/Auffuellen. Nonce ist 12
-// zufaellige Bytes PRO Aufruf via RAND_bytes (kryptografisch sicher, nicht
-// der einfache PRNG hinter randomInt) -- Nonce-Wiederverwendung unter
-// demselben Schluessel ist bei GCM katastrophal (bricht die Authentizitaet).
-// Rueckgabeformat: hex(nonce[12] || ciphertext[N] || tag[16]) -- Hex, weil
-// Tinox-Strings intern C-Strings sind (strlen-basiert) und rohe
-// Binaerbytes (inkl. moeglicher 0-Bytes) stillschweigend abgeschnitten
-// wuerden; ""-Rueckgabe ist der Fehler-Sentinel (ein echter Erfolg ist bei
-// leerem Klartext bereits 56 Hexzeichen lang, nie leer).
+// AES-GCM instead of CBC: authenticated encryption (integrity +
+// confidentiality in one), no padding-oracle risk. The key is derived
+// via SHA-256 from the arbitrary-length `key` string (the same trick
+// as in hmacSha256Hash for keys > 64 bytes) -- ALWAYS a valid
+// 256-bit key, no silent truncation/padding. The nonce is 12
+// random bytes PER call via RAND_bytes (cryptographically secure, not
+// the simple PRNG behind randomInt) -- nonce reuse under
+// the same key is catastrophic for GCM (breaks authenticity).
+// Return format: hex(nonce[12] || ciphertext[N] || tag[16]) -- hex, because
+// Tinox strings are internally C strings (strlen-based) and raw
+// binary bytes (including possible 0 bytes) would be silently truncated;
+// an "" return is the error sentinel (a genuine success is already
+// 56 hex characters long even for empty plaintext, never empty).
 #ifdef TINOX_TLS
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -4317,7 +4315,7 @@ char* aesEncryptRaw(const char* data, const char* key) {
 
     unsigned char nonce[12];
     if (RAND_bytes(nonce, sizeof(nonce)) != 1) {
-        fprintf(stderr, "aesEncryptRaw: RAND_bytes fehlgeschlagen\n");
+        fprintf(stderr, "aesEncryptRaw: RAND_bytes failed\n");
         return GC_strdup("");
     }
 
@@ -4354,7 +4352,7 @@ char* aesEncryptRaw(const char* data, const char* key) {
     return tinox_bytes_to_hex(out_bytes, out_bytes_len);
 #else
     (void)data; (void)key;
-    fprintf(stderr, "aesEncryptRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    fprintf(stderr, "aesEncryptRaw: runtime built without TLS/OpenSSL (TINOX_TLS=0)\n");
     return GC_strdup("");
 #endif
 }
@@ -4388,7 +4386,7 @@ char* aesDecryptRaw(const char* hexInput, const char* key) {
     unsigned char aes_key[32];
     sha256_raw((const unsigned char*)key, strlen(key), aes_key);
 
-    // +2 statt +1: Platz fuer den Erfolgs-Marker (s. u.) VOR dem Klartext.
+    // +2 instead of +1: room for the success marker (see below) BEFORE the plaintext.
     unsigned char* plaintext = (unsigned char*)GC_malloc(ct_len + 2);
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     int out_len = 0, total_len = 0;
@@ -4402,28 +4400,28 @@ char* aesDecryptRaw(const char* hexInput, const char* key) {
         ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, tag) == 1;
     }
     if (ok) {
-        // Rueckgabe <= 0 heisst: Authentifizierung fehlgeschlagen (falscher
-        // Schluessel ODER manipulierter/beschaedigter Ciphertext) -- harter
-        // Fehler statt stillschweigend falscher Klartext (kein Silent-Garbage).
+        // Return value <= 0 means: authentication failed (wrong
+        // key OR tampered/corrupted ciphertext) -- a hard
+        // error instead of silently wrong plaintext (no silent garbage).
         ok = EVP_DecryptFinal_ex(ctx, plaintext + 1 + total_len, &out_len) == 1;
         total_len += out_len;
     }
     if (ctx) EVP_CIPHER_CTX_free(ctx);
     if (!ok) {
-        fprintf(stderr, "aesDecryptRaw: Authentifizierung fehlgeschlagen (falscher Schluessel oder manipulierte Daten)\n");
+        fprintf(stderr, "aesDecryptRaw: authentication failed (wrong key or tampered data)\n");
         return GC_strdup("");
     }
-    // Erfolgs-Marker "1" vorangestellt: ein leerer Klartext (total_len==0,
-    // z.B. Entschluesselung von Crypto::aesEncrypt("", key)) waere sonst als
-    // Rueckgabe "" nicht vom Fehler-Sentinel unterscheidbar -- der Aufrufer
-    // (Crypto::aesDecrypt) prueft result.len()==0 auf Fehler, muesste also
-    // sonst einen gueltigen leeren Klartext faelschlich als Fehler werten.
+    // Success marker "1" prepended: an empty plaintext (total_len==0,
+    // e.g. decrypting Crypto::aesEncrypt("", key)) would otherwise be
+    // indistinguishable from the "" error sentinel -- the caller
+    // (Crypto::aesDecrypt) checks result.len()==0 for an error, so it would
+    // otherwise wrongly treat a valid empty plaintext as an error.
     plaintext[0] = '1';
     plaintext[1 + total_len] = '\0';
     return (char*)plaintext;
 #else
     (void)hexInput; (void)key;
-    fprintf(stderr, "aesDecryptRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    fprintf(stderr, "aesDecryptRaw: runtime built without TLS/OpenSSL (TINOX_TLS=0)\n");
     return GC_strdup("");
 #endif
 }
@@ -4441,7 +4439,7 @@ int64_t* secureRandomBytesRaw(int64_t n) {
     if (n <= 0) return tinox_array_new(0, 4);
     unsigned char* buf = (unsigned char*)malloc((size_t)n);
     if (RAND_bytes(buf, (int)n) != 1) {
-        fprintf(stderr, "secureRandomBytesRaw: RAND_bytes fehlgeschlagen\n");
+        fprintf(stderr, "secureRandomBytesRaw: RAND_bytes failed\n");
         free(buf);
         return tinox_array_new(0, 4);
     }
@@ -4451,7 +4449,7 @@ int64_t* secureRandomBytesRaw(int64_t n) {
     return nh;
 #else
     (void)n;
-    fprintf(stderr, "secureRandomBytesRaw: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    fprintf(stderr, "secureRandomBytesRaw: runtime built without TLS/OpenSSL (TINOX_TLS=0)\n");
     return tinox_array_new(0, 4);
 #endif
 }
@@ -4526,7 +4524,7 @@ bool rsaVerifySha256(int64_t* msgArr, int64_t* sigArr, int64_t* nArr, int64_t* e
     return ok;
 #else
     (void)msgArr; (void)sigArr; (void)nArr; (void)eArr;
-    fprintf(stderr, "rsaVerifySha256: runtime ohne TLS/OpenSSL gebaut (TINOX_TLS=0)\n");
+    fprintf(stderr, "rsaVerifySha256: runtime built without TLS/OpenSSL (TINOX_TLS=0)\n");
     return false;
 #endif
 }
@@ -5017,18 +5015,18 @@ void tinox_HttpServer_listen(int64_t* server) {
 #define JSON_OBJECT    6
 #define JSON_INT_ARRAY 7  // fast-path: arr_val points to int64 values, arr_val[-1]=len
 
-// JsonValue-Knoten + String-/Map-Daten eines Parse leben auf dem normalen
-// GC-Heap (malloc()/GC_malloc(), s. Redirect-Makros oben) statt in einem
-// separaten Arena-Puffer. Frueher lief hier ein `__thread`-lokaler Arena-
-// Allocator, dessen "used"-Zeiger bei JEDEM jsonParse()-Aufruf auf 0
-// zurueckgesetzt wurde ("valid until the next call", Kommentar im
-// ursprünglichen Code) — jeder JsonValue/jede Map aus einem FRUEHEREN
-// Parse, dessen Referenz laenger lebte (z. B. mehrere Parses zu einem
-// Objekt zusammengesetzt), wurde beim naechsten jsonParse()-Aufruf auf
-// DEMSELBEN Thread durch neue Allokationen ueberschrieben -- Silent-
-// Garbage/Use-after-free (bugs.md, Bug-24-Fund). Der GC verwaltet die
-// Lebensdauer jetzt individuell pro Objekt wie ueberall sonst im Runtime —
-// kein spezielles "nur bis zum naechsten Parse gueltig"-Verhalten mehr.
+// The JsonValue nodes + string/map data of a parse live on the normal
+// GC heap (malloc()/GC_malloc(), see the redirect macros above) instead of a
+// separate arena buffer. This used to be a `__thread`-local arena
+// allocator whose "used" pointer got reset to 0 on EVERY jsonParse()
+// call ("valid until the next call", per the comment in the
+// original code) — any JsonValue/map from an EARLIER
+// parse whose reference lived longer (e.g. several parses combined
+// into one object) got overwritten by new allocations on the
+// SAME thread on the next jsonParse() call -- silent
+// garbage/use-after-free (bug 24 finding). The GC now manages the
+// lifetime individually per object like everywhere else in the runtime —
+// no more special "valid only until the next parse" behavior.
 static void* json_arena_alloc(size_t size) {
     return malloc(size);
 }
@@ -6447,16 +6445,16 @@ char* tinox_int_to_param(int64_t val) {
 
 extern int64_t tinox_main(void);
 
-// Fehler-Slot aus dem generierten IR (@__tinox_err = thread_local global i64
-// 0, seit Bug 101 -- vorher ein plain global, das sich HTTP-Worker-Threads
-// geteilt haben). Ein `throw` ohne umschließendes `try` parkt hier den
-// Fehlerwert und die werfende Funktion kehrt mit einem Default-Wert zurück;
-// ein `try` weiter oben konsumiert den Slot und setzt ihn zurück auf 0. Ist
-// nach Ende von tinox_main (auf dem Main-Thread) noch ein Wert gesetzt,
-// wurde der throw NIRGENDS gefangen — das darf nicht still durchgehen (Bug
-// 35): laut auf stderr melden und mit Exit != 0 abbrechen. Die
-// Storage-Class hier MUSS mit der `thread_local`-Deklaration im generierten
-// IR uebereinstimmen (codegen.rs), sonst TLS-Relocation-Mismatch beim Linken.
+// Error slot from the generated IR (@__tinox_err = thread_local global i64
+// 0, since bug 101 -- previously a plain global that HTTP worker threads
+// shared). A `throw` with no enclosing `try` parks the error value here
+// and the throwing function returns with a default value;
+// a `try` further up the stack consumes the slot and resets it to 0. If
+// a value is still set after tinox_main returns (on the main thread),
+// the throw was caught NOWHERE — that must not pass silently (bug
+// 35): report it loudly on stderr and abort with a non-zero exit code. The
+// storage class here MUST match the `thread_local` declaration in the generated
+// IR (codegen.rs), or there's a TLS relocation mismatch at link time.
 extern __thread int64_t __tinox_err;
 
 // Definition of the function forward-declared near tinox_alloc/tinox_free
@@ -6511,7 +6509,7 @@ int main(int argc, char** argv) {
     _tinox_argv = argv;
     int64_t rc = tinox_main();
     if (__tinox_err != 0) {
-        // throw ist typgeprüft auf String-oder-Error; im Regelfall ein String.
+        // throw is type-checked as String-or-Error; usually a String.
         const char* msg = (const char*)(intptr_t)__tinox_err;
         fprintf(stderr, "Uncaught error: %s\n", msg ? msg : "(unknown)");
         return 1;

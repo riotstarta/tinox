@@ -41,7 +41,7 @@ class Main
         // HttpServer::listenTls which binds AND loops in one blocking call.
         let srv: Int64 = WsServer::listenTls(47701, "tls_cert.pem", "tls_key.pem");
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn acceptOnce(srv);
@@ -51,7 +51,7 @@ class Main
         socketConnect(cfd, "127.0.0.1", 47701);
         let cconn: Int64 = httpConnFromFdTls(cfd, "localhost", false);
         if cconn < 0 {
-            println("tls handshake fehlgeschlagen");
+            println("tls handshake failed");
             return 1;
         }
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
@@ -62,7 +62,7 @@ class Main
             }
         }
 
-        // Text-Frame "Hi!", Maske [1,2,3,4] — server echoes it back.
+        // Text frame "Hi!", mask [1,2,3,4] — server echoes it back.
         httpConnWriteBytes(cconn, [129, 131, 1, 2, 3, 4, 73, 107, 34]);
         let echo = httpConnReadN(cconn, 5);
         if echo.len() == 5 {

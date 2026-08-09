@@ -88,17 +88,17 @@ namespace tinox.core.base64
             return 0;
         }
 
-        // Eigenstaendige Byte-Array-Variante von encode() statt eines
-        // encode(rawString)-Delegats: die fruehere Implementierung baute
-        // erst eine Tinox-String aus den Bytes (raw + fromCharCode(b))
-        // und rief dann encode(raw) auf — ein Tinox-String ist intern
-        // ein C-String, jedes 0-Byte in den Eingabedaten haette raw.len()
-        // (strlen-basiert) faelschlich verkuerzt und den Rest der Bytes
-        // STILLSCHWEIGEND abgeschnitten. Bei echten Zufallsbytes (z. B.
-        // ein 32-Byte HMAC-Digest, Issue 77 SCRAM) ist das kein
-        // theoretisches Randrisiko: ~11,6% Wahrscheinlichkeit pro Aufruf,
-        // dass mindestens ein 0-Byte vorkommt — gefunden ueber eine
-        // 1-von-20-flake in einem SCRAM-e2e-Test, nicht durch Inspektion.
+        // A standalone byte-array variant of encode() instead of an
+        // encode(rawString) delegate: the earlier implementation first
+        // built a Tinox string from the bytes (raw + fromCharCode(b))
+        // and then called encode(raw) — a Tinox string is internally a
+        // C string, so any 0 byte in the input data would wrongly
+        // shorten raw.len() (strlen-based) and SILENTLY truncate the
+        // rest of the bytes. For real random bytes (e.g. a 32-byte HMAC
+        // digest, issue 77 SCRAM), this isn't a theoretical edge case:
+        // ~11.6% probability per call that at least one 0 byte occurs —
+        // found via a 1-in-20 flake in a SCRAM e2e test, not by
+        // inspection.
         fn encodeBytes(data: List<Int64>) -> String
         {
             let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -141,13 +141,14 @@ namespace tinox.core.base64
             return result;
         }
 
-        // base64url (RFC 4648 §5, PADDING GESTRIPPT) statt Standard-Alphabet
-        // — issue #131 (OAuth2 PKCE `code_challenge`, RFC 7636 §4.2 verlangt
-        // explizit "Base64 URL Encoding without padding"). `+`/`/` sind in
-        // einer URL-Query nicht sicher (muessten sonst noch prozent-kodiert
-        // werden), `-`/`_` sind es; das `=`-Padding ist bei fester
-        // Eingabelaenge (hier: ein SHA-256-Digest, immer 32 Byte) ohnehin
-        // redundant und laut Spec zu entfernen, nicht nur optional.
+        // base64url (RFC 4648 §5, PADDING STRIPPED) instead of the
+        // standard alphabet — issue #131 (OAuth2 PKCE `code_challenge`,
+        // RFC 7636 §4.2 explicitly requires "Base64 URL Encoding without
+        // padding"). `+`/`/` aren't safe in a URL query (would otherwise
+        // need percent-encoding), `-`/`_` are; the `=` padding is
+        // redundant anyway for a fixed input length (here: a SHA-256
+        // digest, always 32 bytes) and per spec is to be removed, not
+        // just optional.
         fn encodeUrlBytes(data: List<Int64>) -> String
         {
             let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -182,13 +183,12 @@ namespace tinox.core.base64
             return result;
         }
 
-        // Wie decode(), aber liefert die rohen Bytes als List<Int64> statt
-        // sie in einer Tinox-String zu materialisieren — decode() haengt
-        // dekodierte 0-Bytes intern via fromCharCode() an, was ein
-        // C-String-basiertes Tinox-String stillschweigend am ersten
-        // 0-Byte abschneiden wuerde. Fuer echte Binaerdaten (z. B. SCRAM-
-        // Salts/Digests, Issue 77) ist deshalb diese Variante die einzig
-        // sichere.
+        // Like decode(), but returns the raw bytes as List<Int64> instead
+        // of materializing them into a Tinox string — decode() appends
+        // decoded 0 bytes internally via fromCharCode(), which would
+        // silently truncate a C-string-based Tinox string at the first
+        // 0 byte. For real binary data (e.g. SCRAM salts/digests, issue
+        // 77), this variant is therefore the only safe one.
         fn decodeBytes(encoded: String) -> List<Int64>
         {
             var result: List<Int64> = [];

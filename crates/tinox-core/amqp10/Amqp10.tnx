@@ -10,8 +10,8 @@ namespace tinox.core.amqp10
     class Amqp10
     {
         /*
-         * Verbindet zum Broker (rohes TCP), noch OHNE Protokoll-Handshake.
-         * Rückgabe: Conn-Handle (>0) oder -1 bei Verbindungsfehler.
+         * Connects to the broker (raw TCP), still WITHOUT the protocol
+         * handshake. Returns: conn handle (>0) or -1 on connection error.
          */
         fn dial(host: String, port: Int64) -> Int64
         {
@@ -27,11 +27,12 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * amqps:// — TLS-Variante von dial(). OpenSSL ist standardmäßig
-         * gelinkt (s. HttpServer::listenTls); mit TINOX_TLS=0 gebaut
-         * liefert httpConnFromFdTls -1. verify=true prüft Zertifikatskette
-         * + Hostname gegen die System-CA-Stores; verify=false ist ein
-         * bewusster Opt-out für selbstsignierte Testzertifikate.
+         * amqps:// — TLS variant of dial(). OpenSSL is linked by default
+         * (see HttpServer::listenTls); built with TINOX_TLS=0,
+         * httpConnFromFdTls returns -1. verify=true checks the
+         * certificate chain + hostname against the system CA stores;
+         * verify=false is a deliberate opt-out for self-signed test
+         * certificates.
          */
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
@@ -45,7 +46,7 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Sendet den 8-Byte-AMQP-Protokoll-Header (Protocol-ID 0):
+         * Sends the 8-byte AMQP protocol header (protocol-id 0):
          * "AMQP" 0x00 0x01 0x00 0x00.
          */
         fn sendAmqpProtocolHeader(conn: Int64) -> Nothing
@@ -54,10 +55,10 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Sendet den 8-Byte-SASL-Protokoll-Header (Protocol-ID 3):
-         * "AMQP" 0x03 0x01 0x00 0x00. Läuft VOR dem AMQP-Header auf
-         * derselben Verbindung, wenn SASL-Auth genutzt wird (v1 macht das
-         * immer, analog zu 0-9-1s SASL-PLAIN-Weg).
+         * Sends the 8-byte SASL protocol header (protocol-id 3):
+         * "AMQP" 0x03 0x01 0x00 0x00. Runs BEFORE the AMQP header on the
+         * same connection when SASL auth is used (v1 always does, same
+         * as 0-9-1's SASL PLAIN path).
          */
         fn sendSaslProtocolHeader(conn: Int64) -> Nothing
         {
@@ -65,13 +66,13 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Liest 8 Byte und vergleicht sie exakt mit dem zuvor gesendeten
-         * Header (§2.2: der Empfänger bestätigt eine unterstützte Version,
-         * indem er DENSELBEN Header zurücksendet — anders als 0-9-1, wo
-         * Erfolg am ersten Byte eines echten Frames statt eines Echo-Headers
-         * erkannt wird). Ungleicher Header (Broker schlägt eine andere
-         * Version vor) ODER EOF/Kurzread gelten beide als harter
-         * Fehlschlag; der Aufrufer schließt dann die Verbindung.
+         * Reads 8 bytes and compares them exactly against the previously
+         * sent header (§2.2: the receiver confirms a supported version
+         * by sending back the SAME header — unlike 0-9-1, where success
+         * is recognized by the first byte of a real frame instead of an
+         * echoed header). An unequal header (broker proposes a different
+         * version) OR EOF/short read both count as a hard failure; the
+         * caller then closes the connection.
          */
         fn checkProtocolHeaderEcho(conn: Int64, sent: List<Int64>) -> Bool
         {
@@ -88,15 +89,15 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Liest EIN Frame (§2.3.1): size(4B) | doff(1B) | type(1B) |
-         * chanId(2B) | [extended header, (doff-2)*4 Byte] | body. `size`
-         * ist die GESAMTgröße inkl. der 8 Fixed-Header-Bytes (anders als
-         * 0-9-1s `long`, das nur die Payload-Länge zählt). Extended Header
-         * wird gelesen und verworfen (v1 nutzt ihn nicht, aber Broker
-         * dürfen ihn setzen — überspringen statt zu crashen). Fehlerhafte
-         * size/doff (kleiner als der Fixed-Header, oder header > size)
-         * sind ein harter Protokollfehler (-2) statt Silent-Garbage, exakt
-         * wie 0-9-1s Frame-Terminator-Check.
+         * Reads ONE frame (§2.3.1): size(4B) | doff(1B) | type(1B) |
+         * chanId(2B) | [extended header, (doff-2)*4 bytes] | body. `size`
+         * is the TOTAL size including the 8 fixed header bytes (unlike
+         * 0-9-1's `long`, which only counts the payload length). The
+         * extended header is read and discarded (v1 doesn't use it, but
+         * brokers are allowed to set it — skip instead of crashing).
+         * Malformed size/doff (smaller than the fixed header, or header
+         * > size) are a hard protocol error (-2) instead of silent
+         * garbage, exactly like 0-9-1's frame-terminator check.
          */
         fn readFrame(conn: Int64) -> Amqp10Frame
         {
@@ -139,39 +140,40 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Wie readFrame(), aber absorbiert eingehende Heartbeat-Frames
-         * (§2.4.5: ein "empty frame", also ein Frame ganz ohne Body) statt
-         * sie an den Aufrufer durchzureichen (Issue 82). Der Broker darf
-         * jederzeit einen Heartbeat schicken, sobald `open`/`open-ok` das
-         * idle-time-out ausgehandelt haben — jede Stelle, die auf eine
-         * ECHTE Performative wartet (aktuell: nextMessage(), das lange
-         * blockierend auf den nächsten transfer wartet, s. Amqp10Link),
-         * MUSS Heartbeats transparent überspringen statt sie fälschlich
-         * als Protokollfehler zu werten. Andere Call-Sites (begin/attach/
-         * detach/end/close) bleiben bei readFrame() — dort läuft nie genug
-         * Zeit zwischen Send und erwarteter Antwort, dass ein Heartbeat
-         * dazwischenkäme (v1-Annahme, analog zu awaitFlow()s Kommentar
-         * zum fehlenden echten Frame-Dispatcher).
+         * Like readFrame(), but absorbs incoming heartbeat frames (§2.4.5:
+         * an "empty frame", i.e. a frame with no body at all) instead of
+         * passing them through to the caller (issue 82). The broker may
+         * send a heartbeat at any time once `open`/`open-ok` have
+         * negotiated the idle-time-out — every call site that waits for
+         * a REAL performative (currently: nextMessage(), which blocks
+         * for a long time waiting for the next transfer, see
+         * Amqp10Link), MUST transparently skip heartbeats instead of
+         * wrongly treating them as a protocol error. Other call sites
+         * (begin/attach/detach/end/close) stay on readFrame() — there,
+         * never enough time passes between send and expected response
+         * for a heartbeat to land in between (a v1 assumption, analogous
+         * to awaitFlow()'s comment about the missing real frame
+         * dispatcher).
          */
         fn readFrameSkipHeartbeats(conn: Int64) -> Amqp10Frame
         {
             while true {
                 let f = Amqp10::readFrame(conn);
                 if f.frameType < 0 {
-                    return f; // EOF/Protokollfehler, unveraendert durchreichen
+                    return f; // EOF/protocol error, passed through unchanged
                 }
                 if f.body.len() > 0 {
-                    return f; // echtes Frame
+                    return f; // a real frame
                 }
-                // Leerer Body = Heartbeat: absorbieren, weiterwarten.
+                // Empty body = heartbeat: absorb, keep waiting.
             }
             return Amqp10Frame { frameType: -1, chanId: 0, body: [] };
         }
 
         /*
-         * Schreibt ein Frame (§2.3.1). v1: `doff` immer 2 (kein Extended
-         * Header) — die Runde 0/1-Frame-Type-Unterscheidung (AMQP/SASL)
-         * entscheidet der Aufrufer je nach Handshake-Phase.
+         * Writes a frame (§2.3.1). v1: `doff` is always 2 (no extended
+         * header) — the caller decides the 0/1 frame-type distinction
+         * (AMQP/SASL) depending on the handshake phase.
          */
         fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, body: List<Int64>) -> Nothing
         {
@@ -185,12 +187,12 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Baut den Frame-Body einer Performative (§2.3.1): Described Type
-         * mit `descriptorCode` (als smallulong) + einem ListVal der
-         * positionellen Felder — EIN generischer Baustein für alle 9
-         * Performatives, anders als 0-9-1s methodenspezifisches
-         * encodeMethodPayload (classId+methodId+eigenes Argument-Schema
-         * pro Methode).
+         * Builds the frame body of a performative (§2.3.1): a described
+         * type with `descriptorCode` (as smallulong) + a ListVal of the
+         * positional fields — ONE generic building block for all 9
+         * performatives, unlike 0-9-1's method-specific
+         * encodeMethodPayload (classId+methodId+its own argument schema
+         * per method).
          */
         fn encodePerformative(descriptorCode: Int64, fields: List<Amqp10Value>) -> List<Int64>
         {
@@ -201,12 +203,12 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Zerlegt einen Frame-Body in Descriptor-Code + positionelle
-         * Felder. Erwartet EXAKT die Struktur, die encodePerformative
-         * erzeugt (Described Type über einer ListVal) — jede Abweichung
-         * (kein Described Type, Wert ist keine Liste, nicht-numerischer
-         * Descriptor) ist ein harter Fehler: descriptor -1, leere fields,
-         * kein Best-Effort-Parsing.
+         * Splits a frame body into a descriptor code + positional
+         * fields. Expects EXACTLY the structure encodePerformative
+         * produces (a described type over a ListVal) — any deviation
+         * (not a described type, the value isn't a list, a non-numeric
+         * descriptor) is a hard error: descriptor -1, empty fields, no
+         * best-effort parsing.
          */
         fn decodePerformative(body: List<Int64>) -> Amqp10Performative
         {
@@ -232,14 +234,14 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Baut den Frame-Body einer Nachricht (Phase 6, §3.2): eine
-         * `properties`-Section (0x73, nur `content-type` gesetzt, alle
-         * davorliegenden Felder als Platzhalter — Listenfelder dürfen nur
-         * am ENDE weggelassen werden) gefolgt von einer `data`-Section
-         * (0x75, Rohbytes-Body). v1 nutzt bewusst NUR diese zwei Sections
-         * (kein `header`, keine `application-properties`) — analog zu
-         * 0-9-1s Content-Type/Body-Konzept, aber als eigene Described-
-         * Type-Sections statt eines separaten Content-Header-Frames.
+         * Builds the frame body of a message (§3.2): a `properties`
+         * section (0x73, only `content-type` set, all preceding fields
+         * as placeholders — list fields may only be omitted at the END)
+         * followed by a `data` section (0x75, raw-bytes body). v1
+         * deliberately uses ONLY these two sections (no `header`, no
+         * `application-properties`) — analogous to 0-9-1's
+         * content-type/body concept, but as its own described-type
+         * sections instead of a separate content-header frame.
          */
         fn encodeMessageBody(body: List<Int64>, contentType: String) -> List<Int64>
         {
@@ -260,19 +262,19 @@ namespace tinox.core.amqp10
             return w.bytes;
         }
 
-        /* 4-Byte-Big-Endian-Encoding eines Zählers als delivery-tag
-         * (binary, beliebige Byte-Folge laut Spec — muss nur innerhalb
-         * unsettled Deliveries auf demselben Link eindeutig sein). */
+        /* 4-byte big-endian encoding of a counter as a delivery tag
+         * (binary, an arbitrary byte sequence per spec — only needs to
+         * be unique among unsettled deliveries on the same link). */
         fn deliveryTagBytes(n: Int64) -> List<Int64>
         {
             return [(n >> 24) & 0xFF, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF];
         }
 
         /*
-         * SASL-PLAIN-Response: "\0user\0pass" als Rohbytes — identische
-         * Byte-Struktur zu 0-9-1s Amqp091::saslPlainResponse, aber neu
-         * implementiert im neuen Modul (kein Cross-Import zwischen den
-         * beiden AMQP-Modulen).
+         * SASL PLAIN response: "\0user\0pass" as raw bytes — identical
+         * byte structure to 0-9-1's Amqp091::saslPlainResponse, but
+         * reimplemented in the new module (no cross-import between the
+         * two AMQP modules).
          */
         fn saslPlainResponse(user: String, pass: String) -> List<Int64>
         {
@@ -289,44 +291,42 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * SASL-Negotiation (Descriptor-Codes s. tasklist.md-Sondierung):
-         * sasl-mechanisms (0x40) empfangen -> staerksten gemeinsamen
-         * Mechanismus waehlen -> Handshake fuer DEN Mechanismus fahren.
-         * Läuft NACH dem SASL-Protokoll-Header (sendSaslProtocolHeader +
-         * checkProtocolHeaderEcho, Phase 1) auf DERSELBEN Verbindung, auf
-         * der danach der AMQP-Header + `open` folgen (Phase 5).
+         * SASL negotiation: receive sasl-mechanisms (0x40) -> pick the
+         * strongest shared mechanism -> run the handshake for THAT
+         * mechanism. Runs AFTER the SASL protocol header
+         * (sendSaslProtocolHeader + checkProtocolHeaderEcho) on the SAME
+         * connection on which the AMQP header + `open` follow afterward.
          *
-         * Issue 77: SCRAM-SHA-256 wird bevorzugt (echte Challenge-
-         * Response-Authentifizierung mit gegenseitiger Verifikation)
-         * gegenueber PLAIN (Passwort geht im Klartext über die
-         * Verbindung — nur durch TLS geschuetzt, falls amqps:// genutzt
-         * wird). Fallback auf PLAIN bleibt bestehen, falls der Broker
-         * SCRAM-SHA-256 nicht anbietet — kein API-Bruch fuer bestehende
-         * PLAIN-only-Broker/-Tests.
+         * Issue 77: SCRAM-SHA-256 is preferred (real challenge-response
+         * authentication with mutual verification) over PLAIN (the
+         * password goes over the connection in plaintext — protected
+         * only by TLS if amqps:// is used). Falling back to PLAIN still
+         * works if the broker doesn't offer SCRAM-SHA-256 — no API
+         * break for existing PLAIN-only brokers/tests.
          */
         fn negotiateSasl(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
         {
-            // --- sasl-mechanisms empfangen ---
+            // --- receive sasl-mechanisms ---
             let f1 = Amqp10::readFrame(conn);
             if f1.frameType != 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1), bekam frameType=" + f1.frameType.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f1.frameType.toString() };
             }
             let p1 = Amqp10::decodePerformative(f1.body);
             if p1.descriptor != 0x40 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-mechanisms (0x40), bekam descriptor=" + p1.descriptor.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-mechanisms (0x40), got descriptor=" + p1.descriptor.toString() };
             }
             if p1.fields.len() < 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms ohne Mechanismen-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms with no mechanisms field" };
             }
             var hasPlain: Bool = false;
             var hasScram: Bool = false;
             match p1.fields[0]
             {
-                // sasl-server-mechanisms ist laut Spec immer ein
-                // symbol-array (auch bei genau einem Mechanismus) —
-                // ListVal ist der generische Rueckgabetyp von
-                // Amqp10Reader::readArray. Der SymbolVal-Zweig ist reine
-                // Verteidigung gegen abweichende Broker, nicht spec-noetig.
+                // sasl-server-mechanisms is always a symbol array per
+                // spec (even with exactly one mechanism) — ListVal is
+                // the generic return type of Amqp10Reader::readArray.
+                // The SymbolVal branch is pure defense against
+                // non-conforming brokers, not spec-required.
                 ListVal(mechs) => {
                     for i in 0..mechs.len() {
                         match mechs[i] {
@@ -348,10 +348,10 @@ namespace tinox.core.amqp10
                 return Amqp10::negotiateSaslScram(conn, user, pass);
             }
             if !hasPlain {
-                return Amqp10SaslResult { ok: false, errorMessage: "Broker bietet weder SCRAM-SHA-256 noch PLAIN an" };
+                return Amqp10SaslResult { ok: false, errorMessage: "broker offers neither SCRAM-SHA-256 nor PLAIN" };
             }
 
-            // --- sasl-init senden: mechanism, initial-response, hostname(null) ---
+            // --- send sasl-init: mechanism, initial-response, hostname(null) ---
             var initFields: List<Amqp10Value> = [
                 Amqp10Value::SymbolVal("PLAIN"),
                 Amqp10Value::BinaryVal(Amqp10::saslPlainResponse(user, pass)),
@@ -360,17 +360,17 @@ namespace tinox.core.amqp10
             let initBody = Amqp10::encodePerformative(0x41, initFields);
             Amqp10::writeFrame(conn, 1, 0, initBody);
 
-            // --- sasl-outcome empfangen ---
+            // --- receive sasl-outcome ---
             let f2 = Amqp10::readFrame(conn);
             if f2.frameType != 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1), bekam frameType=" + f2.frameType.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f2.frameType.toString() };
             }
             let p2 = Amqp10::decodePerformative(f2.body);
             if p2.descriptor != 0x44 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-outcome (0x44), bekam descriptor=" + p2.descriptor.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p2.descriptor.toString() };
             }
             if p2.fields.len() < 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome ohne code-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome with no code field" };
             }
             var code: Int64 = -1;
             match p2.fields[0]
@@ -379,16 +379,16 @@ namespace tinox.core.amqp10
                 _ => {}
             }
             if code != 0 {
-                return Amqp10SaslResult { ok: false, errorMessage: "SASL-Auth fehlgeschlagen, sasl-outcome-code=" + code.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "SASL auth failed, sasl-outcome-code=" + code.toString() };
             }
             return Amqp10SaslResult { ok: true, errorMessage: "" };
         }
 
         /*
-         * ASCII/UTF-8-Bytes eines Strings — fuer die printablen SCRAM-
-         * Nachrichtenteile (Issue 77), die als initial-response/response
-         * BINARY uebertragen werden (AMQP-1.0-SASL kennt kein reines
-         * String-Feld dafuer).
+         * ASCII/UTF-8 bytes of a string — for the printable SCRAM
+         * message parts (issue 77), which are transmitted as
+         * initial-response/response BINARY (AMQP-1.0 SASL has no plain
+         * string field for that).
          */
         fn stringToBytes(s: String) -> List<Int64>
         {
@@ -400,13 +400,13 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Rueckrichtung von stringToBytes — SICHER nur fuer Bytes, die
-         * tatsaechlich printable ASCII/UTF-8-Text sind (die SCRAM-
-         * Nachrichten-HUELLE "r=...,s=...,i=..." ist das immer; die
-         * darin base64-kodierten Salt-/Proof-/Signature-Werte bleiben
-         * ohnehin printabler Base64-Text). NICHT fuer rohe Binaerdaten
-         * (0-Bytes wuerden ein Tinox-String stillschweigend abschneiden,
-         * s. Base64::decodeBytes-Kommentar).
+         * Reverse direction of stringToBytes — SAFE only for bytes that
+         * really are printable ASCII/UTF-8 text (the SCRAM message
+         * envelope "r=...,s=...,i=..." always is; the base64-encoded
+         * salt/proof/signature values embedded in it stay printable
+         * base64 text regardless). NOT for raw binary data (0 bytes
+         * would silently truncate a Tinox string, see the
+         * Base64::decodeBytes comment).
          */
         fn bytesToString(b: List<Int64>) -> String
         {
@@ -426,11 +426,11 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * PBKDF2-HMAC-SHA256 (RFC 8018) mit dkLen = 32 = SHA-256-
-         * Ausgabegroesse — deshalb reicht EIN Block (Blockindex 1 im
-         * RFC), keine T1||T2||...-Verkettung noetig. `iterations` kommt
-         * vom Broker (server-first-message, typisch 4096+) — O(iterations)
-         * HMAC-Aufrufe, einmalig beim Verbindungsaufbau, kein Hot-Path.
+         * PBKDF2-HMAC-SHA256 (RFC 8018) with dkLen = 32 = SHA-256 output
+         * size — so ONE block suffices (block index 1 in the RFC), no
+         * T1||T2||... concatenation needed. `iterations` comes from the
+         * broker (server-first-message, typically 4096+) — O(iterations)
+         * HMAC calls, once at connection setup, not a hot path.
          */
         fn pbkdf2HmacSha256(password: List<Int64>, salt: List<Int64>, iterations: Int64) -> List<Int64>
         {
@@ -439,7 +439,7 @@ namespace tinox.core.amqp10
             saltBlock.push(0);
             saltBlock.push(0);
             saltBlock.push(0);
-            saltBlock.push(1); // INT(1), 4-Byte big-endian Blockindex
+            saltBlock.push(1); // INT(1), 4-byte big-endian block index
             var u: List<Int64> = hmacSha256Bytes(saltBlock, password);
             var t: List<Int64> = u;
             var iter: Int64 = 2;
@@ -452,12 +452,12 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * Zufaellige SCRAM-Client-Nonce: 16 zufaellige Bytes, Base64-
-         * kodiert (printable, komma-/gleichzeichenfrei — sicher fuer die
-         * "r="-Textnachricht). Die Nonce muss laut Spec nur EINDEUTIG
-         * sein, keine kryptografische Schluesselableitung haengt direkt
-         * an ihrer Vorhersagbarkeit (anders als z. B. ein AES-Nonce) —
-         * der einfache PRNG hinter randomInt reicht hier deshalb.
+         * Random SCRAM client nonce: 16 random bytes, base64-encoded
+         * (printable, free of commas/equals signs — safe for the "r="
+         * text message). Per spec the nonce only needs to be UNIQUE, no
+         * cryptographic key derivation depends directly on its
+         * unpredictability (unlike, say, an AES nonce) — so the simple
+         * PRNG behind randomInt is sufficient here.
          */
         fn generateScramNonce() -> String
         {
@@ -469,22 +469,22 @@ namespace tinox.core.amqp10
         }
 
         /*
-         * SCRAM-SHA-256 (RFC 5802/7677) als AMQP-1.0-SASL-Mechanismus
-         * (Issue 77). Ablauf: sasl-init (client-first-message) ->
+         * SCRAM-SHA-256 (RFC 5802/7677) as an AMQP-1.0 SASL mechanism
+         * (issue 77). Flow: sasl-init (client-first-message) ->
          * sasl-challenge (server-first-message: r=<nonce>,s=<salt>,
          * i=<iterations>) -> sasl-response (client-final-message:
          * c=<gs2-header>,r=<nonce>,p=<proof>) -> sasl-outcome (code=0,
          * additional-data = server-final-message "v=<signature>").
-         * Spec-konforme Broker liefern die Server-Signature-Verifikation
-         * ALS additional-data auf sasl-outcome statt einer weiteren
-         * Challenge-Runde — v1 unterstuetzt nur diesen (ueblichen) Fall,
-         * keine mehrfachen sasl-challenge/-response-Runden.
+         * Spec-compliant brokers deliver the server-signature
+         * verification AS additional-data on sasl-outcome instead of
+         * another challenge round — v1 only supports this (common) case,
+         * no multiple sasl-challenge/-response rounds.
          *
-         * gs2-Header "n,," = kein Channel-Binding (v1-Grenze, wie bei
-         * PLAIN ueber amqps:// auch keine Kanalbindung an das TLS-
-         * Zertifikat geprueft wird). Username wird UNESCAPED durchgereicht
-         * (RFC verlangt "="/","-Escaping als "=3D"/"=2C") — v1-Annahme:
-         * Benutzernamen enthalten diese Zeichen nicht.
+         * gs2 header "n,," = no channel binding (a v1 limitation, same
+         * as PLAIN over amqps:// also not checking any channel binding
+         * to the TLS certificate). The username is passed through
+         * UNESCAPED (the RFC requires "="/","-escaping as "=3D"/"=2C")
+         * — a v1 assumption: usernames don't contain those characters.
          */
         fn negotiateSaslScram(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
         {
@@ -501,17 +501,17 @@ namespace tinox.core.amqp10
             let initBody = Amqp10::encodePerformative(0x41, initFields);
             Amqp10::writeFrame(conn, 1, 0, initBody);
 
-            // --- sasl-challenge (server-first-message) empfangen ---
+            // --- receive sasl-challenge (server-first-message) ---
             let f2 = Amqp10::readFrame(conn);
             if f2.frameType != 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1) fuer SCRAM-Challenge, bekam frameType=" + f2.frameType.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM challenge, got frameType=" + f2.frameType.toString() };
             }
             let p2 = Amqp10::decodePerformative(f2.body);
             if p2.descriptor != 0x42 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-challenge (0x42), bekam descriptor=" + p2.descriptor.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-challenge (0x42), got descriptor=" + p2.descriptor.toString() };
             }
             if p2.fields.len() < 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge ohne challenge-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with no challenge field" };
             }
             var serverFirstMessage: String = "";
             match p2.fields[0] {
@@ -519,10 +519,10 @@ namespace tinox.core.amqp10
                 _ => {}
             }
             if serverFirstMessage.len() == 0 {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge mit leerem/ungueltigem challenge-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with an empty/invalid challenge field" };
             }
 
-            // --- server-first-message parsen ---
+            // --- parse the server-first-message ---
             let parts = serverFirstMessage.split(",");
             var combinedNonce: String = "";
             var saltB64: String = "";
@@ -540,10 +540,10 @@ namespace tinox.core.amqp10
                 }
             }
             if !combinedNonce.startsWith(clientNonce) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: Broker-Nonce beginnt nicht mit der Client-Nonce (moeglicher Downgrade-Angriff)" };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: broker nonce doesn't start with the client nonce (possible downgrade attack)" };
             }
             if saltB64.len() == 0 || iterations <= 0 {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-first-message ohne gueltiges Salt/Iterations-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-first-message with no valid salt/iterations field" };
             }
             // Bug 87: `iterations` is broker-controlled and fed straight into
             // an O(iterations) PBKDF2-HMAC loop below. A malicious/compromised
@@ -569,31 +569,31 @@ namespace tinox.core.amqp10
             let clientProof = Amqp10::xorBytes(clientKey, clientSignature);
             let clientFinalMessage = clientFinalMessageWithoutProof + ",p=" + Base64::encodeBytes(clientProof);
 
-            // --- sasl-response senden ---
+            // --- send sasl-response ---
             var respFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(clientFinalMessage))];
             let respBody = Amqp10::encodePerformative(0x43, respFields);
             Amqp10::writeFrame(conn, 1, 0, respBody);
 
-            // --- sasl-outcome empfangen (additional-data = server-final-message) ---
+            // --- receive sasl-outcome (additional-data = server-final-message) ---
             let f3 = Amqp10::readFrame(conn);
             if f3.frameType != 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete SASL-Frame (type=1) fuer SCRAM-Outcome, bekam frameType=" + f3.frameType.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM outcome, got frameType=" + f3.frameType.toString() };
             }
             let p3 = Amqp10::decodePerformative(f3.body);
             if p3.descriptor != 0x44 {
-                return Amqp10SaslResult { ok: false, errorMessage: "erwartete sasl-outcome (0x44), bekam descriptor=" + p3.descriptor.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p3.descriptor.toString() };
             }
             if p3.fields.len() < 1 {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome ohne code-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome with no code field" };
             }
             var code: Int64 = -1;
             match p3.fields[0] { UByteVal(n) => { code = n; } _ => {} }
             if code != 0 {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM-Auth fehlgeschlagen, sasl-outcome-code=" + code.toString() };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM auth failed, sasl-outcome-code=" + code.toString() };
             }
 
-            // --- Server-Signature verifizieren (gegenseitige Authentifizierung,
-            // nicht nur Client -> Server) — kein Silent-Trust ---
+            // --- verify the server signature (mutual authentication,
+            // not just client -> server) — no silent trust ---
             var serverFinalMessage: String = "";
             if p3.fields.len() > 1 {
                 match p3.fields[1] {
@@ -602,10 +602,10 @@ namespace tinox.core.amqp10
                 }
             }
             if serverFinalMessage.len() == 0 {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: sasl-outcome ohne additional-data (server-final-message) — Server-Identitaet nicht verifizierbar" };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: sasl-outcome with no additional-data (server-final-message) — server identity not verifiable" };
             }
             if !serverFinalMessage.startsWith("v=") {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-final-message ohne 'v='-Feld" };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-final-message with no 'v=' field" };
             }
             let serverSignatureB64 = serverFinalMessage.substring(2, serverFinalMessage.len());
             let receivedServerSignature = Base64::decodeBytes(serverSignatureB64);
@@ -618,7 +618,7 @@ namespace tinox.core.amqp10
                 }
             }
             if !sigMatch {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: Server-Signature stimmt nicht ueberein — Server-Identitaet NICHT verifiziert (moeglicher MITM)" };
+                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server signature mismatch — server identity NOT verified (possible MITM)" };
             }
 
             return Amqp10SaslResult { ok: true, errorMessage: "" };

@@ -3,8 +3,8 @@ module tinox.core.websocket;
 namespace tinox.core.websocket
 {
     /*
-     * Minimaler Server-Einstieg: listen + accept-mit-Handshake. Bewusst als
-     * explizite Schleifen-API (kein Lambda-Handler in v1, s. tasklist.md 4.1).
+     * Minimal server entry point: listen + accept-with-handshake.
+     * Deliberately an explicit loop-based API (no lambda handler in v1).
      */
     class WsServer
     {
@@ -14,9 +14,9 @@ namespace tinox.core.websocket
         }
 
         /*
-         * Akzeptiert die nächste Verbindung und führt den Handshake durch.
-         * Rückgabe: Conn-Handle (>0) oder -1 (Handshake fehlgeschlagen,
-         * Verbindung ist dann bereits geschlossen).
+         * Accepts the next connection and runs the handshake. Returns:
+         * conn handle (>0) or -1 (handshake failed, the connection is
+         * already closed in that case).
          */
         fn accept(srv: Int64) -> Int64
         {
@@ -32,10 +32,10 @@ namespace tinox.core.websocket
         }
 
         /*
-         * wss:// — TLS-Variante von listen(). OpenSSL ist standardmäßig
-         * gelinkt (s. HttpServer::listenTls); mit TINOX_TLS=0 gebaut liefert
-         * httpServerCreateTls -1. Cert/Key sind PEM-Dateien, certPath darf
-         * die volle Chain enthalten (Leaf zuerst).
+         * wss:// — TLS variant of listen(). OpenSSL is linked by default
+         * (see HttpServer::listenTls); built with TINOX_TLS=0,
+         * httpServerCreateTls returns -1. Cert/key are PEM files,
+         * certPath may contain the full chain (leaf first).
          */
         fn listenTls(port: Int64, certPath: String, keyPath: String) -> Int64
         {
@@ -43,11 +43,11 @@ namespace tinox.core.websocket
         }
 
         /*
-         * TLS-Variante von accept(): akzeptiert, macht den TLS-Handshake
-         * (httpServerAcceptTls) und danach den normalen WS-Handshake über
-         * dasselbe Conn-Handle — httpConnReadRequest/SendRaw und die
-         * binärsicheren Frame-Primitiven sind transparent für TLS- wie
-         * Plaintext-Handles (Runtime routet über conn_recv/conn_send).
+         * TLS variant of accept(): accepts, does the TLS handshake
+         * (httpServerAcceptTls) and then the normal WS handshake over
+         * the same conn handle — httpConnReadRequest/SendRaw and the
+         * binary-safe frame primitives are transparent to both TLS and
+         * plaintext handles (the runtime routes via conn_recv/conn_send).
          */
         fn acceptTls(srv: Int64) -> Int64
         {

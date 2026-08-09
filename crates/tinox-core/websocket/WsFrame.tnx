@@ -1,25 +1,25 @@
 module tinox.core.websocket;
 
 /*
- * WebSocket-Server (RFC 6455) über der Conn-Handle-Architektur des
- * HTTP-Servers. Aufbau siehe tasklist.md (Phasen 2-4).
+ * WebSocket server (RFC 6455) on top of the HTTP server's conn-handle
+ * architecture.
  *
- * Bytes laufen als List<Int64> (ein Byte 0..255 pro Slot) über die
- * binärsicheren Primitiven httpConnReadN/httpConnWriteBytes — die
- * C-String-basierten Pfade (httpConnReadRequest/SendRaw) werden NUR für den
- * textuellen Handshake benutzt.
+ * Bytes flow as List<Int64> (one byte 0..255 per slot) over the
+ * binary-safe primitives httpConnReadN/httpConnWriteBytes — the
+ * C-string-based paths (httpConnReadRequest/SendRaw) are used ONLY for
+ * the textual handshake.
  *
- * Bewusste v1-Lücken (tasklist.md "Später"): kein permessage-deflate.
- * Fragmentierte Nachrichten (Continuation-Frames, RFC 6455 §5.4) werden von
- * Ws::readMessage zusammengesetzt (issue #120); ausgehende Verbindungen als
- * Client deckt WsClient::connect ab (issue #121).
+ * Deliberate v1 gaps: no permessage-deflate. Fragmented messages
+ * (continuation frames, RFC 6455 §5.4) are reassembled by
+ * Ws::readMessage (issue #120); outgoing connections as a client are
+ * covered by WsClient::connect (issue #121).
  *
- * Verwendung (Echo-Server):
+ * Usage (echo server):
  *   let srv = WsServer::listen(8080);
- *   let conn = WsServer::accept(srv);        // inkl. Handshake, -1 bei Fehler
+ *   let conn = WsServer::accept(srv);        // includes the handshake, -1 on error
  *   while true {
- *       let f = Ws::readMessage(conn);        // Ping/Pong+Close automatisch
- *       if f.opcode != 1 { break; }           // 1 = Text
+ *       let f = Ws::readMessage(conn);        // ping/pong+close handled automatically
+ *       if f.opcode != 1 { break; }           // 1 = text
  *       Ws::sendText(conn, Ws::text(f));
  *   }
  *   Ws::close(conn);
@@ -28,10 +28,10 @@ module tinox.core.websocket;
 namespace tinox.core.websocket
 {
     /*
-     * Ein gelesener Frame. opcode wie RFC 6455 (1 Text, 2 Binary, 8 Close,
-     * 9 Ping, 10 Pong); zusätzlich als Lese-Ergebnis:
-     *   -1 = Verbindung zu/EOF, -2 = Protokollfehler (Verbindung wurde
-     *   von readMessage bereits mit Close beantwortet).
+     * A frame that was read. opcode as per RFC 6455 (1 text, 2 binary,
+     * 8 close, 9 ping, 10 pong); additionally as a read result:
+     *   -1 = connection closed/EOF, -2 = protocol error (readMessage
+     *   already responded to the connection with close).
      */
     class WsFrame
     {

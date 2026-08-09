@@ -10,31 +10,31 @@ import tinox.core.json;
 namespace tinox.core.oauth2
 {
     /*
-     * OAuth2-Client für den Authorization Code Grant mit PKCE (RFC 6749 +
-     * RFC 7636, issue #131) — der empfohlene Standard-Flow für sowohl
-     * Server- als auch Public-Clients. `authorizeUrl`/`tokenUrl` sind die
-     * beiden Provider-Endpunkte (z. B. Google:
+     * OAuth2 client for the Authorization Code grant with PKCE (RFC 6749
+     * + RFC 7636, issue #131) — the recommended standard flow for both
+     * server and public clients. `authorizeUrl`/`tokenUrl` are the two
+     * provider endpoints (e.g. Google:
      * "https://accounts.google.com/o/oauth2/v2/auth" /
-     * "https://oauth2.googleapis.com/token"), `redirectUri` die beim
-     * Provider registrierte Callback-URL dieser Anwendung.
+     * "https://oauth2.googleapis.com/token"), `redirectUri` this
+     * application's callback URL registered with the provider.
      *
-     * Ablauf:
-     *   1. buildAuthorizeUrl(scope) -> Aufrufer leitet den User-Agent zu
-     *      .url weiter, speichert .state + .codeVerifier session-seitig
-     *      (s. OAuth2AuthorizeRequest).
-     *   2. Callback-Handler: .state gegen den gespeicherten Wert prüfen
-     *      (CSRF), dann exchangeCode(code, codeVerifier) mit dem
-     *      gespeicherten codeVerifier aufrufen.
-     *   3. Bei Bedarf später refresh(refreshToken).
+     * Flow:
+     *   1. buildAuthorizeUrl(scope) -> caller redirects the user agent to
+     *      .url, stores .state + .codeVerifier session-side (see
+     *      OAuth2AuthorizeRequest).
+     *   2. Callback handler: check .state against the stored value
+     *      (CSRF), then call exchangeCode(code, codeVerifier) with the
+     *      stored codeVerifier.
+     *   3. Later, as needed, refresh(refreshToken).
      *
-     * Bewusste v1-Lücken (s. issue #131 für die volle Begründung):
-     *   - Kein OIDC-ID-Token-Verifizieren (bräuchte RS256/JWKS in Jwt,
-     *     UND Jwt selbst hat noch ein eigenes Wire-Format-Problem,
-     *     s. issue #137 — beides eigene, größere Folge-Arbeit).
-     *   - Nur Authorization Code + PKCE, kein client_credentials/
+     * Deliberate v1 gaps (see issue #131 for the full rationale):
+     *   - No OIDC ID-token verification (would need RS256/JWKS in Jwt,
+     *     AND Jwt itself still has its own wire-format issue, see issue
+     *     #137 — both their own, larger follow-up work).
+     *   - Only authorization code + PKCE, no client_credentials/
      *     implicit/device_code.
-     *   - Kein Token-Storage/Session-Integration — Aufrufer-Sache, wie
-     *     beim Rest des rest/http_server-Frameworks.
+     *   - No token storage/session integration — the caller's concern,
+     *     same as with the rest of the rest/http_server framework.
      */
     class OAuth2Client
     {
@@ -50,12 +50,12 @@ namespace tinox.core.oauth2
         }
 
         /*
-         * Baut die Authorization-URL + generiert `state` (CSRF) und den
-         * PKCE `code_verifier` (RFC 7636 §4.1: 32 kryptografisch sichere
-         * Zufallsbytes, base64url-kodiert -> 43 Zeichen, erfüllt die
-         * geforderten 43-128 Zeichen aus dem erlaubten Alphabet).
-         * `code_challenge` ist SHA-256 des Verifiers, ebenfalls
-         * base64url — S256-Methode (RFC 7636 §4.2), nicht das unsichere
+         * Builds the authorization URL + generates `state` (CSRF) and
+         * the PKCE `code_verifier` (RFC 7636 §4.1: 32 cryptographically
+         * secure random bytes, base64url-encoded -> 43 characters,
+         * satisfies the required 43-128 characters from the allowed
+         * alphabet). `code_challenge` is SHA-256 of the verifier, also
+         * base64url — the S256 method (RFC 7636 §4.2), not the insecure
          * "plain".
          */
         fn buildAuthorizeUrl(scope: String) -> OAuth2AuthorizeRequest
@@ -66,11 +66,11 @@ namespace tinox.core.oauth2
             let verifierBytes: List<Int64> = Crypto::secureRandomBytes(32);
             let codeVerifier: String = Base64::encodeUrlBytes(verifierBytes);
 
-            // Crypto::sha256 liefert Hex-Text (kein Roh-Bytes-Primitiv in
-            // Crypto, s. issue #137); Hex::decodeBytes holt die rohen 32
-            // Digest-Bytes sicher zurück (kein String-basierter Umweg über
-            // fromCharCode, der bei einem eingebetteten 0-Byte im Digest
-            // stillschweigend abgeschnitten hätte).
+            // Crypto::sha256 returns hex text (no raw-bytes primitive in
+            // Crypto, see issue #137); Hex::decodeBytes safely recovers
+            // the raw 32 digest bytes (no string-based detour via
+            // fromCharCode, which would have silently truncated on an
+            // embedded 0 byte in the digest).
             let challengeHex: String = Crypto::sha256(codeVerifier);
             let challengeBytes: List<Int64> = Hex::decodeBytes(challengeHex);
             let codeChallenge: String = Base64::encodeUrlBytes(challengeBytes);
@@ -96,13 +96,12 @@ namespace tinox.core.oauth2
         }
 
         /*
-         * Tauscht den Authorization Code gegen Access-/Refresh-Token
-         * (RFC 6749 §4.1.3). `codeVerifier` MUSS der von
-         * buildAuthorizeUrl() zurückgegebene und vom Aufrufer
-         * gespeicherte Wert sein — der Server prüft ihn gegen den
-         * `code_challenge`, den er beim Authorize-Request gesehen hat
-         * (PKCE-Kernmechanismus: nur wer den ursprünglichen Verifier
-         * kennt, kann den Code einlösen).
+         * Exchanges the authorization code for an access/refresh token
+         * (RFC 6749 §4.1.3). `codeVerifier` MUST be the value returned
+         * by buildAuthorizeUrl() and stored by the caller — the server
+         * checks it against the `code_challenge` it saw in the
+         * authorize request (the core PKCE mechanism: only whoever knows
+         * the original verifier can redeem the code).
          */
         fn exchangeCode(code: String, codeVerifier: String) -> OAuth2TokenResponse
         {
@@ -115,7 +114,7 @@ namespace tinox.core.oauth2
             return OAuth2Client::postToken(this.tokenUrl, body);
         }
 
-        /* Tauscht einen Refresh-Token gegen ein frisches Token-Paar (RFC 6749 §6). */
+        /* Exchanges a refresh token for a fresh token pair (RFC 6749 §6). */
         fn refresh(refreshToken: String) -> OAuth2TokenResponse
         {
             var body: String = "grant_type=refresh_token";
@@ -126,15 +125,15 @@ namespace tinox.core.oauth2
         }
 
         /*
-         * Gemeinsamer POST-Kern für exchangeCode()/refresh(): sendet
-         * `application/x-www-form-urlencoded` (RFC 6749 §4.1.3 verlangt
-         * genau das, nicht JSON) und parst die JSON-Antwort. `ok == false`
-         * bei jedem Fehler — Netzwerk-/TLS-Fehler (Http liefert dann
-         * statusCode()==0, s. issue #131s TLS-Arbeit an Http.tnx),
-         * HTTP-Fehlerstatus, RFC-6749-§5.2-Fehlerantwort
-         * (`error`/`error_description`), oder eine 2xx-Antwort ohne
-         * `access_token`-Feld werden alle hart als Fehler gemeldet statt
-         * ein leeres/falsches Token still durchzureichen.
+         * Shared POST core for exchangeCode()/refresh(): sends
+         * `application/x-www-form-urlencoded` (RFC 6749 §4.1.3 requires
+         * exactly that, not JSON) and parses the JSON response.
+         * `ok == false` on any error — network/TLS errors (Http then
+         * returns statusCode()==0, see issue #131's TLS work on
+         * Http.tnx), an HTTP error status, an RFC-6749-§5.2 error
+         * response (`error`/`error_description`), or a 2xx response with
+         * no `access_token` field are all reported as hard errors
+         * instead of silently passing through an empty/wrong token.
          */
         fn postToken(url: String, body: String) -> OAuth2TokenResponse
         {

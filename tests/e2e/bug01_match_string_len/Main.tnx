@@ -1,4 +1,4 @@
-// Bug 1: s.len() auf match-gebundenen Strings gab ASCII-Code zurück
+// Bug 1: s.len() on match-bound strings returned the ASCII code
 // expect: 5
 import bug01_match_string_len;
 

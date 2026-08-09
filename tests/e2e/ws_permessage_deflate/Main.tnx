@@ -27,7 +27,7 @@ class Main
     fnc main() -> Int32 {
         let srv = WsServer::listen(47640);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
 

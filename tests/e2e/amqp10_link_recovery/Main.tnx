@@ -1,12 +1,12 @@
-// Issue 80: Link-Recovery/Resumption — attachWithRecovery() meldet dem
-// Broker delivery-tags, die diese Session als (aus einer frueheren Session)
-// noch unsettled in Erinnerung hat; der Broker vergleicht das mit seiner
-// eigenen Sicht und liefert sein EIGENES unsettled-Feld in der attach-
-// Antwort zurueck (Amqp10Link.recoveredUnsettledTags). Deckt ab: normales
-// attach() bleibt unveraendert (leeres unsettled-Feld, wie bisher), sowie
-// beide Richtungen der Reconciliation — ein vom Client gemeldeter Tag, den
-// der Broker BESTAETIGT (weiterhin offen), und einer, den der Broker als
-// bereits erledigt zurueckweist (fehlt in der Antwort).
+// Issue 80: link recovery/resumption — attachWithRecovery() reports to the
+// broker the delivery tags this session still remembers as unsettled
+// (from an earlier session); the broker compares that against its own
+// view and returns its OWN unsettled field in the attach response
+// (Amqp10Link.recoveredUnsettledTags). Covers: plain attach() stays
+// unchanged (empty unsettled field, as before), plus both directions of
+// the reconciliation — a tag reported by the client that the broker
+// CONFIRMS (still open), and one the broker rejects as already settled
+// (missing from the response).
 // expect: ok-plain-attach-no-unsettled
 // expect: ok-recovery-tag-confirmed
 // expect: ok-recovery-tag-not-reoffered
@@ -21,7 +21,7 @@ class Main
     async fnc recoveryBroker(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptConnHandle(srv);
 
-        // --- SASL-Header + Negotiation (PLAIN) ---
+        // --- SASL header + negotiation (PLAIN) ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
         let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
@@ -29,7 +29,7 @@ class Main
         Amqp10::readFrame(sconn);
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]));
 
-        // --- AMQP-Header ---
+        // --- AMQP header ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
@@ -49,8 +49,8 @@ class Main
         ];
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
-        // --- attach 1: normaler attach() ohne Recovery — unsettled-Feld MUSS
-        // NullVal sein (Position 7), unveraendertes Verhalten. ---
+        // --- attach 1: plain attach() without recovery — the unsettled field
+        // MUST be NullVal (position 7), unchanged behavior. ---
         let fAttach1 = Amqp10::readFrame(sconn);
         let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
         var plainNoUnsettled: Bool = false;
@@ -62,10 +62,10 @@ class Main
         let pDetach1 = Amqp10::decodePerformative(fDetach1.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
 
-        // --- attach 2: attachWithRecovery() mit ZWEI gemeldeten Tags. Broker
-        // bestaetigt Tag A (weiterhin offen) und weist Tag B zurueck (aus
-        // Brokersicht laengst erledigt) — testet BEIDE Reconciliation-Faelle
-        // in einem Attach-Zyklus. ---
+        // --- attach 2: attachWithRecovery() with TWO reported tags. The
+        // broker confirms tag A (still open) and rejects tag B (already
+        // settled from the broker's point of view) — tests BOTH
+        // reconciliation cases in a single attach cycle. ---
         let fAttach2 = Amqp10::readFrame(sconn);
         let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
         var sawTagA: Bool = false;
@@ -92,8 +92,8 @@ class Main
                 _ => {}
             }
         }
-        // Broker-Antwort: nur Tag A im eigenen unsettled-Feld (Tag B gilt als
-        // laengst settled und wird NICHT erneut angeboten).
+        // Broker response: only tag A in its own unsettled field (tag B is
+        // considered long settled and is NOT re-offered).
         var respFields: List<Amqp10Value> = [];
         for i in 0..pAttach2.fields.len() {
             respFields.push(pAttach2.fields[i]);
@@ -114,26 +114,26 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(47717);
         if srv < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle = spawn recoveryBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", 47717, "guest", "guest");
         if conn.conn <= 0 {
-            println("connect fehlgeschlagen: " + conn.errorMessage);
+            println("connect failed: " + conn.errorMessage);
             return 1;
         }
         let session = Amqp10Session::begin(conn);
 
-        // --- Normaler attach() ohne Recovery ---
+        // --- Plain attach() without recovery ---
         let link1 = Amqp10Link::attach(session, "plain-link", true, "queue-a");
         if link1.recoveredUnsettledTags.len() == 0 {
             println("ok-plain-attach-no-unsettled");
         }
         link1.detach();
 
-        // --- attachWithRecovery() mit zwei zuvor unsettled gemeldeten Tags ---
+        // --- attachWithRecovery() with two previously-unsettled reported tags ---
         var priorTags: List<List<Int64>> = [[65], [66]];
         let link2 = Amqp10Link::attachWithRecovery(session, "recovery-link", true, "queue-a", priorTags);
         var tagAConfirmed: Bool = false;

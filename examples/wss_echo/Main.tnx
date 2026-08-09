@@ -1,14 +1,14 @@
-// WebSocket-Echo-Server über TLS (wss://).
-// OpenSSL ist standardmäßig gelinkt, kein Extra-Flag nötig:
-//   tinox run examples/wss_echo.tnx
-// (Opt-out per TINOX_TLS=0, falls kein OpenSSL zum Bauen verfügbar ist.)
-// Selbstsigniertes Testzertifikat erzeugen:
+// WebSocket echo server over TLS (wss://).
+// OpenSSL is linked by default, no extra flag needed:
+//   tinox run examples/wss_echo/Main.tnx
+// (Opt out via TINOX_TLS=0 if no OpenSSL is available to build with.)
+// Generate a self-signed test certificate:
 //   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
 //     -days 1 -nodes -subj "/CN=localhost"
-// Test: Browser-Konsole (Zertifikat vorher als vertrauenswürdig akzeptieren)
+// Test: browser console (accept the certificate as trusted first)
 //         s = new WebSocket("wss://localhost:8791");
-//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hallo");
-// Bedient eine Verbindung nach der anderen (blocking, v1 — wie ws_echo.tnx).
+//         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hello");
+// Serves one connection at a time (blocking, v1 -- same as ws_echo).
 
 import tinox.core.websocket;
 
@@ -17,21 +17,21 @@ class Main
     fnc main() -> Int32 {
         let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
         if srv < 0 {
-            println("listenTls fehlgeschlagen (Port belegt, Runtime mit TINOX_TLS=0 gebaut, oder cert.pem/key.pem fehlen/ungueltig)");
+            println("listenTls failed (port in use, runtime built with TINOX_TLS=0, or cert.pem/key.pem missing/invalid)");
             return 1;
         }
-        println("wss://localhost:8791 bereit");
+        println("wss://localhost:8791 ready");
         while true {
             let conn = WsServer::acceptTls(srv);
             if conn <= 0 {
                 continue;
             }
-            println("Client verbunden");
+            println("client connected");
             while true {
                 let f = Ws::readMessage(conn);
                 if f.opcode == 1 {
                     let msg = Ws::text(f);
-                    println("empfangen: " + msg);
+                    println("received: " + msg);
                     Ws::sendText(conn, "echo: " + msg);
                     continue;
                 }
@@ -39,11 +39,11 @@ class Main
                     Ws::sendBinary(conn, f.payload);
                     continue;
                 }
-                // Close (8), EOF (-1) oder Protokollfehler (-2): Verbindung beenden
+                // Close (8), EOF (-1), or protocol error (-2): end the connection
                 break;
             }
             Ws::close(conn);
-            println("Client getrennt");
+            println("client disconnected");
         }
         return 0;
     }

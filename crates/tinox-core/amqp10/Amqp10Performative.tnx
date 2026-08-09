@@ -6,13 +6,13 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Eine dekodierte Performative-Hülle (§2.3.1: jede der 9 Performatives
-     * ist ein Described List — EIN generisches Encoding für alle, anders
-     * als 0-9-1s classId+methodId+methodenspezifisches Feld-Schema).
-     * descriptor: -1 = Decode-Fehler (unerwartete Struktur — s.
-     * Amqp10::decodePerformative). fields sind POSITIONELL, die
-     * Feldbedeutung ergibt sich aus der jeweiligen Performative-Spec
-     * (Phase 5/6), nicht aus diesem generischen Baustein.
+     * A decoded performative wrapper (§2.3.1: each of the 9
+     * performatives is a described list — ONE generic encoding for all
+     * of them, unlike 0-9-1's classId+methodId+method-specific field
+     * schema). descriptor: -1 = decode error (unexpected structure —
+     * see Amqp10::decodePerformative). fields are POSITIONAL, field
+     * meaning comes from the respective performative spec, not from
+     * this generic building block.
      */
     class Amqp10Performative
     {

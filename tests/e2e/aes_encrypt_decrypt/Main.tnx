@@ -1,4 +1,4 @@
-// Issue 74: Crypto::aesEncrypt/aesDecrypt threw "nicht implementiert" as a
+// Issue 74: Crypto::aesEncrypt/aesDecrypt threw "not implemented" as a
 // deliberate placeholder (a weak substitute like XOR would have silently
 // undermined the promise the method name makes). Implemented as AES-256-GCM
 // (authenticated encryption) via OpenSSL, key derived from an

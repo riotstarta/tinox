@@ -1,4 +1,4 @@
-// Bug 6: Enum-Felder in Structs über Modulgrenzen waren korrupt
+// Bug 6: enum fields in structs across module boundaries were corrupted
 // expect: 42
 // expect: hi
 import _bug06_mod;

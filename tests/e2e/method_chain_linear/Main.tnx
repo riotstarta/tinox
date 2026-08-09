@@ -1,9 +1,9 @@
-// Method-Ketten-Typisierung ist linear, nicht exponentiell (Bug 50): eine tiefe
-// Kette `c.n().n()…` verursachte O(2^n) Typecheck-Zeit, weil der Empfänger pro
-// Ebene doppelt inferiert wurde (direkt + via check_call). infer_type memoisiert
-// jetzt über die Node-Id. Eine 60-fache Kette hing zuvor praktisch (Minuten);
-// jetzt kompiliert sie sofort. Der Test verifiziert die Korrektheit des
-// Ergebnisses — die Kette liefert unverändert den erwarteten Wert.
+// Method-chain typing is linear, not exponential (Bug 50): a deep
+// chain `c.n().n()…` caused O(2^n) typecheck time, because the receiver was
+// inferred twice per level (directly + via check_call). infer_type now
+// memoizes via the node id. A 60-deep chain used to hang in practice (minutes);
+// now it compiles instantly. The test verifies the correctness of the
+// result — the chain still produces the expected value unchanged.
 // expect: 42
 
 import method_chain_linear;
@@ -12,7 +12,7 @@ class Main
 {
     fnc main() -> Int32 {
         let c: method_chain_linear = method_chain_linear::make(42);
-        // 60-fache Method-Kette — früher exponentiell im Typecheck
+        // 60-deep method chain — previously exponential in the typecheck
         let r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()

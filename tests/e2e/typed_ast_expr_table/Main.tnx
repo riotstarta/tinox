@@ -1,6 +1,6 @@
-// Typecheck→Codegen-Typtabelle (TESTPLAN Phase 4, Schritt 2+3): Container aus
-// Ausdrücken ohne Codegen-Heuristik (match als Wert, let-gebundenes m.get,
-// split/keys/first ohne Allowlist) sind elementgenau typisiert.
+// Typecheck→codegen type table (TESTPLAN phase 4, steps 2+3): containers from
+// expressions without a codegen heuristic (match as a value, let-bound m.get,
+// split/keys/first without an allowlist) are typed precisely per element.
 // expect: 3
 // expect: 2
 // expect: 3
@@ -20,14 +20,14 @@ class Main
         for s in xs { println(s.len()); }
         let m = @{"k" => "hello"};
         println(m.get("k").len());
-        // let-gebundenes m.get auf Map mit Container-Value (Marker via Tabelle,
-        // Annotation gewinnt gegen typgelöschtes Map::new)
+        // let-bound m.get on a map with a container value (marker via the table,
+        // annotation wins against type-erased Map::new)
         var lm: Map<String, List<String>> = Map::new();
         lm.insert("k", ["aa", "bbb"]);
         let vals = lm.get("k");
         println(vals.len());
         for s in vals { println(s); }
-        // split/keys/first ohne Codegen-Allowlist (Marker aus Signaturen/Override)
+        // split/keys/first without a codegen allowlist (marker from signatures/override)
         let parts = "ab,cd".split(",");
         println(parts[0].len() + parts.first().len());
         println(parts.last());

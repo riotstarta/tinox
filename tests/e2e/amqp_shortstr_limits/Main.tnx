@@ -1,28 +1,28 @@
-// AMQP-0-9-1 Phase 5.2 (tasklist.md): `shortstr`-Laengengrenze.
-// AMQP-0-9-1-`shortstr`-Werte (Queue-/Exchange-/Routing-Key-Namen,
-// Content-Type) haben eine 1-Byte-Laengenpraefix -> hartes Maximum von
-// 255 Byte. Beim Testen dieser Grenze wurde ein echter Bug gefunden (s.
-// bugs.md, "Bug 66"-Nachbar-Fund, kein eigener Bug-Eintrag noetig):
-// `AmqpWriter091::shortstr()` schrieb die Laenge unmaskiert per
-// `octet(s.len())`, was bei > 255 Byte durch das `& 0xFF` in `octet()`
-// still einen zu KLEINEN Laengen-Praefix erzeugte, waehrend die vollen
-// Rohbytes trotzdem folgten -- ein korrupter Frame statt eines harten
-// Fehlers (Verstoss gegen "kein Silent-Garbage"). Gefixt: `shortstr()`
-// setzt jetzt ein `tooLong`-Flag (`hasError()`), das `declareQueue`/
-// `bindQueue`/`consume`/`publish` VOR dem Senden pruefen und stattdessen
-// hart mit leerem Ergebnis + `errorMessage` abbrechen -- kein Byte geht
-// in diesem Fall auf die Leitung.
+// AMQP-0-9-1 phase 5.2 (tasklist.md): `shortstr` length limit.
+// AMQP-0-9-1 `shortstr` values (queue/exchange/routing-key names,
+// content-type) have a 1-byte length prefix -> hard maximum of
+// 255 bytes. Testing this limit uncovered a real bug (see
+// bugs.md, a neighbor find of "Bug 66", no separate bug entry needed):
+// `AmqpWriter091::shortstr()` wrote the length unmasked via
+// `octet(s.len())`, which for > 255 bytes, due to the `& 0xFF` in `octet()`,
+// still produced a length prefix that was too SMALL, while the full
+// raw bytes still followed -- a corrupted frame instead of a hard
+// error (a violation of "no silent garbage"). Fixed: `shortstr()`
+// now sets a `tooLong` flag (`hasError()`), which `declareQueue`/
+// `bindQueue`/`consume`/`publish` check BEFORE sending and instead
+// abort hard with an empty result + `errorMessage` -- no byte goes
+// on the wire in this case.
 //
-// Bewusst OHNE Netzwerk/spawn-Broker: die Pruefung selbst ist rein
-// clientseitig (kein Frame wird je gesendet), ein `AmqpChannel091` mit
-// Dummy-Handles (`conn`/`chanId` = -1) reicht. Vermeidet damit auch Bug 68
-// (bugs.md) -- eine nichtdeterministische Async-Runtime-Instabilitaet,
-// die beim Kombinieren von langen shortstr-Werten mit spawn/await
-// gefunden wurde (s. amqp_edge_cases.tnx).
+// Deliberately WITHOUT a network/spawn broker: the check itself is purely
+// client-side (no frame is ever sent), an `AmqpChannel091` with
+// dummy handles (`conn`/`chanId` = -1) is enough. This also avoids Bug 68
+// (bugs.md) -- a non-deterministic async-runtime instability
+// that was found when combining long shortstr values with spawn/await
+// (see amqp_edge_cases.tnx).
 //
-// Der 255-Byte-Grenzfall (gueltig, NICHT abgelehnt) wurde zusaetzlich
-// live gegen echtes RabbitMQ verifiziert (queue.declare + queue.bind mit
-// 255-Byte-Namen, erfolgreich), s. tasklist.md Log Phase 5.2.
+// The 255-byte boundary case (valid, NOT rejected) was additionally
+// verified live against real RabbitMQ (queue.declare + queue.bind with
+// 255-byte names, successful), see tasklist.md log, phase 5.2.
 // expect: ok-declare-boundary-valid
 // expect: ok-declare-rejected
 // expect: ok-bind-rejected
@@ -45,18 +45,18 @@ class Main
 
 
     /*
-     * Baut ein AmqpChannel091 mit Dummy-Handles (conn/chanId = -1), OHNE
-     * echten Dispatcher (issue #123 fuehrte einen Hintergrund-Task ein, der
-     * normalerweise `open()` startet, hier aber bewusst nicht existiert,
-     * s. Datei-Kommentar oben zu "kein Netzwerk/spawn-Broker"). Vorher liess
-     * ein `conn <= 0` beim rohen `Amqp091::readFrame()` einen lesenden
-     * Methodenaufruf einfach sofort mit frameType -1 zurueckkommen; seit
-     * Channel-Reads ueber `recv this.inbox` laufen, wuerde ein NIE bestueckter
-     * Kanal fuer immer blockieren (keine Dispatcher-Task sendet je etwas
-     * hinein). Die Inbox hier einmalig mit genau dem synthetischen
-     * "Verbindung zu"-Frame vorzufuellen, das der Dispatcher bei einem
-     * echten EOF senden wuerde, reproduziert das alte Verhalten ohne echtes
-     * Netzwerk.
+     * Builds an AmqpChannel091 with dummy handles (conn/chanId = -1), WITHOUT
+     * a real dispatcher (issue #123 introduced a background task that
+     * normally `open()` starts, but which deliberately does not exist here,
+     * see the file comment above on "no network/spawn broker"). Previously,
+     * a `conn <= 0` in the raw `Amqp091::readFrame()` let a reading
+     * method call simply return immediately with frameType -1; since
+     * channel reads go through `recv this.inbox`, a channel that is NEVER
+     * fed would block forever (no dispatcher task ever sends anything
+     * into it). Pre-filling the inbox here once with exactly the synthetic
+     * "connection closed" frame that the dispatcher would send on a
+     * real EOF reproduces the old behavior without a real
+     * network.
      */
     fnc dummyChannel091() -> AmqpChannel091
     {
@@ -70,22 +70,22 @@ class Main
         let name255 = makeName(255);
         let name256 = makeName(256);
 
-        // Grenzfall: genau 255 Byte -- MUSS als gueltig behandelt werden
-        // (dial schlaegt zwar fehl, conn=-1, aber die shortstr-Laengenpruefung
-        // selbst darf NICHT anschlagen; die Encodierung erreicht in diesem
-        // Fall den Punkt VOR dem Senden ohne Fehlermeldung).
+        // Boundary case: exactly 255 bytes -- MUST be treated as valid
+        // (dial does fail, conn=-1, but the shortstr length check
+        // itself must NOT trigger; in this case the encoding reaches the
+        // point BEFORE sending without an error message).
         let chBoundary = dummyChannel091();
         let rBoundary = chBoundary.declareQueue(name255, true, false, false);
-        // conn=-1 laesst den eigentlichen Netzwerkaufruf natuerlich fehlschlagen
-        // (kein echter Socket) -- entscheidend ist NUR, dass die Laengenpruefung
-        // selbst NICHT anschlaegt (die "zu lang"-Fehlermeldung darf nicht
-        // auftauchen; jeder andere Fehler ist hier erwartet und irrelevant).
-        if !chBoundary.errorMessage.contains("zu lang") {
+        // conn=-1 naturally makes the actual network call fail
+        // (no real socket) -- the ONLY thing that matters is that the length
+        // check itself does NOT trigger (the "too long" error message must not
+        // appear; any other error is expected and irrelevant here).
+        if !chBoundary.errorMessage.contains("too long") {
             println("ok-declare-boundary-valid");
         }
 
-        // 256 Byte: jenseits des shortstr-Maximums -- muss hart clientseitig
-        // abgelehnt werden.
+        // 256 bytes: beyond the shortstr maximum -- must be rejected hard
+        // on the client side.
         let ch1 = dummyChannel091();
         let r1 = ch1.declareQueue(name256, true, false, false);
         if r1 == "" {

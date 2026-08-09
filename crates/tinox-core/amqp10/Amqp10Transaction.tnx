@@ -6,11 +6,11 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Ergebnis von Amqp10Link::declare() (Issue 79). ok == false bei
-     * jedem Fehlschlag (Broker antwortet nicht mit `declared`, o. ae.) —
-     * txnId ist dann leer. Bei Erfolg wird txnId an publishTransactional()/
-     * ackTransactional()/discharge() weitergereicht, analog zu 0-9-1/1.0s
-     * sonstigem errorMessage-Konventionen in diesem Modul.
+     * Result of Amqp10Link::declare() (issue 79). ok == false on any
+     * failure (broker doesn't respond with `declared`, etc.) — txnId is
+     * then empty. On success, txnId is passed to
+     * publishTransactional()/ackTransactional()/discharge(), following
+     * the same errorMessage conventions as the rest of this module.
      */
     class Amqp10Transaction
     {

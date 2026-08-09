@@ -6,11 +6,11 @@ import tinox.core.base64;
 namespace tinox.core.amqp10
 {
     /*
-     * Ein gelesenes AMQP-1.0-Frame (§2.3.1 der Sondierung in tasklist.md).
-     * frameType: 0 = AMQP-Frame, 1 = SASL-Frame (Broker darf beide auf
-     * derselben Verbindung schicken, je nach Negotiation-Phase);
-     * zusätzlich als Lese-Ergebnis: -1 = Verbindung zu/EOF, -2 =
-     * Protokollfehler (unplausible size/doff, s. Amqp10::readFrame).
+     * An AMQP-1.0 frame that was read (§2.3.1). frameType: 0 = AMQP
+     * frame, 1 = SASL frame (the broker may send both on the same
+     * connection, depending on the negotiation phase); additionally as
+     * a read result: -1 = connection closed/EOF, -2 = protocol error
+     * (implausible size/doff, see Amqp10::readFrame).
      */
     class Amqp10Frame
     {

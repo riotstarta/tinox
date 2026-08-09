@@ -57,7 +57,7 @@ class Main
     fnc main() -> Int32 {
         let srv1 = httpServerCreate(47637);
         if srv1 < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle1 = spawn feederShort(srv1);
@@ -75,7 +75,7 @@ class Main
 
         let srv2 = httpServerCreate(47638);
         if srv2 < 0 {
-            println("bind fehlgeschlagen");
+            println("bind failed");
             return 1;
         }
         let handle2 = spawn feederHuge(srv2);
