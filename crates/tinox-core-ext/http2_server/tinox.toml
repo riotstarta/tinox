@@ -1,6 +1,6 @@
 [package]
 name = "http2_server"
-version = "1.0.0"
+version = "1.0.1"
 description = "tinox.core.http2_server, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
@@ -11,4 +11,4 @@ version = "1.0.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.0"
+version = "1.0.1"

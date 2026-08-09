@@ -1,6 +1,6 @@
 [package]
 name = "oidc"
-version = "1.0.0"
+version = "1.0.1"
 description = "tinox.core.oidc, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
@@ -21,7 +21,7 @@ version = "1.0.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "jwt"
-version = "1.0.0"
+version = "1.0.1"
 
 [[dependencies]]
 group = "tinox.core"

@@ -33,7 +33,10 @@ for dir in crates/tinox-core-ext/*/; do
 
     resp="$TMP/$module.json"
     code=$(curl -sS -m 15 -o "$resp" -w '%{http_code}' "$REPO_URL/api/v1/$GROUP/$module/$version")
-    if [ "$code" = "404" ]; then
+    # A version that was never published can come back as either 404 or 500
+    # depending on the exact lookup path on the server side -- treat both as
+    # "not published" rather than a hard fetch error.
+    if [ "$code" = "404" ] || [ "$code" = "500" ]; then
         echo "NOT PUBLISHED"
         MISSING+=("$module")
         continue

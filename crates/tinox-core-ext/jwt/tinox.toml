@@ -1,6 +1,6 @@
 [package]
 name = "jwt"
-version = "1.0.0"
+version = "1.0.1"
 description = "tinox.core.jwt, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
