@@ -73,6 +73,25 @@ GOOD_EXAMPLES=(
     examples/interface_extends/Main.tnx
     examples/rest_with_mini/Main.tnx
 )
+# Core/extended stdlib split (see CLAUDE.md): any example importing an
+# extended-tier module (e.g. tinox.core.http_server) needs its declared
+# dependency actually installed before it'll build -- `tinox install` walks
+# up from its own cwd to find that example's tinox.toml (unaffected by
+# `find_project_root_from`'s build-time walk-up-from-the-FILE's-directory
+# behavior, since install genuinely is meant to be cwd-based -- see its own
+# doc comment in pm.rs). Sequential, not backgrounded like the builds below:
+# each install is a few seconds at most (a warm ~/.tinox/repository/ cache
+# skips the network entirely, see install_dep's cache-hit check), and every
+# build below needs its own example's install to have already landed.
+for f in "${GOOD_EXAMPLES[@]}"; do
+    dir="$(dirname "$f")"
+    if [ -f "$dir/tinox.toml" ]; then
+        if ! (cd "$dir" && "$TINOX" install) >"$TMP/log/$(job_id "install_$f")" 2>&1; then
+            echo "warning: tinox install failed for $dir (see $TMP/log/$(job_id "install_$f"))" >&2
+        fi
+    fi
+done
+
 for f in "${GOOD_EXAMPLES[@]}"; do
     run_job "$(job_id "build_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "build_$f")"
 done

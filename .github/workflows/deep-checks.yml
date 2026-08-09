@@ -7,6 +7,13 @@
 # handling here: its FUZZ_SECONDS?=60 default per target runs fine
 # under the generic `make ${{ matrix.target }}` step below, just like
 # asan/checked.
+#
+# Core/extended stdlib split (see CLAUDE.md, and check.yml's own note):
+# the e2e suite (asan/checked targets) and 5 of the fuzz/*/ harnesses
+# (fuzz target) both `tinox install` extended-tier stdlib dependencies
+# for real now — same `actions/cache` treatment as check.yml, sharing
+# the identical cache key so a check.yml run earlier in the week already
+# warms this workflow's cache too.
 
 name: deep-checks
 
@@ -39,6 +46,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tinox/repository
+          key: tinox-pkg-cache-v1
 
       - name: make ${{ matrix.target }}
         run: make ${{ matrix.target }}

@@ -75,6 +75,25 @@ class Main
     )
     .expect("write Main.tnx");
 
+    // Core/extended stdlib split: Ctrl.tnx imports tinox.core.http_server
+    // (extended-tier), so it needs a declared+installed dependency now.
+    std::fs::write(
+        workdir.join("tinox.toml"),
+        "[package]\nname = \"heavy_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("write tinox.toml");
+    let install = Command::new(tinox)
+        .arg("install")
+        .current_dir(&workdir)
+        .output()
+        .expect("spawn install");
+    assert!(
+        install.status.success(),
+        "tinox install failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
     let exe = workdir.join("heavy_server");
     let build = Command::new(tinox)
         .arg("build")

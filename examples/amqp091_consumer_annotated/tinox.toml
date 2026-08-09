@@ -1,0 +1,9 @@
+[package]
+name = "amqp091_consumer_annotated"
+version = "0.1.0"
+description = ""
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "amqp091"
+version = "1.0.0"

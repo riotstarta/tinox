@@ -17,12 +17,16 @@ if [ ! -x "$TINOX_BIN" ]; then
     exit 1
 fi
 
-# Amqp10Driver.tnx imports the real crates/tinox-core/amqp10/*.tnx module
-# (no copy of the frame-parsing logic) and adds a one-line
-# tinoxAmqp10ReadFrame(conn: Int64) wrapper. `tinox build` always tries to
-# link a full executable and fails here because the driver has no
-# main()/tinox_main — that failure is expected and harmless, we only need
-# the driver_out.ll it leaves behind before the failing final link step.
+# Amqp10Driver.tnx imports the real tinox.core.amqp10 module (crates/
+# tinox-core-ext/amqp10/*.tnx, an extended-tier stdlib package since the
+# core/extended split — see tinox.toml here) and adds a one-line
+# tinoxAmqp10ReadFrame(conn: Int64) wrapper. No copy of the frame-parsing
+# logic. `tinox install` fetches it (cached under ~/.tinox/repository/
+# after the first run). `tinox build` always tries to link a full
+# executable and fails here because the driver has no main()/tinox_main —
+# that failure is expected and harmless, we only need the driver_out.ll it
+# leaves behind before the failing final link step.
+"$TINOX_BIN" install >/dev/null
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
 "$TINOX_BIN" build Amqp10Driver.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then

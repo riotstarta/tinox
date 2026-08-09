@@ -14,14 +14,36 @@ pub struct Package {
     pub description: String,
 }
 
+/// One `[[repositories]]` table — a named base URL a `Dependency` can
+/// reference by `id`. Purely local configuration (tinox.toml only), never
+/// itself fetched or cached.
+#[derive(Debug, Clone)]
+pub struct Repository {
+    pub id: String,
+    pub url: String,
+}
+
+/// The default repository base URL used when a dependency specifies
+/// neither `url` nor `repository` — see `effective_download_url`.
+pub const DEFAULT_REPOSITORY_URL: &str = "https://central.tinox-lang.de";
+
 /// One `[[dependencies]]` table — parsed/written by
 /// `parse_manifest`/`write_manifest` (hand-rolled, see there for why).
+///
+/// Exactly one of `url`/`repository` may be set (see
+/// `effective_download_url`): `url` is the legacy, explicit-URL form
+/// (unchanged since before #172); `repository` names a `[[repositories]]`
+/// entry to resolve `{base}/api/v1/{group}/{artifactId}/{version}`
+/// against. If neither is set, resolution falls back to
+/// `DEFAULT_REPOSITORY_URL` — an unqualified dependency does NOT pick "the
+/// first configured repository," it always uses the hardcoded default.
 #[derive(Debug, Clone)]
 pub struct Dependency {
     pub group: String,
     pub artifact_id: String,
     pub version: String,
-    pub url: String,
+    pub url: Option<String>,
+    pub repository: Option<String>,
     /// Expected SHA-256 of the downloaded artifact, lowercase hex. Optional
     /// for backward compatibility with existing manifests, but strongly
     /// recommended: without it, `tinox install` only pins against whatever
@@ -29,10 +51,48 @@ pub struct Dependency {
     pub sha256: Option<String>,
 }
 
+/// Resolves the exact URL to download `dep` from. `owning_manifest` is
+/// whichever tinox.toml actually declared `dep` — for a transitive
+/// dependency read back from an installed package's own tinox.toml, this
+/// is THAT package's manifest, not the top-level project's, so a
+/// `repository` reference resolves against the repositories the package
+/// that declared it configured, not whoever happens to be installing it.
+pub fn effective_download_url(dep: &Dependency, owning_manifest: &TinoxManifest) -> Result<String, String> {
+    if let Some(url) = &dep.url {
+        if dep.repository.is_some() {
+            return Err(format!(
+                "dependency {}:{} {} specifies both `url` and `repository` — use only one",
+                dep.group, dep.artifact_id, dep.version
+            ));
+        }
+        return Ok(url.clone());
+    }
+    let base = match &dep.repository {
+        Some(id) => owning_manifest
+            .repositories
+            .iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.url.clone())
+            .ok_or_else(|| format!(
+                "dependency {}:{} {} references repository \"{}\", but no [[repositories]] entry has that id",
+                dep.group, dep.artifact_id, dep.version, id
+            ))?,
+        None => DEFAULT_REPOSITORY_URL.to_string(),
+    };
+    Ok(format!(
+        "{}/api/v1/{}/{}/{}",
+        base.trim_end_matches('/'),
+        dep.group,
+        dep.artifact_id,
+        dep.version
+    ))
+}
+
 #[derive(Debug, Default)]
 pub struct TinoxManifest {
     pub package: Option<Package>,
     pub dependencies: Vec<Dependency>,
+    pub repositories: Vec<Repository>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -87,8 +147,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-pub fn find_project_root() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
+/// Walks upward from `start` (not necessarily cwd) looking for a
+/// `tinox.toml`. `start` need not itself be a directory — pass a source
+/// file's parent, not the file itself.
+pub fn find_project_root_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
         if dir.join("tinox.toml").exists() {
             return Some(dir);
@@ -100,17 +163,32 @@ pub fn find_project_root() -> Option<PathBuf> {
     None
 }
 
+/// cwd-based project root lookup — correct for `tinox install`/`add`/
+/// `package`, which are always invoked by a human already `cd`'d into the
+/// project. Compiling a specific source file (`tinox build <path>`) must
+/// NOT use this: cwd is unrelated to the file being built whenever the
+/// caller's cwd differs from the file's own directory (e.g. `dogfood.sh`
+/// invokes `tinox build examples/foo/Main.tnx` from the repo root, and the
+/// e2e/fixture test harness builds from an isolated temp workdir) — use
+/// `find_project_root_from` with the file's directory instead.
+pub fn find_project_root() -> Option<PathBuf> {
+    std::env::current_dir().ok().and_then(|d| find_project_root_from(&d))
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum ManifestSection {
     None,
     Package,
     Dependency,
+    Repository,
     Other,
 }
 
 fn manifest_section_for(header_line: &str) -> ManifestSection {
     if header_line == "[[dependencies]]" {
         ManifestSection::Dependency
+    } else if header_line == "[[repositories]]" {
+        ManifestSection::Repository
     } else if header_line == "[package]" {
         ManifestSection::Package
     } else {
@@ -141,20 +219,37 @@ fn parse_manifest(content: &str) -> TinoxManifest {
     let mut pkg_description = String::new();
     let mut have_package = false;
 
+    fn empty_dep() -> Dependency {
+        Dependency { group: String::new(), artifact_id: String::new(), version: String::new(), url: None, repository: None, sha256: None }
+    }
+    fn empty_repo() -> Repository {
+        Repository { id: String::new(), url: String::new() }
+    }
+
     let mut dependencies: Vec<Dependency> = Vec::new();
-    let mut cur = Dependency { group: String::new(), artifact_id: String::new(), version: String::new(), url: String::new(), sha256: None };
+    let mut cur = empty_dep();
     let mut have_cur = false;
+
+    let mut repositories: Vec<Repository> = Vec::new();
+    let mut cur_repo = empty_repo();
+    let mut have_cur_repo = false;
 
     for raw_line in content.lines() {
         let line = raw_line.trim();
         if line.starts_with('[') {
             if have_cur {
-                dependencies.push(std::mem::replace(&mut cur, Dependency { group: String::new(), artifact_id: String::new(), version: String::new(), url: String::new(), sha256: None }));
+                dependencies.push(std::mem::replace(&mut cur, empty_dep()));
                 have_cur = false;
+            }
+            if have_cur_repo {
+                repositories.push(std::mem::replace(&mut cur_repo, empty_repo()));
+                have_cur_repo = false;
             }
             section = manifest_section_for(line);
             if section == ManifestSection::Dependency {
                 have_cur = true;
+            } else if section == ManifestSection::Repository {
+                have_cur_repo = true;
             } else if section == ManifestSection::Package {
                 have_package = true;
             }
@@ -172,8 +267,14 @@ fn parse_manifest(content: &str) -> TinoxManifest {
                 "group" => cur.group = value,
                 "artifactId" => cur.artifact_id = value,
                 "version" => cur.version = value,
-                "url" => cur.url = value,
+                "url" if !value.is_empty() => cur.url = Some(value),
+                "repository" if !value.is_empty() => cur.repository = Some(value),
                 "sha256" if !value.is_empty() => cur.sha256 = Some(value),
+                _ => {}
+            },
+            ManifestSection::Repository => match key {
+                "id" => cur_repo.id = value,
+                "url" => cur_repo.url = value,
                 _ => {}
             },
             ManifestSection::None | ManifestSection::Other => {}
@@ -182,9 +283,12 @@ fn parse_manifest(content: &str) -> TinoxManifest {
     if have_cur {
         dependencies.push(cur);
     }
+    if have_cur_repo {
+        repositories.push(cur_repo);
+    }
 
     let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description });
-    TinoxManifest { package, dependencies }
+    TinoxManifest { package, dependencies, repositories }
 }
 
 pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
@@ -199,13 +303,23 @@ pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
 
 fn format_dependency(dep: &Dependency) -> String {
     let mut s = format!(
-        "[[dependencies]]\ngroup = \"{}\"\nartifactId = \"{}\"\nversion = \"{}\"\nurl = \"{}\"\n",
-        dep.group, dep.artifact_id, dep.version, dep.url
+        "[[dependencies]]\ngroup = \"{}\"\nartifactId = \"{}\"\nversion = \"{}\"\n",
+        dep.group, dep.artifact_id, dep.version
     );
+    if let Some(url) = &dep.url {
+        s.push_str(&format!("url = \"{}\"\n", url));
+    }
+    if let Some(repository) = &dep.repository {
+        s.push_str(&format!("repository = \"{}\"\n", repository));
+    }
     if let Some(sha256) = &dep.sha256 {
         s.push_str(&format!("sha256 = \"{}\"\n", sha256));
     }
     s
+}
+
+fn format_repository(repo: &Repository) -> String {
+    format!("[[repositories]]\nid = \"{}\"\nurl = \"{}\"\n", repo.id, repo.url)
 }
 
 /// Surgically rewrites `tinox.toml`'s `name`/`version`/`description` keys
@@ -232,8 +346,8 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
         let line = raw_line.trim();
         if line.starts_with('[') {
             section = manifest_section_for(line);
-            if section == ManifestSection::Dependency {
-                continue; // dropped — every [[dependencies]] table is rebuilt below
+            if section == ManifestSection::Dependency || section == ManifestSection::Repository {
+                continue; // dropped — every [[dependencies]]/[[repositories]] table is rebuilt below
             }
             out.push(raw_line.to_string());
             if section == ManifestSection::Package {
@@ -251,7 +365,7 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
             continue;
         }
         match section {
-            ManifestSection::Dependency => {} // dropped — rebuilt below
+            ManifestSection::Dependency | ManifestSection::Repository => {} // dropped — rebuilt below
             ManifestSection::Package => {
                 let key = parse_toml_kv(line).map(|(k, _)| k);
                 if !matches!(key, Some("name" | "version" | "description")) {
@@ -273,6 +387,14 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
                 pkg.name, pkg.version, pkg.description
             ));
         }
+    }
+    if !manifest.repositories.is_empty() {
+        content.push('\n');
+        for repo in &manifest.repositories {
+            content.push_str(&format_repository(repo));
+            content.push('\n');
+        }
+        content.pop();
     }
     if !manifest.dependencies.is_empty() {
         content.push('\n');
@@ -318,65 +440,216 @@ pub fn dep_install_dir(root: &Path, dep: &Dependency) -> Result<PathBuf, String>
         .join(&dep.version))
 }
 
+/// The tinox home directory for the GLOBAL, Maven-style repository cache
+/// (`~/.tinox` by default) — `TINOX_HOME` overrides it, mirroring the
+/// existing `TINOX_PATH` stdlib-dir override convention in `main.rs`. The
+/// override is what makes this testable/isolatable (both in this file's own
+/// unit tests and in CI) without ever touching a real `~/.tinox`.
+fn tinox_home_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("TINOX_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    std::env::var("HOME").ok().map(PathBuf::from)
+}
+
+/// Install directory for a COORDINATE-resolved dependency (no explicit
+/// `url`): `~/.tinox/repository/<repoId>/<group>/<artifactId>/<version>/`,
+/// shared across every project on the machine. `repoId` is the dependency's
+/// `repository` id, or the literal `"central"` for the default-fallback
+/// case (no `url`, no `repository`).
+///
+/// Deliberately NOT unified with `dep_install_dir`'s project-local
+/// `.tinox/deps/` tree (used for explicit-`url` dependencies): tinox-central
+/// enforces immutable versions (a `group:artifactId:version` triple always
+/// names the same bytes), so it's safe to share globally — a raw `url` has
+/// no such guarantee, and two unrelated projects on the same machine could
+/// legitimately declare the same coordinates pointing at different bytes.
+/// Globalizing that case would be a silent cross-project collision; keeping
+/// it project-scoped (as today) avoids that. If this ever gets "simplified"
+/// into one shared cache, that guarantee is what would need re-establishing
+/// first.
+pub fn global_dep_install_dir(dep: &Dependency) -> Result<PathBuf, String> {
+    let repo_id = dep.repository.as_deref().unwrap_or("central");
+    sanitize_path_component(repo_id, "repository")?;
+    sanitize_path_component(&dep.group, "group")?;
+    sanitize_path_component(&dep.artifact_id, "artifactId")?;
+    sanitize_path_component(&dep.version, "version")?;
+    let home = tinox_home_dir()
+        .ok_or_else(|| "Cannot determine home directory (HOME/TINOX_HOME unset)".to_string())?;
+    Ok(home
+        .join(".tinox")
+        .join("repository")
+        .join(repo_id)
+        .join(&dep.group)
+        .join(&dep.artifact_id)
+        .join(&dep.version))
+}
+
+/// Picks the right install directory for `dep`: project-local `.tinox/deps/`
+/// for an explicit-`url` dependency (unchanged behavior), the global
+/// `~/.tinox/repository/...` cache for a coordinate-resolved one.
+fn resolved_install_dir(root: &Path, dep: &Dependency) -> Result<PathBuf, String> {
+    if dep.url.is_some() {
+        dep_install_dir(root, dep)
+    } else {
+        global_dep_install_dir(dep)
+    }
+}
+
+/// A coordinate-resolved dependency `manifest` declares that isn't in the
+/// global cache yet — surfaced instead of silently dropped, so a caller can
+/// tell "never declared" apart from "declared but `tinox install` hasn't
+/// been run" (see `resolve_imports`'s use of this in `main.rs`).
+#[derive(Debug, Clone)]
+pub struct MissingDep {
+    pub group: String,
+    pub artifact_id: String,
+    pub version: String,
+}
+
 /// Every installed dependency directory reachable for import resolution —
-/// not just the ones this project's own tinox.toml lists directly.
-/// `install_dep_transitively` installs a dependency's own transitive
-/// dependencies flat into the SAME `.tinox/deps/<group>/<artifactId>/
-/// <version>/` tree as direct ones (deliberately, see that function's own
-/// doc comment) specifically so a package like `oidc` — which itself
-/// imports `tinox.core.oauth2` — keeps compiling for a consumer whose own
-/// tinox.toml only declares `oidc` directly. Walking the manifest's
-/// `.dependencies` list alone (the previous behavior) missed exactly
-/// those transitively-installed-but-not-directly-declared directories,
-/// so any multi-level dependency chain failed to build with "Cannot
-/// resolve stdlib import" despite `tinox install` having fetched
-/// everything it needed onto disk. `manifest` is unused now but kept in
-/// the signature — this stays a drop-in replacement at its one call site.
-pub fn installed_dep_dirs(root: &Path, _manifest: &TinoxManifest) -> Vec<PathBuf> {
+/// not just the ones this project's own tinox.toml lists directly. Merges
+/// two trees: the project-local `.tinox/deps/**` glob (explicit-`url`
+/// dependencies, unchanged since before the global cache existed — see
+/// `install_dep_transitively`'s doc comment for why a blind glob is safe
+/// there specifically, being inherently project-scoped) and the global,
+/// coordinate-resolved cache (`global_dep_dirs`, scoped rather than
+/// globbed — see there for why a blind glob of THAT tree would be unsafe).
+pub fn installed_dep_dirs(root: &Path, manifest: &TinoxManifest) -> (Vec<PathBuf>, Vec<MissingDep>) {
     let deps_root = root.join(".tinox").join("deps");
     let mut dirs = Vec::new();
-    let Ok(groups) = fs::read_dir(&deps_root) else {
-        return dirs;
-    };
-    for group in groups.flatten() {
-        let Ok(artifacts) = fs::read_dir(group.path()) else { continue };
-        for artifact in artifacts.flatten() {
-            let Ok(versions) = fs::read_dir(artifact.path()) else { continue };
-            for version in versions.flatten() {
-                let p = version.path();
-                if p.is_dir() {
-                    dirs.push(p);
+    if let Ok(groups) = fs::read_dir(&deps_root) {
+        for group in groups.flatten() {
+            let Ok(artifacts) = fs::read_dir(group.path()) else { continue };
+            for artifact in artifacts.flatten() {
+                let Ok(versions) = fs::read_dir(artifact.path()) else { continue };
+                for version in versions.flatten() {
+                    let p = version.path();
+                    if p.is_dir() {
+                        dirs.push(p);
+                    }
                 }
             }
         }
     }
-    dirs
+    let (global_dirs, missing) = global_dep_dirs(manifest);
+    dirs.extend(global_dirs);
+    (dirs, missing)
+}
+
+/// Scoped transitive walk of the GLOBAL cache for `manifest`'s
+/// coordinate-resolved dependencies (the ones with no explicit `url`,
+/// handled instead by the project-local glob above). Deliberately NOT a
+/// blind glob of `~/.tinox/repository/**`, unlike the project-local
+/// `.tinox/deps/**` glob above — the global tree can hold every OTHER
+/// project's cached dependencies ever fetched on this machine, and a blind
+/// glob would pull all of them into every build's import resolution,
+/// reintroducing exactly the ambiguous-import class of bug #156's hard
+/// error exists to catch, just against a much larger, mostly irrelevant
+/// candidate set. Instead: start from what THIS manifest (and, recursively,
+/// whatever manifest each resolved dependency itself ships) actually
+/// declares — mirrors `install_dep_transitively`'s walk, but read-only (no
+/// network, no installation), with the same cycle-guard.
+pub fn global_dep_dirs(manifest: &TinoxManifest) -> (Vec<PathBuf>, Vec<MissingDep>) {
+    let mut dirs = Vec::new();
+    let mut missing = Vec::new();
+    let mut visited: HashSet<(String, String, String)> = HashSet::new();
+    for dep in &manifest.dependencies {
+        if dep.url.is_some() {
+            continue; // handled by the project-local .tinox/deps/ glob instead
+        }
+        collect_global_dep_dir(dep, &mut dirs, &mut missing, &mut visited);
+    }
+    (dirs, missing)
+}
+
+fn collect_global_dep_dir(
+    dep: &Dependency,
+    dirs: &mut Vec<PathBuf>,
+    missing: &mut Vec<MissingDep>,
+    visited: &mut HashSet<(String, String, String)>,
+) {
+    let coord = (dep.group.clone(), dep.artifact_id.clone(), dep.version.clone());
+    if !visited.insert(coord) {
+        return;
+    }
+    let Ok(dir) = global_dep_install_dir(dep) else { return };
+    if !dir.is_dir() {
+        missing.push(MissingDep {
+            group: dep.group.clone(),
+            artifact_id: dep.artifact_id.clone(),
+            version: dep.version.clone(),
+        });
+        return;
+    }
+    dirs.push(dir.clone());
+    if let Ok(sub_manifest) = read_manifest(&dir) {
+        for sub_dep in &sub_manifest.dependencies {
+            if sub_dep.url.is_some() {
+                continue;
+            }
+            collect_global_dep_dir(sub_dep, dirs, missing, visited);
+        }
+    }
+}
+
+/// GET with a few retries on TRANSIENT failures only: a 5xx status (server
+/// overload/restart/reverse-proxy hiccup — observed in practice against
+/// central.tinox-lang.de under concurrent load, e.g. multiple `cargo test`
+/// shards installing the same coordinate at once) or a transport-level
+/// error (DNS/connection reset). A 4xx status (404 not found, 401/403 auth)
+/// is NOT retried — retrying can't fix a request that's wrong by
+/// construction, only a genuinely transient server-side condition.
+fn get_with_retry(url: &str) -> Result<ureq::Response, String> {
+    // Returns a String, not ureq::Error, per clippy::result_large_err
+    // (ureq::Error is 272 bytes — every install_dep call site immediately
+    // formats it into a String anyway, see below, so there's no reason to
+    // carry the large variant any further than this function).
+    const MAX_ATTEMPTS: u32 = 4;
+    const BACKOFF: [u64; 3] = [200, 600, 1500];
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match ureq::get(url).call() {
+            Ok(resp) => return Ok(resp),
+            Err(ureq::Error::Status(code, resp)) if !(500..600).contains(&code) => {
+                return Err(ureq::Error::Status(code, resp).to_string());
+            }
+            Err(e) => {
+                if attempt + 1 < MAX_ATTEMPTS {
+                    eprintln!("  ({e}, retrying...)");
+                    std::thread::sleep(std::time::Duration::from_millis(BACKOFF[attempt as usize]));
+                }
+                last_err = Some(e.to_string());
+            }
+        }
+    }
+    Err(last_err.expect("loop always sets last_err before exiting on failure"))
 }
 
 /// Resolves the expected checksum for `dep` per the priority described on
 /// `install_dep`: an explicit `dep.sha256` always wins; otherwise, unless
 /// `update` is set, a `tinox.lock` entry for the same coordinates *and*
-/// URL pins it (a changed URL for the same version has no comparable
-/// baseline, so it's treated as an unpinned first install rather than a
-/// mismatch).
-fn expected_checksum<'a>(dep: &'a Dependency, lock: &'a TinoxLock, update: bool) -> Option<&'a str> {
+/// effective URL pins it (a changed URL for the same version has no
+/// comparable baseline, so it's treated as an unpinned first install rather
+/// than a mismatch).
+fn expected_checksum<'a>(dep: &'a Dependency, effective_url: &str, lock: &'a TinoxLock, update: bool) -> Option<&'a str> {
     dep.sha256.as_deref().or_else(|| {
         if update {
             None
         } else {
             lock_entry_for(lock, dep)
-                .filter(|e| e.url == dep.url)
+                .filter(|e| e.url == effective_url)
                 .map(|e| e.sha256.as_str())
         }
     })
 }
 
-fn verify_checksum(dep: &Dependency, lock: &TinoxLock, update: bool, actual_sha256: &str) -> Result<(), String> {
-    if let Some(expected) = expected_checksum(dep, lock, update) {
+fn verify_checksum(dep: &Dependency, effective_url: &str, lock: &TinoxLock, update: bool, actual_sha256: &str) -> Result<(), String> {
+    if let Some(expected) = expected_checksum(dep, effective_url, lock, update) {
         if !expected.eq_ignore_ascii_case(actual_sha256) {
             return Err(format!(
                 "checksum mismatch for {}:{} {} ({}): expected sha256 {}, got {} — refusing to install a dependency whose content doesn't match what was pinned (tinox.toml/tinox.lock). Pass --update to re-pin if this URL's content legitimately changed.",
-                dep.group, dep.artifact_id, dep.version, dep.url, expected, actual_sha256
+                dep.group, dep.artifact_id, dep.version, effective_url, expected, actual_sha256
             ));
         }
     }
@@ -386,13 +659,21 @@ fn verify_checksum(dep: &Dependency, lock: &TinoxLock, update: bool, actual_sha2
 /// Installs one dependency, verifying the downloaded bytes against an
 /// expected SHA-256 when one is available (`dep.sha256` from tinox.toml
 /// takes priority; otherwise a matching `tinox.lock` entry for the same
-/// group/artifactId/version/url pins it). A mismatch is a hard error —
-/// no silent fallback to "install anyway" — the same "no silent garbage"
-/// principle the rest of this project follows (see CLAUDE.md). Callers
-/// are responsible for persisting the resulting hash back into the lock
-/// (see `cmd_install`/`cmd_add`) since this function only downloads.
-fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) -> Result<Option<String>, String> {
-    let install_dir = dep_install_dir(root, dep)?;
+/// group/artifactId/version/effective-url pins it). A mismatch is a hard
+/// error — no silent fallback to "install anyway" — the same "no silent
+/// garbage" principle the rest of this project follows (see CLAUDE.md).
+/// Callers are responsible for persisting the resulting hash back into the
+/// lock (see `cmd_install`/`cmd_add`) since this function only downloads.
+///
+/// `effective_url` is precomputed by the caller (`effective_download_url`,
+/// a pure function of `dep` + whichever manifest declared it) rather than
+/// recomputed here, so a single resolution feeds both the download and the
+/// lock-entry/checksum bookkeeping consistently. Installs to
+/// `resolved_install_dir`: project-local `.tinox/deps/` for an explicit-
+/// `url` dependency, the global `~/.tinox/repository/...` cache for a
+/// coordinate-resolved one.
+fn install_dep(root: &Path, dep: &Dependency, effective_url: &str, lock: &TinoxLock, update: bool) -> Result<Option<String>, String> {
+    let install_dir = resolved_install_dir(root, dep)?;
     if install_dir.exists() {
         println!(
             "  already installed: {}:{} {}",
@@ -406,9 +687,8 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
         dep.group, dep.artifact_id, dep.version
     );
 
-    let response = ureq::get(&dep.url)
-        .call()
-        .map_err(|e| format!("Download failed ({}): {}", dep.url, e))?;
+    let response = get_with_retry(effective_url)
+        .map_err(|e| format!("Download failed ({}): {}", effective_url, e))?;
 
     let mut raw_bytes: Vec<u8> = Vec::new();
     response
@@ -432,10 +712,41 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
         };
 
     let actual_sha256 = sha256_hex(&bytes);
-    verify_checksum(dep, lock, update, &actual_sha256)?;
+    verify_checksum(dep, effective_url, lock, update, &actual_sha256)?;
 
-    fs::create_dir_all(&install_dir)
-        .map_err(|e| format!("Cannot create install dir: {}", e))?;
+    // Stage the extraction in a uniquely-named temp dir next to the real
+    // install dir, then atomically rename it into place, rather than
+    // extracting directly into `install_dir`. The global cache
+    // (`resolved_install_dir` → `global_dep_install_dir`) is shared across
+    // every project AND every concurrently-running caller on the machine
+    // (e.g. multiple `cargo test` shards each independently resolving the
+    // same coordinate) — extracting straight into the final path would let
+    // two racing installs of the same coordinate interleave their writes
+    // into one directory, and a third caller could read a half-written
+    // package in between. A rename is atomic on the same filesystem, so
+    // whichever caller finishes first "wins" and everyone else's staged
+    // copy is simply discarded once they notice `install_dir` now exists.
+    //
+    // The uniqueness suffix must be unique per CALLER, not just per OS
+    // process: `cargo test` runs multiple `#[test]`s as threads within one
+    // process, so `std::process::id()` alone is identical across all of
+    // them — two threads racing to install the same coordinate would then
+    // pick the SAME staging dir name and stomp on each other (confirmed by
+    // hand: this caused an intermittent "declared but not installed"
+    // e2e failure before this counter was added). An atomic counter is
+    // unique per call within the process regardless of threading; combined
+    // with the pid it stays unique across separate processes too.
+    static STAGING_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging_dir = install_dir.with_file_name(format!(
+        ".{}-staging-{}-{}",
+        install_dir.file_name().and_then(|n| n.to_str()).unwrap_or("pkg"),
+        std::process::id(),
+        unique,
+    ));
+    let _ = fs::remove_dir_all(&staging_dir);
+    fs::create_dir_all(&staging_dir)
+        .map_err(|e| format!("Cannot create staging dir: {}", e))?;
 
     // Prefer the artifact's own filename (from a registry envelope) for
     // the tar.gz/zip/single-file dispatch — the dependency URL itself
@@ -443,12 +754,12 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
     // reliable signal in that case.
     let name_for_dispatch = filename_hint
         .clone()
-        .unwrap_or_else(|| dep.url.split('/').next_back().unwrap_or("lib.tnx").to_string());
+        .unwrap_or_else(|| effective_url.split('/').next_back().unwrap_or("lib.tnx").to_string());
     let name_lower = name_for_dispatch.to_lowercase();
-    if name_lower.ends_with(".tar.gz") || name_lower.ends_with(".tgz") {
-        extract_tar_gz(&bytes, &install_dir)?;
+    let extract_result = if name_lower.ends_with(".tar.gz") || name_lower.ends_with(".tgz") {
+        extract_tar_gz(&bytes, &staging_dir)
     } else if name_lower.ends_with(".zip") {
-        extract_zip(&bytes, &install_dir)?;
+        extract_zip(&bytes, &staging_dir)
     } else {
         // Single .tnx file — save directly
         let filename = if name_for_dispatch.ends_with(".tnx") {
@@ -456,8 +767,27 @@ fn install_dep(root: &Path, dep: &Dependency, lock: &TinoxLock, update: bool) ->
         } else {
             format!("{}.tnx", name_for_dispatch)
         };
-        fs::write(install_dir.join(filename), &bytes)
-            .map_err(|e| format!("Cannot write file: {}", e))?;
+        fs::write(staging_dir.join(filename), &bytes).map_err(|e| format!("Cannot write file: {}", e))
+    };
+    if let Err(e) = extract_result {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(e);
+    }
+
+    if let Some(parent) = install_dir.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create install parent dir: {}", e))?;
+    }
+    match fs::rename(&staging_dir, &install_dir) {
+        Ok(()) => {}
+        Err(_) if install_dir.is_dir() => {
+            // Another process finished installing the same coordinate first
+            // — that's a cache hit, not a failure. Discard our own copy.
+            let _ = fs::remove_dir_all(&staging_dir);
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(format!("Cannot move staged install into place: {}", e));
+        }
     }
 
     println!(
@@ -601,13 +931,21 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
 /// Installs `dep`, then — if its own install directory contains a
 /// `tinox.toml` declaring further dependencies — recursively installs
 /// those too (#157). Flat resolution: transitive dependencies land in
-/// the SAME project-level `.tinox/deps/` tree as direct ones, not nested
+/// the SAME tree as direct ones (project-local `.tinox/deps/` for
+/// explicit-`url` deps, the global `~/.tinox/repository/...` cache for
+/// coordinate-resolved ones — see `resolved_install_dir`), not nested
 /// per-dependency, matching the flat namespace `resolve_imports`/
 /// `resolve_in_dep_dirs` already assumes. `visited` is shared across the
 /// whole call tree for one `install`/`add` run: it guards against a
 /// dependency cycle (A depends on B depends on A) and against re-walking
 /// a coordinate reached twice (a diamond — two dependencies both
 /// depending on the same third one at the same version).
+///
+/// `owning_manifest` is whichever tinox.toml actually declared `dep` — see
+/// `effective_download_url`'s doc comment for why this must be threaded
+/// through rather than always using the top-level project's manifest: a
+/// `repository` reference on a transitive dependency resolves against the
+/// repositories ITS OWN manifest configured, not the top-level consumer's.
 ///
 /// Diamond dependencies at DIFFERENT versions of the same
 /// group:artifactId are deliberately not specially handled here — they
@@ -621,6 +959,7 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
 fn install_dep_transitively(
     root: &Path,
     dep: &Dependency,
+    owning_manifest: &TinoxManifest,
     lock: &mut TinoxLock,
     update: bool,
     visited: &mut HashSet<(String, String, String)>,
@@ -633,7 +972,14 @@ fn install_dep_transitively(
 
     let mut ok = 0usize;
     let mut fail = 0usize;
-    match install_dep(root, dep, lock, update) {
+    let effective_url = match effective_download_url(dep, owning_manifest) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("  error: {}", e);
+            return (ok, fail + 1);
+        }
+    };
+    match install_dep(root, dep, &effective_url, lock, update) {
         Ok(Some(sha256)) => {
             upsert_lock_entry(
                 lock,
@@ -641,7 +987,7 @@ fn install_dep_transitively(
                     group: dep.group.clone(),
                     artifact_id: dep.artifact_id.clone(),
                     version: dep.version.clone(),
-                    url: dep.url.clone(),
+                    url: effective_url,
                     sha256,
                 },
             );
@@ -657,14 +1003,14 @@ fn install_dep_transitively(
         }
     }
 
-    if let Ok(install_dir) = dep_install_dir(root, dep) {
+    if let Ok(install_dir) = resolved_install_dir(root, dep) {
         // read_manifest returns an empty manifest (not an error) when the
         // dependency doesn't ship its own tinox.toml — the common case,
         // handled the same as "no transitive dependencies" below.
         if let Ok(sub_manifest) = read_manifest(&install_dir) {
             for sub_dep in &sub_manifest.dependencies {
                 let (sub_ok, sub_fail) =
-                    install_dep_transitively(root, sub_dep, lock, update, visited, lock_changed);
+                    install_dep_transitively(root, sub_dep, &sub_manifest, lock, update, visited, lock_changed);
                 ok += sub_ok;
                 fail += sub_fail;
             }
@@ -679,31 +1025,41 @@ fn install_dep_transitively(
 /// install fails (catches a dependency URL's content silently changing
 /// underneath a pinned version — see #112). `--update` re-pins instead of
 /// verifying, for when that change is intentional.
-pub fn cmd_install(args: &[String]) {
+///
+/// Returns `true` iff every dependency installed cleanly (or was already
+/// installed) — callers (`main.rs`'s CLI dispatch) must turn a `false`
+/// into a non-zero process exit code. Previously this returned `()`
+/// unconditionally, so `tinox install` always exited 0 even when some
+/// dependencies failed (only a `println!("N installed, M failed")` line
+/// hinted at it) — a caller relying on the exit code alone (the e2e test
+/// harness's `run_case`, or a CI script) would silently proceed with a
+/// dependency actually missing, only to hit a confusing later failure
+/// ("declared but not installed") instead of a clear one right here.
+pub fn cmd_install(args: &[String]) -> bool {
     let update = args.iter().any(|a| a == "--update");
     let root = match find_project_root() {
         Some(r) => r,
         None => {
             eprintln!("error: no tinox.toml found");
-            return;
+            return false;
         }
     };
     let manifest = match read_manifest(&root) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {}", e);
-            return;
+            return false;
         }
     };
     if manifest.dependencies.is_empty() {
         println!("No dependencies to install.");
-        return;
+        return true;
     }
     let mut lock = match read_lock(&root) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("error: {}", e);
-            return;
+            return false;
         }
     };
     println!(
@@ -721,7 +1077,7 @@ pub fn cmd_install(args: &[String]) {
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
     for dep in &manifest.dependencies {
         let (dep_ok, dep_fail) =
-            install_dep_transitively(&root, dep, &mut lock, update, &mut visited, &mut lock_changed);
+            install_dep_transitively(&root, dep, &manifest, &mut lock, update, &mut visited, &mut lock_changed);
         ok += dep_ok;
         fail += dep_fail;
     }
@@ -731,6 +1087,7 @@ pub fn cmd_install(args: &[String]) {
         }
     }
     println!("{} installed, {} failed", ok, fail);
+    fail == 0
 }
 
 pub fn cmd_package() {
@@ -867,7 +1224,8 @@ pub fn cmd_add(args: &[String]) {
         group: args[0].clone(),
         artifact_id: args[1].clone(),
         version: args[2].clone(),
-        url: args[3].clone(),
+        url: Some(args[3].clone()),
+        repository: None,
         sha256: None,
     };
     let root = match find_project_root() {
@@ -910,7 +1268,7 @@ pub fn cmd_add(args: &[String]) {
     };
     let mut lock_changed = false;
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
-    install_dep_transitively(&root, &dep, &mut lock, false, &mut visited, &mut lock_changed);
+    install_dep_transitively(&root, &dep, &manifest, &mut lock, false, &mut visited, &mut lock_changed);
     if lock_changed {
         if let Err(e) = write_lock(&root, &lock) {
             eprintln!("warning: failed to update tinox.lock: {}", e);
@@ -922,12 +1280,24 @@ pub fn cmd_add(args: &[String]) {
 mod tests {
     use super::*;
 
+    /// `TINOX_HOME` is process-global state; `cargo test` runs tests in
+    /// parallel threads by default, so any test that sets/reads it must
+    /// hold this lock for its whole body — otherwise two such tests can
+    /// interleave their `set_var`/read, each seeing the OTHER's value.
+    /// (Found the hard way: `global_dep_dirs_finds_an_installed_coordinate_
+    /// dep_and_its_transitive_deps` failed intermittently before this was
+    /// added, with `dirs` empty despite the fixture directories existing
+    /// on disk — a second TINOX_HOME-touching test had stomped the env var
+    /// mid-test.)
+    static TINOX_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn dep(group: &str, artifact_id: &str, version: &str) -> Dependency {
         Dependency {
             group: group.to_string(),
             artifact_id: artifact_id.to_string(),
             version: version.to_string(),
-            url: "https://example.com/lib.tnx".to_string(),
+            url: Some("https://example.com/lib.tnx".to_string()),
+            repository: None,
             sha256: None,
         }
     }
@@ -937,9 +1307,51 @@ mod tests {
             group: d.group.clone(),
             artifact_id: d.artifact_id.clone(),
             version: d.version.clone(),
-            url: d.url.clone(),
+            url: d.url.clone().unwrap_or_default(),
             sha256: sha256.to_string(),
         }
+    }
+
+    #[test]
+    fn find_project_root_from_walks_up_from_an_arbitrary_start_dir_not_cwd() {
+        // #172 follow-on prerequisite: `tinox build <path>` must find the
+        // built file's OWN tinox.toml even when cwd is somewhere unrelated
+        // (dogfood.sh builds from the repo root; the e2e harness builds from
+        // an isolated temp workdir) — this is the fix for that.
+        let root = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "find_project_root_from"
+        ));
+        let nested = root.join("src").join("deeper");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+
+        // cwd (wherever the test runner happens to be) has no tinox.toml of
+        // its own reachable from `nested` — only walking up from `nested`
+        // itself finds it.
+        assert_eq!(find_project_root_from(&nested), Some(root.clone()));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn find_project_root_from_stops_at_the_nearest_tinox_toml_not_a_further_one() {
+        // A tinox.toml two levels up must not shadow one right at `start`'s
+        // own directory — the walk should return the CLOSEST ancestor match.
+        let root = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "find_project_root_from_nearest"
+        ));
+        let inner = root.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\nname = \"outer\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(inner.join("tinox.toml"), "[package]\nname = \"inner\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+
+        assert_eq!(find_project_root_from(&inner), Some(inner.clone()));
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -990,11 +1402,12 @@ mod tests {
         // Empty manifest: nothing declared directly in tinox.toml here —
         // both dirs must still show up, since they're both already on disk.
         let manifest = TinoxManifest::default();
-        let mut dirs = installed_dep_dirs(&root, &manifest);
+        let (mut dirs, missing) = installed_dep_dirs(&root, &manifest);
         dirs.sort();
         let mut expected = vec![direct, transitive];
         expected.sort();
         assert_eq!(dirs, expected);
+        assert!(missing.is_empty());
 
         fs::remove_dir_all(&root).ok();
     }
@@ -1016,7 +1429,7 @@ mod tests {
     fn verify_checksum_with_no_pin_accepts_anything() {
         let d = dep("g", "a", "1.0");
         let lock = TinoxLock::default();
-        assert!(verify_checksum(&d, &lock, false, "deadbeef").is_ok());
+        assert!(verify_checksum(&d, d.url.as_deref().unwrap(), &lock, false, "deadbeef").is_ok());
     }
 
     #[test]
@@ -1025,8 +1438,9 @@ mod tests {
         d.sha256 = Some("AAAA".to_string()); // uppercase — comparison must be case-insensitive
         let mut lock = TinoxLock::default();
         lock.dependencies.push(lock_entry(&d, "bbbb")); // would mismatch if consulted
-        assert!(verify_checksum(&d, &lock, false, "aaaa").is_ok());
-        assert!(verify_checksum(&d, &lock, false, "cccc").is_err());
+        let url = d.url.clone().unwrap();
+        assert!(verify_checksum(&d, &url, &lock, false, "aaaa").is_ok());
+        assert!(verify_checksum(&d, &url, &lock, false, "cccc").is_err());
     }
 
     #[test]
@@ -1034,8 +1448,9 @@ mod tests {
         let d = dep("g", "a", "1.0");
         let mut lock = TinoxLock::default();
         lock.dependencies.push(lock_entry(&d, "cafebabe"));
-        assert!(verify_checksum(&d, &lock, false, "cafebabe").is_ok());
-        let err = verify_checksum(&d, &lock, false, "00000000").unwrap_err();
+        let url = d.url.clone().unwrap();
+        assert!(verify_checksum(&d, &url, &lock, false, "cafebabe").is_ok());
+        let err = verify_checksum(&d, &url, &lock, false, "00000000").unwrap_err();
         assert!(err.contains("checksum mismatch"), "unexpected message: {err}");
         assert!(err.contains("--update"), "should mention the escape hatch: {err}");
     }
@@ -1045,10 +1460,10 @@ mod tests {
         let mut d = dep("g", "a", "1.0");
         let mut lock = TinoxLock::default();
         lock.dependencies.push(lock_entry(&d, "cafebabe")); // pinned for the original URL
-        d.url = "https://example.com/moved.tnx".to_string(); // same coordinates, different source
+        d.url = Some("https://example.com/moved.tnx".to_string()); // same coordinates, different source
         // No comparable baseline for the new URL — anything is accepted rather than
         // spuriously failing against a hash that describes a different download.
-        assert!(verify_checksum(&d, &lock, false, "anything").is_ok());
+        assert!(verify_checksum(&d, d.url.as_deref().unwrap(), &lock, false, "anything").is_ok());
     }
 
     #[test]
@@ -1057,7 +1472,7 @@ mod tests {
         let mut lock = TinoxLock::default();
         lock.dependencies.push(lock_entry(&d, "cafebabe"));
         // Without --update this would fail; with it, re-pinning is allowed.
-        assert!(verify_checksum(&d, &lock, true, "brand-new-hash").is_ok());
+        assert!(verify_checksum(&d, d.url.as_deref().unwrap(), &lock, true, "brand-new-hash").is_ok());
     }
 
     #[test]
@@ -1153,6 +1568,7 @@ mod tests {
         let mut manifest = TinoxManifest {
             package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new() }),
             dependencies: vec![dep("com.example", "mylib", "1.0.0")],
+            repositories: Vec::new(),
         };
         write_manifest(&dir, &manifest).unwrap();
 
@@ -1165,6 +1581,212 @@ mod tests {
         assert_eq!(reread.dependencies[0].version, "2.0.0");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_manifest_reads_repositories_and_coordinate_only_dependency() {
+        let content = "[[repositories]]\nid = \"internal\"\nurl = \"https://pkg.example.internal\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"rest\"\nversion = \"1.0.0\"\n\n[[dependencies]]\ngroup = \"com.acme\"\nartifactId = \"widgets\"\nversion = \"2.1.0\"\nrepository = \"internal\"\n";
+        let m = parse_manifest(content);
+        assert_eq!(m.repositories.len(), 1);
+        assert_eq!(m.repositories[0].id, "internal");
+        assert_eq!(m.repositories[0].url, "https://pkg.example.internal");
+        assert_eq!(m.dependencies.len(), 2);
+        assert_eq!(m.dependencies[0].url, None);
+        assert_eq!(m.dependencies[0].repository, None);
+        assert_eq!(m.dependencies[1].repository.as_deref(), Some("internal"));
+    }
+
+    #[test]
+    fn write_manifest_round_trips_repositories() {
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "write_manifest_repositories"
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = TinoxManifest {
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new() }),
+            dependencies: vec![],
+            repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.internal".to_string() }],
+        };
+        write_manifest(&dir, &manifest).unwrap();
+
+        let rewritten = fs::read_to_string(dir.join("tinox.toml")).unwrap();
+        assert!(rewritten.contains("[[repositories]]"), "{rewritten}");
+        assert!(rewritten.contains("id = \"internal\""), "{rewritten}");
+
+        let reread = read_manifest(&dir).unwrap();
+        assert_eq!(reread.repositories.len(), 1);
+        assert_eq!(reread.repositories[0].id, "internal");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn effective_download_url_uses_explicit_url_as_is() {
+        let d = dep("g", "a", "1.0"); // url = Some("https://example.com/lib.tnx")
+        let m = TinoxManifest::default();
+        assert_eq!(effective_download_url(&d, &m).unwrap(), "https://example.com/lib.tnx");
+    }
+
+    #[test]
+    fn effective_download_url_rejects_both_url_and_repository() {
+        let mut d = dep("g", "a", "1.0");
+        d.repository = Some("internal".to_string());
+        let m = TinoxManifest::default();
+        let err = effective_download_url(&d, &m).unwrap_err();
+        assert!(err.contains("both `url` and `repository`"), "{err}");
+    }
+
+    #[test]
+    fn effective_download_url_defaults_to_central_when_unqualified() {
+        let mut d = dep("tinox.core", "rest", "1.0.0");
+        d.url = None;
+        let m = TinoxManifest::default(); // no [[repositories]] configured at all
+        assert_eq!(
+            effective_download_url(&d, &m).unwrap(),
+            "https://central.tinox-lang.de/api/v1/tinox.core/rest/1.0.0"
+        );
+    }
+
+    #[test]
+    fn effective_download_url_default_ignores_configured_repositories_when_unreferenced() {
+        // An unqualified dependency does NOT pick "the first configured
+        // repository" — it always falls back to the hardcoded default, even
+        // if [[repositories]] entries exist elsewhere in the same manifest.
+        let mut d = dep("tinox.core", "rest", "1.0.0");
+        d.url = None;
+        let m = TinoxManifest {
+            package: None,
+            dependencies: vec![],
+            repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.internal".to_string() }],
+        };
+        assert_eq!(
+            effective_download_url(&d, &m).unwrap(),
+            "https://central.tinox-lang.de/api/v1/tinox.core/rest/1.0.0"
+        );
+    }
+
+    #[test]
+    fn effective_download_url_resolves_named_repository() {
+        let mut d = dep("com.acme", "widgets", "2.1.0");
+        d.url = None;
+        d.repository = Some("internal".to_string());
+        let m = TinoxManifest {
+            package: None,
+            dependencies: vec![],
+            repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.internal/".to_string() }],
+        };
+        assert_eq!(
+            effective_download_url(&d, &m).unwrap(),
+            "https://pkg.example.internal/api/v1/com.acme/widgets/2.1.0"
+        );
+    }
+
+    #[test]
+    fn effective_download_url_unknown_repository_id_is_a_hard_error() {
+        let mut d = dep("com.acme", "widgets", "2.1.0");
+        d.url = None;
+        d.repository = Some("nonexistent".to_string());
+        let m = TinoxManifest::default();
+        let err = effective_download_url(&d, &m).unwrap_err();
+        assert!(err.contains("nonexistent"), "{err}");
+        assert!(err.contains("no [[repositories]] entry"), "{err}");
+    }
+
+    #[test]
+    fn global_dep_install_dir_shape_uses_home_or_tinox_home_override() {
+        let _guard = TINOX_HOME_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("TINOX_HOME", "/tmp/tinox-home-test-fixture") };
+        let mut d = dep("tinox.core", "rest", "1.0.0");
+        d.url = None;
+        let dir = global_dep_install_dir(&d).unwrap();
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/tinox-home-test-fixture/.tinox/repository/central/tinox.core/rest/1.0.0")
+        );
+        unsafe { std::env::remove_var("TINOX_HOME") };
+    }
+
+    #[test]
+    fn global_dep_install_dir_uses_repository_id_when_set() {
+        let _guard = TINOX_HOME_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("TINOX_HOME", "/tmp/tinox-home-test-fixture2") };
+        let mut d = dep("com.acme", "widgets", "2.1.0");
+        d.url = None;
+        d.repository = Some("internal".to_string());
+        let dir = global_dep_install_dir(&d).unwrap();
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/tinox-home-test-fixture2/.tinox/repository/internal/com.acme/widgets/2.1.0")
+        );
+        unsafe { std::env::remove_var("TINOX_HOME") };
+    }
+
+    #[test]
+    fn global_dep_dirs_reports_missing_dep_instead_of_silently_dropping_it() {
+        let _guard = TINOX_HOME_ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "global_dep_dirs_missing"
+        ));
+        fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("TINOX_HOME", home.to_str().unwrap()) };
+
+        let mut d = dep("tinox.core", "amqp10", "1.0.0");
+        d.url = None; // coordinate-only, not yet installed anywhere
+        let manifest = TinoxManifest {
+            package: None,
+            dependencies: vec![d],
+            repositories: Vec::new(),
+        };
+        let (dirs, missing) = global_dep_dirs(&manifest);
+        assert!(dirs.is_empty());
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].group, "tinox.core");
+        assert_eq!(missing[0].artifact_id, "amqp10");
+
+        unsafe { std::env::remove_var("TINOX_HOME") };
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn global_dep_dirs_finds_an_installed_coordinate_dep_and_its_transitive_deps() {
+        let _guard = TINOX_HOME_ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-{}",
+            std::process::id(),
+            "global_dep_dirs_found"
+        ));
+        fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("TINOX_HOME", home.to_str().unwrap()) };
+
+        // Simulate a prior successful install: oidc (declared directly) and
+        // oauth2 (its own transitive dep, per oidc's own tinox.toml) both
+        // already sitting in the global cache.
+        let oidc_dir = home.join(".tinox/repository/central/tinox.core/oidc/1.0.0");
+        let oauth2_dir = home.join(".tinox/repository/central/tinox.core/oauth2/1.0.0");
+        fs::create_dir_all(&oidc_dir).unwrap();
+        fs::create_dir_all(&oauth2_dir).unwrap();
+        fs::write(
+            oidc_dir.join("tinox.toml"),
+            "[package]\nname = \"oidc\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"oauth2\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let mut d = dep("tinox.core", "oidc", "1.0.0");
+        d.url = None;
+        let manifest = TinoxManifest { package: None, dependencies: vec![d], repositories: Vec::new() };
+        let (mut dirs, missing) = global_dep_dirs(&manifest);
+        dirs.sort();
+        let mut expected = vec![oidc_dir, oauth2_dir];
+        expected.sort();
+        assert_eq!(dirs, expected);
+        assert!(missing.is_empty());
+
+        unsafe { std::env::remove_var("TINOX_HOME") };
+        fs::remove_dir_all(&home).ok();
     }
 
     #[test]

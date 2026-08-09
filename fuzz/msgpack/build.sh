@@ -17,12 +17,16 @@ if [ ! -x "$TINOX_BIN" ]; then
     exit 1
 fi
 
-# MsgpackDriver.tnx imports the real crates/tinox-core/msgpack/*.tnx module
-# (no copy of the decode logic) and adds a one-line
-# tinoxMsgpackDecode(List<Int64>) wrapper. `tinox build` always tries to
-# link a full executable and fails here because the driver has no
-# main()/tinox_main — that failure is expected and harmless, we only need
-# the driver_out.ll it leaves behind before the failing final link step.
+# MsgpackDriver.tnx imports the real tinox.core.msgpack module (crates/
+# tinox-core-ext/msgpack/*.tnx, an extended-tier stdlib package since the
+# core/extended split — see tinox.toml here) and adds a one-line
+# tinoxMsgpackDecode(List<Int64>) wrapper. No copy of the decode logic.
+# `tinox install` fetches it (cached under ~/.tinox/repository/ after the
+# first run). `tinox build` always tries to link a full executable and
+# fails here because the driver has no main()/tinox_main — that failure is
+# expected and harmless, we only need the driver_out.ll it leaves behind
+# before the failing final link step.
+"$TINOX_BIN" install >/dev/null
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
 "$TINOX_BIN" build MsgpackDriver.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then

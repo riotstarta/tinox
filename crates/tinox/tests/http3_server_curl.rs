@@ -84,6 +84,22 @@ fn http3_get_post_and_concurrent_requests() {
     )
     .expect("copy key fixture");
 
+    // Core/extended stdlib split (see CLAUDE.md): Main.tnx imports
+    // tinox.core.http3_server/http_server (extended-tier) -- the example's
+    // own tinox.toml dependency needs to actually be installed first.
+    // `tinox install` walks up from its own cwd, not from `workdir`.
+    let install = Command::new(tinox)
+        .arg("install")
+        .current_dir(src.parent().expect("src has a parent dir"))
+        .output()
+        .expect("spawn install");
+    assert!(
+        install.status.success(),
+        "tinox install failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
     let build = Command::new(tinox)
         .arg("build")
         .arg(&src)

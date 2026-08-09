@@ -2,7 +2,6 @@ module tinox.core.logger;
 
 import tinox.core.time;
 import tinox.core.env;
-import tinox.core.json;
 
 namespace tinox.core.logger
 {
@@ -65,7 +64,7 @@ namespace tinox.core.logger
             if logger.jsonFormat
             {
                 let record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
-                println(Json::serialize(record));
+                println(Logger::toJson(record));
             }
             else
             {
@@ -78,6 +77,37 @@ namespace tinox.core.logger
                 print("] ");
                 println(message);
             }
+        }
+
+        // Hand-written serialization for LogRecord's fixed 4-string shape,
+        // matching the escaping Encoding::htmlEncode already does for HTML
+        // (see tinox.core.encoding) — deliberately not tinox.core.json's
+        // @JsonSerializable/Json::serialize, since that would make logger
+        // (core-tier) transitively require json (extended-tier). See
+        // LogRecord.tnx and CLAUDE.md's core/extended stdlib split notes.
+        fnc toJson(record: LogRecord) -> String
+        {
+            var s: String = "{\"timestamp\":\"";
+            s = s + Logger::escapeJson(record.timestamp);
+            s = s + "\",\"level\":\"";
+            s = s + Logger::escapeJson(record.level);
+            s = s + "\",\"logger\":\"";
+            s = s + Logger::escapeJson(record.logger);
+            s = s + "\",\"message\":\"";
+            s = s + Logger::escapeJson(record.message);
+            s = s + "\"}";
+            return s;
+        }
+
+        fnc escapeJson(s: String) -> String
+        {
+            var result: String = s;
+            result = result.replace("\\", "\\\\");
+            result = result.replace("\"", "\\\"");
+            result = result.replace("\n", "\\n");
+            result = result.replace("\r", "\\r");
+            result = result.replace("\t", "\\t");
+            return result;
         }
     }
 }

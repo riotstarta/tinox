@@ -1,0 +1,9 @@
+[package]
+name = "amqps_publish_consume"
+version = "0.1.0"
+description = ""
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "amqp091"
+version = "1.0.0"

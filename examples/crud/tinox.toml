@@ -6,3 +6,18 @@ description = "Full CRUD REST API example with SQLite and related entities"
 [database]
 driver = "sqlite"
 url = "crud.db"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "db"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

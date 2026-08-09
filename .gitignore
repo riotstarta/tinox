@@ -19,6 +19,13 @@ Thumbs.db
 .tinox_notes
 *.tinox_state
 
+# Tinox package manager: project-local dependency cache (populated by
+# `tinox install` for explicit-url deps -- coordinate-resolved deps go to
+# the global ~/.tinox/repository/ cache instead, never checked in either)
+.tinox/
+*.tar.gz
+tinox.lock
+
 # Claude Code
 claude
 .claude/settings.local.json

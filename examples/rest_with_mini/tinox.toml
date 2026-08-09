@@ -1,0 +1,14 @@
+[package]
+name = "rest_with_mini"
+version = "0.1.0"
+description = ""
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

@@ -10,6 +10,15 @@
 # and links against Boehm-GC (libgc-dev); the ORM e2e tests need the
 # sqlite3 CLI (fixtures) and libsqlite3-dev (-lsqlite3), otherwise
 # they'd be skipped.
+#
+# Core/extended stdlib split (see CLAUDE.md): examples/e2e/dogfood cases
+# importing an extended-tier module (e.g. tinox.core.json, tinox.core.rest)
+# now `tinox install` it for real from central.tinox-lang.de into the
+# global ~/.tinox/repository/ cache — the `actions/cache` step below
+# persists that cache across runs, so only the FIRST run after a change
+# touches the network; every subsequent run restores it and installs
+# nothing new (install_dep's own cache-hit check, pm.rs, skips the
+# download entirely once the coordinate is already on disk).
 
 name: check
 
@@ -63,6 +72,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tinox
+
+      # Global tinox package-manager cache (~/.tinox/repository/, see
+      # pm.rs's global_dep_install_dir) -- coordinate-resolved extended-
+      # tier stdlib dependencies land here, shared across every example/
+      # e2e/dogfood case in one run AND across runs via this cache. Keyed
+      # on a static string with a manually-bumped suffix: no single
+      # lockfile spans every case's independently-synthesized tinox.toml,
+      # so there's no natural hash to key on the way Cargo.lock keys the
+      # rust-cache step above.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.tinox/repository
+          key: tinox-pkg-cache-v1
 
       - name: make check
         run: make -C tinox check

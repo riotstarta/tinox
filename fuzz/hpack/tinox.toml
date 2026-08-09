@@ -1,0 +1,9 @@
+[package]
+name = "hpack-fuzz-driver"
+version = "0.1.0"
+description = "Local-only manifest so HpackDriver.tnx can pull in the real tinox.core.hpack module as a dependency."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "hpack"
+version = "1.0.0"

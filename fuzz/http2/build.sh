@@ -17,12 +17,17 @@ if [ ! -x "$TINOX_BIN" ]; then
     exit 1
 fi
 
-# Http2Driver.tnx imports the real crates/tinox-core/http2_server/*.tnx
-# module (no copy of the frame-parsing logic) and adds a one-line
-# tinoxHttp2ReadFrame(conn: Int64) wrapper. `tinox build` always tries to
+# Http2Driver.tnx imports the real tinox.core.http2_server module (crates/
+# tinox-core-ext/http2_server/*.tnx, an extended-tier stdlib package since
+# the core/extended split — see tinox.toml here) and adds a one-line
+# tinoxHttp2ReadFrame(conn: Int64) wrapper. No copy of the frame-parsing
+# logic. `tinox install` fetches it and its own transitive deps (hpack,
+# http_server — see http2_server's own tinox.toml), cached under
+# ~/.tinox/repository/ after the first run. `tinox build` always tries to
 # link a full executable and fails here because the driver has no
 # main()/tinox_main — that failure is expected and harmless, we only need
 # the driver_out.ll it leaves behind before the failing final link step.
+"$TINOX_BIN" install >/dev/null
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
 "$TINOX_BIN" build Http2Driver.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then

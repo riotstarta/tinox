@@ -49,6 +49,22 @@ fn ws_annotated_endpoint_handshake_and_echo() {
     std::fs::create_dir_all(&workdir).expect("mkdir workdir");
     let exe = workdir.join("EchoEndpoint");
 
+    // Core/extended stdlib split (see CLAUDE.md): Main.tnx imports
+    // tinox.core.websocket (extended-tier) -- the example's own tinox.toml
+    // dependency needs to actually be installed first. `tinox install`
+    // walks up from its own cwd, not from `workdir`.
+    let install = Command::new(tinox)
+        .arg("install")
+        .current_dir(src.parent().expect("src has a parent dir"))
+        .output()
+        .expect("spawn install");
+    assert!(
+        install.status.success(),
+        "tinox install failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
     let build = Command::new(tinox)
         .arg("build")
         .arg(&src)

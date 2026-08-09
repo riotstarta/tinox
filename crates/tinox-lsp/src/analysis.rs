@@ -1221,8 +1221,11 @@ mod tests {
         // One-type-per-file (2026-07-26): http_server is now a directory of
         // several `<TypeName>.tnx` files instead of one `http_server.tnx` —
         // parse and merge all of them, same as build_embedded_stdlib() does.
+        // Core/extended stdlib split (see CLAUDE.md): http_server is
+        // extended-tier, so it lives under tinox-core-ext now, not
+        // tinox-core.
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let dir = format!("{}/../../crates/tinox-core/http_server", manifest);
+        let dir = format!("{}/../../crates/tinox-core-ext/http_server", manifest);
         let mut registry = HashMap::new();
         let Ok(entries) = std::fs::read_dir(&dir) else { return registry };
         let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();

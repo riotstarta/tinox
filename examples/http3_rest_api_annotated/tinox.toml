@@ -1,0 +1,14 @@
+[package]
+name = "http3_rest_api_annotated"
+version = "0.1.0"
+description = ""
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http3_server"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

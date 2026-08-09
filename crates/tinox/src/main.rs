@@ -45,7 +45,11 @@ fn run() {
         "check"   => check(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
-        "install" => pm::cmd_install(&args[2..]),
+        "install" => {
+            if !pm::cmd_install(&args[2..]) {
+                std::process::exit(1);
+            }
+        }
         "add"     => pm::cmd_add(&args[2..]),
         "package" => pm::cmd_package(),
         "help" | "--help" | "-h" => print_help(),
@@ -897,8 +901,8 @@ fn check(args: &[String]) {
     if let Ok(canonical) = Path::new(&input_file).canonicalize() {
         visited.insert(canonical);
     }
-    let dep_dirs = load_dep_dirs();
-    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs) {
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
@@ -1691,8 +1695,8 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
-    let dep_dirs = load_dep_dirs();
-    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs)
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
     let result = tinox_typecheck::annotations::process_annotations(&ast);
     Ok(result.test_entries)
@@ -1714,8 +1718,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
-    let dep_dirs = load_dep_dirs();
-    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs)?;
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)?;
     tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = tinox_typecheck::TypeChecker::new();
@@ -1843,6 +1847,24 @@ fn stdlib_dir() -> Option<PathBuf> {
     None
 }
 
+/// The always-available "core" tier of `tinox.core.*` — resolves
+/// unconditionally via `stdlib_dir()`, exactly like every `tinox.core.*`
+/// import did before this split, with no `tinox.toml` declaration needed.
+/// Everything else under `tinox.core.*` is "extended tier": it must be
+/// declared as a real dependency (group `tinox.core`, the module name as
+/// `artifactId`) and installed via `tinox install` — see `resolve_imports`'s
+/// branch 3 gating below, and CLAUDE.md's core/extended stdlib split notes.
+const CORE_MODULES: &[&str] = &[
+    "array", "collections", "set", "queue", "heap", "trie", "graph", "iter",
+    "sort", "option", "result", "cache", "pool",
+    "math", "mathf", "mathx", "complex", "decimal",
+    "string", "fmt", "format", "encoding",
+    "io", "fs", "env", "process", "debug", "socket",
+    "semaphore", "time", "cron", "events",
+    "logger", "validation", "regex", "random", "hash", "uuid",
+    "base64", "hex", "uri",
+];
+
 /// Returns the path to runtime.c: the dev-checkout path relative to this
 /// binary's compiled-in source location (works for `cargo run` during
 /// development), then the fixed system install path used by distro
@@ -1861,8 +1883,12 @@ fn runtime_c_path() -> Option<PathBuf> {
     None
 }
 
-fn load_dep_dirs() -> Vec<PathBuf> {
-    pm::find_project_root()
+/// Returns installed dependency directories plus any coordinate-resolved
+/// dependency the manifest declares but that isn't installed yet (see
+/// `resolve_imports`'s use of the latter to distinguish "never declared"
+/// from "declared but `tinox install` wasn't run").
+fn load_dep_dirs(base_dir: &Path) -> (Vec<PathBuf>, Vec<pm::MissingDep>) {
+    pm::find_project_root_from(base_dir)
         .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
         .map(|(root, m)| pm::installed_dep_dirs(&root, &m))
         .unwrap_or_default()
@@ -2095,6 +2121,24 @@ fn resolve_in_dep_dirs(
         1 => Ok(Some(matches.into_iter().next().unwrap().1)),
         _ => {
             let coords: Vec<String> = matches.iter().map(|(d, _)| dep_dir_coordinate(d)).collect();
+            // Two matches for the SAME group:artifactId:version aren't a
+            // real ambiguity — a coordinate is immutable on tinox-central
+            // (see pm.rs's global cache doc comments), so any two
+            // installations of it are guaranteed the same content, just
+            // reached via different resolution paths. This happens in
+            // practice when a project directly declares a coordinate
+            // dependency (→ the global ~/.tinox/repository/ cache) that's
+            // ALSO reachable transitively through another dependency whose
+            // own manifest still pins it via an explicit `url` (→ the
+            // project-local .tinox/deps/ tree) — e.g. before every
+            // already-published extended-tier stdlib package is
+            // republished under the new coordinate-only manifest style.
+            // Only a genuine coordinate MISMATCH is a real, hard-error
+            // ambiguity (#156's original case: two unrelated dependencies
+            // shipping conflicting content at the same relative path).
+            if coords.iter().all(|c| c == &coords[0]) {
+                return Ok(Some(matches.into_iter().next().unwrap().1));
+            }
             Err(format!(
                 "Ambiguous import '{}': resolves in more than one installed dependency ({}). \
                  Remove or rename one of them so their module paths don't collide.",
@@ -2110,6 +2154,7 @@ fn resolve_imports(
     base_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
 ) -> Result<(), String> {
     let imports: Vec<_> = ast
         .decls
@@ -2155,18 +2200,44 @@ fn resolve_imports(
 
         // Resolution order:
         // 1. Relative to source file directory
-        // 2. Installed package dependencies (.tinox/deps/...)
+        // 2. Installed package dependencies (.tinox/deps/... or the global
+        //    ~/.tinox/repository/... cache — see resolve_in_dep_dirs)
         // 3. tinox.core.X  →  <stdlib_dir>/X.tnx or <stdlib_dir>/X/*.tnx
         //    tinox.core.X.Y  →  <stdlib_dir>/X/Y.tnx or <stdlib_dir>/X/Y/*.tnx
         //    (everything after "tinox.core" nests as a subdirectory of the
         //    stdlib dir, same rule as the relative-import case above; when
         //    there's no "core" segment to anchor on, falls back to just the
-        //    last segment, unchanged from before this nesting support)
+        //    last segment, unchanged from before this nesting support) —
+        //    but ONLY for CORE_MODULES. `tinox.core.<mod>` for anything
+        //    else is extended-tier: it must have already resolved via
+        //    branch 2 (a declared+installed dependency); if we're here, it
+        //    didn't, so fail with a specific, actionable error instead of
+        //    silently falling through to stdlib_dir() (see CLAUDE.md's
+        //    core/extended stdlib split notes and the "no silent garbage"
+        //    philosophy this project follows throughout).
         let full_paths: Vec<PathBuf> = if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
             p
         } else if let Some(p) = resolve_in_dep_dirs(dep_dirs, &rel_file, &rel_dir)? {
             p
         } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
+            if import.path.len() >= 3 && import.path[1] == "core" {
+                let module = import.path[2].as_str();
+                if !CORE_MODULES.contains(&module) {
+                    if let Some(m) = missing_deps
+                        .iter()
+                        .find(|m| m.group == "tinox.core" && m.artifact_id == module)
+                    {
+                        return Err(format!(
+                            "tinox.toml declares tinox.core:{}:{} but it isn't installed — run `tinox install`.",
+                            m.artifact_id, m.version
+                        ));
+                    }
+                    return Err(format!(
+                        "Cannot resolve import 'tinox.core.{}...': '{}' is an extended-tier stdlib module, not part of the always-available core — declare it in tinox.toml:\n\n  [[dependencies]]\n  group = \"tinox.core\"\n  artifactId = \"{}\"\n  version = \"1.0.0\"\n\nthen run `tinox install`.",
+                        module, module, module
+                    ));
+                }
+            }
             let tail: Vec<&String> = if import.path.len() >= 3 && import.path[1] == "core" {
                 import.path[2..].iter().collect()
             } else {
@@ -2220,7 +2291,7 @@ fn resolve_imports(
             stamp_file_identity(&mut imported.decls, &full_path);
 
             let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-            resolve_imports(&mut imported, &imported_dir, visited, dep_dirs)?;
+            resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
 
             imported_decls.extend(imported.decls);
         }
@@ -2261,8 +2332,8 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     if let Ok(canonical) = Path::new(input_path).canonicalize() {
         visited.insert(canonical);
     }
-    let dep_dirs = load_dep_dirs();
-    resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs)
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);

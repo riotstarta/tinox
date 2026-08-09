@@ -1,0 +1,9 @@
+[package]
+name = "ws_echo_annotated"
+version = "0.1.0"
+description = ""
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "websocket"
+version = "1.0.0"

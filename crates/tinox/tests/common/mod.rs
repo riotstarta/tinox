@@ -7,6 +7,26 @@ use std::time::{Duration, Instant};
 
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
 const RUN_TIMEOUT: Duration = Duration::from_secs(15);
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Duplicated from `CORE_MODULES` in `crates/tinox/src/main.rs` — kept in
+/// sync by hand (tinox is a bin-only crate with no lib target to share a
+/// single source of truth from). If a module moves between the core and
+/// extended tiers, update both. Anything `tinox.core.<mod>` NOT in this
+/// list needs a synthesized `[[dependencies]]` entry (see
+/// `extended_deps_used`/`run_case` below) for the case to resolve at all,
+/// mirroring what a real consuming project has to do since the core/
+/// extended stdlib split.
+const CORE_MODULES: &[&str] = &[
+    "array", "collections", "set", "queue", "heap", "trie", "graph", "iter",
+    "sort", "option", "result", "cache", "pool",
+    "math", "mathf", "mathx", "complex", "decimal",
+    "string", "fmt", "format", "encoding",
+    "io", "fs", "env", "process", "debug", "socket",
+    "semaphore", "time", "cron", "events",
+    "logger", "validation", "regex", "random", "hash", "uuid",
+    "base64", "hex", "uri",
+];
 
 pub struct Case {
     pub path: PathBuf,
@@ -61,6 +81,57 @@ pub fn parse_case(path: &Path) -> Case {
         }
     }
     Case { path: path.to_path_buf(), name, expect_lines, expect_contains, expect_exit, args, db_sql, test_mode, tls_fixture }
+}
+
+/// Scans `import tinox.core.<mod>...;` lines in `src` and returns every
+/// distinct `<mod>` that ISN'T in `CORE_MODULES` — the set of extended-tier
+/// dependencies this source file needs declared in a synthesized
+/// tinox.toml before it can build post-split. A plain substring/line scan
+/// (not a real parser) is enough here: false positives inside a string
+/// literal or comment are vanishingly unlikely in this codebase's test
+/// fixtures and would only cause an unnecessary (harmless) extra
+/// dependency entry, never a missed one.
+fn extended_deps_in_source(src: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in src.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("import tinox.core.") else { continue };
+        let module = rest.split(['.', ';']).next().unwrap_or("").trim();
+        if module.is_empty() || CORE_MODULES.contains(&module) {
+            continue;
+        }
+        if !found.iter().any(|m: &String| m == module) {
+            found.push(module.to_string());
+        }
+    }
+    found
+}
+
+/// Recursively copies every `.tnx` file (and the directory structure that
+/// contains them) from `src` into `dest`, collecting the union of
+/// extended-tier module names any of them import (see
+/// `extended_deps_in_source`) into `extended_deps`. Used for directory-
+/// based e2e cases, which can nest a whole second module in an
+/// underscore-prefixed subdirectory.
+fn copy_tnx_tree(src: &Path, dest: &Path, extended_deps: &mut Vec<String>) -> Result<(), String> {
+    for entry in fs::read_dir(src).map_err(|e| format!("read {}: {e}", src.display()))?.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            let sub_dest = dest.join(p.file_name().unwrap());
+            fs::create_dir_all(&sub_dest).map_err(|e| format!("mkdir {}: {e}", sub_dest.display()))?;
+            copy_tnx_tree(&p, &sub_dest, extended_deps)?;
+        } else if p.extension().map(|x| x == "tnx").unwrap_or(false) {
+            let src_content = fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+            for m in extended_deps_in_source(&src_content) {
+                if !extended_deps.contains(&m) {
+                    extended_deps.push(m);
+                }
+            }
+            let dest_file = dest.join(p.file_name().unwrap());
+            fs::copy(&p, &dest_file).map_err(|e| format!("copy {}: {e}", p.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Wait with timeout; kill on expiry. Returns None on timeout.
@@ -118,6 +189,35 @@ pub fn run_case(case: &Case) -> Result<(), String> {
     let _ = fs::remove_dir_all(&workdir);
     fs::create_dir_all(&workdir).map_err(|e| format!("mkdir workdir: {e}"))?;
 
+    // Copy the case's own source into the isolated workdir rather than
+    // building it in place from tests/e2e/ -- the core/extended stdlib
+    // split (see CLAUDE.md) means a case importing an extended-tier module
+    // needs a synthesized tinox.toml (below) sitting next to its own
+    // entry file, since `find_project_root_from` walks up from the FILE
+    // BEING BUILT's own directory, not the process's cwd. Writing that
+    // transiently into the real tests/e2e/<case>/ tree would risk leftover
+    // files in the repo on a panicked/killed test run; copying into the
+    // already-isolated, always-cleaned-up workdir avoids that entirely.
+    // Directory-based cases (one-type-per-file convention) get their whole
+    // subtree copied RECURSIVELY, not just top-level siblings -- a
+    // cross-module test case can nest a second module in its own
+    // underscore-prefixed subdirectory (e.g. bug06_cross_module_struct/
+    // _bug06_mod/*.tnx, imported via `import _bug06_mod;`), matching
+    // exactly how it already sits on disk; single-file cases just get the
+    // one file.
+    let src_dir = case.path.parent().unwrap_or(Path::new("."));
+    let is_dir_case = src_dir.file_name().map(|n| n != "e2e").unwrap_or(false);
+    let mut extended_deps: Vec<String> = Vec::new();
+    if is_dir_case {
+        copy_tnx_tree(src_dir, &workdir, &mut extended_deps)?;
+    } else {
+        let src = fs::read_to_string(&case.path).map_err(|e| format!("read {}: {e}", case.path.display()))?;
+        extended_deps = extended_deps_in_source(&src);
+        let dest = workdir.join(case.path.file_name().unwrap());
+        fs::copy(&case.path, &dest).map_err(|e| format!("copy {}: {e}", case.path.display()))?;
+    }
+    let entry = workdir.join(case.path.file_name().unwrap());
+
     // Optional TLS fixture: a fixed self-signed cert/key so HTTPS/WSS/AMQPS
     // e2e tests don't need to generate one at test time.
     if case.tls_fixture {
@@ -139,17 +239,45 @@ pub fn run_case(case: &Case) -> Result<(), String> {
         if !st.success() {
             return Err("sqlite3 fixture SQL failed".to_string());
         }
-        fs::write(
-            workdir.join("tinox.toml"),
-            "[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n",
-        )
-        .map_err(|e| format!("write tinox.toml: {e}"))?;
+    }
+
+    // A tinox.toml is needed if either the sqlite fixture above needs its
+    // [database] section, or the case imports an extended-tier stdlib
+    // module needing a [[dependencies]] declaration (or both at once --
+    // e.g. the orm_sqlite_* cases, which do both) -- write ONE merged file
+    // covering whichever apply, then `tinox install` before build/test.
+    if !case.db_sql.is_empty() || !extended_deps.is_empty() {
+        let mut toml = String::new();
+        if !case.db_sql.is_empty() {
+            toml.push_str("[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n");
+        }
+        if !extended_deps.is_empty() {
+            toml.push_str("[package]\nname = \"");
+            toml.push_str(&case.name);
+            toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+            for m in &extended_deps {
+                toml.push_str(&format!(
+                    "\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"1.0.0\"\n"
+                ));
+            }
+        }
+        fs::write(workdir.join("tinox.toml"), toml).map_err(|e| format!("write tinox.toml: {e}"))?;
+    }
+    if !extended_deps.is_empty() {
+        let mut install = Command::new(tinox);
+        install.arg("install").current_dir(&workdir);
+        let (status, out) = run_captured(install, INSTALL_TIMEOUT)?;
+        match status {
+            None => return Err("tinox install TIMEOUT".to_string()),
+            Some(st) if !st.success() => return Err(format!("tinox install failed:\n{}", out.trim_end())),
+            _ => {}
+        }
     }
 
     let (status, output) = if case.test_mode {
         // `tinox test` compiles and runs @Test methods itself.
         let mut cmd = Command::new(tinox);
-        cmd.arg("test").arg(&case.path).current_dir(&workdir);
+        cmd.arg("test").arg(&entry).current_dir(&workdir);
         let (status, output) = run_captured(cmd, COMPILE_TIMEOUT)?;
         match status {
             None => return Err("tinox test TIMEOUT".to_string()),
@@ -162,7 +290,7 @@ pub fn run_case(case: &Case) -> Result<(), String> {
         // (which looks for `workdir/<case.name>`) would find nothing.
         let exe = workdir.join(&case.name);
         let mut build = Command::new(tinox);
-        build.arg("build").arg(&case.path).arg("-o").arg(&exe).current_dir(&workdir);
+        build.arg("build").arg(&entry).arg("-o").arg(&exe).current_dir(&workdir);
         let (status, out) = run_captured(build, COMPILE_TIMEOUT)?;
         match status {
             None => return Err("compile TIMEOUT".to_string()),

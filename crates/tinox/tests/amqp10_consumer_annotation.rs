@@ -111,7 +111,35 @@ fnc main() -> Int32 {
 }
 "#;
 
+/// Runs `tinox install` in `src`'s own directory if it has a tinox.toml —
+/// core/extended stdlib split (see CLAUDE.md): `src` imports
+/// `tinox.core.amqp10`, an extended-tier module that needs a declared+
+/// installed dependency now, not just an unconditional stdlib import.
+/// `tinox install` must run with its cwd (or, since the `find_project_root`
+/// fix, any ancestor) at `src`'s directory, NOT `workdir` — `find_project_
+/// root_from` (crates/tinox/src/main.rs) walks up from the FILE BEING
+/// BUILT's own directory to find its tinox.toml, unrelated to `workdir`.
+fn install_deps_if_needed(tinox: &str, src: &Path) {
+    let src_dir = src.parent().expect("src has a parent dir");
+    if !src_dir.join("tinox.toml").exists() {
+        return;
+    }
+    let install = Command::new(tinox)
+        .arg("install")
+        .current_dir(src_dir)
+        .output()
+        .expect("spawn install");
+    assert!(
+        install.status.success(),
+        "tinox install in {} failed:\nstdout: {}\nstderr: {}",
+        src_dir.display(),
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+}
+
 fn build(tinox: &str, src: &Path, workdir: &Path, out_name: &str) -> PathBuf {
+    install_deps_if_needed(tinox, src);
     let exe = workdir.join(out_name);
     let build = Command::new(tinox)
         .arg("build")
@@ -214,6 +242,15 @@ fn amqp10_consumer_annotation_receives_and_acks() {
     std::fs::create_dir_all(&broker_src_dir).expect("mkdir fake_broker src dir");
     let broker_src_path = broker_src_dir.join("Main.tnx");
     std::fs::write(&broker_src_path, FAKE_BROKER_SRC).expect("write fake broker source");
+    // Core/extended stdlib split: FAKE_BROKER_SRC imports tinox.core.amqp10
+    // (extended-tier), so it needs its own tinox.toml declaring it as a
+    // dependency (socket is core-tier, needs no declaration) -- see
+    // install_deps_if_needed/build above.
+    std::fs::write(
+        broker_src_dir.join("tinox.toml"),
+        "[package]\nname = \"fake_broker\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("write fake_broker tinox.toml");
 
     let broker_exe = build(tinox, &broker_src_path, &workdir, "fake_broker");
     let consumer_exe = build(tinox, &consumer_src, &workdir, "DemoConsumer");

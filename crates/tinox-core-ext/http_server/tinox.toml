@@ -1,0 +1,9 @@
+[package]
+name = "http_server"
+version = "1.0.1"
+description = "tinox.core.http_server, split out of the bundled stdlib as a standalone tinox-central package."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

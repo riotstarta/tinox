@@ -1,0 +1,4 @@
+[package]
+name = "crypto"
+version = "1.0.1"
+description = "tinox.core.crypto, split out of the bundled stdlib as a standalone tinox-central package."

@@ -18,7 +18,7 @@ mod common;
 use common::{parse_case, run_case};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Modules that don't compile/run today — each entry is an open bug
 /// (see bugs.md Bug 20, grouped there by error class). When fixed:
@@ -565,6 +565,18 @@ fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core")
 }
 
+/// The extended-tier stdlib split off crates/tinox-core into its own
+/// directory (see CLAUDE.md's core/extended stdlib split notes) — still
+/// walked here for `stdlib_smoke_completeness`'s inventory, alongside
+/// `stdlib_dir()`, so extended modules keep needing a smoke case too, even
+/// though they no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
+/// time. Each SMOKES case for an extended module gets an auto-synthesized
+/// tinox.toml plus a `tinox install` run by `common::run_case`, exactly
+/// like an e2e case importing an extended module.
+fn ext_stdlib_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext")
+}
+
 fn emit_case(s: &Smoke) -> (String, String) {
     let name = format!("stdlib_smoke_{}", s.key);
     let mut src = String::new();
@@ -588,19 +600,17 @@ fn emit_case(s: &Smoke) -> (String, String) {
     (name, src)
 }
 
-/// Every stdlib module has a smoke case or a justification in EXCLUDED.
-#[test]
-fn stdlib_smoke_completeness() {
-    // A module is either a legacy single `<name>.tnx` file (not yet migrated),
-    // a `<name>/` directory of one-type-per-file `.tnx` files directly inside
-    // it (migrated, one-type-per-file convention), or — since the compiler
-    // gained nested `tinox.core.X.Y` stdlib import support (rest/client,
-    // rest/server) — a `<name>/` directory containing ONLY subdirectories
-    // (no `.tnx` files of its own), a pure grouping directory: descend one
-    // level and key each child as `"<name>.<child>"`, matching the import
-    // path (`tinox.core.rest.client`) rather than the directory name.
-    let modules: BTreeSet<String> = fs::read_dir(stdlib_dir())
-        .expect("crates/tinox-core readable")
+/// A module is either a legacy single `<name>.tnx` file (not yet migrated),
+/// a `<name>/` directory of one-type-per-file `.tnx` files directly inside
+/// it (migrated, one-type-per-file convention), or — since the compiler
+/// gained nested `tinox.core.X.Y` stdlib import support (rest/client,
+/// rest/server) — a `<name>/` directory containing ONLY subdirectories
+/// (no `.tnx` files of its own), a pure grouping directory: descend one
+/// level and key each child as `"<name>.<child>"`, matching the import
+/// path (`tinox.core.rest.client`) rather than the directory name.
+fn scan_module_dir(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} readable: {e}", dir.display()))
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .flat_map(|p| -> Vec<String> {
@@ -635,7 +645,18 @@ fn stdlib_smoke_completeness() {
                 vec![]
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Every stdlib module has a smoke case or a justification in EXCLUDED.
+#[test]
+fn stdlib_smoke_completeness() {
+    // Core-tier (stdlib_dir(), resolves unconditionally) + extended-tier
+    // (ext_stdlib_dir(), needs a declared+installed dependency) — both
+    // trees need every module covered, see CLAUDE.md's core/extended
+    // stdlib split notes and ext_stdlib_dir()'s own doc comment.
+    let mut modules: BTreeSet<String> = scan_module_dir(&stdlib_dir()).into_iter().collect();
+    modules.extend(scan_module_dir(&ext_stdlib_dir()));
     let covered: BTreeSet<String> = SMOKES.iter().map(|s| s.key.to_string()).collect();
     let excluded: BTreeSet<String> = EXCLUDED.iter().map(|(k, _)| k.to_string()).collect();
 

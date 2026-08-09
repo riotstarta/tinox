@@ -1,0 +1,9 @@
+[package]
+name = "msgpack-fuzz-driver"
+version = "0.1.0"
+description = "Local-only manifest so MsgpackDriver.tnx can pull in the real tinox.core.msgpack module as a dependency."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "msgpack"
+version = "1.0.0"
