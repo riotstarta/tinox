@@ -132,6 +132,48 @@ whole point is to show the manual/low-level mechanism itself.
   | sort -u` diffed against the same line for `docs_en.html`, must be
   empty.
 
+## Every tinox-central Publish Needs a Matching Per-Version Doc Page
+
+Whenever a `crates/tinox-core-ext/<module>` (or `tinox-core`) package is
+published to tinox-central as a new version (`scripts/publish-stdlib-ext.sh`
+or any manual `POST /api/v1/{group}/{artifactId}/{version}`), generate its
+`tinox doc` page into `docs/<group-with-dots-as-dashes>/<artifactId>/
+<version-with-dots-as-dashes>/docs.html` in THIS repo (e.g. `tinox.core` +
+`amqp091` + `1.0.2` → `docs/tinox-core/amqp091/1-0-2/docs.html`) and commit
+it alongside the version bump. **Never overwrite an existing version's
+docs.html** — old versions stay published and browsable, so their doc page
+must stay too; only ADD the new version's directory.
+
+**Why:** tinox-central's frontend (`registry-frontend/.../
+DocsProxyResource.java` + `RegistryClient.java` in the `tinox-central` repo)
+has no docs of its own — it fetches this exact path from
+`raw.githubusercontent.com/subnix-work/tinox/refs/heads/main/docs/...` and
+proxies it into the package detail page's iframe. A published version
+without a matching doc directory here just 404s in that iframe — this
+already happened for 13 modules bumped in the 2026-08-10 core/extended
+split's republish (amqp091, amqp10, crypto, http, http2_server,
+http3_server, http_server, jwt, oauth2, oidc, rest, websocket, zip all
+gained a new version with no doc page to match, silently, since nothing
+enforces this link).
+
+**How to generate one:** `tinox doc` only auto-discovers files under a
+project's `src/` next to its `tinox.toml` (for the Description/Dependencies
+sections) — but `crates/tinox-core-ext/<module>/` is flat (`.tnx` files
+and `tinox.toml` directly in the module dir, no `src/`, matching the live
+archive layout `publish-stdlib-ext.sh` uploads). So stage a throwaway
+project first: create a temp dir, copy the module's `tinox.toml` in as-is
+and copy its `.tnx` file(s) into a `src/` subdirectory (recursively for
+multi-directory modules like `rest`'s `client/`/`server/`), then run
+`tinox doc --out <path-to-repo>/docs/<group>/<artifactId>/<version>/
+docs.html` from inside that staged dir. The Dependencies section is read
+straight from the copied `tinox.toml`'s `[[dependencies]]` and links to
+`../../<artifactId>/<version>/docs.html` — verify those targets actually
+exist (they should, since dependencies are published/versioned first).
+Note the module's own `examples/*.tnx` (for the page's Examples section)
+no longer exists anywhere on disk for extended-tier modules post-split —
+that section will legitimately be absent from freshly generated pages
+until/unless that content is restored somewhere discoverable.
+
 ## File Structure: One Class/Interface/Enum per File
 
 Since 2026-07-26 this is hard-enforced at the compiler level (a hard
