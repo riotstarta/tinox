@@ -1,0 +1,13 @@
+import GreetController;
+
+// Every Tinox program still needs its own class Main as the mandatory
+// entry point (since 2026-08-09) -- @ApplicationComponent's REST server
+// spawns and runs alongside it on its own thread, it doesn't replace it.
+// This is the required sibling file for the annotated controller above.
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}

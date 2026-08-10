@@ -1,0 +1,33 @@
+import tinox.core.oidc;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let client: OidcClient = OidcClient::new(
+            "https://accounts.google.com",
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            "https://www.googleapis.com/oauth2/v3/certs",
+            "my-client-id",
+            "my-client-secret",
+            "https://myapp.example.com/callback"
+        );
+
+        let req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+        println("redirect user to: " + req.url);
+
+        // Callback handler, after the provider redirects back with ?code=...
+        let tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
+        if tokens.ok
+        {
+            // id_token signature + iss/aud/exp/nbf already verified here
+            println("subject: " + tokens.claims["sub"].getString());
+        }
+        else
+        {
+            println("login failed: " + tokens.errorMessage);
+        }
+        return 0;
+    }
+}

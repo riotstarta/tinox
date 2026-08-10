@@ -169,10 +169,30 @@ docs.html` from inside that staged dir. The Dependencies section is read
 straight from the copied `tinox.toml`'s `[[dependencies]]` and links to
 `../../<artifactId>/<version>/docs.html` — verify those targets actually
 exist (they should, since dependencies are published/versioned first).
-Note the module's own `examples/*.tnx` (for the page's Examples section)
-no longer exists anywhere on disk for extended-tier modules post-split —
-that section will legitimately be absent from freshly generated pages
-until/unless that content is restored somewhere discoverable.
+
+**Examples live in `docs/tinox-core/<module>/examples/*.tnx`, NOT inside
+`crates/tinox-core-ext/<module>/`.** They used to sit in an `examples/`
+dir next to the module's own source pre-split, but `publish-stdlib-ext.sh`
+archives every `.tnx` it finds recursively under the module dir straight
+into the published package — an `examples/` folder placed there would ship
+inside the artifact itself and get pulled into every consumer's import
+(and an example's own `class Main` would collide with the consumer's).
+Copy from `docs/tinox-core/<module>/examples/` into the staged project's
+`examples/` subdirectory before running `tinox doc` (same one-directory-
+per-module location regardless of which version you're currently
+generating docs for — examples aren't re-versioned per release, only
+updated by hand if they go stale against a new version's actual API). As
+of 2026-08-10 only the 13 modules bumped that day
+(amqp091/amqp10/crypto/http/http2_server/http3_server/http_server/jwt/
+oauth2/oidc/rest/websocket/zip) have this `docs/tinox-core/<module>/
+examples/` directory restored (recovered by stripping the syntax-
+highlighting markup back out of each module's previous docs.html, since
+the original example sources were never committed as standalone files,
+only their rendered HTML) — the other extended-tier modules' examples are
+still only baked into their existing 1.0.0 docs.html with no editable
+source anywhere; restore theirs the same way before their next version
+bump, or that module's next docs.html will silently lose its Examples
+section.
 
 ## File Structure: One Class/Interface/Enum per File
 

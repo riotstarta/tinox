@@ -1,0 +1,19 @@
+import tinox.core.rest.server;
+import tinox.core.json;
+
+// Annotation-driven: no explicit main()/RestApi anywhere in the program —
+// the compiler discovers @ApplicationComponent classes and generates the
+// server entry point itself.
+@ApplicationComponent
+@Path("/api/v1")
+class GreetController
+{
+    @GET
+    @Path("/hello/:name")
+    @Produces("application/json")
+    fn hello(ctx: HttpContext) -> Nothing
+    {
+        let name: String = ctx.request.getParam("name");
+        ctx.response.json("{\"message\":\"Hello, " + name + "!\"}");
+    }
+}
