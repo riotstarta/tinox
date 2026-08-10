@@ -12,8 +12,33 @@
 //! philosophy -- this exact bug was previously invisible to any
 //! self-consistent/simulated test and was only found via live curl load.
 
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repo root")
+}
+
+/// Reads the current published version out of the module's own
+/// `crates/tinox-core-ext/<module>/tinox.toml` instead of a hardcoded
+/// string -- see amqp10_consumer_annotation.rs's copy of this helper for
+/// why a hardcoded version here is a latent bug, not just style.
+fn extended_module_version(module: &str) -> String {
+    let manifest = repo_root().join("crates/tinox-core-ext").join(module).join("tinox.toml");
+    std::fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix("version"))
+                .and_then(|rest| rest.trim_start().strip_prefix('='))
+                .map(|rest| rest.trim().trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| "1.0.0".to_string())
+}
 
 struct KillOnDrop(Child);
 impl Drop for KillOnDrop {
@@ -79,7 +104,10 @@ class Main
     // (extended-tier), so it needs a declared+installed dependency now.
     std::fs::write(
         workdir.join("tinox.toml"),
-        "[package]\nname = \"heavy_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.0\"\n",
+        format!(
+            "[package]\nname = \"heavy_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
+            extended_module_version("http_server"),
+        ),
     )
     .expect("write tinox.toml");
     let install = Command::new(tinox)

@@ -91,6 +91,35 @@ pub fn parse_case(path: &Path) -> Case {
 /// literal or comment are vanishingly unlikely in this codebase's test
 /// fixtures and would only cause an unnecessary (harmless) extra
 /// dependency entry, never a missed one.
+/// The published version to pin an extended-tier dependency to in a
+/// synthesized tinox.toml — read from that module's own source-of-truth
+/// manifest (`crates/tinox-core-ext/<module>/tinox.toml`) rather than a
+/// hardcoded "1.0.0". A stale hardcoded version silently keeps testing
+/// whatever was published under that old version forever, even after the
+/// module's real content moves on — exactly what happened on 2026-08-10,
+/// when 13 extended modules got republished as 1.0.1/1.0.2 to fix content
+/// drift (translation, a real SASL handshake bug in amqp10, ...) but e2e
+/// kept pinning "1.0.0", so cases importing them kept exercising the OLD,
+/// pre-fix package instead of the one that's actually current. Falls back
+/// to "1.0.0" if the module's manifest can't be read/parsed, matching the
+/// old hardcoded behavior for anything not (yet) bumped past its first
+/// release.
+fn extended_module_version(module: &str) -> String {
+    let manifest = repo_root()
+        .join("crates/tinox-core-ext")
+        .join(module)
+        .join("tinox.toml");
+    fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix("version"))
+                .and_then(|rest| rest.trim_start().strip_prefix('='))
+                .map(|rest| rest.trim().trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| "1.0.0".to_string())
+}
+
 fn extended_deps_in_source(src: &str) -> Vec<String> {
     let mut found = Vec::new();
     for line in src.lines() {
@@ -256,8 +285,9 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
             for m in &extended_deps {
+                let v = extended_module_version(m);
                 toml.push_str(&format!(
-                    "\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"1.0.0\"\n"
+                    "\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{v}\"\n"
                 ));
             }
         }

@@ -22,6 +22,28 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+/// Reads the current published version straight out of the module's own
+/// `crates/tinox-core-ext/<module>/tinox.toml` instead of a hardcoded
+/// string -- a stale hardcoded version silently keeps testing whatever was
+/// published under that old number forever, even after the module's real
+/// content (and its own manifest) moves on. Exactly this bit
+/// amqp10_heartbeat_reconnect (e2e.rs, via common/mod.rs's own copy of this
+/// helper) on 2026-08-10: amqp10 got republished as 1.0.1 to fix a real
+/// SASL handshake bug, but a hardcoded "1.0.0" here would have kept
+/// exercising the broken pre-fix package.
+fn extended_module_version(module: &str) -> String {
+    let manifest = repo_root().join("crates/tinox-core-ext").join(module).join("tinox.toml");
+    std::fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix("version"))
+                .and_then(|rest| rest.trim_start().strip_prefix('='))
+                .map(|rest| rest.trim().trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| "1.0.0".to_string())
+}
+
 /// Kills the child on drop, so a failed assertion doesn't leak a
 /// long-running process (or a listening socket) across test runs.
 struct KillOnDrop(Child);
@@ -248,7 +270,10 @@ fn amqp10_consumer_annotation_receives_and_acks() {
     // install_deps_if_needed/build above.
     std::fs::write(
         broker_src_dir.join("tinox.toml"),
-        "[package]\nname = \"fake_broker\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"1.0.0\"\n",
+        format!(
+            "[package]\nname = \"fake_broker\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"{}\"\n",
+            extended_module_version("amqp10"),
+        ),
     )
     .expect("write fake_broker tinox.toml");
 
