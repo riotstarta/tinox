@@ -2,6 +2,154 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [2.1.0] - 2026-08-11
+
+### Breaking
+
+- **`class Main` is now required in every program**, including ones that
+  previously relied on an auto-run annotation
+  (`@GET`/`@Http3RestController`/`@WebsocketEndpoint`/`@Amqp10Consumer`/
+  `@Amqp091Consumer`) alone. Each auto-run kind used to generate its own
+  `@tinox_main` directly, so at most one could exist per program, they
+  could never be combined, and an explicit `class Main` silently
+  pre-empted all of them with no error. Every registered kind now spawns
+  on its own thread from a single, unified bootstrap that also calls
+  `Main.main()` — so REST + WebSocket + AMQP consumers can now coexist in
+  one program, but an annotation-only file without `class Main` needs one
+  added. `@Command` CLI programs and `tinox test` stay exempt.
+- **The stdlib is split into a core tier (always bundled) and an
+  extended tier (explicit dependency + `tinox install`)**. 41
+  fundamental modules (types, collections, math, string, I/O, logging,
+  concurrency primitives) stay built into the compiler and resolve
+  unconditionally; 31 protocol/vertical modules (REST, AMQP 0-9-1/1.0,
+  WebSocket, crypto, OAuth2/OIDC, JSON/YAML/TOML/XML/msgpack, HTTP/2/3,
+  DB, …) moved to `crates/tinox-core-ext/` and must now be declared as a
+  `group:artifactId:version` dependency in `tinox.toml` and
+  `tinox install`ed before a program can import them — a program that
+  imported one of these without declaring it now gets a hard,
+  actionable error instead of silently resolving against a bundled
+  copy. `tinox.toml` gains `[[repositories]]` (defaulting to
+  `https://central.tinox-lang.de`), and installed coordinate
+  dependencies land in a new global, Maven-style cache
+  (`~/.tinox/repository/`, `TINOX_HOME`-overridable) shared across every
+  project on the machine.
+
+### Added
+
+- **`tinox docker`**: compiles the project and packages the binary into
+  a minimal Docker image. A new `[docker]` section in `tinox.toml`
+  declares the ports to `EXPOSE`, plus optional `image`/`base`/
+  `extra_packages` overrides (default base `debian:trixie-slim`). Only
+  installs the runtime shared libraries actually linked, and runs `ldd`
+  inside the freshly built image afterward — hard-fails with the exact
+  missing library instead of silently shipping a broken image.
+- **Startup banner**: every compiled program with at least one auto-run
+  endpoint now prints an ASCII banner, the `tinox.core` modules declared
+  in `tinox.toml`, each endpoint's protocol + port, and the bootstrap's
+  own elapsed time — on by default, no `import tinox.core.logger;` or
+  annotation needed. Opt out per project with `[startup]`/
+  `banner = false` in `tinox.toml`.
+- **Five new stdlib modules**: `tinox.core.compress` (gzip/raw-DEFLATE,
+  [#132](https://github.com/subnix-work/tinox/issues/132)),
+  `tinox.core.sse` (Server-Sent Events,
+  [#133](https://github.com/subnix-work/tinox/issues/133)),
+  `tinox.core.smtp` (SMTP client incl. STARTTLS/AUTH PLAIN,
+  [#134](https://github.com/subnix-work/tinox/issues/134)),
+  `tinox.core.redis` (RESP2 client,
+  [#135](https://github.com/subnix-work/tinox/issues/135)), and
+  `tinox.core.msgpack` (MessagePack codec,
+  [#136](https://github.com/subnix-work/tinox/issues/136)).
+- **Transitive dependency resolution** for `tinox install`/`add`: a
+  dependency's own declared dependencies are now discovered and
+  installed too, not just the direct list
+  ([#157](https://github.com/subnix-work/tinox/issues/157)). An import
+  resolving against two different installed dependencies at once is now
+  a hard, actionable error instead of a silent first-match
+  ([#156](https://github.com/subnix-work/tinox/issues/156)).
+  `tinox package` now archives `tinox.toml` itself, so a published
+  package's own dependencies are discoverable by its consumers.
+- **`tinox doc`**: generated pages gain Description (from `tinox.toml`),
+  Dependencies (linked to sibling doc pages), and Examples sections
+  ahead of the existing auto-extracted API reference; published doc
+  pages now exist for all 72 tinox-core modules.
+- **`docs.html`/`docs_en.html`** redesigned to match tinox-central's
+  dark, glassy theme and use the full page width; every per-module
+  stdlib reference section now embeds the corresponding
+  `docs/tinox-core/<module>/<version>/docs.html` page via `<iframe>`
+  instead of duplicating its content by hand.
+- **Fuzzing**: a dedicated HTTP/2 frame-parsing target
+  ([#111](https://github.com/subnix-work/tinox/issues/111) follow-up),
+  a `make fuzz` target running all seven harnesses against their seed
+  corpus, and weekly CI wiring.
+
+### Fixed
+
+- **Generics/typecheck/codegen**: own-type-param generic instance
+  methods (e.g. `Option<T>.map<U>`) had no instance-call dispatch path
+  and ICE'd ([#153](https://github.com/subnix-work/tinox/issues/153)),
+  including when chained with no intermediate `let`
+  ([#158](https://github.com/subnix-work/tinox/issues/158)).
+  `Class<T>::method(...)` (type args before `::`) discarded them
+  entirely, ICE'ing on codegen
+  ([#166](https://github.com/subnix-work/tinox/issues/166)). An
+  arrow-sugar lambda (`n => ...`) passed to a generic instance method
+  silently mis-specialized its type param to `Int64`
+  ([#165](https://github.com/subnix-work/tinox/issues/165)). Namespace-
+  wrapped generic classes (essentially all of the stdlib) were missing
+  call-site type-argument unification entirely, breaking any bare-
+  chained factory call with no `let`
+  ([#161](https://github.com/subnix-work/tinox/issues/161)). Interface
+  vtable dispatch hardcoded `i64` as every method's return type
+  regardless of its real declared type, corrupting `String`/`Bool`-
+  returning interface calls. The same symbol declared via `extern fn` in
+  more than one file merged into one program produced a duplicate LLVM
+  `declare` ([#168](https://github.com/subnix-work/tinox/issues/168)).
+- **`List<Int64>.join()`** segfaulted immediately — no element-type
+  check, reinterpreted raw integers as string pointers; now a
+  compile-time error
+  ([#164](https://github.com/subnix-work/tinox/issues/164)).
+- **`@inline`** ICE'd on any function/method with a non-void return
+  type — `alwaysinline` was emitted in the LLVM IR return-value-
+  attribute position instead of the function-attribute position.
+- **O(n²) string building** (`s = s + fromCharCode(...)` in a loop) was
+  quadratic across several stdlib modules (WebSocket, HPACK, AMQP
+  0-9-1/1.0, HTTP/2, Redis, Base64/Hex, JWT, URI, Crypto) — replaced
+  with a single-pass byte-collect-then-convert
+  ([#167](https://github.com/subnix-work/tinox/issues/167)).
+- **HTTP route params**: `route_matches()` reused a single stack buffer
+  across `:param` names, so every parameter but a route's last one
+  silently resolved to `""`
+  ([#176](https://github.com/subnix-work/tinox/issues/176)).
+- **Package manager**: dependencies were read from a separate
+  `tinox.yaml` that no other subcommand consulted, so `tinox add`/
+  `install` never actually took effect — moved into `tinox.toml` itself
+  ([#154](https://github.com/subnix-work/tinox/issues/154)). `tinox
+  new`'s scaffold failed both `tinox run` and `tinox test` out of the
+  box ([#155](https://github.com/subnix-work/tinox/issues/155)/
+  [#159](https://github.com/subnix-work/tinox/issues/159)).
+  `tinox install` now understands tinox-central's base64-JSON artifact
+  envelope and exits non-zero on partial failure.
+- **`docs.html`/`docs_en.html`/`README.md`**: every code example still
+  used the pre-2.0.0 bare top-level `fn main()` shape and failed to
+  compile as written; all ~70 examples fixed and individually
+  re-verified against the real compiler
+  ([#160](https://github.com/subnix-work/tinox/issues/160)/
+  [#163](https://github.com/subnix-work/tinox/issues/163)).
+- **`tinox docker`**'s default base image bumped from
+  `debian:bookworm-slim` to `debian:trixie-slim` — the older default's
+  glibc (2.36) proved too old for a host-compiled binary from any
+  reasonably current dev machine, tripping the post-build `ldd` check
+  on the very first real-world use rather than being a theoretical edge
+  case.
+
+### Changed
+
+- `tinox.core.metrics.Stopwatch` renamed to `MetricsStopwatch` to avoid
+  a bare-name collision with `tinox.core.time.Stopwatch`
+  ([#170](https://github.com/subnix-work/tinox/issues/170) — the
+  underlying lack of module-qualified symbol keys in tinox-typecheck is
+  a larger, cross-cutting gap left open for a future pass).
+
 ## [2.0.0] - 2026-08-02
 
 ### Breaking
