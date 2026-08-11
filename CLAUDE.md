@@ -413,8 +413,8 @@ Release.
 
 Every compiled program that has at least one auto-run endpoint (`@GET`/
 `@Http3RestController`/`@WebsocketEndpoint`/`@Amqp10Consumer`/
-`@Amqp091Consumer`) now prints a startup banner unconditionally — no
-`import tinox.core.logger;` or annotation needed. Owned by
+`@Amqp091Consumer`) prints a startup banner by default — no `import
+tinox.core.logger;` or annotation needed. Owned by
 `emit_tinox_main_bootstrap` (`crates/tinox-codegen/src/codegen.rs`),
 since that's already the one place that knows about every registered
 auto-run kind and is guaranteed to run exactly once, first:
@@ -431,19 +431,29 @@ Endpoints:
 Started in 0 ms
 ```
 
-- **Only fires when `background_run_fns` is non-empty** (`has_endpoints`
-  in `emit_tinox_main_bootstrap`). A plain `class Main { fnc main() }`
-  script with no auto-run annotation goes through the *same* function
-  (`user_main_class` alone doesn't early-return) but must produce byte-
-  identical output to before this feature — that's the shape virtually
-  every e2e/example test with an exact `// expect:` stdout match uses.
-  **Verify this gate whenever touching this function**: the very first
+- **Only fires when `background_run_fns` is non-empty AND `banner_enabled`
+  is true** (`show_banner` in `emit_tinox_main_bootstrap`). A plain
+  `class Main { fnc main() }` script with no auto-run annotation goes
+  through the *same* function (`user_main_class` alone doesn't early-
+  return) but must produce byte-identical output to before this feature
+  — that's the shape virtually every e2e/example test with an exact `//
+  expect:` stdout match uses. **Verify the `background_run_fns`-empty
+  half of this gate whenever touching this function**: the very first
   implementation forgot it, and every single compiled program (including
   the entire e2e suite) grew this banner — caught immediately by
   compiling a trivial one-`println` `class Main` and diffing its output,
   not by `cargo test` (no e2e test happens to combine an auto-run
   annotation with an exact stdout match, so the suite itself wouldn't
   have caught this).
+- **Explicit per-project opt-out: `[startup]` / `banner = false` in
+  tinox.toml** (`read_startup_banner_config` in `crates/tinox/src/
+  main.rs`, defaults `true`; `CodeGen::banner_enabled` /
+  `set_startup_banner_enabled`). Added because jgrep-tinox/ygrep-tinox
+  are plain argv-parsing CLI tools with no auto-run endpoint, so
+  `background_run_fns` is already empty for them and the banner never
+  fires regardless — this setting only matters for a program that DOES
+  have an endpoint (so the banner would otherwise print) but still needs
+  clean stdout, e.g. piped into another program.
 - **"Loaded tinox.core modules"** is `tinox.toml`'s declared
   `[[dependencies]]` filtered to `group == "tinox.core"`
   (`loaded_tinox_core_modules` in `crates/tinox/src/main.rs`, read

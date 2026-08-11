@@ -432,6 +432,16 @@ pub struct CodeGen {
     /// `startup_endpoints`. Empty for the REPL and other non-project
     /// compile paths, which never call the setter.
     loaded_modules: Vec<String>,
+    /// Whether the startup banner (ASCII art + loaded_modules +
+    /// startup_endpoints + elapsed time) should actually be emitted, set
+    /// externally via `set_startup_banner_enabled` from tinox.toml's
+    /// `[startup] banner` (defaults `true`). One of two conditions
+    /// `emit_tinox_main_bootstrap` ANDs together into `show_banner`: this
+    /// is the explicit opt-out (for a program that does have an auto-run
+    /// endpoint but still needs clean stdout, e.g. piped into another
+    /// program); the other is simply having no endpoint to report on in
+    /// the first place, which needs no opt-in/out at all.
+    banner_enabled: bool,
     /// Whether `class Main { fnc main() -> Int32 }` was found and validated
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
@@ -528,6 +538,7 @@ impl CodeGen {
             background_run_fns: Vec::new(),
             startup_endpoints: Vec::new(),
             loaded_modules: Vec::new(),
+            banner_enabled: true,
             user_main_class: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -562,6 +573,13 @@ impl CodeGen {
     /// "tinox.core"`; not touched at all by e.g. the REPL's compile path.
     pub fn set_loaded_modules(&mut self, modules: Vec<String>) {
         self.loaded_modules = modules;
+    }
+
+    /// From tinox.toml's `[startup] banner` (default `true`) -- an
+    /// explicit opt-out for the startup banner, independent of whether
+    /// the program actually has an auto-run endpoint to report on.
+    pub fn set_startup_banner_enabled(&mut self, enabled: bool) {
+        self.banner_enabled = enabled;
     }
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
@@ -2810,10 +2828,12 @@ impl CodeGen {
     /// from `[[dependencies]]` (via `set_loaded_modules`), the auto-run
     /// endpoints registered in `startup_endpoints` (protocol + port/detail,
     /// pushed alongside each `background_run_fns` entry above), and the
-    /// bootstrap's own elapsed time. Printed unconditionally -- no
-    /// `import tinox.core.logger;`/annotation needed -- since this is the
-    /// one place in the generated program that already knows about every
+    /// bootstrap's own elapsed time. Printed by default -- no `import
+    /// tinox.core.logger;`/annotation needed -- since this is the one
+    /// place in the generated program that already knows about every
     /// auto-run kind and is guaranteed to run exactly once, first.
+    /// Opt out per project via `[startup] banner = false` in tinox.toml
+    /// (`banner_enabled` / `set_startup_banner_enabled`).
     fn emit_tinox_main_bootstrap(&mut self) {
         if self.has_main {
             return;
@@ -2843,8 +2863,10 @@ impl CodeGen {
         // above) and must keep printing exactly nothing extra: this is the
         // shape virtually every e2e/example test with an exact `// expect:`
         // stdout match uses, and it's also just not a meaningful "started
-        // serving on port X" moment for a one-shot script.
-        let has_endpoints = !self.background_run_fns.is_empty();
+        // serving on port X" moment for a one-shot script. `banner_enabled`
+        // is the separate, explicit `[startup] banner = false` opt-out for
+        // programs that DO have an endpoint but still want clean stdout.
+        let show_banner = self.banner_enabled && !self.background_run_fns.is_empty();
 
         // figlet -f standard "Tinox" -- generated once, hardcoded here since
         // it's fixed text with no dynamic content.
@@ -2868,7 +2890,7 @@ impl CodeGen {
         // t0: captured before anything else runs, so the elapsed time
         // printed below covers the banner print itself too (negligible,
         // but simpler than threading a "skip this call" flag through).
-        let t0 = if has_endpoints {
+        let t0 = if show_banner {
             let t = self.temp();
             writeln!(&mut self.lambda_ir, "  {t} = call i64 @tinox_now_ms()").unwrap();
             let banner_ptr = self.emit_lambda_string_literal(&banner);

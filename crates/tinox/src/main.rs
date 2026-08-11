@@ -352,6 +352,51 @@ fn read_metrics_config() -> Option<String> {
     None
 }
 
+/// Read `[startup] banner` from the nearest `tinox.toml`, if present.
+/// Defaults to `true` (the banner is on by default, matching
+/// emit_tinox_main_bootstrap's "systemic, no opt-in" design) -- this is
+/// purely an escape hatch for programs that have an auto-run endpoint
+/// (so the banner would otherwise fire) but still need clean stdout, e.g.
+/// a tool piped into another program. Most plain CLI/script-style
+/// programs (jgrep-tinox, ygrep-tinox, ...) never trigger the banner in
+/// the first place -- it's gated on having at least one @GET/
+/// @WebsocketEndpoint/@Amqp*Consumer/@Http3RestController, which those
+/// don't have -- so this setting has no effect on them; it's here for
+/// the (currently hypothetical, but plausible) case where such a tool
+/// gains one later, without anyone having to remember it.
+fn read_startup_banner_config() -> bool {
+    let mut dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return true,
+    };
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = match fs::read_to_string(&toml_path) {
+                Ok(c) => c,
+                Err(_) => return true,
+            };
+            let mut in_startup = false;
+            let mut banner = true;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_startup = line == "[startup]";
+                    continue;
+                }
+                if !in_startup { continue; }
+                if let Some(rest) = line.strip_prefix("banner") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("true");
+                    banner = rest != "false";
+                }
+            }
+            return banner;
+        }
+        if !dir.pop() { break; }
+    }
+    true
+}
+
 struct DbConfig {
     driver: String,
     url: String,
@@ -2679,6 +2724,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
     let loaded_modules = loaded_tinox_core_modules(&base_dir);
+    let startup_banner_enabled = read_startup_banner_config();
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
     // NodeIds for the type table (typecheck → codegen)
@@ -2849,6 +2895,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_expr_value_types(typechecker.expr_value_types());
     codegen.set_interface_info(iface_methods, class_implements);
     codegen.set_loaded_modules(loaded_modules);
+    codegen.set_startup_banner_enabled(startup_banner_enabled);
     let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
         .iter()
         .map(|f| tinox_codegen::ConfigFieldInfo {
