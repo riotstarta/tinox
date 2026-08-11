@@ -10,6 +10,7 @@ tinox_codegen = { package = "tinox-codegen", path = "../tinox-codegen" }
 tinox_typecheck = { package = "tinox-typecheck", path = "../tinox-typecheck" }
 tinox_common = { package = "tinox-common", path = "../tinox-common" }
 notify = "6"
+ctrlc = "3"
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 ureq = { workspace = true }

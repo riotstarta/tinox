@@ -478,3 +478,156 @@ Started in 0 ms
   actual bind happens asynchronously on its own spawned thread, so a
   slow/failing bind is invisible to this number, same tradeoff Spring
   Boot's own "Started Application in Xs" line makes.
+
+## Dev UI Introspection API (since 2026-08-11)
+
+`[dev] enabled = true` in `tinox.toml` (`DevConfig`/`read_dev_config`,
+`crates/tinox/src/main.rs`) compiles in a background JSON introspection API
+(`emit_devui_code`, `crates/tinox-codegen/src/codegen.rs`) for a *separate*
+web dashboard (`tinox-devui`, a standalone Vaadin-on-Quarkus app,
+`git@github.com:subnix-work/tinox-devui.git`, not part of this repo) to
+consume — Quarkus-dev-mode-style: current config, REST/
+WebSocket endpoints, live CDI component status, loaded `tinox.core`
+modules. Enabling it works for `tinox build`/`run` too, not gated behind
+`tinox dev` specifically (deliberate — `compile_file` prints a release-
+build warning as the safety net instead of a hard gate).
+
+- **`127.0.0.1`-only bind, unlike every other `HttpServer` in this
+  codebase.** New runtime.c primitive `tinox_HttpServer_new_bind(port,
+  addr)` (the public `HttpServer::new(port)` stays `0.0.0.0`/`::`
+  unchanged) — this API exposes config and CDI internals, so it must never
+  be reachable off the local machine. Verified live: `ss -ltnp` on a
+  devui-enabled `demo` run shows the app's own port on `0.0.0.0`, the devui
+  port on `127.0.0.1` only.
+- **Found and fixed a real concurrency bug while adding this**: adding a
+  *second* `HttpServer::listen()` call in the same process (previously
+  impossible — before this feature, no program ever ran more than one) hit
+  `struct TinoxWorkerArgs { ... }` being `static` in
+  `tinox_HttpServer_listen` (runtime.c) — shared storage across every call
+  to that function, not per-instance. With two listening servers, the
+  second's worker args silently clobber the first's while its still-
+  running worker threads keep reading it, serving the wrong server's
+  routes on the wrong port. Fixed by making it a plain stack local
+  (`tinox_HttpServer_listen` never returns while its server is up, so the
+  stack frame outlives the spawned workers, same as `static` did — just
+  scoped per-call instead of shared).
+- **Found and fixed a real, unrelated pre-existing bug while studying this
+  pattern**: the `/metrics` endpoint's `Content-Type` header
+  (`emit_route_code`'s metrics shim) computed `%ct_hdr_val` and then never
+  used it — `%body_i64` (the response body's own pointer) was passed as
+  the header *value* instead, so every `/metrics` response's Content-Type
+  header ended up set to the same string as its body. No test ever
+  exercised the header specifically, so nothing caught it until this
+  investigation.
+- **`declare`-conflict landmine for anything emitted alongside
+  `emit_route_code`**: `opt` hard-errors ("invalid redefinition") on a
+  *second* `declare` for a symbol already declared elsewhere in the
+  module, even with an identical signature -- contrary to what an earlier
+  draft of this feature assumed from an unverified reading of the existing
+  double-`declare` of `tinox_HttpServer_new` inside the metrics shim
+  (which, it turns out, never actually co-occurs with `emit_route_code`'s
+  own copy in any tested program — a genuinely separate, still-open,
+  latent bug: a program with **both** `[metrics]` enabled **and** real
+  `@GET`/etc. routes would hit the exact same "invalid redefinition"
+  class of error the devui work below had to route around; not fixed
+  here, out of scope for this feature). `emit_devui_code` mirrors
+  `emit_route_code`'s own `route_entries.is_empty() ||
+  http3_rest_controller.is_some()` guard to decide whether it's safe to
+  declare `tinox_HttpServer_get`/`_listen` itself.
+- **`/components`** (`emit_devui_components_handler`) is the one endpoint
+  needing real per-request work: `@ApplicationComponent`/`@Startup`-scoped
+  classes get a live look at their `@{class}_di_instance` global (null or
+  not); `@HttpRequestScoped` ones report a constant `false` — they have no
+  persistent singleton at all (`_di_create()` allocates fresh every call,
+  never caches), so there's nothing to check.
+- **`/config`** merges two genuinely separate sources at runtime via
+  `tinox_string_concat`: a compile-time summary of `tinox.toml`'s
+  `[docker]`/`[database]`/`[metrics]`/`[startup]` sections
+  (`build_dev_config_summary_json`, main.rs — deliberately omits
+  `[database] url`, which can carry credentials, even though this
+  endpoint is loopback-only) and a live dump of `application.properties`
+  (`tinox_config_dump_json`, new in runtime.c — the existing
+  `tinox_config_get*` only ever look up one key a `@Config` field already
+  declared, there was no "list everything" API before this).
+- **`httpPort` on `/info`**: the app's plain-HTTP port (`self.startup_
+  endpoints`'s `"HTTP"` entry, already registered by `emit_route_code`,
+  which runs before `emit_devui_code`), `null` for an HTTP/3-only program.
+  This is what `tinox-devui`'s REST "try it out" targets — deliberately
+  NOT the introspection port itself, and NOT `"HTTP/3 (QUIC)"` (a plain
+  `java.net.http.HttpClient` can't speak QUIC; HTTP/3-only apps just don't
+  get try-it-out in v1).
+
+## `tinox-devui` Dashboard + `tinox dev` Docker Orchestration (since 2026-08-12)
+
+The consumer side of the introspection API above: a standalone Maven/
+Quarkus/Vaadin app (`tinox-devui` repo, dark Lumo theme matching
+tinox-central's `registry-frontend`) with an `AppLayout`+`SideNav` shell
+and one view per introspection endpoint (Overview/Configuration/REST
+Endpoints/WebSocket Endpoints/CDI Components/Modules). `TinoxDevUiClient`
+(`@ApplicationScoped`, plain `java.net.http.HttpClient` + manual Jackson,
+mirrors tinox-central's `RegistryClient.java` pattern) talks to the
+connected app's `[dev] port` (`tinox.app.url` / `TINOX_APP_URL`,
+default `http://localhost:9090`).
+
+- **REST "try it out"** (`RestEndpointsView`): a dialog per route with a
+  `TextField` per `:param` path segment (parsed via regex, substituted
+  and URL-encoded before the call), a raw headers textarea (`"Name:
+  value"` per line), a body textarea, and a "Send" button that calls
+  `TinoxDevUiClient.invoke(httpPort, method, path, headers, body)` --
+  server-side, against the app's OWN `httpPort` (from `/info`), never the
+  introspection port and never directly from the browser. This is why
+  there's no CORS story on the tinox side (decision made during planning,
+  see the approved plan) -- the browser only ever talks to this Quarkus
+  backend, which does the real HTTP call itself.
+- **WebSocket "try it out"** (`WebSocketEndpointsView` + `DevUiWsClient`):
+  same server-side-proxy shape, but for a persistent connection instead of
+  one-shot calls. `DevUiWsClient` is a plain Jakarta WebSocket
+  (`quarkus-websockets-client`) `Endpoint` connecting to the app's own WS
+  port (`/websockets`' `port`, NOT the introspection port). Incoming
+  messages arrive on the WS client's own thread, not Vaadin's request
+  thread, so every UI update (transcript line, connected/disconnected
+  status pill) goes through `UI.access(...)` -- requires `@Push` on
+  `AppShellConfig`, the one piece of Vaadin server-push wiring this whole
+  app needs, added specifically for this view.
+- **`tinox dev` orchestration** (`launch_devui_container`/
+  `stop_devui_container`, `crates/tinox/src/main.rs`): when the project's
+  `[dev]` is `enabled`, `tinox dev` additionally `docker run -d --rm
+  --network host` the `tinox-devui` image (tag from `[dev] devui_image`,
+  default `tinox-devui:latest` -- a locally built image; override once a
+  real registry tag exists) alongside the compiled program, with
+  `TINOX_APP_URL` pointed at `127.0.0.1:<dev.port>`, then opens
+  `http://localhost:9091` the same way `tinox doc --open` already does
+  (`xdg-open`/`open` fallback). `--network host` is what lets the
+  container reach the loopback-only introspection API directly -- no
+  `host.docker.internal`, Linux-only, matches this whole toolchain's
+  target. A missing/unbuildable image is a soft failure (a printed
+  warning, `tinox dev` still runs the actual program fine) rather than a
+  hard error, consistent with `[dev]` itself being an opt-in convenience
+  feature, not a build-blocking dependency.
+- **Found a real cleanup gap while wiring this up, not hypothetical:**
+  `dev_mode`'s only exit path before this was the file-watcher channel
+  closing (`rx.recv()` returning `Err`) -- which a plain Ctrl-C never
+  triggers. The compiled child process happened to look cleaned-up anyway
+  (the terminal's own SIGINT delivery kills it directly, since it's in the
+  same foreground process group), which is presumably why this was never
+  noticed before. A `docker run` container is NOT in that process group
+  though, so every single ordinary `tinox dev` + Ctrl-C session would have
+  silently leaked a running `tinox-devui` container -- verified live: with
+  no signal handler, `kill -INT` on `tinox dev`'s pid terminated the
+  process immediately without running any Rust cleanup code, leaving the
+  container in `docker ps`. Fixed by adding a real `ctrlc::set_handler`
+  (new `ctrlc` dependency) sharing `Arc<Mutex<...>>`-wrapped child-process
+  and container-name state with the main loop, calling the same cleanup
+  closure (`kill` child, remove temp exe files, `docker stop` the
+  container) from both the normal loop-exit path and the signal handler.
+  Re-verified live after the fix: `kill -INT` now cleanly stops and
+  removes (`--rm`) the container and leaves no leftover `.tinox_dev_*`
+  files.
+- **Registry push / CI publish workflow: deliberately not done yet.**
+  The image builds and has been verified locally (`docker build` +
+  `docker run` against a real `demo`-style app, and end-to-end through
+  `tinox dev` itself) -- per the plan, publishing (`ghcr.io/subnix-work/
+  tinox-devui` + a tag-triggered GitHub Actions workflow) comes only
+  *after* that manual validation, and additionally involves pushing to a
+  shared/external registry, which needs an explicit go-ahead rather than
+  being bundled into routine commit work.

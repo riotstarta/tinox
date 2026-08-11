@@ -471,6 +471,34 @@ fn read_project_name() -> Option<String> {
     None
 }
 
+/// Read `version` from the nearest `tinox.toml`, if present. Same
+/// deliberately-loose shape as `read_project_name` (first `version =` line
+/// in the file, not scoped to `[package]`) -- matches existing convention.
+fn read_project_version() -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).ok()?;
+            for line in content.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("version") {
+                    let rest = rest.trim();
+                    if let Some(rest) = rest.strip_prefix('=') {
+                        let version = rest.trim().trim_matches('"').to_string();
+                        if !version.is_empty() {
+                            return Some(version);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
 /// Container ports the compiled program listens on, plus optional image
 /// naming/base overrides -- purely build-time metadata for `tinox docker`.
 /// Setting `ports` here doesn't change runtime behavior (the program still
@@ -537,6 +565,108 @@ fn read_docker_config() -> Option<DockerConfig> {
         if !dir.pop() { break; }
     }
     None
+}
+
+/// Whether to compile in the dev-mode introspection API, and on which port.
+/// `enabled = true` alone is sufficient -- respected by `tinox build`/`run`
+/// too, not gated behind the `tinox dev` command specifically (see
+/// `compile_file`'s companion release-build warning for the safety net that
+/// decision needs instead).
+struct DevConfig {
+    enabled: bool,
+    port: u16,
+    /// Docker image tag for the tinox-devui dashboard `tinox dev` launches
+    /// alongside the compiled program. Defaults to `tinox-devui:latest`
+    /// (a locally built image, see the tinox-devui repo's README) --
+    /// override once a real registry tag exists.
+    devui_image: Option<String>,
+}
+
+impl Default for DevConfig {
+    fn default() -> Self {
+        DevConfig { enabled: false, port: 9090, devui_image: None }
+    }
+}
+
+/// Read the `[dev]` section from the nearest `tinox.toml`, if present.
+fn read_dev_config() -> Option<DevConfig> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).ok()?;
+            let mut in_dev = false;
+            let mut found = false;
+            let mut cfg = DevConfig::default();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_dev = line == "[dev]";
+                    if in_dev { found = true; }
+                    continue;
+                }
+                if !in_dev { continue; }
+                if let Some(rest) = line.strip_prefix("enabled") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    cfg.enabled = rest == "true";
+                } else if let Some(rest) = line.strip_prefix("port") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    if let Ok(p) = rest.parse::<u16>() {
+                        cfg.port = p;
+                    }
+                } else if let Some(rest) = line.strip_prefix("devui_image") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    let v = rest.trim_matches('"').to_string();
+                    if !v.is_empty() { cfg.devui_image = Some(v); }
+                }
+            }
+            return if found { Some(cfg) } else { None };
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
+/// Escapes `"` and `\` for embedding a Rust string as a JSON string value.
+/// Not a general JSON encoder -- just enough for the handful of
+/// tinox.toml-derived string values `build_dev_config_summary_json` embeds.
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The dev-mode introspection API's `/config` endpoint has two halves: this
+/// builds the compile-time one (what's configured in tinox.toml), baked as
+/// a JSON constant at codegen time; `tinox_config_dump_json` (runtime.c)
+/// builds the other (live `application.properties` values) per request.
+/// Deliberately omits `[database] url` even though this endpoint only ever
+/// binds to 127.0.0.1 -- connection strings routinely carry credentials,
+/// and there's no reason to bake those into the compiled binary's constant
+/// pool just to answer "what database am I using".
+fn build_dev_config_summary_json() -> String {
+    let docker = read_docker_config();
+    let db = read_database_config();
+    let metrics = read_metrics_config();
+    let startup_banner = read_startup_banner_config();
+
+    let docker_json = match docker {
+        Some(d) => format!(
+            "{{\"enabled\":true,\"ports\":[{}]}}",
+            d.ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+        ),
+        None => "{\"enabled\":false}".to_string(),
+    };
+    let db_json = match db {
+        Some(d) => format!("{{\"enabled\":true,\"driver\":\"{}\"}}", json_escape(&d.driver)),
+        None => "{\"enabled\":false}".to_string(),
+    };
+    let metrics_json = match metrics {
+        Some(path) => format!("{{\"enabled\":true,\"path\":\"{}\"}}", json_escape(&path)),
+        None => "{\"enabled\":false}".to_string(),
+    };
+
+    format!(
+        "{{\"docker\":{docker_json},\"database\":{db_json},\"metrics\":{metrics_json},\"startupBanner\":{startup_banner}}}"
+    )
 }
 
 /// Debian/Ubuntu runtime packages for the shared libraries `compile_ll_to_exe`
@@ -1108,9 +1238,73 @@ fn print_dev_banner(watching: &str) {
     eprintln!();
 }
 
+/// Launches the tinox-devui dashboard as a Docker container alongside a
+/// `tinox dev`-run program with `[dev] enabled = true` -- reuses the
+/// "shell out to docker" pattern `docker_build` already established.
+/// `--network host` (Linux-only, matches this whole toolchain's target)
+/// lets the container reach the loopback-only introspection API on the
+/// host's 127.0.0.1 directly, no `host.docker.internal` needed. A soft
+/// failure by design: if docker isn't installed or the image is missing,
+/// `tinox dev` still runs the actual program fine, just without the
+/// dashboard -- printed as a warning, not a hard error.
+fn launch_devui_container(cfg: &DevConfig) -> Option<String> {
+    let docker_available = Command::new("docker")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !docker_available {
+        eprintln!("[dev] docker not found -- skipping the tinox-devui dashboard");
+        return None;
+    }
+
+    let image = cfg.devui_image.clone().unwrap_or_else(|| "tinox-devui:latest".to_string());
+    let container_name = format!("tinox-devui-{}", std::process::id());
+    let app_url = format!("http://127.0.0.1:{}", cfg.port);
+
+    let status = Command::new("docker")
+        .args([
+            "run", "-d", "--rm", "--network", "host",
+            "--name", &container_name,
+            "-e", &format!("TINOX_APP_URL={app_url}"),
+            &image,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            // Fixed -- matches tinox-devui's own application.properties
+            // (quarkus.http.port=9091), reached directly via --network host.
+            let dashboard_url = "http://localhost:9091";
+            println!("[dev] tinox-devui dashboard: {dashboard_url}");
+            let _ = Command::new("xdg-open").arg(dashboard_url).spawn()
+                .or_else(|_| Command::new("open").arg(dashboard_url).spawn());
+            Some(container_name)
+        }
+        _ => {
+            eprintln!(
+                "[dev] failed to start the tinox-devui container (image '{image}' missing? \
+                 build it from the tinox-devui repo: docker build -t {image} .)"
+            );
+            None
+        }
+    }
+}
+
+fn stop_devui_container(name: &str) {
+    let _ = Command::new("docker")
+        .args(["stop", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 fn dev_mode(args: &[String]) {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
 
     let input_file = match resolve_entry_file(args) {
         Some(f) => f,
@@ -1120,31 +1314,84 @@ fn dev_mode(args: &[String]) {
 
     print_dev_banner(&input_file);
 
-    let compile_and_run = |child: &mut Option<std::process::Child>| {
-        if let Some(ref mut c) = child {
-            let _ = c.kill();
-            let _ = c.wait();
-            *child = None;
-        }
+    // Arc<Mutex<...>> instead of a plain local, because the Ctrl-C handler
+    // below (a separate thread, see ctrlc::set_handler) needs to reach the
+    // same child process and devui container name to clean them up --
+    // without this, hitting Ctrl-C (the ordinary way to exit `tinox dev`)
+    // bypasses every cleanup step after the watch loop entirely: SIGINT's
+    // default disposition kills the process immediately, and neither the
+    // compiled child (still holding its port) nor a `[dev]`-launched
+    // tinox-devui container (not in this process's group, so it's NOT
+    // killed by the terminal's own SIGINT delivery the way the child is)
+    // would ever get cleaned up otherwise.
+    let child: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(None));
+    let devui_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-        eprint!("[dev] compiling... ");
-        match compile_file(&input_file, &exe_name, OptLevel::Debug) {
-            Ok(_) => {
-                eprintln!("ok");
-                match Command::new(format!("./{}", exe_name)).spawn() {
-                    Ok(c) => {
-                        eprintln!("[dev] started (pid {})", c.id());
-                        *child = Some(c);
-                    }
-                    Err(e) => eprintln!("[dev] launch failed: {}", e),
+    let compile_and_run = {
+        let child = Arc::clone(&child);
+        let input_file = input_file.clone();
+        let exe_name = exe_name.clone();
+        move || {
+            {
+                let mut guard = child.lock().unwrap();
+                if let Some(ref mut c) = *guard {
+                    let _ = c.kill();
+                    let _ = c.wait();
                 }
+                *guard = None;
             }
-            Err(e) => eprintln!("[dev] compile error:\n{}", e),
+
+            eprint!("[dev] compiling... ");
+            match compile_file(&input_file, &exe_name, OptLevel::Debug) {
+                Ok(_) => {
+                    eprintln!("ok");
+                    match Command::new(format!("./{}", exe_name)).spawn() {
+                        Ok(c) => {
+                            eprintln!("[dev] started (pid {})", c.id());
+                            *child.lock().unwrap() = Some(c);
+                        }
+                        Err(e) => eprintln!("[dev] launch failed: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("[dev] compile error:\n{}", e),
+            }
         }
     };
 
-    let mut child: Option<std::process::Child> = None;
-    compile_and_run(&mut child);
+    compile_and_run();
+
+    // Launched once, outside compile_and_run's rebuild cycle: the
+    // dashboard container talks to the introspection API over HTTP, so it
+    // doesn't need restarting when the compiled program itself is rebuilt
+    // (a fresh curl/reconnect on the devui side sees the new routes fine).
+    if let Some(cfg) = read_dev_config().filter(|cfg| cfg.enabled) {
+        *devui_container.lock().unwrap() = launch_devui_container(&cfg);
+    }
+
+    let cleanup = {
+        let child = Arc::clone(&child);
+        let devui_container = Arc::clone(&devui_container);
+        let exe_name = exe_name.clone();
+        move || {
+            if let Some(ref mut c) = *child.lock().unwrap() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            let _ = fs::remove_file(&exe_name);
+            let _ = fs::remove_file(format!("{}.ll", exe_name));
+            if let Some(ref name) = *devui_container.lock().unwrap() {
+                stop_devui_container(name);
+            }
+        }
+    };
+
+    {
+        let cleanup = cleanup.clone();
+        let _ = ctrlc::set_handler(move || {
+            cleanup();
+            std::process::exit(0);
+        });
+    }
 
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -1169,7 +1416,7 @@ fn dev_mode(args: &[String]) {
                     eprintln!("[dev] change detected — rebuilding...");
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     while rx.try_recv().is_ok() {}
-                    compile_and_run(&mut child);
+                    compile_and_run();
                 }
             }
             Ok(Err(e)) => eprintln!("[dev] watcher error: {}", e),
@@ -1177,12 +1424,7 @@ fn dev_mode(args: &[String]) {
         }
     }
 
-    if let Some(ref mut c) = child {
-        let _ = c.kill();
-        let _ = c.wait();
-    }
-    let _ = fs::remove_file(&exe_name);
-    let _ = fs::remove_file(format!("{}.ll", exe_name));
+    cleanup();
 }
 
 fn check(args: &[String]) {
@@ -2725,6 +2967,14 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
     let loaded_modules = loaded_tinox_core_modules(&base_dir);
     let startup_banner_enabled = read_startup_banner_config();
+    let dev_config = read_dev_config().unwrap_or_default();
+    if dev_config.enabled && opt == OptLevel::Release {
+        eprintln!(
+            "warning: [dev] is enabled in a release build -- the dev UI introspection API \
+             will be reachable on 127.0.0.1:{} at runtime",
+            dev_config.port
+        );
+    }
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
     // NodeIds for the type table (typecheck → codegen)
@@ -2896,6 +3146,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_interface_info(iface_methods, class_implements);
     codegen.set_loaded_modules(loaded_modules);
     codegen.set_startup_banner_enabled(startup_banner_enabled);
+    codegen.set_dev_config(dev_config.enabled, dev_config.port);
     let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
         .iter()
         .map(|f| tinox_codegen::ConfigFieldInfo {
@@ -2998,6 +3249,14 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
     codegen.set_db_url(read_database_config().map(|c| c.url));
+    if dev_config.enabled {
+        codegen.set_dev_info(
+            read_project_name().unwrap_or_else(|| "app".to_string()),
+            read_project_version().unwrap_or_else(|| "0.0.0".to_string()),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        codegen.set_dev_config_summary_json(build_dev_config_summary_json());
+    }
     codegen
         .gen(&ast)
         .map_err(|e| format!("Codegen error: {:?}", e))?;

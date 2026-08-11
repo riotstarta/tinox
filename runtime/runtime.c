@@ -2630,19 +2630,31 @@ static void conn_close(TinoxConn* c) {
 }
 #endif
 
-int64_t httpServerCreate(int64_t port) {
+// bind_addr NULL means the existing INADDR_ANY (0.0.0.0) behavior every
+// current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
+// by the dev-mode introspection server -- see tinox_HttpServer_new_bind)
+// restricts the listening socket to that interface only.
+int64_t httpServerCreateOn(int64_t port, const char* bind_addr) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
     struct sockaddr_in addr = {0};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons((uint16_t)port);
+    addr.sin_family = AF_INET;
+    if (bind_addr) {
+        if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1) { close(fd); return -1; }
+    } else {
+        addr.sin_addr.s_addr = INADDR_ANY;
+    }
+    addr.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
     if (listen(fd, 4096) < 0) { close(fd); return -1; }
     return (int64_t)fd;
+}
+
+int64_t httpServerCreate(int64_t port) {
+    return httpServerCreateOn(port, NULL);
 }
 
 int64_t httpServerAcceptConn(int64_t server_fd) {
@@ -4557,6 +4569,13 @@ typedef struct {
     int64_t port;
     TinoxRoute routes[TINOX_MAX_ROUTES];
     int route_count;
+    // NULL (the common case, every existing caller): binds 0.0.0.0/::, same
+    // as always. Non-NULL: restricts to that address only -- used by the
+    // dev-mode introspection server (tinox_HttpServer_new_bind) so it isn't
+    // reachable off the local machine. Owned by this struct (strdup'd in
+    // tinox_HttpServer_new_bind), never freed -- servers live for the
+    // process lifetime, same as every other allocation in this file.
+    char* bind_addr;
 } TinoxHttpServer;
 
 extern void* tinox_alloc(size_t size);
@@ -4566,6 +4585,18 @@ int64_t* tinox_HttpServer_new(int64_t port) {
     TinoxHttpServer* srv = (TinoxHttpServer*)malloc(sizeof(TinoxHttpServer));
     memset(srv, 0, sizeof(TinoxHttpServer));
     srv->port = port;
+    return (int64_t*)srv;
+}
+
+// Same as tinox_HttpServer_new, but the listening socket(s) only bind
+// `bind_addr` (e.g. "127.0.0.1") instead of every interface. Compiler-
+// generated only (the dev-mode introspection API); not part of the
+// tinox.core.http_server surface user code imports.
+int64_t* tinox_HttpServer_new_bind(int64_t port, const char* bind_addr) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)malloc(sizeof(TinoxHttpServer));
+    memset(srv, 0, sizeof(TinoxHttpServer));
+    srv->port = port;
+    srv->bind_addr = bind_addr ? strdup(bind_addr) : NULL;
     return (int64_t*)srv;
 }
 
@@ -4980,12 +5011,12 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
     }
 }
 
-struct TinoxWorkerArgs { TinoxHttpServer* srv; int64_t port; };
+struct TinoxWorkerArgs { TinoxHttpServer* srv; int64_t port; const char* bind_addr; };
 
 static void* tinox_worker_run(void* arg) {
     struct TinoxWorkerArgs* wa = (struct TinoxWorkerArgs*)arg;
     // Each worker creates its own SO_REUSEPORT socket for zero-contention accept()
-    int64_t server_fd = httpServerCreate(wa->port);
+    int64_t server_fd = httpServerCreateOn(wa->port, wa->bind_addr);
     if (server_fd >= 0) tinox_handle_connections(wa->srv, server_fd);
     return NULL;
 }
@@ -4999,9 +5030,20 @@ void tinox_HttpServer_listen(int64_t* server) {
     int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     int nthreads = ncpus > 0 ? ncpus : 8; // one thread per CPU, each handles multiple conns via epoll
 
-    static struct TinoxWorkerArgs worker_args;
-    worker_args.srv  = srv;
-    worker_args.port = port;
+    // Bug found while adding the dev-mode introspection server (the first
+    // caller to ever run a SECOND HttpServer::listen() in one process):
+    // this used to be `static`, shared storage across every call to this
+    // function. With only ever one HttpServer instance per process, that
+    // was harmless; with two, the second call's worker_args overwrites the
+    // first's srv/port while its still-running worker threads keep reading
+    // it, silently serving the wrong server's routes on the wrong port.
+    // Plain stack storage is safe here instead -- this function only
+    // returns once the main thread's own tinox_handle_connections loop
+    // does, which in practice is never (same as the workers' lifetime).
+    struct TinoxWorkerArgs worker_args;
+    worker_args.srv       = srv;
+    worker_args.port      = port;
+    worker_args.bind_addr = srv->bind_addr;
 
     for (int i = 1; i < nthreads; i++) {
         pthread_t tid;
@@ -5010,7 +5052,7 @@ void tinox_HttpServer_listen(int64_t* server) {
     }
 
     // Main thread creates its own SO_REUSEPORT socket
-    int64_t server_fd = httpServerCreate(port);
+    int64_t server_fd = httpServerCreateOn(port, srv->bind_addr);
     if (server_fd < 0) { fprintf(stderr, "HttpServer: failed to bind\n"); return; }
     tinox_handle_connections(srv, server_fd);
     httpServerClose(server_fd);
@@ -5725,6 +5767,31 @@ char* jsonBuilderFinish(char* handle) {
     return result;
 }
 
+// Builds the dev-mode introspection API's /components response: one JSON
+// object per @ApplicationComponent-scoped class -- name, scope, and
+// whether a singleton currently exists. `instantiated` is always 0 for
+// HttpRequest-scoped components: they have no persistent singleton to
+// check (emit_di_code's _di_create() allocates a fresh instance per call,
+// never caches one), so the compiler-generated caller passes a constant 0
+// for those rather than loading a global that was never emitted for them.
+// N is always small (the program's own @ApplicationComponent count) and
+// this is a dev-only introspection endpoint, not a hot path, so the
+// per-component tinox_string_concat chain here (same primitive used
+// throughout the runtime; GC-tracked, nothing to free by hand) is fine.
+char* tinox_devui_components_json(char** names, char** scopes, int64_t* instantiated, int64_t count) {
+    char* result = strdup("[");
+    for (int64_t i = 0; i < count; i++) {
+        if (i > 0) result = tinox_string_concat(result, ",");
+        char* b = jsonBuilderCreate();
+        jsonBuilderAddString(b, "name", names[i]);
+        jsonBuilderAddString(b, "scope", scopes[i]);
+        jsonBuilderAddBool(b, "instantiated", instantiated[i] != 0);
+        char* obj = jsonBuilderFinish(b);
+        result = tinox_string_concat(result, obj);
+    }
+    return tinox_string_concat(result, "]");
+}
+
 // ---- fromJson field helpers — avoid two runtime calls per field ----
 
 int64_t jsonGetIntField(int64_t* obj, const char* key) {
@@ -5811,6 +5878,23 @@ int64_t tinox_config_get_bool(const char* key) {
     const char* v = tinox_config_lookup(key);
     if (!v || *v == '\0') return 0;
     return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+}
+
+// Dumps every application.properties key/value as a flat JSON object --
+// unlike tinox_config_get*, which only ever looks up a single key a
+// @Config field already declared, this backs the dev-mode introspection
+// API's /config endpoint (it needs to show what's actually loaded, not
+// just what the program happens to read). Values are always emitted as
+// JSON strings (application.properties has no type info of its own --
+// tinox_config_get_int/_bool parse on demand per @Config field, not at
+// load time).
+char* tinox_config_dump_json(void) {
+    if (tinox_config_count < 0) tinox_config_load();
+    char* b = jsonBuilderCreate();
+    for (int i = 0; i < tinox_config_count; i++) {
+        jsonBuilderAddString(b, tinox_config_entries[i].key, tinox_config_entries[i].value);
+    }
+    return jsonBuilderFinish(b);
 }
 
 // ---- CLI argument parsing (@Command / @Option / @Argument) ----

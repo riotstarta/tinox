@@ -442,6 +442,23 @@ pub struct CodeGen {
     /// program); the other is simply having no endpoint to report on in
     /// the first place, which needs no opt-in/out at all.
     banner_enabled: bool,
+    /// Whether to compile in the dev-mode introspection API
+    /// (`emit_devui_code`), and on which port -- from tinox.toml's
+    /// `[dev]` section, set externally via `set_dev_config`.
+    dev_enabled: bool,
+    dev_port: u16,
+    /// Package name/version (`tinox.toml`) and the tinox compiler's own
+    /// version -- set externally via `set_dev_info`, served by the
+    /// dev-mode introspection API's `/info` route.
+    dev_package_name: String,
+    dev_package_version: String,
+    dev_tinox_version: String,
+    /// Pre-built JSON object (compile-time tinox.toml config summary --
+    /// `[docker]`/`[database]`/`[metrics]`/`[startup]`), set externally via
+    /// `set_dev_config_summary_json` from `build_dev_config_summary_json`
+    /// in main.rs (which has the raw section readers already in scope).
+    /// codegen just bakes this as a constant; it doesn't re-derive it.
+    dev_config_summary_json: String,
     /// Whether `class Main { fnc main() -> Int32 }` was found and validated
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
@@ -539,6 +556,12 @@ impl CodeGen {
             startup_endpoints: Vec::new(),
             loaded_modules: Vec::new(),
             banner_enabled: true,
+            dev_enabled: false,
+            dev_port: 9090,
+            dev_package_name: String::new(),
+            dev_package_version: String::new(),
+            dev_tinox_version: String::new(),
+            dev_config_summary_json: "{}".to_string(),
             user_main_class: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -580,6 +603,24 @@ impl CodeGen {
     /// the program actually has an auto-run endpoint to report on.
     pub fn set_startup_banner_enabled(&mut self, enabled: bool) {
         self.banner_enabled = enabled;
+    }
+
+    /// From tinox.toml's `[dev]` section (`enabled`, `port`, default
+    /// `false`/`9090`) -- whether to emit the dev-mode introspection API
+    /// background server (`emit_devui_code`) and which port it binds.
+    pub fn set_dev_config(&mut self, enabled: bool, port: u16) {
+        self.dev_enabled = enabled;
+        self.dev_port = port;
+    }
+
+    pub fn set_dev_info(&mut self, package_name: String, package_version: String, tinox_version: String) {
+        self.dev_package_name = package_name;
+        self.dev_package_version = package_version;
+        self.dev_tinox_version = tinox_version;
+    }
+
+    pub fn set_dev_config_summary_json(&mut self, json: String) {
+        self.dev_config_summary_json = json;
     }
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
@@ -1912,6 +1953,9 @@ impl CodeGen {
         // Emit the auto-run connect/receive loop for an @Amqp091Consumer class
         self.emit_amqp091_consumer_code();
 
+        // Emit the dev-mode introspection API (no-op unless [dev] enabled)
+        self.emit_devui_code();
+
         // Unify user_main_class + background_run_fns into @tinox_main
         self.emit_tinox_main_bootstrap();
 
@@ -2032,7 +2076,16 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  %hdrs_field = getelementptr i64, i64* %resp_ptr, i64 1").unwrap();
             writeln!(&mut self.lambda_ir, "  %hdrs_i64 = load i64, i64* %hdrs_field").unwrap();
             writeln!(&mut self.lambda_ir, "  %hdrs_ptr = inttoptr i64 %hdrs_i64 to i8*").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_ptr, i8* %ct_hdr_key, i64 %body_i64)").unwrap();
+            // Bug found while adding the dev-mode introspection API (which
+            // needed to mirror this exact response-writing shape): this
+            // passed %body_i64 (the RESPONSE BODY's pointer) as the header
+            // VALUE instead of %ct_hdr_val (computed right above, then
+            // never actually used) -- every /metrics response's
+            // Content-Type header ended up set to the same string as the
+            // body (the full Prometheus text) instead of
+            // "text/plain; version=0.0.4".
+            writeln!(&mut self.lambda_ir, "  %ct_val_i64 = ptrtoint i8* %ct_hdr_val to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_map_set(i8* %hdrs_ptr, i8* %ct_hdr_key, i64 %ct_val_i64)").unwrap();
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -2804,6 +2857,313 @@ impl CodeGen {
                 format!("{}:{} (queue: {})", c.host, c.port, c.queue),
             ));
         }
+    }
+
+    /// Dev-mode introspection API for the separate `tinox-devui` dashboard:
+    /// a background `HttpServer` bound to `127.0.0.1` only
+    /// (`tinox_HttpServer_new_bind`, runtime.c -- never reachable off the
+    /// local machine, unlike the program's own public routes) serving a
+    /// handful of read-only JSON `GET` routes. No-op unless `[dev] enabled
+    /// = true` (`set_dev_config`). Must run before
+    /// `emit_tinox_main_bootstrap` so `__tinox_run_devui` and its
+    /// `startup_endpoints` entry are registered in time to be spawned/
+    /// reported by it -- LLVM itself doesn't care about declaration order
+    /// for the `@{Class}_di_instance` globals this references (`/components`
+    /// below), only `background_run_fns` registration is order-sensitive.
+    fn emit_devui_code(&mut self) {
+        if !self.dev_enabled {
+            return;
+        }
+        let port = self.dev_port;
+
+        // tinox_HttpServer_new_bind is new -- nothing else ever declares
+        // it, always safe to declare here. tinox_HttpServer_get/_listen are
+        // NOT safe to unconditionally re-declare: opt hard-errors
+        // ("invalid redefinition") on a second `declare` for a symbol
+        // already declared elsewhere in the same module, even with an
+        // identical signature -- found by actually compiling a devui-
+        // enabled program that also has real @GET routes (emit_route_code
+        // already declares both whenever route_entries is non-empty and
+        // there's no @Http3RestController -- the same condition it uses to
+        // early-return, mirrored here so this only declares what
+        // emit_route_code won't).
+        writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new_bind(i64, i8*)").unwrap();
+        if self.route_entries.is_empty() || self.http3_rest_controller.is_some() {
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_get(i64*, i8*, i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
+        }
+
+        let modules_json = Self::devui_json_string_array(&self.loaded_modules);
+        let routes_json = self.devui_routes_json();
+        let websockets_json = self.devui_websockets_json();
+        // "HTTP" (plain, not "HTTP/3 (QUIC)") is the one try-it-out can
+        // actually reach with a standard java.net.http.HttpClient -- an
+        // HTTP/3-only program has no reachable base URL here (null), REST
+        // try-it-out is out of scope for QUIC-only apps in v1. Already
+        // registered in startup_endpoints by emit_route_code, which runs
+        // before this function.
+        let http_port_json = self.startup_endpoints.iter()
+            .find(|(protocol, _)| protocol == "HTTP")
+            .map(|(_, detail)| detail.trim_start_matches(':').to_string())
+            .unwrap_or_else(|| "null".to_string());
+        let info_json = format!(
+            "{{\"name\":{},\"version\":{},\"tinoxVersion\":{},\"httpPort\":{}}}",
+            Self::devui_json_string(&self.dev_package_name),
+            Self::devui_json_string(&self.dev_package_version),
+            Self::devui_json_string(&self.dev_tinox_version),
+            http_port_json,
+        );
+
+        self.emit_devui_static_handler("__devui_modules", &modules_json);
+        self.emit_devui_static_handler("__devui_routes", &routes_json);
+        self.emit_devui_static_handler("__devui_websockets", &websockets_json);
+        self.emit_devui_static_handler("__devui_info", &info_json);
+        self.emit_devui_config_handler();
+        self.emit_devui_components_handler();
+
+        writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        let addr_ptr = self.emit_lambda_string_literal("127.0.0.1");
+        writeln!(&mut self.lambda_ir,
+            "  %server = call i64* @tinox_HttpServer_new_bind(i64 {port}, i8* {addr_ptr})").unwrap();
+        for (path, handler) in [
+            ("/modules", "__devui_modules"),
+            ("/routes", "__devui_routes"),
+            ("/websockets", "__devui_websockets"),
+            ("/info", "__devui_info"),
+            ("/config", "__devui_config"),
+            ("/components", "__devui_components"),
+        ] {
+            let path_ptr = self.emit_lambda_string_literal(path);
+            writeln!(&mut self.lambda_ir,
+                "  %{handler}_fn = ptrtoint void (i64)* @{handler} to i64").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  call void @tinox_HttpServer_get(i64* %server, i8* {path_ptr}, i64 %{handler}_fn)").unwrap();
+        }
+        writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+
+        self.background_run_fns.push("__tinox_run_devui".to_string());
+        self.startup_endpoints.push(("Dev UI".to_string(), format!(":{port}")));
+    }
+
+    /// Minimal JSON string escaping for the handful of compiler-controlled
+    /// values (module/class/path names, tinox.toml-derived strings)
+    /// `emit_devui_code` embeds -- not a general JSON encoder.
+    fn devui_json_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    fn devui_json_opt_string(s: &Option<String>) -> String {
+        match s {
+            Some(v) => Self::devui_json_string(v),
+            None => "null".to_string(),
+        }
+    }
+
+    fn devui_json_string_array(items: &[String]) -> String {
+        let parts: Vec<String> = items.iter().map(|s| Self::devui_json_string(s)).collect();
+        format!("[{}]", parts.join(","))
+    }
+
+    fn devui_routes_json(&self) -> String {
+        let items: Vec<String> = self.route_entries.iter().map(|r| {
+            format!(
+                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{}}}",
+                Self::devui_json_string(&r.http_method),
+                Self::devui_json_string(&r.path),
+                Self::devui_json_string(&r.class_name),
+                Self::devui_json_string(&r.method_name),
+                r.status_code.map(|c| c.to_string()).unwrap_or_else(|| "null".to_string()),
+                Self::devui_json_opt_string(&r.produces),
+                Self::devui_json_opt_string(&r.consumes),
+            )
+        }).collect();
+        format!("[{}]", items.join(","))
+    }
+
+    fn devui_websockets_json(&self) -> String {
+        // Same effective-port fallback emit_ws_code itself uses -- an
+        // endpoint with no explicit @WebsocketEndpoint(port) argument
+        // resolves it identically at codegen time (TINOX_PORT env var,
+        // default 8080), so this reports the port that will actually be
+        // bound, not just what was literally written in source.
+        let items: Vec<String> = self.ws_endpoints.iter().map(|w| {
+            let port = w.port
+                .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
+                .unwrap_or(8080);
+            format!(
+                "{{\"class\":{},\"path\":{},\"port\":{port}}}",
+                Self::devui_json_string(&w.class_name),
+                Self::devui_json_string(&w.path),
+            )
+        }).collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// Emits `define void @{handler_name}(i64 %ctx_i64) { ... }` serving a
+    /// pre-baked JSON string constant -- used for the introspection routes
+    /// whose content is fully known at codegen time (modules/routes/
+    /// websockets/info). `/config` and `/components` need per-request
+    /// runtime work instead (see their own emit_devui_*_handler methods).
+    fn emit_devui_static_handler(&mut self, handler_name: &str, json: &str) {
+        writeln!(&mut self.lambda_ir, "define void @{handler_name}(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        let json_ptr = self.emit_lambda_string_literal(json);
+        self.emit_devui_finish_response(&json_ptr);
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// Shared response-writing tail for a devui handler -- `%ctx_i64`
+    /// already in scope as the handler's incoming parameter. Sets status
+    /// 200, the body to the given already-computed `i8*` SSA value, and
+    /// `Content-Type: application/json`, then `ret void`. Self-contained
+    /// (its own string literals via `emit_lambda_string_literal`):
+    /// deliberately does not reuse `@__hdr_content_type`, which
+    /// `emit_route_annotation_globals` only emits when the program also
+    /// has real `@GET`/etc. routes -- a devui-only program (no REST
+    /// annotations at all) would otherwise reference an undefined symbol.
+    fn emit_devui_finish_response(&mut self, json_var: &str) {
+        writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+        writeln!(&mut self.lambda_ir, "  %sc_field = getelementptr i64, i64* %resp_ptr, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  store i64 200, i64* %sc_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %body_field = getelementptr i64, i64* %resp_ptr, i64 2").unwrap();
+        writeln!(&mut self.lambda_ir, "  %body_i64 = ptrtoint i8* {json_var} to i64").unwrap();
+        writeln!(&mut self.lambda_ir, "  store i64 %body_i64, i64* %body_field").unwrap();
+        let ct_key_ptr = self.emit_lambda_string_literal("Content-Type");
+        let ct_val_ptr = self.emit_lambda_string_literal("application/json");
+        writeln!(&mut self.lambda_ir, "  %ct_val_i64 = ptrtoint i8* {ct_val_ptr} to i64").unwrap();
+        writeln!(&mut self.lambda_ir, "  %hdrs_field = getelementptr i64, i64* %resp_ptr, i64 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %hdrs_i64 = load i64, i64* %hdrs_field").unwrap();
+        writeln!(&mut self.lambda_ir, "  %hdrs_ptr = inttoptr i64 %hdrs_i64 to i8*").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  call void @tinox_map_set(i8* %hdrs_ptr, i8* {ct_key_ptr}, i64 %ct_val_i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+    }
+
+    /// `/config`: concatenates the compile-time tinox.toml summary
+    /// (`dev_config_summary_json`, built by `build_dev_config_summary_json`
+    /// in main.rs and baked as a constant) with a live
+    /// `application.properties` dump (`tinox_config_dump_json`,
+    /// runtime.c) -- the two genuinely separate config sources this
+    /// project has (see CLAUDE.md's Dev UI section).
+    fn emit_devui_config_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_config_dump_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_config(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        let static_ptr = self.emit_lambda_string_literal(&self.dev_config_summary_json.clone());
+        let prefix_ptr = self.emit_lambda_string_literal("{\"tinoxToml\":");
+        let mid_ptr = self.emit_lambda_string_literal(",\"applicationProperties\":");
+        writeln!(&mut self.lambda_ir, "  %props_json = call i8* @tinox_config_dump_json()").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %s1 = call i8* @tinox_string_concat(i8* {prefix_ptr}, i8* {static_ptr})").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %s2 = call i8* @tinox_string_concat(i8* %s1, i8* {mid_ptr})").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %s3 = call i8* @tinox_string_concat(i8* %s2, i8* %props_json)").unwrap();
+        let suffix_ptr = self.emit_lambda_string_literal("}");
+        writeln!(&mut self.lambda_ir,
+            "  %json = call i8* @tinox_string_concat(i8* %s3, i8* {suffix_ptr})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// `/components`: one JSON object per `@ApplicationComponent`-scoped
+    /// class -- name, scope, and whether a singleton currently exists.
+    /// Application/Startup-scoped components have a real
+    /// `@{class}_di_instance` global (`emit_di_code`) to check; loads it
+    /// and compares to null right here at request time. HttpRequest-scoped
+    /// ones never get such a global (a fresh instance is allocated per
+    /// request, never cached), so their flag is a compile-time-constant
+    /// `0` -- there's nothing to check.
+    fn emit_devui_components_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_devui_components_json(i8**, i8**, i64*, i64)").unwrap();
+        let components = self.di_components.clone();
+        writeln!(&mut self.lambda_ir, "define void @__devui_components(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+
+        if components.is_empty() {
+            let empty_ptr = self.emit_lambda_string_literal("[]");
+            self.emit_devui_finish_response(&empty_ptr);
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+            return;
+        }
+
+        let count = components.len();
+        let name_ptrs: Vec<String> = components.iter()
+            .map(|c| self.emit_lambda_string_literal(&c.class_name))
+            .collect();
+        let scope_ptrs: Vec<String> = components.iter()
+            .map(|c| {
+                let scope_str = match c.scope {
+                    DiScope::Application => "Application",
+                    DiScope::Startup => "Startup",
+                    DiScope::HttpRequest => "HttpRequest",
+                };
+                self.emit_lambda_string_literal(scope_str)
+            })
+            .collect();
+
+        writeln!(&mut self.lambda_ir, "  %names = alloca [{count} x i8*]").unwrap();
+        writeln!(&mut self.lambda_ir, "  %scopes = alloca [{count} x i8*]").unwrap();
+        writeln!(&mut self.lambda_ir, "  %flags = alloca [{count} x i64]").unwrap();
+        for (idx, comp) in components.iter().enumerate() {
+            writeln!(&mut self.lambda_ir,
+                "  %name_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %names, i64 0, i64 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* {}, i8** %name_slot_{idx}", name_ptrs[idx]).unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %scope_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %scopes, i64 0, i64 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* {}, i8** %scope_slot_{idx}", scope_ptrs[idx]).unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %flag_slot_{idx} = getelementptr [{count} x i64], [{count} x i64]* %flags, i64 0, i64 {idx}").unwrap();
+            match comp.scope {
+                DiScope::Application | DiScope::Startup => {
+                    writeln!(&mut self.lambda_ir,
+                        "  %inst_raw_{idx} = load i8*, i8** @{}_di_instance", comp.class_name).unwrap();
+                    writeln!(&mut self.lambda_ir,
+                        "  %is_set_{idx} = icmp ne i8* %inst_raw_{idx}, null").unwrap();
+                    writeln!(&mut self.lambda_ir,
+                        "  %flag_{idx} = zext i1 %is_set_{idx} to i64").unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i64 %flag_{idx}, i64* %flag_slot_{idx}").unwrap();
+                }
+                DiScope::HttpRequest => {
+                    writeln!(&mut self.lambda_ir, "  store i64 0, i64* %flag_slot_{idx}").unwrap();
+                }
+            }
+        }
+        writeln!(&mut self.lambda_ir,
+            "  %names_ptr = getelementptr [{count} x i8*], [{count} x i8*]* %names, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %scopes_ptr = getelementptr [{count} x i8*], [{count} x i8*]* %scopes, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %flags_ptr = getelementptr [{count} x i64], [{count} x i64]* %flags, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %json = call i8* @tinox_devui_components_json(i8** %names_ptr, i8** %scopes_ptr, i64* %flags_ptr, i64 {count})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
     }
 
     /// Unifies `class Main { fnc main() }` (user_main_class) and the
