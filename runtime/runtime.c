@@ -138,6 +138,18 @@ void tinox_print_newline() {
     printf("\n");
 }
 
+// Monotonic milliseconds -- used by the compiler-generated @tinox_main
+// bootstrap (emit_tinox_main_bootstrap in tinox-codegen) to measure and
+// print its own startup time. CLOCK_MONOTONIC rather than
+// CLOCK_REALTIME: only ever diffed against another call from the same
+// process, so immune to wall-clock adjustments (NTP, timezone, manual
+// changes) a two-call delta over REALTIME would otherwise pick up.
+int64_t tinox_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 // Panic/Error handling
 void tinox_panic(const char* msg) {
     fprintf(stderr, "PANIC: %s\n", msg);

@@ -38,6 +38,7 @@ fn run() {
     match args[1].as_str() {
         "new"   => new_project(&args[2..]),
         "build" => build(&args[2..]),
+        "docker" => docker_build(&args[2..]),
         "run"   => run_file(&args[2..]),
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
@@ -66,6 +67,8 @@ fn print_help() {
     println!("Usage:");
     println!("  tinox new <name>           Create a new Tinox project");
     println!("  tinox build [file]         Compile to an executable (uses tinox.toml if no file)");
+    println!("  tinox docker               Build a minimal Docker image (needs [docker] in tinox.toml)");
+    println!("  tinox docker --tag n:t     Build the image under an explicit name:tag");
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");
@@ -421,6 +424,301 @@ fn read_project_name() -> Option<String> {
         if !dir.pop() { break; }
     }
     None
+}
+
+/// Container ports the compiled program listens on, plus optional image
+/// naming/base overrides -- purely build-time metadata for `tinox docker`.
+/// Setting `ports` here doesn't change runtime behavior (the program still
+/// binds them itself, e.g. via `HttpServer::new(port)`); it only controls
+/// what the generated Dockerfile `EXPOSE`s.
+#[derive(Default)]
+struct DockerConfig {
+    ports: Vec<u16>,
+    image: Option<String>,
+    base: Option<String>,
+    extra_packages: Vec<String>,
+}
+
+/// Parse a TOML-ish inline array (`[8080, 9090]` or `["a", "b"]`) into its
+/// raw comma-separated elements, with surrounding whitespace and quotes
+/// stripped. Not a general TOML parser -- matches the hand-rolled,
+/// single-line-value style the rest of this file's tinox.toml readers use.
+fn parse_toml_array(rest: &str) -> Vec<String> {
+    let rest = rest.trim();
+    let inner = rest.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or("");
+    inner
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Read the `[docker]` section from the nearest `tinox.toml`, if present.
+fn read_docker_config() -> Option<DockerConfig> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).ok()?;
+            let mut in_docker = false;
+            let mut found = false;
+            let mut cfg = DockerConfig::default();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_docker = line == "[docker]";
+                    if in_docker { found = true; }
+                    continue;
+                }
+                if !in_docker { continue; }
+                if let Some(rest) = line.strip_prefix("ports") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    cfg.ports = parse_toml_array(rest).iter().filter_map(|s| s.parse::<u16>().ok()).collect();
+                } else if let Some(rest) = line.strip_prefix("extra_packages") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    cfg.extra_packages = parse_toml_array(rest);
+                } else if let Some(rest) = line.strip_prefix("image") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    let v = rest.trim_matches('"').to_string();
+                    if !v.is_empty() { cfg.image = Some(v); }
+                } else if let Some(rest) = line.strip_prefix("base") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    let v = rest.trim_matches('"').to_string();
+                    if !v.is_empty() { cfg.base = Some(v); }
+                }
+            }
+            return if found { Some(cfg) } else { None };
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
+/// Debian/Ubuntu runtime packages for the shared libraries `compile_ll_to_exe`
+/// links against, given the same feature flags that decide what it links.
+/// Pure so it's directly unit-testable; `docker_runtime_packages` below
+/// gathers the (env-var- and tinox.toml-dependent) inputs.
+fn compute_runtime_packages(tls_enabled: bool, db_driver: Option<&str>, extra: &[String]) -> Vec<String> {
+    // libgc1: Boehm GC (-lgc). zlib1g: WebSocket permessage-deflate (-lz).
+    // Both linked unconditionally, same as in compile_ll_to_exe. libm/
+    // libpthread need no separate package -- part of glibc (libc6).
+    let mut pkgs = vec!["libgc1".to_string(), "zlib1g".to_string(), "ca-certificates".to_string()];
+    if tls_enabled {
+        pkgs.push("libssl3".to_string());
+    }
+    match db_driver {
+        Some("postgres") => pkgs.push("libpq5".to_string()),
+        Some("mysql") => pkgs.push("libmariadb3".to_string()),
+        Some("sqlite") => pkgs.push("libsqlite3-0".to_string()),
+        _ => {}
+    }
+    for p in extra {
+        if !pkgs.contains(p) {
+            pkgs.push(p.clone());
+        }
+    }
+    pkgs
+}
+
+/// Reads the same env vars / tinox.toml `[database]` section
+/// `compile_ll_to_exe` reads to decide what to link, so the Docker image's
+/// installed packages track the actual binary instead of guessing.
+fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
+    let tls_enabled = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
+    let http3_enabled = tls_enabled
+        && std::env::var("TINOX_HTTP3").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    if http3_enabled {
+        eprintln!(
+            "warning: TINOX_HTTP3 is set, but ngtcp2/nghttp3 runtime package names vary by distro \
+             and aren't auto-provisioned here -- add them via [docker] extra_packages in tinox.toml, \
+             or the post-build library check below will fail with a clear error instead of shipping \
+             a broken image."
+        );
+    }
+    let db_driver = read_database_config();
+    compute_runtime_packages(tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
+}
+
+/// Renders the (minimal, single-stage) Dockerfile: install just the
+/// runtime shared libraries the binary needs, copy it in, EXPOSE the
+/// configured ports, run it directly as the container's entrypoint.
+fn generate_dockerfile(base: &str, packages: &[String], binary_name: &str, ports: &[u16]) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("FROM {base}\n\n"));
+    if !packages.is_empty() {
+        s.push_str("RUN apt-get update && apt-get install -y --no-install-recommends \\\n");
+        for pkg in packages {
+            // Every package line continues (there's always a trailing
+            // `&& rm -rf ...` line after the loop), unlike a plain
+            // comma/newline-joined list where only the interior separators
+            // need it.
+            s.push_str(&format!("    {pkg} \\\n"));
+        }
+        s.push_str("    && rm -rf /var/lib/apt/lists/*\n\n");
+    }
+    s.push_str("WORKDIR /app\n");
+    s.push_str(&format!("COPY {binary_name} /app/{binary_name}\n"));
+    s.push_str(&format!("RUN chmod +x /app/{binary_name}\n\n"));
+    if !ports.is_empty() {
+        let port_list = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+        s.push_str(&format!("EXPOSE {port_list}\n\n"));
+    }
+    s.push_str(&format!("ENTRYPOINT [\"/app/{binary_name}\"]\n"));
+    s
+}
+
+fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == flag {
+            return args.get(i + 1).cloned();
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `tinox docker [--tag name:tag] [--debug]` -- compiles the project (same
+/// pipeline as `tinox build`, Release by default) and packages the result
+/// into a minimal Docker image: install only the runtime shared libraries
+/// actually linked, COPY the binary in, EXPOSE the `[docker] ports` from
+/// tinox.toml, run it as the entrypoint.
+///
+/// The binary is compiled on the host and copied into the image rather
+/// than rebuilt inside a container, so it must run under the base image's
+/// glibc (older host glibc than the image's is fine; newer generally isn't).
+/// Rather than silently shipping a binary that fails at container start,
+/// the build ends with an `ldd` check inside the freshly built image and
+/// hard-fails with the exact missing library if anything doesn't resolve.
+fn docker_build(args: &[String]) {
+    let docker_available = Command::new("docker")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !docker_available {
+        eprintln!("error: `docker` not found on PATH -- install Docker to use `tinox docker`");
+        std::process::exit(1);
+    }
+
+    let debug = args.iter().any(|a| a == "--debug");
+    let opt = if debug { OptLevel::Debug } else { OptLevel::Release };
+    let tag_override = parse_flag_value(args, "--tag");
+
+    // Project mode only -- the [docker] section this command reads only
+    // exists in a tinox.toml, so (unlike `build`/`run`) there's no bare-file
+    // mode to fall back to.
+    let input_file = match resolve_entry_file(&[]) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let cfg = read_docker_config().unwrap_or_default();
+    if cfg.ports.is_empty() {
+        eprintln!("note: no [docker] ports configured in tinox.toml -- image will not EXPOSE any ports");
+    }
+
+    let project_name = read_project_name().unwrap_or_else(|| "app".to_string());
+    let binary_name = project_name.clone();
+    // Docker image names must be lowercase; only lowercase the name we
+    // derive ourselves -- an explicit `image =`/`--tag` is used verbatim.
+    let image_ref = tag_override.unwrap_or_else(|| {
+        let image_name = cfg.image.clone().unwrap_or_else(|| project_name.to_lowercase());
+        format!("{image_name}:latest")
+    });
+    // debian:trixie-slim (current Debian stable, glibc 2.41) rather than
+    // the older bookworm-slim (glibc 2.36) -- bookworm's glibc proved too
+    // old in practice for a host-compiled binary from any reasonably
+    // current dev machine (Arch, recent Ubuntu/Fedora, ...), tripping the
+    // ldd check below on the very first real-world run. Still fully
+    // overridable via `[docker] base`.
+    let base_image = cfg.base.clone().unwrap_or_else(|| "debian:trixie-slim".to_string());
+
+    println!("Compiling {binary_name} ({opt:?})...");
+    if let Err(e) = compile_file(&input_file, &binary_name, opt) {
+        eprintln!("Compilation failed: {}", e);
+        std::process::exit(1);
+    }
+
+    let build_dir = Path::new(".tinox").join("docker");
+    if let Err(e) = fs::create_dir_all(&build_dir) {
+        eprintln!("error: cannot create {}: {}", build_dir.display(), e);
+        std::process::exit(1);
+    }
+    let staged_binary = build_dir.join(&binary_name);
+    if let Err(e) = fs::copy(&binary_name, &staged_binary) {
+        eprintln!("error: cannot stage compiled binary into {}: {}", build_dir.display(), e);
+        std::process::exit(1);
+    }
+
+    let packages = docker_runtime_packages(&cfg.extra_packages);
+    let dockerfile = generate_dockerfile(&base_image, &packages, &binary_name, &cfg.ports);
+    let dockerfile_path = build_dir.join("Dockerfile");
+    if let Err(e) = fs::write(&dockerfile_path, &dockerfile) {
+        eprintln!("error: cannot write {}: {}", dockerfile_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!("Building image {image_ref} from {base_image}...");
+    let build_status = Command::new("docker")
+        .arg("build")
+        .arg("-t").arg(&image_ref)
+        .arg("-f").arg(&dockerfile_path)
+        .arg(&build_dir)
+        .status();
+    match build_status {
+        Ok(s) if s.success() => {}
+        Ok(_) => {
+            eprintln!("error: `docker build` failed");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: failed to run docker: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    print!("Verifying linked libraries resolve inside the image... ");
+    use std::io::Write as _;
+    std::io::stdout().flush().ok();
+    let ldd_out = Command::new("docker")
+        .args(["run", "--rm", "--entrypoint", "ldd"])
+        .arg(&image_ref)
+        .arg(format!("/app/{binary_name}"))
+        .output();
+    match ldd_out {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let missing: Vec<String> = stdout.lines().filter(|l| l.contains("not found")).map(|l| l.trim().to_string()).collect();
+            if !missing.is_empty() {
+                println!("FAILED");
+                eprintln!("error: image {image_ref} is missing shared libraries the compiled binary needs:");
+                for m in &missing {
+                    eprintln!("  {}", m);
+                }
+                eprintln!(
+                    "Add the missing package(s) via [docker] extra_packages in tinox.toml \
+                     (base image: {base_image}), then run `tinox docker` again."
+                );
+                std::process::exit(1);
+            }
+            println!("ok");
+        }
+        Err(e) => {
+            println!("skipped ({e})");
+        }
+    }
+
+    println!("Built {image_ref}");
+    println!("Run it with:");
+    if cfg.ports.is_empty() {
+        println!("  docker run --rm {image_ref}");
+    } else {
+        let publish_flags: String = cfg.ports.iter().map(|p| format!("-p {p}:{p}")).collect::<Vec<_>>().join(" ");
+        println!("  docker run --rm {publish_flags} {image_ref}");
+    }
 }
 
 fn parse_output_flag(args: &[String]) -> Option<String> {
@@ -1511,47 +1809,74 @@ fn render_docs_html(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{project_name} — Tinox Docs</title>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {{
-  --bg:        #0f1117;
-  --bg2:       #171b26;
-  --bg3:       #1e2333;
-  --sidebar:   #13161f;
-  --border:    #2a2f42;
-  --accent:    #5b8ff9;
-  --accent2:   #7c5bf9;
-  --green:     #4ecb71;
-  --text:      #dde1f0;
-  --text2:     #8a91aa;
-  --text3:     #5a6080;
-  --code-bg:   #0b0e18;
-  --tag-bg:    #1a2540;
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
 }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; display: flex; min-height: 100vh; }}
-nav {{ width: 270px; min-width: 270px; background: var(--sidebar); border-right: 1px solid var(--border); padding: 32px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; flex-shrink: 0; }}
-nav h1 {{ padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.5px; color: #fff; }}
+body {{
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}}
+body::before {{
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}}
+nav {{ position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }}
+nav h1 {{ padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }}
 nav ul {{ list-style: none; }}
 nav li.nav-section {{ font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }}
 nav li a {{ display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }}
 nav li a:hover {{ color: var(--text); background: var(--bg3); border-left-color: var(--accent); }}
-main {{ flex: 1; max-width: 920px; padding: 56px 64px; }}
-main h1 {{ font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }}
-main > p {{ color: var(--text2); margin-bottom: 32px; font-size: 0.88rem; }}
-.item {{ border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); }}
-.item-name {{ font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'Fira Code', 'Cascadia Code', monospace; }}
+main {{ position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }}
+main h1 {{ font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }}
+main > p.generated-by {{ color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }}
+.tool-tag {{ font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }}
+.item {{ border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }}
+.item-name {{ font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }}
 .kw {{ color: #c792ea; }}
 .doc {{ color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }}
 h3 {{ font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }}
 table.members {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
 table.members tr {{ border-bottom: 1px solid var(--border); }}
 table.members td {{ padding: 8px 10px; vertical-align: top; }}
-.member-name {{ font-family: 'Fira Code', 'Cascadia Code', monospace; color: var(--text); width: 35%; }}
+.member-name {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }}
 .member-type {{ color: #ffcb6b; width: 20%; }}
-.method-sig {{ background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }}
+.method-sig {{ background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }}
 .method-doc {{ color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }}
 .ann {{ color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }}
-code {{ font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: #a8d0ff; }}
-a {{ color: var(--accent); text-decoration: none; }}
+code {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }}
+a {{ color: var(--link); text-decoration: none; }}
 a:hover {{ text-decoration: underline; }}
 </style>
 </head>
@@ -1562,7 +1887,7 @@ a:hover {{ text-decoration: underline; }}
 </nav>
 <main>
   <h1>{project_name}</h1>
-  <p>Generated by <code>tinox doc</code></p>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
   {body}
 </main>
 </body>
@@ -1891,6 +2216,26 @@ fn load_dep_dirs(base_dir: &Path) -> (Vec<PathBuf>, Vec<pm::MissingDep>) {
     pm::find_project_root_from(base_dir)
         .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
         .map(|(root, m)| pm::installed_dep_dirs(&root, &m))
+        .unwrap_or_default()
+}
+
+/// `tinox.core` module names (artifactIds) declared in the nearest
+/// tinox.toml's `[[dependencies]]` -- fed into the generated program's
+/// startup banner via `CodeGen::set_loaded_modules`. Declared, not
+/// actually-imported: simpler and accurate enough (an unused declared
+/// dependency is already unusual, not the common case this needs to
+/// optimize for), and avoids threading resolved-import bookkeeping across
+/// the typecheck/codegen boundary just for a log line.
+fn loaded_tinox_core_modules(base_dir: &Path) -> Vec<String> {
+    pm::find_project_root_from(base_dir)
+        .and_then(|root| pm::read_manifest(&root).ok())
+        .map(|m| {
+            m.dependencies
+                .iter()
+                .filter(|d| d.group == "tinox.core")
+                .map(|d| d.artifact_id.clone())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -2333,6 +2678,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         visited.insert(canonical);
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    let loaded_modules = loaded_tinox_core_modules(&base_dir);
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
     // NodeIds for the type table (typecheck → codegen)
@@ -2502,6 +2848,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     let mut codegen = CodeGen::new();
     codegen.set_expr_value_types(typechecker.expr_value_types());
     codegen.set_interface_info(iface_methods, class_implements);
+    codegen.set_loaded_modules(loaded_modules);
     let config_fields: Vec<tinox_codegen::ConfigFieldInfo> = ann_result.config_fields
         .iter()
         .map(|f| tinox_codegen::ConfigFieldInfo {
@@ -2959,5 +3306,95 @@ mod no_top_level_fn_tests {
         let decls = parse_decls("namespace tinox.core.demo { fn helper() -> Int64 { return 1; } }");
         let err = check_no_top_level_fn(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("helper"), "error should name the function: {err}");
+    }
+}
+
+#[cfg(test)]
+mod docker_tests {
+    use super::*;
+
+    #[test]
+    fn parse_toml_array_ints() {
+        assert_eq!(parse_toml_array("[8080, 9090]"), vec!["8080", "9090"]);
+    }
+
+    #[test]
+    fn parse_toml_array_strings_and_trailing_comma() {
+        assert_eq!(parse_toml_array("[\"libpq5\", \"foo\", ]"), vec!["libpq5", "foo"]);
+    }
+
+    #[test]
+    fn parse_toml_array_empty() {
+        assert_eq!(parse_toml_array("[]"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn runtime_packages_baseline_no_tls() {
+        let pkgs = compute_runtime_packages(false, None, &[]);
+        assert_eq!(pkgs, vec!["libgc1", "zlib1g", "ca-certificates"]);
+    }
+
+    #[test]
+    fn runtime_packages_tls_adds_libssl() {
+        let pkgs = compute_runtime_packages(true, None, &[]);
+        assert!(pkgs.contains(&"libssl3".to_string()));
+    }
+
+    #[test]
+    fn runtime_packages_db_driver_mapped() {
+        assert!(compute_runtime_packages(false, Some("postgres"), &[]).contains(&"libpq5".to_string()));
+        assert!(compute_runtime_packages(false, Some("mysql"), &[]).contains(&"libmariadb3".to_string()));
+        assert!(compute_runtime_packages(false, Some("sqlite"), &[]).contains(&"libsqlite3-0".to_string()));
+    }
+
+    #[test]
+    fn runtime_packages_extra_appended_without_duplicates() {
+        let pkgs = compute_runtime_packages(true, None, &["libssl3".to_string(), "libfoo".to_string()]);
+        assert_eq!(pkgs.iter().filter(|p| *p == "libssl3").count(), 1);
+        assert!(pkgs.contains(&"libfoo".to_string()));
+    }
+
+    #[test]
+    fn dockerfile_includes_expose_and_entrypoint() {
+        let out = generate_dockerfile("debian:bookworm-slim", &["libgc1".to_string()], "myapp", &[8080, 9090]);
+        assert!(out.starts_with("FROM debian:bookworm-slim\n"));
+        assert!(out.contains("RUN apt-get update"));
+        // Every package line (including the last, single one here) must
+        // keep its line-continuation backslash -- the `&& rm -rf ...`
+        // line right after it is not a standalone RUN on its own and
+        // `docker build` hard-errors on "unknown instruction: &&" if a
+        // package line drops it.
+        assert!(out.contains("    libgc1 \\\n"), "package line must continue with backslash:\n{out}");
+        assert!(out.contains("    && rm -rf /var/lib/apt/lists/*"));
+        assert!(out.contains("COPY myapp /app/myapp"));
+        assert!(out.contains("EXPOSE 8080 9090"));
+        assert!(out.contains("ENTRYPOINT [\"/app/myapp\"]"));
+    }
+
+    #[test]
+    fn dockerfile_multi_package_all_lines_continue() {
+        let out = generate_dockerfile(
+            "debian:bookworm-slim",
+            &["libgc1".to_string(), "zlib1g".to_string(), "libssl3".to_string()],
+            "myapp",
+            &[],
+        );
+        for pkg in ["libgc1", "zlib1g", "libssl3"] {
+            assert!(out.contains(&format!("    {pkg} \\\n")), "{pkg} line must continue with backslash:\n{out}");
+        }
+    }
+
+    #[test]
+    fn dockerfile_no_ports_omits_expose() {
+        let out = generate_dockerfile("debian:bookworm-slim", &[], "myapp", &[]);
+        assert!(!out.contains("EXPOSE"));
+        assert!(!out.contains("apt-get"));
+    }
+
+    #[test]
+    fn flag_value_found_and_missing() {
+        let args = vec!["--tag".to_string(), "myapp:v1".to_string()];
+        assert_eq!(parse_flag_value(&args, "--tag"), Some("myapp:v1".to_string()));
+        assert_eq!(parse_flag_value(&args, "--other"), None);
     }
 }

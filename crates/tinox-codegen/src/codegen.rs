@@ -420,6 +420,18 @@ pub struct CodeGen {
     /// can spawn all of them (plus call Main_main if present) from one
     /// unified entry point.
     background_run_fns: Vec<String>,
+    /// `(protocol, detail)` pairs -- one per background auto-run kind
+    /// registered above, in the same order -- consumed by
+    /// emit_tinox_main_bootstrap to print the startup "Endpoints:" block.
+    /// e.g. `("HTTP", "8080")`, `("WebSocket", "9001")`,
+    /// `("AMQP 0-9-1 (consumer)", "localhost:5672 (queue: orders)")`.
+    startup_endpoints: Vec<(String, String)>,
+    /// `tinox.core` module (artifactId) names from the project's
+    /// `[[dependencies]]`, set externally via `set_loaded_modules` before
+    /// `gen()` runs -- printed in the startup banner alongside
+    /// `startup_endpoints`. Empty for the REPL and other non-project
+    /// compile paths, which never call the setter.
+    loaded_modules: Vec<String>,
     /// Whether `class Main { fnc main() -> Int32 }` was found and validated
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
@@ -514,6 +526,8 @@ impl CodeGen {
             test_entry: None,
             has_main: false,
             background_run_fns: Vec::new(),
+            startup_endpoints: Vec::new(),
+            loaded_modules: Vec::new(),
             user_main_class: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -540,6 +554,14 @@ impl CodeGen {
         self.do_not_serialize_fields = info.do_not_serialize_fields;
         self.json_serializable_classes = info.json_serializable_classes;
         self.metric_entries = info.metric_entries;
+    }
+
+    /// `tinox.core` module names (artifactIds) to print in the startup
+    /// banner -- the caller (main.rs's compile_file) reads these straight
+    /// from `tinox.toml`'s `[[dependencies]]`, filtered to `group ==
+    /// "tinox.core"`; not touched at all by e.g. the REPL's compile path.
+    pub fn set_loaded_modules(&mut self, modules: Vec<String>) {
+        self.loaded_modules = modules;
     }
 
     pub fn set_metrics_config(&mut self, path: Option<String>) {
@@ -1238,6 +1260,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
+        // Monotonic milliseconds -- used only by emit_tinox_main_bootstrap's
+        // startup banner to measure/print bootstrap time.
+        writeln!(&mut self.ir, "declare i64 @tinox_now_ms()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_channel_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_channel_send(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_channel_recv(i8*)").unwrap();
@@ -2047,6 +2072,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir).unwrap();
 
             self.background_run_fns.push("__tinox_run_http".to_string());
+            self.startup_endpoints.push(("HTTP".to_string(), format!(":{port}")));
         }
     }
 
@@ -2429,6 +2455,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir).unwrap();
 
         self.background_run_fns.push("__tinox_run_http3".to_string());
+        self.startup_endpoints.push(("HTTP/3 (QUIC)".to_string(), format!(":{}", controller.port)));
     }
 
     /// Generates an auto-run `main` for a single `@WebsocketEndpoint`-annotated class:
@@ -2524,6 +2551,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir).unwrap();
 
             self.background_run_fns.push(run_fn);
+            self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
         }
     }
 
@@ -2640,6 +2668,10 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir).unwrap();
 
             self.background_run_fns.push(run_fn);
+            self.startup_endpoints.push((
+                "AMQP 1.0 (consumer)".to_string(),
+                format!("{}:{} ({})", c.host, c.port, c.address),
+            ));
         }
     }
 
@@ -2749,6 +2781,10 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir).unwrap();
 
             self.background_run_fns.push(run_fn);
+            self.startup_endpoints.push((
+                "AMQP 0-9-1 (consumer)".to_string(),
+                format!("{}:{} (queue: {})", c.host, c.port, c.queue),
+            ));
         }
     }
 
@@ -2769,6 +2805,15 @@ impl CodeGen {
     /// top-level `fn main()` already claimed @tinox_main directly (that
     /// deprecated pre-#149 shape intentionally does not participate in this
     /// unification).
+    ///
+    /// Also owns the startup banner: ASCII art, the `tinox.core` modules
+    /// from `[[dependencies]]` (via `set_loaded_modules`), the auto-run
+    /// endpoints registered in `startup_endpoints` (protocol + port/detail,
+    /// pushed alongside each `background_run_fns` entry above), and the
+    /// bootstrap's own elapsed time. Printed unconditionally -- no
+    /// `import tinox.core.logger;`/annotation needed -- since this is the
+    /// one place in the generated program that already knows about every
+    /// auto-run kind and is guaranteed to run exactly once, first.
     fn emit_tinox_main_bootstrap(&mut self) {
         if self.has_main {
             return;
@@ -2791,11 +2836,68 @@ impl CodeGen {
             handles.push((idx, tramp));
         }
 
+        // Startup banner only makes sense for programs that actually have
+        // something auto-run (a REST/HTTP3/WS/AMQP endpoint) -- a plain
+        // `class Main` script with no annotations still comes through this
+        // function (user_main_class alone is enough to not early-return
+        // above) and must keep printing exactly nothing extra: this is the
+        // shape virtually every e2e/example test with an exact `// expect:`
+        // stdout match uses, and it's also just not a meaningful "started
+        // serving on port X" moment for a one-shot script.
+        let has_endpoints = !self.background_run_fns.is_empty();
+
+        // figlet -f standard "Tinox" -- generated once, hardcoded here since
+        // it's fixed text with no dynamic content.
+        let mut banner = String::new();
+        banner.push_str(" _____ _                 \n");
+        banner.push_str("|_   _(_)_ __   _____  __\n");
+        banner.push_str("  | | | | '_ \\ / _ \\ \\/ /\n");
+        banner.push_str("  | | | | | | | (_) >  < \n");
+        banner.push_str("  |_| |_|_| |_|\\___/_/\\_\\\n");
+        if !self.loaded_modules.is_empty() {
+            banner.push_str(&format!("Loaded tinox.core modules: {}\n", self.loaded_modules.join(", ")));
+        }
+        banner.push_str("Endpoints:\n");
+        for (protocol, detail) in &self.startup_endpoints {
+            banner.push_str(&format!("  {protocol:<22} {detail}\n"));
+        }
+
         writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+
+        // t0: captured before anything else runs, so the elapsed time
+        // printed below covers the banner print itself too (negligible,
+        // but simpler than threading a "skip this call" flag through).
+        let t0 = if has_endpoints {
+            let t = self.temp();
+            writeln!(&mut self.lambda_ir, "  {t} = call i64 @tinox_now_ms()").unwrap();
+            let banner_ptr = self.emit_lambda_string_literal(&banner);
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {banner_ptr})").unwrap();
+            Some(t)
+        } else {
+            None
+        };
+
         for (idx, tramp) in &handles {
             writeln!(&mut self.lambda_ir,
                 "  %h_{idx} = call i8* @tinox_task_spawn(i8* (i8*)* @{tramp}, i8* null)").unwrap();
+        }
+
+        // t1: right after every auto-run kind has been spawned (not
+        // "actually listening" -- HttpServer::listen()'s own bind happens
+        // asynchronously on its spawned thread -- but matches how e.g.
+        // Spring Boot's "Started Application in Xs" measures context
+        // bring-up, not first successful request).
+        if let Some(t0) = t0 {
+            let t1 = self.temp();
+            writeln!(&mut self.lambda_ir, "  {t1} = call i64 @tinox_now_ms()").unwrap();
+            let elapsed = self.temp();
+            writeln!(&mut self.lambda_ir, "  {elapsed} = sub i64 {t1}, {t0}").unwrap();
+            let started_pfx_ptr = self.emit_lambda_string_literal("Started in ");
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {started_pfx_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_int(i64 {elapsed})").unwrap();
+            let started_sfx_ptr = self.emit_lambda_string_literal(" ms\n");
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {started_sfx_ptr})").unwrap();
         }
 
         if self.user_main_class {

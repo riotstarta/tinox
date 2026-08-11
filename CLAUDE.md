@@ -341,3 +341,130 @@ then calls `Main.main()`, and afterward joins every spawned thread
   then resolve the raw `[0x...]` addresses from the log with
   `addr2line -f -C -e <binary> <address>`. Remove again after
   debugging.
+
+## `tinox docker`: Minimal Docker Images from a Project (since 2026-08-11)
+
+`tinox docker` (`crates/tinox/src/main.rs`, `docker_build`) compiles the
+project (same pipeline as `tinox build`, Release by default) and packages
+the resulting binary into a minimal, single-stage Docker image: install
+only the runtime shared libraries actually linked, `COPY` the binary in,
+`EXPOSE` the configured ports, run it as the entrypoint. Config lives in
+a `[docker]` section in `tinox.toml`:
+
+```toml
+[docker]
+ports = [8080, 9090]        # optional, EXPOSE only -- doesn't change how
+                             # the program binds them (still HttpServer::new(port) etc.)
+image = "myapp"              # optional, defaults to [package].name
+base = "debian:trixie-slim"  # optional, defaults shown; must be apt-based (see below)
+extra_packages = ["libpq5"]  # optional, appended to the auto-detected apt package list
+```
+
+`--tag name:tag` overrides the image name+tag outright (from either
+`tinox.toml` or the derived default); `--debug` compiles Debug instead of
+Release.
+
+- **The compiled binary is copied in from the host, not rebuilt inside the
+  container.** A full multi-stage build (matching-glibc builder image,
+  Rust+LLVM+clang toolchain, vendoring the compiler source into the build
+  context) would remove the glibc-compatibility caveat below entirely, but
+  is disproportionately invasive for what was asked for — a lightweight,
+  minimalistic mechanism. Documented limitation, not a bug: `[docker] base`
+  needs a glibc new enough for the host-compiled binary (older host glibc
+  than the image's is fine; a newer host glibc generally is not). Default
+  is `debian:trixie-slim` (glibc 2.41, current Debian stable as of
+  2026-08) rather than `bookworm-slim` (glibc 2.36) -- the older default
+  tripped the `ldd` check below on the very first two real-world runs
+  (this dev machine, Arch glibc 2.44, and a user's machine needing
+  `GLIBC_2.38`), so it wasn't just a theoretical edge case.
+- **This is exactly the kind of thing the project's "no silent garbage"
+  philosophy exists for, so it isn't just documented — it's enforced at
+  build time:** after `docker build`, `docker_build` runs `ldd` on the
+  copied-in binary inside the freshly built image and greps for "not
+  found". Any missing symbol/library hard-fails the command with the exact
+  `ldd` line instead of silently tagging a broken image as built. Verified
+  live on this dev machine (Arch, glibc 2.44): `debian:bookworm-slim`
+  (glibc 2.36) correctly hard-failed with `GLIBC_2.38 not found`;
+  switching `[docker] base` to `debian:trixie-slim` (2.41) then built,
+  passed the `ldd` check, and `docker run`'s output was verified against
+  `curl` end-to-end (a standalone annotation-based REST demo project, not
+  part of this repo). This dev machine's
+  glibc (2.44) is itself still ahead of every current apt-based image
+  including `debian:sid-slim` (2.42) and `ubuntu:devel` (2.43) -- expect
+  `tinox docker`'s default to occasionally need a newer `base` override on
+  bleeding-edge rolling-release hosts even after this bump.
+- **Only apt-based (Debian/Ubuntu-family) base images are supported.** The
+  generated Dockerfile's package-install step is hardcoded to
+  `apt-get` — `[docker] base` pointing at an Alpine/Arch/etc. image will
+  fail at that `RUN` step, not silently produce a broken image, but it
+  won't work either. Not handled: scope was "minimal apt-based runtime
+  image", not multi-package-manager support.
+- **Package selection mirrors `compile_ll_to_exe`'s own link flags exactly**
+  (`docker_runtime_packages`/`compute_runtime_packages`), rather than a
+  fixed guess: `libgc1`+`zlib1g` always (matches unconditional `-lgc -lz`),
+  `libssl3` when TLS is on (default on, matches `-lssl -lcrypto`, opt-out
+  via `TINOX_TLS=0` same as the compiler), `libpq5`/`libmariadb3`/
+  `libsqlite3-0` from `[database] driver` when set. `TINOX_HTTP3=1` prints
+  a warning instead of guessing ngtcp2/nghttp3 package names (they vary by
+  distro) — add them via `extra_packages` if needed; the `ldd` check
+  catches it either way if they're missing.
+
+## Startup Banner for Auto-Run Programs (since 2026-08-11)
+
+Every compiled program that has at least one auto-run endpoint (`@GET`/
+`@Http3RestController`/`@WebsocketEndpoint`/`@Amqp10Consumer`/
+`@Amqp091Consumer`) now prints a startup banner unconditionally — no
+`import tinox.core.logger;` or annotation needed. Owned by
+`emit_tinox_main_bootstrap` (`crates/tinox-codegen/src/codegen.rs`),
+since that's already the one place that knows about every registered
+auto-run kind and is guaranteed to run exactly once, first:
+
+```
+ _____ _
+|_   _(_)_ __   _____  __
+  | | | | '_ \ / _ \ \/ /
+  | | | | | | | (_) >  <
+  |_| |_|_| |_|\___/_/\_\
+Loaded tinox.core modules: http_server, json
+Endpoints:
+  HTTP                   :8080
+Started in 0 ms
+```
+
+- **Only fires when `background_run_fns` is non-empty** (`has_endpoints`
+  in `emit_tinox_main_bootstrap`). A plain `class Main { fnc main() }`
+  script with no auto-run annotation goes through the *same* function
+  (`user_main_class` alone doesn't early-return) but must produce byte-
+  identical output to before this feature — that's the shape virtually
+  every e2e/example test with an exact `// expect:` stdout match uses.
+  **Verify this gate whenever touching this function**: the very first
+  implementation forgot it, and every single compiled program (including
+  the entire e2e suite) grew this banner — caught immediately by
+  compiling a trivial one-`println` `class Main` and diffing its output,
+  not by `cargo test` (no e2e test happens to combine an auto-run
+  annotation with an exact stdout match, so the suite itself wouldn't
+  have caught this).
+- **"Loaded tinox.core modules"** is `tinox.toml`'s declared
+  `[[dependencies]]` filtered to `group == "tinox.core"`
+  (`loaded_tinox_core_modules` in `crates/tinox/src/main.rs`, read
+  alongside `load_dep_dirs` in `compile_file` and passed to codegen via
+  `CodeGen::set_loaded_modules`) — declared, not actually-imported.
+  Simpler, and accurate enough: an unused declared dependency is already
+  the unusual case, not the common one this needs to optimize for.
+- **"Endpoints:"** is `(protocol, detail)` pairs pushed into
+  `CodeGen::startup_endpoints` right alongside each `background_run_fns`
+  push (same emit_*_code functions, so always in sync): `("HTTP",
+  ":8080")`, `("HTTP/3 (QUIC)", ":8843")`, `("WebSocket", ":9001")`,
+  `("AMQP 0-9-1 (consumer)", "host:port (queue: q)")`, `("AMQP 1.0
+  (consumer)", "host:port (address)")`. AMQP consumers connect out
+  rather than bind a port, hence the different (no leading `:`) shape.
+- **"Started in N ms"** is wall-clock from the top of `@tinox_main`
+  (before the banner print) to right after every auto-run kind has been
+  `tinox_task_spawn`-ed (before calling `Main_main`) — via
+  `tinox_now_ms()` (runtime.c, `clock_gettime(CLOCK_MONOTONIC, ...)`),
+  diffed on the Tinox side (two IR-level calls + a `sub`, no runtime
+  elapsed-time helper needed). This is "time to bring up the bootstrap",
+  not "time until the first successful request" — `HttpServer::listen()`s
+  actual bind happens asynchronously on its own spawned thread, so a
+  slow/failing bind is invisible to this number, same tradeoff Spring
+  Boot's own "Started Application in Xs" line makes.
