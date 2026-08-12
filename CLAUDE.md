@@ -850,3 +850,61 @@ preference.
   directly, not those specific variants. This meaningfully de-risked
   auto-serialize mode: a handler that provably never returns on some path
   is already a compile error today, independent of this feature.
+
+## REST "Try it out" Parameter Fields + Request/Response Example Schemas (since 2026-08-12)
+
+`/routes`' JSON entries (`devui_routes_json`, codegen.rs) now additionally carry
+`params` (every `@PathParam`/`@QueryParam`/`@PostParam`/`@HttpContext` binding, with
+its Tinox type name) and `requestExample`/`responseExample` -- compiler-generated
+example JSON *values* for the `@PostParam` body and the auto-serialized response body,
+so `tinox-devui`'s "Try it out" dialog can show a user what to send/expect without
+them going to read the controller source. Builds directly on the REST parameter
+binding annotations feature above (`RouteEntry.params`/`.return_type` already existed
+in codegen; this is purely an introspection-API + dashboard addition, no typecheck
+changes).
+
+- **`devui_json_example_for_type` walks the original AST `Type`, not the LLVM-level
+  `struct_field_llvm_types`/`struct_field_class_types` maps** used elsewhere in this
+  file for codegen proper -- those lose generic-argument fidelity (a `List<String>`
+  field and a `List<Person>` field are both just `"i8*"`/`"List"` at that level), which
+  would produce useless examples. `class_ast_map` (built once near the top of `gen()`,
+  ~codegen.rs:1578) is threaded down as a plain parameter into `emit_devui_code`/
+  `devui_routes_json` rather than stored as a new `self` field -- its only call site
+  (`self.emit_devui_code()`) is later in the same `gen()` body, so a persistent field
+  would be pure overhead.
+- **Cycle safety is genuinely new in this file.** The closest existing analog,
+  `emit_devui_component_state_handlers`'s CDI state dumper (see the section above),
+  avoids the problem entirely by refusing to recurse into nested classes at all.
+  Example generation DOES recurse (needed for realistic examples of real nested
+  request/response bodies), so a self-referential `@JsonSerializable` class (e.g. a
+  tree `Node` with a `List<Node> children` field) needs an explicit guard: a
+  `visiting: HashSet<String>` of class names currently being expanded on the current
+  path short-circuits a re-entrant one to a `"<ClassName>"` placeholder string instead
+  of recursing forever, plus an independent `depth` cap (12) as defense-in-depth
+  against long non-cyclic chains. Verified live: a `Node { id: Int64; children:
+  List<Node>; }` fixture compiles instantly and produces
+  `{"id":0,"children":["<Node>"]}`, not a hang or stack overflow.
+- **`requestExample`/`responseExample` are embedded as raw, unescaped nested JSON**
+  (`null` when absent), matching the existing precedent of `/components`'s `state`
+  field (`tinox_devui_components_json`, runtime.c) rather than a JSON-escaped string
+  -- also simply less code, since `devui_routes_json` already builds its JSON via
+  plain `format!` splicing, not the runtime `jsonBuilder` API. `RouteInfo.java`
+  (tinox-devui repo) declares these as `JsonNode`, consistent with `ComponentInfo
+  .state`'s existing handling, not `String`.
+- **Real, pre-existing gap fixed on the `tinox-devui` side while wiring this up, not
+  hypothetical**: `RestEndpointsView`'s "Try it out" dialog previously created input
+  fields ONLY for `:name` path segments (via a regex over `route.path`) -- `@QueryParam`
+  -bound parameters got no field at all, and even a manually-appended `?name=value`
+  would have gone nowhere, since the "Send" handler had no query-string-building logic
+  whatsoever. Fixed alongside this feature (not a separate change) since `route.params`
+  now exists and makes the omission obvious: both `PathParam` and `QueryParam` kinds
+  get labeled fields (`":id (Int64)"` / `"loud (Bool)"`), and `Send` builds a real
+  `?k=v&k2=v2` query string from the latter. Verified live end-to-end (not just
+  compiled): filling `:name=Ada` + `loud=true` on a `GET /greet/:name` route and
+  clicking Send returned a real `HTTP 200 {"message":"hi Ada"}` -- confirming the query
+  param actually reached the handler, not just that the field rendered.
+- **No separate type-only schema output.** A single populated example value (real
+  field names + representative typed values) is enough to answer "what do I type
+  here" -- matching Swagger's "Example Value" tab rather than adding a parallel
+  "Schema" tab. `params`' per-field `{kind, name, type}` already covers the scalar
+  path/query side separately.

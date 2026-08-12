@@ -2004,7 +2004,7 @@ impl CodeGen {
         self.emit_amqp091_consumer_code();
 
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
-        self.emit_devui_code();
+        self.emit_devui_code(&class_ast_map);
 
         // Unify user_main_class + background_run_fns into @tinox_main
         self.emit_tinox_main_bootstrap();
@@ -3210,7 +3210,7 @@ impl CodeGen {
     /// reported by it -- LLVM itself doesn't care about declaration order
     /// for the `@{Class}_di_instance` globals this references (`/components`
     /// below), only `background_run_fns` registration is order-sensitive.
-    fn emit_devui_code(&mut self) {
+    fn emit_devui_code(&mut self, class_ast_map: &HashMap<String, tinox_parser::Class>) {
         if !self.dev_enabled {
             return;
         }
@@ -3234,7 +3234,7 @@ impl CodeGen {
         }
 
         let modules_json = Self::devui_json_string_array(&self.loaded_modules);
-        let routes_json = self.devui_routes_json();
+        let routes_json = self.devui_routes_json(class_ast_map);
         let websockets_json = self.devui_websockets_json();
         // "HTTP" (plain, not "HTTP/3 (QUIC)") is the one try-it-out can
         // actually reach with a standard java.net.http.HttpClient -- an
@@ -3324,10 +3324,23 @@ impl CodeGen {
         format!("[{}]", parts.join(","))
     }
 
-    fn devui_routes_json(&self) -> String {
+    fn devui_routes_json(&self, class_ast_map: &HashMap<String, tinox_parser::Class>) -> String {
+        let do_not_serialize: HashSet<(String, String)> = self.do_not_serialize_fields.iter()
+            .map(|f| (f.class_name.clone(), f.field_name.clone()))
+            .collect();
         let items: Vec<String> = self.route_entries.iter().map(|r| {
+            let params_json = Self::devui_route_params_json(&r.params);
+            let request_example = r.params.iter()
+                .find(|p| p.kind == RouteParamKind::PostParam)
+                .map(|p| self.devui_json_example_for_type(&p.ty, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0))
+                .unwrap_or_else(|| "null".to_string());
+            let response_example = if matches!(&r.return_type, Type::Named(n) if n == "HttpContext") {
+                "null".to_string()
+            } else {
+                self.devui_json_example_for_type(&r.return_type, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0)
+            };
             format!(
-                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{}}}",
+                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{},\"params\":{},\"requestExample\":{},\"responseExample\":{}}}",
                 Self::devui_json_string(&r.http_method),
                 Self::devui_json_string(&r.path),
                 Self::devui_json_string(&r.class_name),
@@ -3335,9 +3348,167 @@ impl CodeGen {
                 r.status_code.map(|c| c.to_string()).unwrap_or_else(|| "null".to_string()),
                 Self::devui_json_opt_string(&r.produces),
                 Self::devui_json_opt_string(&r.consumes),
+                params_json,
+                request_example,
+                response_example,
             )
         }).collect();
         format!("[{}]", items.join(","))
+    }
+
+    /// `{"kind":"PathParam","name":"id","type":"Int64"}, ...` for a route's
+    /// bound parameters -- `type` is `null` for `@HttpContext` (not a JSON
+    /// scalar, nothing meaningful to label it with).
+    fn devui_route_params_json(params: &[RouteParamBinding]) -> String {
+        let items: Vec<String> = params.iter().map(|p| {
+            let kind = match p.kind {
+                RouteParamKind::PathParam => "PathParam",
+                RouteParamKind::QueryParam => "QueryParam",
+                RouteParamKind::PostParam => "PostParam",
+                RouteParamKind::HttpContext => "HttpContext",
+            };
+            let type_json = match p.kind {
+                RouteParamKind::HttpContext => "null".to_string(),
+                _ => Self::devui_json_string(Self::devui_type_name(&p.ty)),
+            };
+            format!(
+                "{{\"kind\":{},\"name\":{},\"type\":{}}}",
+                Self::devui_json_string(kind),
+                Self::devui_json_string(&p.name),
+                type_json,
+            )
+        }).collect();
+        format!("[{}]", items.join(","))
+    }
+
+    /// Display name for a param's declared type -- the scalar arms cover
+    /// what `@PathParam`/`@QueryParam` actually support
+    /// (`is_supported_param_scalar_type`, tinox-typecheck/src/annotations.rs);
+    /// `Type::Named` (a `@PostParam`'s class type) returns the class name
+    /// itself rather than falling into a generic "Unknown" bucket, since
+    /// that's real, useful label info for the devui dialog even though
+    /// `@PostParam` isn't a plain scalar. `Type` has no `Display` impl
+    /// (only `Debug`, which would print `Named("Foo")` rather than `Foo`),
+    /// so this is a fresh match rather than a shortcut through an existing
+    /// trait.
+    fn devui_type_name(ty: &Type) -> &str {
+        match ty {
+            Type::String => "String",
+            Type::Int8 => "Int8",
+            Type::Int16 => "Int16",
+            Type::Int32 => "Int32",
+            Type::Int64 => "Int64",
+            Type::UInt8 => "UInt8",
+            Type::UInt16 => "UInt16",
+            Type::UInt32 => "UInt32",
+            Type::UInt64 => "UInt64",
+            Type::Float32 => "Float32",
+            Type::Float64 => "Float64",
+            Type::Bool => "Bool",
+            Type::Char => "Char",
+            Type::Named(name) => name,
+            _ => "Unknown",
+        }
+    }
+
+    /// Field name -> declared `Type` for a class, inheritance-aware (own
+    /// fields override an ancestor's same-named field, matching how a real
+    /// Tinox subclass field shadows its parent's) -- unlike the sibling
+    /// `collect_inherited_fields`/`collect_field_class_types` helpers (which
+    /// only need field *names* or an LLVM-flattened type), this keeps the
+    /// full original AST `Type` so nested/generic shapes (`List<Person>`,
+    /// `Person?`, ...) survive for JSON-example generation below.
+    fn devui_class_field_types(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> Vec<(String, Type)> {
+        let Some(c) = class_map.get(name) else { return vec![]; };
+        let mut fields: Vec<(String, Type)> = if let Some(parent) = &c.extends {
+            Self::devui_class_field_types(parent, class_map)
+        } else {
+            vec![]
+        };
+        for f in &c.fields {
+            fields.retain(|(n, _)| n != &f.name);
+            fields.push((f.name.clone(), f.field_type.clone()));
+        }
+        fields
+    }
+
+    /// Recursively builds an example JSON *value* for a Tinox `Type` --
+    /// backs `/routes`' `requestExample`/`responseExample` (see CLAUDE.md's
+    /// Dev UI section). Deliberately walks the original AST `Type` rather
+    /// than the LLVM-flattened `struct_field_llvm_types`/
+    /// `struct_field_class_types` maps used elsewhere in this file, since
+    /// those lose generic-argument fidelity (a `List<String>` field and a
+    /// `List<Person>` field are both just "i8*"/"List" at that level).
+    ///
+    /// Cycle safety is genuinely new in this file -- the closest existing
+    /// analog, `emit_devui_component_state_handlers`'s CDI state dumper,
+    /// avoids the problem entirely by refusing to recurse into nested
+    /// classes at all. This function DOES recurse (needed for realistic
+    /// examples of real request/response bodies), so a self-referential
+    /// `@JsonSerializable` class (e.g. a tree `Node` with a `List<Node>`
+    /// field) needs an explicit guard: `visiting` tracks class names
+    /// currently being expanded on the current path and short-circuits a
+    /// re-entrant one to a placeholder string instead of recursing forever.
+    /// `depth` is a second, independent cap (defense in depth against long
+    /// non-cyclic chains, not just true cycles).
+    fn devui_json_example_for_type(
+        &self,
+        ty: &Type,
+        class_ast_map: &HashMap<String, tinox_parser::Class>,
+        do_not_serialize: &HashSet<(String, String)>,
+        visiting: &mut HashSet<String>,
+        depth: usize,
+    ) -> String {
+        if depth > 12 {
+            return "null".to_string();
+        }
+        match ty {
+            Type::String => "\"string\"".to_string(),
+            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64
+            | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64 => "0".to_string(),
+            Type::Float32 | Type::Float64 => "0.0".to_string(),
+            Type::Bool => "false".to_string(),
+            Type::Char => "\"c\"".to_string(),
+            Type::Mutable(inner) | Type::Ref(inner) | Type::Nullable(inner) =>
+                self.devui_json_example_for_type(inner, class_ast_map, do_not_serialize, visiting, depth),
+            Type::Generic { name, args } if (name == "List" || name == "Array") && !args.is_empty() => {
+                let elem = self.devui_json_example_for_type(&args[0], class_ast_map, do_not_serialize, visiting, depth + 1);
+                format!("[{elem}]")
+            }
+            Type::Array(inner) => {
+                let elem = self.devui_json_example_for_type(inner, class_ast_map, do_not_serialize, visiting, depth + 1);
+                format!("[{elem}]")
+            }
+            Type::Named(cls) => {
+                if !class_ast_map.contains_key(cls) {
+                    return "null".to_string();
+                }
+                if !visiting.insert(cls.clone()) {
+                    // Already expanding this class further up the current
+                    // path -- a genuine cycle, not just repeated use of the
+                    // same class in unrelated fields (each top-level call
+                    // gets its own empty `visiting` set).
+                    return Self::devui_json_string(&format!("<{cls}>"));
+                }
+                let fields = Self::devui_class_field_types(cls, class_ast_map);
+                let parts: Vec<String> = fields.iter()
+                    .filter(|(fname, _)| {
+                        let owner = self.field_declaring_class(cls, fname);
+                        !do_not_serialize.contains(&(owner, fname.clone()))
+                    })
+                    .map(|(fname, fty)| {
+                        let val = self.devui_json_example_for_type(fty, class_ast_map, do_not_serialize, visiting, depth + 1);
+                        format!("{}:{}", Self::devui_json_string(fname), val)
+                    })
+                    .collect();
+                visiting.remove(cls);
+                format!("{{{}}}", parts.join(","))
+            }
+            _ => "null".to_string(),
+        }
     }
 
     fn devui_websockets_json(&self) -> String {
