@@ -1,0 +1,89 @@
+{
+  "name": "jgrep-tinox",
+  "displayName": "jgrep",
+  "description": "Filter the current JSON or YAML editor with the locally installed jgrep CLI — including unsaved buffers.",
+  "version": "0.1.0",
+  "publisher": "subnix-work",
+  "license": "MIT",
+  "homepage": "https://github.com/subnix-work/jgrep-tinox",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/subnix-work/tinox.git",
+    "directory": "vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/subnix-work/tinox/issues"
+  },
+  "keywords": [
+    "jgrep",
+    "jq",
+    "json",
+    "yaml",
+    "filter"
+  ],
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "jgrep-tinox.filter",
+        "title": "jgrep: Filter current JSON/YAML",
+        "category": "jgrep"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "jgrep-tinox.filter"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "jgrep-tinox.filter",
+          "group": "1_modification",
+          "when": "editorTextFocus && (editorLangId == json || editorLangId == jsonc || editorLangId == jsonl || editorLangId == yaml || editorLangId == yml)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "jgrep-tinox",
+      "properties": {
+        "jgrep-tinox.executablePath": {
+          "type": "string",
+          "default": "jgrep",
+          "scope": "machine-overridable",
+          "order": 0,
+          "markdownDescription": "Path or program name of the `jgrep` binary. The default `jgrep` is resolved from the `PATH` of the VS Code process. Set an absolute path for a local build, e.g. `/usr/local/bin/jgrep` or `C:\\\\Tools\\\\jgrep.exe`."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.125.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}

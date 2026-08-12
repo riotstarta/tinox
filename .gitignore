@@ -6,6 +6,20 @@
 # Editor
 .vscode/
 .idea/
+
+# VS Code extension (tinox/vscode/) — build artifacts
+vscode/node_modules/
+vscode/out/
+vscode/*.vsix
+vscode/.vscode-test/
+
+# version the extension's launch/tasks config (parent .vscode/ is ignored)
+!vscode/.vscode/
+!vscode/.vscode/launch.json
+!vscode/.vscode/tasks.json
+!vscode/.vscode/extensions.json
+!vscode/.vscode/settings.json
+
 *.swp
 *.swo
 *~
@@ -42,6 +56,9 @@ claude
 a.out
 test_*
 test
+# parent pattern `test` would otherwise drop vscode/src/test/
+!vscode/src/test/
+!vscode/src/test/**
 test2
 test_manual
 test_verify
