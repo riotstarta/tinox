@@ -32,6 +32,7 @@
 #include <sys/uio.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
 #include <zlib.h>
@@ -5767,18 +5768,39 @@ char* jsonBuilderFinish(char* handle) {
     return result;
 }
 
+// Inserts an already-valid raw JSON value (object/array/`null`) as-is --
+// unlike jsonBuilderAddString, does NOT quote/escape it. A NULL rawJson
+// writes the JSON `null` literal (used by /components' "state" field: no
+// persistent instance to dump yet, see tinox_devui_components_json below).
+void jsonBuilderAddRaw(char* handle, const char* key, const char* rawJson) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    jb_key(b, key);
+    if (!rawJson) {
+        jb_grow(b, 4);
+        memcpy(b->buf + b->len, "null", 4); b->len += 4;
+        return;
+    }
+    size_t vl = strlen(rawJson);
+    jb_grow(b, vl);
+    memcpy(b->buf + b->len, rawJson, vl); b->len += vl;
+}
+
 // Builds the dev-mode introspection API's /components response: one JSON
-// object per @ApplicationComponent-scoped class -- name, scope, and
-// whether a singleton currently exists. `instantiated` is always 0 for
-// HttpRequest-scoped components: they have no persistent singleton to
-// check (emit_di_code's _di_create() allocates a fresh instance per call,
-// never caches one), so the compiler-generated caller passes a constant 0
+// object per @ApplicationComponent-scoped class -- name, scope, whether a
+// singleton currently exists, and (when it does) its full field-value
+// state (states[i], a pre-built raw JSON object string from the
+// compiler-generated, null-safe `ClassName_devui_state_json`, or NULL for
+// "nothing to show" -- see emit_devui_component_state_handlers,
+// codegen.rs). `instantiated` is always 0 for HttpRequest-scoped
+// components: they have no persistent singleton to check (emit_di_code's
+// _di_create() allocates a fresh instance per call, never caches one), so
+// the compiler-generated caller passes a constant 0 (and a NULL state)
 // for those rather than loading a global that was never emitted for them.
 // N is always small (the program's own @ApplicationComponent count) and
 // this is a dev-only introspection endpoint, not a hot path, so the
 // per-component tinox_string_concat chain here (same primitive used
 // throughout the runtime; GC-tracked, nothing to free by hand) is fine.
-char* tinox_devui_components_json(char** names, char** scopes, int64_t* instantiated, int64_t count) {
+char* tinox_devui_components_json(char** names, char** scopes, int64_t* instantiated, char** states, int64_t count) {
     char* result = strdup("[");
     for (int64_t i = 0; i < count; i++) {
         if (i > 0) result = tinox_string_concat(result, ",");
@@ -5786,10 +5808,62 @@ char* tinox_devui_components_json(char** names, char** scopes, int64_t* instanti
         jsonBuilderAddString(b, "name", names[i]);
         jsonBuilderAddString(b, "scope", scopes[i]);
         jsonBuilderAddBool(b, "instantiated", instantiated[i] != 0);
+        jsonBuilderAddRaw(b, "state", states[i]);
         char* obj = jsonBuilderFinish(b);
         result = tinox_string_concat(result, obj);
     }
     return tinox_string_concat(result, "]");
+}
+
+// Runs `cmd` via the shell (popen), capturing its combined output (the
+// caller redirects stderr itself, e.g. "... 2>&1", same as any
+// interactive shell use) into a dynamically-grown buffer, and returns
+// {"exitCode":N,"output":"<captured text>"} -- backs the dev-mode
+// introspection API's /tests/run endpoint (emit_devui_code, codegen.rs),
+// which shells out to `tinox test` in the connected project's own
+// directory. `cmd` is always a compiler-generated, compile-time-constant
+// string (the project root and the tinox binary's own path, both
+// captured at build time -- see main.rs's dev_test_command) -- never
+// influenced by request input, so there's no injection surface despite
+// this being reachable from an HTTP handler.
+char* tinox_run_command_json(const char* cmd) {
+    FILE* fp = popen(cmd, "r");
+    if (!fp) {
+        char* b = jsonBuilderCreate();
+        jsonBuilderAddInt(b, "exitCode", -1);
+        jsonBuilderAddString(b, "output", "failed to start command");
+        return jsonBuilderFinish(b);
+    }
+
+    size_t cap = 4096;
+    size_t len = 0;
+    char* buf = (char*)malloc(cap);
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
+        if (len + n + 1 > cap) {
+            while (len + n + 1 > cap) cap *= 2;
+            buf = (char*)realloc(buf, cap);
+        }
+        memcpy(buf + len, chunk, n);
+        len += n;
+    }
+    buf[len] = '\0';
+
+    int status = pclose(fp);
+    int64_t exitCode = -1;
+    if (status != -1) {
+        if (WIFEXITED(status)) {
+            exitCode = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            exitCode = 128 + WTERMSIG(status);
+        }
+    }
+
+    char* b = jsonBuilderCreate();
+    jsonBuilderAddInt(b, "exitCode", exitCode);
+    jsonBuilderAddString(b, "output", buf);
+    return jsonBuilderFinish(b);
 }
 
 // ---- fromJson field helpers — avoid two runtime calls per field ----

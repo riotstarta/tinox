@@ -634,6 +634,32 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Walks up from the current directory to find the nearest `tinox.toml`,
+/// returning its containing directory -- same search `read_dev_config`/
+/// `read_docker_config`/etc. already do, but returning the directory
+/// itself instead of a section's parsed contents (needed for the dev-mode
+/// introspection API's `/tests/run`, which needs the actual project root
+/// to hand to `tinox test`).
+fn find_project_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("tinox.toml").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
+/// Single-quotes `s` for safe embedding in a `/bin/sh -c` command string
+/// (the dev-mode introspection API's `/tests/run` uses `popen`, which
+/// invokes a shell), escaping any literal `'` as `'\''`. Only ever applied
+/// to compiler-controlled paths (the tinox binary's own path, the project
+/// root) -- never request input -- but paths can still contain spaces.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// The dev-mode introspection API's `/config` endpoint has two halves: this
 /// builds the compile-time one (what's configured in tinox.toml), baked as
 /// a JSON constant at codegen time; `tinox_config_dump_json` (runtime.c)
@@ -3263,6 +3289,24 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             env!("CARGO_PKG_VERSION").to_string(),
         );
         codegen.set_dev_config_summary_json(build_dev_config_summary_json());
+        // `tinox test` takes a single positional arg as a FILE path, not a
+        // project directory (collect_test_files, main.rs) -- there's no
+        // "run against this directory" flag, only "run with no args,
+        // scanning tests/+src/ under the nearest tinox.toml found by
+        // walking up from the current directory". So `cd` into the
+        // project root first and invoke it bare, letting its own
+        // discovery do the work, instead of passing the root as an
+        // argument (which would make it try to read the directory itself
+        // as a single test file and fail with "Is a directory").
+        let test_command = match (std::env::current_exe(), find_project_root()) {
+            (Ok(exe), Some(root)) => format!(
+                "cd {} && {} test 2>&1",
+                shell_quote(&root.to_string_lossy()),
+                shell_quote(&exe.to_string_lossy())
+            ),
+            _ => String::new(),
+        };
+        codegen.set_dev_test_command(test_command);
     }
     codegen
         .gen(&ast)

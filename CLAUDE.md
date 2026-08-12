@@ -637,3 +637,96 @@ default `http://localhost:9090`).
   -- `docker run` pulls it automatically on a machine that's never built
   the dashboard itself. Override to a local build via `[dev] devui_image`
   in `tinox.toml` when developing the dashboard.
+
+## CDI Component Full-State Dump + Test Runner (since 2026-08-12)
+
+Two follow-up additions to the Dev UI, both requested after the initial
+dashboard was already live: `/components`' `state` field (the CDI
+singleton's actual field values, not just name/scope/instantiated), and a
+new `/tests/run` endpoint + Tests view that runs the connected project's
+own `tinox test` suite from the dashboard.
+
+**CDI state** (`emit_devui_component_state_handlers`, codegen.rs): a
+SEPARATE serializer from `emit_json_serialize_code`'s `_toJson`
+(@JsonSerializable-only, used for real REST response bodies), not an
+extension of it -- the original plan for this whole feature explicitly
+called out why: `List<Class>`/nested-class fields are i64* at the LLVM
+level, indistinguishable from a plain int array, so `_toJson`'s existing
+fallback (`jsonBuilderAddIntList`) would silently misread one as
+consecutive int64s if reused naively. The new serializer instead reuses
+`tinox_json_list_serialize` (the SAME dispatch the compiler's own
+`List<C>.toJson()` call-site codegen already uses, so it's proven, not
+new machinery) for `List<X>` where X is `@JsonSerializable`, and falls
+back to an honest `"<unsupported field type>"` placeholder for anything
+else pointer-shaped it can't identify this way (Map<K,V>,
+List<String>/List<Float>, a List of a non-`@JsonSerializable` class, a
+directly nested class field -- narrower than `List<X>`, deliberately
+skipped rather than risking a null-pointer call into an arbitrary
+class's `_toJson`). Verified live against `demo`'s `PersonController`
+(`var people: List<Person>` -- exactly the case `_toJson` would have
+gotten wrong): `/components` now returns the real `people` array with
+every field, `null` before the singleton is first instantiated.
+`ComponentInfo.state`'s null-safety is handled INSIDE the generated
+`{class}_devui_state_json(i8* %self_i8)` function itself (an `icmp eq
+... null` branch returning `i8* null` immediately) rather than at the
+call site in `emit_devui_components_handler` -- lets that caller invoke
+it unconditionally for every Application/Startup-scoped component,
+matching how `HttpRequest`-scoped ones (no persistent instance to check)
+just store a constant null pointer instead.
+
+**Test runner** (`/tests/run`, `tinox_run_command_json` in runtime.c):
+shells out (via `popen`) to a compile-time-constant command --
+`cd <project root> && <tinox binary path> test 2>&1` -- built in main.rs
+from `std::env::current_exe()` and a new `find_project_root()` helper
+(same nearest-`tinox.toml` walk `read_dev_config`/etc. already do, just
+returning the directory instead of parsed section contents). Never
+influenced by request input, so there's no injection surface despite
+running a shell command from an HTTP handler. `tinox test`'s own
+human-readable stdout (PASS/FAIL lines, a final summary) comes back
+as-is in the `output` JSON field -- no separate structured result format
+needed on either side. The dashboard's Tests view runs this on its own
+background thread (`TestsView.runTests()`, tinox-devui repo) and pushes
+the result via `UI.access(...)` once done, the same `@Push` wiring
+`WebSocketEndpointsView`'s `DevUiWsClient` needs -- a real test run can
+take anywhere from a couple seconds to much longer, so unlike REST/
+WebSocket "try it out" this can't just block the request thread; without
+the background thread + push, the whole click would appear to freeze for
+the run's duration with no progress indicator ever actually rendering.
+
+**Two real, previously-undiscovered bugs found and fixed while building
+the test runner** -- found purely by trying to write and run one real
+test against `demo`'s own `PersonController`, exactly the kind of thing
+this project's CLAUDE.md philosophy expects ("verify against real
+systems... structurally find NO bugs where the implementation is
+self-consistent but wrong"):
+- **`tinox test` silently hung instead of running the test** when the
+  test file imports a class carrying its own auto-run annotations (here:
+  `PersonController`'s `@GET` routes) -- a completely ordinary thing to
+  want to test (a helper method on a REST controller). Root cause:
+  `compile_test_exe` runs a test file through the exact same `gen()`
+  codegen path as a normal build, including whatever it `import`s --
+  `PersonController`'s routes populate `background_run_fns` same as any
+  real program. `emit_tinox_main_bootstrap` runs BEFORE `emit_test_code`
+  (which only defines `@tinox_main` when `!self.has_main`) and
+  unconditionally claimed `@tinox_main` for itself instead, since its own
+  guard only checked `has_main`/`background_run_fns.is_empty()`, neither
+  of which was true. The compiled "test" binary silently became the real
+  app's auto-run bootstrap (spawned the HTTP server, blocked forever
+  joining its listener thread) and the actual `@Test` method was never
+  called -- no error, no wrong-answer failure, just a hang, which is
+  arguably worse. Fixed with one added guard at the top of
+  `emit_tinox_main_bootstrap`: `if self.test_entry.is_some() { return; }`
+  -- `background_run_fns`/`route_entries` etc. still get populated and
+  their functions still get emitted, just as harmless unused IR; only the
+  "what does `@tinox_main` become" decision needed to defer to the test
+  runner. Verified live: `tinox test` on `demo`'s new
+  `src/PersonControllerTest.tnx` (which imports `PersonController`) now
+  runs its 4 tests and exits normally instead of hanging.
+- **`tinox test <project-root-dir>` doesn't work the way it looks like it
+  should**: the CLI's single positional arg is a FILE path
+  (`collect_test_files`), not a project directory -- passing a directory
+  fails with "Is a directory" (Rust's `fs::read_to_string` on a dir).
+  There's no dedicated "run against this directory" flag; the only way to
+  get the tests/+src/ auto-discovery scan is to run `tinox test` bare
+  from inside the project. `/tests/run`'s command construction accounts
+  for this: `cd <project root> &&`, not a positional argument.

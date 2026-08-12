@@ -459,6 +459,13 @@ pub struct CodeGen {
     /// in main.rs (which has the raw section readers already in scope).
     /// codegen just bakes this as a constant; it doesn't re-derive it.
     dev_config_summary_json: String,
+    /// Full shell command line for `/tests/run` (`<tinox exe> test
+    /// <project root> 2>&1`, both paths captured at compile time and
+    /// shell-quoted) -- set externally via `set_dev_test_command`. Empty
+    /// when either path couldn't be determined at build time; the emitted
+    /// handler checks for that and returns a fixed error JSON instead of
+    /// running an empty command.
+    dev_test_command: String,
     /// Whether `class Main { fnc main() -> Int32 }` was found and validated
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
@@ -562,6 +569,7 @@ impl CodeGen {
             dev_package_version: String::new(),
             dev_tinox_version: String::new(),
             dev_config_summary_json: "{}".to_string(),
+            dev_test_command: String::new(),
             user_main_class: false,
             defined_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -617,6 +625,10 @@ impl CodeGen {
         self.dev_package_name = package_name;
         self.dev_package_version = package_version;
         self.dev_tinox_version = tinox_version;
+    }
+
+    pub fn set_dev_test_command(&mut self, command: String) {
+        self.dev_test_command = command;
     }
 
     pub fn set_dev_config_summary_json(&mut self, json: String) {
@@ -1355,6 +1367,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @jsonBuilderAddBool(i8*, i8*, i32)").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddString(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @jsonBuilderAddIntList(i8*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare void @jsonBuilderAddRaw(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @jsonBuilderFinish(i8*)").unwrap();
         // fromJson field helpers
         writeln!(&mut self.ir, "declare i64 @jsonGetIntField(i64*, i8*)").unwrap();
@@ -2920,6 +2933,7 @@ impl CodeGen {
         self.emit_devui_static_handler("__devui_info", &info_json);
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
+        self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
@@ -2933,6 +2947,7 @@ impl CodeGen {
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
             ("/components", "__devui_components"),
+            ("/tests/run", "__devui_tests_run"),
         ] {
             let path_ptr = self.emit_lambda_string_literal(path);
             writeln!(&mut self.lambda_ir,
@@ -3089,6 +3104,180 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir).unwrap();
     }
 
+    /// Emits `@{class}_devui_state_json(i8* %self_i8) -> i8*` for every
+    /// Application/Startup-scoped DI component -- a full field-value dump
+    /// backing `/components`' "state". Null-safe by design (returns a
+    /// null i8* immediately when `%self_i8` is null, i.e. no singleton
+    /// exists yet), so `emit_devui_components_handler` can call it
+    /// unconditionally instead of needing its own branch.
+    ///
+    /// Deliberately a SEPARATE serializer from `emit_json_serialize_code`'s
+    /// `_toJson` (@JsonSerializable-only, used for real REST response
+    /// bodies) -- not an extension of that shared, already-relied-on path.
+    /// The plan for this whole feature explicitly called out `_toJson`'s
+    /// known gap: `List<Class>` and directly-nested-class fields are i64*
+    /// at the LLVM level, indistinguishable from a plain int array, so
+    /// `_toJson`'s existing fallback (`jsonBuilderAddIntList`) would
+    /// silently misread one as consecutive int64s -- exactly the kind of
+    /// silent garbage this project's CLAUDE.md exists to prevent. This
+    /// serializer instead:
+    ///  - reuses `tinox_json_list_serialize` for `List<X>` where X is
+    ///    `@JsonSerializable` -- the SAME dispatch the compiler's own
+    ///    `List<C>.toJson()` call-site codegen already uses (proven
+    ///    correct: it's real REST-response serialization code, not new
+    ///    machinery written just for this).
+    ///  - falls back to an honest `"<unsupported field type>"` placeholder
+    ///    for anything else pointer-shaped it can't identify this way
+    ///    (Map<K,V>, List<String>/List<Float>, a List of a non-
+    ///    @JsonSerializable class, a directly nested class field --
+    ///    narrower scope than `List<X>`, skipped rather than risking a
+    ///    null-pointer call into an arbitrary class's `_toJson`). Narrow,
+    ///    not a general recursive object serializer.
+    ///
+    /// Plain scalars (String/Int/Float/Bool) and plain int arrays
+    /// (`List<Int>`, marker "Array") serialize exactly like `_toJson`
+    /// always has -- this only changes behavior for the i64* cases that
+    /// were previously ALWAYS routed through `jsonBuilderAddIntList`
+    /// regardless of what they actually were.
+    fn emit_devui_component_state_handlers(&mut self, components: &[DiComponentInfo]) {
+        let do_not_serialize_set: std::collections::HashSet<(String, String)> =
+            self.do_not_serialize_fields.iter()
+                .map(|f| (f.class_name.clone(), f.field_name.clone()))
+                .collect();
+
+        for comp in components {
+            if !matches!(comp.scope, DiScope::Application | DiScope::Startup) {
+                continue;
+            }
+            let class_name = comp.class_name.clone();
+            let Some(layout) = self.struct_layouts.get(&class_name).cloned() else { continue };
+            let Some(llvm_types) = self.struct_field_llvm_types.get(&class_name).cloned() else { continue };
+            let field_class_types = self.struct_field_class_types.get(&class_name).cloned().unwrap_or_default();
+
+            let data_fields: Vec<(String, usize, String)> = layout.iter()
+                .enumerate()
+                .filter(|(_, f)| *f != "__vtable__" && *f != "log")
+                .filter(|(_, f)| {
+                    let owner = self.field_declaring_class(&class_name, f);
+                    !do_not_serialize_set.contains(&(owner, f.to_string()))
+                })
+                .filter_map(|(idx, f)| llvm_types.get(f).map(|ty| (f.clone(), idx, ty.clone())))
+                .collect();
+
+            let uid = self.temp_count;
+            self.temp_count += 1;
+
+            writeln!(&mut self.lambda_ir, "define i8* @{class_name}_devui_state_json(i8* %self_i8) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_null_{uid} = icmp eq i8* %self_i8, null").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_null_{uid}, label %null_case_{uid}, label %normal_case_{uid}").unwrap();
+            writeln!(&mut self.lambda_ir, "null_case_{uid}:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i8* null").unwrap();
+            writeln!(&mut self.lambda_ir, "normal_case_{uid}:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %self = bitcast i8* %self_i8 to i64*").unwrap();
+            let builder = self.temp();
+            writeln!(&mut self.lambda_ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+
+            for (field_name, struct_idx, llvm_ty) in &data_fields {
+                let key_lbl = format!("str{}", self.strings.len());
+                self.strings.insert(key_lbl.clone(), field_name.clone());
+                let key_len = field_name.len() + 1;
+                let key_ptr = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {key_ptr} = getelementptr [{key_len} x i8], [{key_len} x i8]* @{key_lbl}, i64 0, i64 0").unwrap();
+
+                let fptr = self.temp();
+                let raw = self.temp();
+                writeln!(&mut self.lambda_ir, "  {fptr} = getelementptr i64, i64* %self, i64 {struct_idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  {raw} = load i64, i64* {fptr}").unwrap();
+
+                let marker = field_class_types.get(field_name).cloned();
+
+                match llvm_ty.as_str() {
+                    "i8*" => {
+                        let s = self.temp();
+                        writeln!(&mut self.lambda_ir, "  {s} = inttoptr i64 {raw} to i8*").unwrap();
+                        writeln!(&mut self.lambda_ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {s})").unwrap();
+                    }
+                    "double" | "float" => {
+                        let dbl = self.temp();
+                        writeln!(&mut self.lambda_ir, "  {dbl} = bitcast i64 {raw} to double").unwrap();
+                        writeln!(&mut self.lambda_ir, "  call void @jsonBuilderAddFloat(i8* {builder}, i8* {key_ptr}, double {dbl})").unwrap();
+                    }
+                    "i1" => {
+                        let truncated = self.temp();
+                        let extended = self.temp();
+                        writeln!(&mut self.lambda_ir, "  {truncated} = trunc i64 {raw} to i1").unwrap();
+                        writeln!(&mut self.lambda_ir, "  {extended} = zext i1 {truncated} to i32").unwrap();
+                        writeln!(&mut self.lambda_ir, "  call void @jsonBuilderAddBool(i8* {builder}, i8* {key_ptr}, i32 {extended})").unwrap();
+                    }
+                    "i64*" => {
+                        let list_of_serializable = marker.as_deref()
+                            .and_then(|m| m.strip_prefix("List:"))
+                            .filter(|cls| self.json_serializable_classes.iter().any(|c| c == cls))
+                            .map(|cls| cls.to_string());
+                        if marker.as_deref() == Some("Array") {
+                            let arr_ptr = self.temp();
+                            writeln!(&mut self.lambda_ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                            writeln!(&mut self.lambda_ir, "  call void @jsonBuilderAddIntList(i8* {builder}, i8* {key_ptr}, i64* {arr_ptr})").unwrap();
+                        } else if let Some(cls) = list_of_serializable {
+                            let list_ptr = self.temp();
+                            writeln!(&mut self.lambda_ir, "  {list_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                            let json = self.temp();
+                            writeln!(&mut self.lambda_ir,
+                                "  {json} = call i8* @tinox_json_list_serialize(i64* {list_ptr}, ptr @{cls}_toJson)").unwrap();
+                            writeln!(&mut self.lambda_ir,
+                                "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                        } else {
+                            let placeholder = self.emit_lambda_string_literal("<unsupported field type>");
+                            writeln!(&mut self.lambda_ir,
+                                "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
+                        }
+                    }
+                    _ => {
+                        writeln!(&mut self.lambda_ir, "  call void @jsonBuilderAddInt(i8* {builder}, i8* {key_ptr}, i64 {raw})").unwrap();
+                    }
+                }
+            }
+
+            let result = self.temp();
+            writeln!(&mut self.lambda_ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i8* {result}").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+    }
+
+    /// `/tests/run`: shells out to `tinox test` in the connected project's
+    /// own directory via `tinox_run_command_json` (runtime.c, popen-based)
+    /// -- `dev_test_command` is a compile-time constant (built in main.rs
+    /// from `std::env::current_exe()` and the project root found by
+    /// walking up from the build's own working directory), never
+    /// influenced by request input, so there's no injection surface
+    /// despite this running an arbitrary-looking shell command from an
+    /// HTTP handler. Backs the dashboard's Tests view -- `tinox test`'s
+    /// own human-readable stdout ("PASS ..."/"FAIL ...", a final "N
+    /// tests -- N passed, N failed" summary) is returned as-is in
+    /// `output`, no separate structured parsing needed on either side.
+    fn emit_devui_tests_run_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_run_command_json(i8*)").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_tests_run(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        if self.dev_test_command.is_empty() {
+            let err_json = self.emit_lambda_string_literal(
+                "{\"exitCode\":-1,\"output\":\"could not determine the tinox binary path or project root at build time\"}"
+            );
+            self.emit_devui_finish_response(&err_json);
+        } else {
+            let cmd_ptr = self.emit_lambda_string_literal(&self.dev_test_command.clone());
+            let json = self.temp();
+            writeln!(&mut self.lambda_ir, "  {json} = call i8* @tinox_run_command_json(i8* {cmd_ptr})").unwrap();
+            self.emit_devui_finish_response(&json);
+        }
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
     /// `/components`: one JSON object per `@ApplicationComponent`-scoped
     /// class -- name, scope, and whether a singleton currently exists.
     /// Application/Startup-scoped components have a real
@@ -3096,10 +3285,13 @@ impl CodeGen {
     /// and compares to null right here at request time. HttpRequest-scoped
     /// ones never get such a global (a fresh instance is allocated per
     /// request, never cached), so their flag is a compile-time-constant
-    /// `0` -- there's nothing to check.
+    /// `0` -- there's nothing to check. "state" defers to
+    /// `emit_devui_component_state_handlers`'s null-safe per-class
+    /// function, called unconditionally for Application/Startup scope.
     fn emit_devui_components_handler(&mut self) {
-        writeln!(&mut self.lambda_ir, "declare i8* @tinox_devui_components_json(i8**, i8**, i64*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_devui_components_json(i8**, i8**, i64*, i8**, i64)").unwrap();
         let components = self.di_components.clone();
+        self.emit_devui_component_state_handlers(&components);
         writeln!(&mut self.lambda_ir, "define void @__devui_components(i64 %ctx_i64) {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
@@ -3129,6 +3321,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "  %names = alloca [{count} x i8*]").unwrap();
         writeln!(&mut self.lambda_ir, "  %scopes = alloca [{count} x i8*]").unwrap();
         writeln!(&mut self.lambda_ir, "  %flags = alloca [{count} x i64]").unwrap();
+        writeln!(&mut self.lambda_ir, "  %states = alloca [{count} x i8*]").unwrap();
         for (idx, comp) in components.iter().enumerate() {
             writeln!(&mut self.lambda_ir,
                 "  %name_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %names, i64 0, i64 {idx}").unwrap();
@@ -3138,6 +3331,8 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  store i8* {}, i8** %scope_slot_{idx}", scope_ptrs[idx]).unwrap();
             writeln!(&mut self.lambda_ir,
                 "  %flag_slot_{idx} = getelementptr [{count} x i64], [{count} x i64]* %flags, i64 0, i64 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir,
+                "  %state_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %states, i64 0, i64 {idx}").unwrap();
             match comp.scope {
                 DiScope::Application | DiScope::Startup => {
                     writeln!(&mut self.lambda_ir,
@@ -3147,9 +3342,13 @@ impl CodeGen {
                     writeln!(&mut self.lambda_ir,
                         "  %flag_{idx} = zext i1 %is_set_{idx} to i64").unwrap();
                     writeln!(&mut self.lambda_ir, "  store i64 %flag_{idx}, i64* %flag_slot_{idx}").unwrap();
+                    writeln!(&mut self.lambda_ir,
+                        "  %state_{idx} = call i8* @{}_devui_state_json(i8* %inst_raw_{idx})", comp.class_name).unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i8* %state_{idx}, i8** %state_slot_{idx}").unwrap();
                 }
                 DiScope::HttpRequest => {
                     writeln!(&mut self.lambda_ir, "  store i64 0, i64* %flag_slot_{idx}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i8* null, i8** %state_slot_{idx}").unwrap();
                 }
             }
         }
@@ -3160,7 +3359,9 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir,
             "  %flags_ptr = getelementptr [{count} x i64], [{count} x i64]* %flags, i64 0, i64 0").unwrap();
         writeln!(&mut self.lambda_ir,
-            "  %json = call i8* @tinox_devui_components_json(i8** %names_ptr, i8** %scopes_ptr, i64* %flags_ptr, i64 {count})").unwrap();
+            "  %states_ptr = getelementptr [{count} x i8*], [{count} x i8*]* %states, i64 0, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir,
+            "  %json = call i8* @tinox_devui_components_json(i8** %names_ptr, i8** %scopes_ptr, i64* %flags_ptr, i8** %states_ptr, i64 {count})").unwrap();
         self.emit_devui_finish_response("%json");
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
@@ -3195,6 +3396,31 @@ impl CodeGen {
     /// Opt out per project via `[startup] banner = false` in tinox.toml
     /// (`banner_enabled` / `set_startup_banner_enabled`).
     fn emit_tinox_main_bootstrap(&mut self) {
+        // `tinox test` (compile_test_exe, main.rs) compiles ONE source
+        // file's full annotation set through the exact same `gen()` path
+        // as a normal build -- including whatever the file `import`s. A
+        // test file importing a class with its own auto-run annotations
+        // (e.g. testing a helper method on an @GET/@ApplicationComponent
+        // REST controller, a completely ordinary thing to want to test)
+        // populates `background_run_fns` from THAT class's routes, same
+        // as any real program would. Found live: without this guard, this
+        // function runs BEFORE `emit_test_code` (which only defines
+        // `@tinox_main` when `!self.has_main`) and unconditionally claims
+        // `@tinox_main` itself instead -- the compiled "test" binary
+        // silently becomes the real app's auto-run bootstrap (spawns the
+        // HTTP server, blocks forever waiting for its listener thread to
+        // join) and the actual @Test method is never even called. No
+        // error, no wrong-answer test failure either -- the process just
+        // hangs, which is arguably worse. `test_entry.is_some()` means
+        // `emit_test_code` is going to define `@tinox_main` itself
+        // (guarded on `!has_main`, so it MUST see this function skip);
+        // background_run_fns/route_entries etc. still get populated and
+        // their functions still get emitted as harmless unused IR -- only
+        // this bootstrap step (deciding what `@tinox_main` becomes) needs
+        // to defer to the test runner.
+        if self.test_entry.is_some() {
+            return;
+        }
         if self.has_main {
             return;
         }
