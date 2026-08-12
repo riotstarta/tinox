@@ -87,6 +87,37 @@ pub struct RouteEntry {
     pub oidc_roles: Vec<String>,
     /// true = fnc (static), false = fn (instance, has self)
     pub is_static: bool,
+    /// Per-parameter bindings, in declared order -- drives
+    /// `emit_route_shim_body`'s call-argument construction. Every
+    /// parameter has exactly one (validated at typecheck time,
+    /// `validate_route_params`, annotations.rs) -- no unannotated/
+    /// implicit shape.
+    pub params: Vec<RouteParamBinding>,
+    /// `HttpContext` = manual-response mode (handler builds
+    /// `ctx.response` itself, its return value is discarded/never
+    /// dereferenced); anything else = auto-serialize mode (the shim
+    /// serializes the returned value as the JSON response body).
+    pub return_type: tinox_parser::Type,
+}
+
+/// Mirrors `tinox_typecheck::annotations::RouteParamKind` -- duplicated
+/// rather than imported directly, matching this codebase's existing
+/// convention for typecheck-derived route/DI info (see e.g. `DiScope`
+/// below, converted explicitly at the main.rs boundary) so codegen
+/// doesn't depend on typecheck's exact internal shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteParamKind {
+    PathParam,
+    QueryParam,
+    PostParam,
+    HttpContext,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteParamBinding {
+    pub kind: RouteParamKind,
+    pub name: String,
+    pub ty: tinox_parser::Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1347,6 +1378,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
+        // Strict @PathParam/@QueryParam conversion + bare-string JSON
+        // encoding for auto-serialize REST responses (emit_route_shim_body).
+        writeln!(&mut self.ir, "declare i32 @tinox_parse_int_checked(i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i32 @tinox_parse_float_checked(i8*, double*)").unwrap();
+        writeln!(&mut self.ir, "declare i32 @tinox_parse_bool_checked(i8*, i32*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_encode_string(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_char_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_from_char_code(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_char(i32)").unwrap();
@@ -2030,6 +2067,7 @@ impl CodeGen {
 
         let routes = self.route_entries.clone();
         self.emit_route_annotation_globals(&routes);
+        self.ensure_postparam_specializations(&routes);
 
         // ── Shim functions ──────────────────────────────────────────────────────
         // Signature: void (i64) — ctx_i64 is a ptrtoint of the HttpContext* pointer.
@@ -2386,8 +2424,8 @@ impl CodeGen {
 
             // ── Allocate controller and call the handler ─────────────────────────
             if route.is_static {
-                // fnc (static): no self pointer, called as method_fn(ctx)
-                writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctx_ptr)").unwrap();
+                // fnc (static): no self pointer, called as method_fn(<bound params>)
+                self.emit_route_handler_call(idx, route, &method_fn, None);
             } else {
                 // fn (instance): use DI getter/factory if the controller is a DI component
                 let di_scope = self.di_components.iter()
@@ -2433,9 +2471,297 @@ impl CodeGen {
                             "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
                     }
                 }
-                writeln!(&mut self.lambda_ir, "  call void @{method_fn}(i64* %ctrl_{idx}, i64* %ctx_ptr)").unwrap();
+                let ctrl_arg = format!("%ctrl_{idx}");
+                self.emit_route_handler_call(idx, route, &method_fn, Some(&ctrl_arg));
             }
         }
+    }
+
+    /// Builds the real, typed call-argument list from `route.params` (one
+    /// of `@PathParam`/`@QueryParam`/`@PostParam`/`@HttpContext` per
+    /// parameter, in declared order -- no unannotated/implicit shape,
+    /// validated at typecheck time), calls the handler, and -- unless the
+    /// declared return type is `HttpContext` (manual-response mode, where
+    /// the handler already built `ctx.response` itself and the returned
+    /// value is simply never dereferenced) -- serializes the returned
+    /// value as the JSON response body (`emit_route_auto_serialize`).
+    /// `ctrl_arg` is `Some("%ctrl_N")` for an instance (`fn`) handler,
+    /// `None` for a static (`fnc`) one -- prepended to the bound-parameter
+    /// args when present, mirroring how the old fixed call already varied
+    /// its argument list on `route.is_static`.
+    /// Triggers every `Json::deserialize<T>` specialization `@PostParam`
+    /// bindings across `routes` will need, BEFORE any shim function starts
+    /// being written -- must run at this specific point, not lazily
+    /// inside `emit_route_handler_call`/`emit_route_shim_body`.
+    ///
+    /// `ensure_generic_method_specialization` (shared with the real
+    /// `Class::method<T>(...)` call-site path) emits a brand new
+    /// top-level `define ...` function straight into `self.lambda_ir` the
+    /// first time a given specialization is needed. That's safe when
+    /// called from ordinary expression codegen (`self.ir` is the
+    /// "current function" buffer there, `self.lambda_ir` only ever holds
+    /// complete, already-finished definitions). It is NOT safe called
+    /// lazily from inside `emit_route_handler_call`, because THAT
+    /// function builds the current route's shim body by writing directly
+    /// into `self.lambda_ir` itself (mirroring `emit_route_code`'s
+    /// declare-then-shim-loop shape) -- found live: a `Json_deserialize__
+    /// Person` specialization triggered mid-shim landed as a nested
+    /// `define` textually inside the enclosing `__route_Ctrl_echo`
+    /// shim's own body, an LLVM verifier error ("expected instruction
+    /// opcode"). Pre-triggering here, before the shim-emission loop
+    /// starts, ensures each specialization lands as its own clean,
+    /// separate top-level entry first; the later in-shim call to
+    /// `ensure_generic_method_specialization` for the same (class, type)
+    /// pair is then a cheap no-op (`generated_specializations` already
+    /// contains it) that just returns the mangled name.
+    fn ensure_postparam_specializations(&mut self, routes: &[RouteEntry]) {
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        for route in routes {
+            for binding in &route.params {
+                if binding.kind != RouteParamKind::PostParam {
+                    continue;
+                }
+                let tinox_parser::Type::Named(target_class) = &binding.ty else {
+                    continue; // validated as a class at typecheck time; defensive skip otherwise
+                };
+                if !seen.insert(target_class.clone()) {
+                    continue;
+                }
+                let Some(gm) = self.generic_methods.get("Json_deserialize").cloned() else {
+                    continue; // same defensive skip as emit_route_handler_call's .expect() context
+                };
+                self.ensure_generic_method_specialization(
+                    "Json_deserialize", &gm, &[tinox_parser::Type::Named(target_class.clone())],
+                ).expect("Json::deserialize<T> specialization should always succeed for an already-typechecked @JsonSerializable class");
+            }
+        }
+    }
+
+    fn emit_route_handler_call(&mut self, idx: usize, route: &RouteEntry, method_fn: &str, ctrl_arg: Option<&str>) {
+        use tinox_parser::Type;
+
+        let mut call_args: Vec<String> = Vec::new();
+        if let Some(ctrl) = ctrl_arg {
+            call_args.push(format!("i64* {ctrl}"));
+        }
+
+        for (pi, binding) in route.params.iter().enumerate() {
+            let n = format!("{idx}_{pi}");
+            match binding.kind {
+                RouteParamKind::HttpContext => {
+                    call_args.push("i64* %ctx_ptr".to_string());
+                }
+                RouteParamKind::PathParam | RouteParamKind::QueryParam => {
+                    writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_ptr_{n} = inttoptr i64 %req_i64_{n} to i64*").unwrap();
+                    let name_ptr = self.emit_lambda_string_literal(&binding.name);
+                    let getter = if binding.kind == RouteParamKind::PathParam { "HttpRequest_getParam" } else { "HttpRequest_getQuery" };
+                    writeln!(&mut self.lambda_ir,
+                        "  %raw_{n} = call i8* @{getter}(i64* %req_ptr_{n}, i8* {name_ptr})").unwrap();
+
+                    if matches!(binding.ty, Type::String) {
+                        writeln!(&mut self.lambda_ir, "  %len_{n} = call i64 @tinox_string_length(i8* %raw_{n})").unwrap();
+                        writeln!(&mut self.lambda_ir, "  %empty_{n} = icmp eq i64 %len_{n}, 0").unwrap();
+                        writeln!(&mut self.lambda_ir, "  br i1 %empty_{n}, label %param_fail_{n}, label %param_ok_{n}").unwrap();
+                        self.emit_param_bind_failure(&n, &binding.name);
+                        writeln!(&mut self.lambda_ir, "param_ok_{n}:").unwrap();
+                        call_args.push(format!("i8* %raw_{n}"));
+                    } else {
+                        let (checker, slot_ty) = match binding.ty {
+                            Type::Bool => ("tinox_parse_bool_checked", "i32"),
+                            Type::Float64 | Type::Float32 => ("tinox_parse_float_checked", "double"),
+                            _ => ("tinox_parse_int_checked", "i64"),
+                        };
+                        writeln!(&mut self.lambda_ir, "  %out_{n} = alloca {slot_ty}").unwrap();
+                        writeln!(&mut self.lambda_ir,
+                            "  %ok_{n} = call i32 @{checker}(i8* %raw_{n}, {slot_ty}* %out_{n})").unwrap();
+                        writeln!(&mut self.lambda_ir, "  %okbit_{n} = icmp ne i32 %ok_{n}, 0").unwrap();
+                        writeln!(&mut self.lambda_ir, "  br i1 %okbit_{n}, label %param_ok_{n}, label %param_fail_{n}").unwrap();
+                        self.emit_param_bind_failure(&n, &binding.name);
+                        writeln!(&mut self.lambda_ir, "param_ok_{n}:").unwrap();
+                        writeln!(&mut self.lambda_ir, "  %val_{n} = load {slot_ty}, {slot_ty}* %out_{n}").unwrap();
+                        match binding.ty {
+                            Type::Int32 => {
+                                writeln!(&mut self.lambda_ir, "  %val32_{n} = trunc i64 %val_{n} to i32").unwrap();
+                                call_args.push(format!("i32 %val32_{n}"));
+                            }
+                            Type::Bool => {
+                                writeln!(&mut self.lambda_ir, "  %boolval_{n} = trunc i32 %val_{n} to i1").unwrap();
+                                call_args.push(format!("i1 %boolval_{n}"));
+                            }
+                            Type::Float32 => {
+                                writeln!(&mut self.lambda_ir, "  %val32f_{n} = fptrunc double %val_{n} to float").unwrap();
+                                call_args.push(format!("float %val32f_{n}"));
+                            }
+                            Type::Float64 => call_args.push(format!("double %val_{n}")),
+                            _ => call_args.push(format!("i64 %val_{n}")),
+                        }
+                    }
+                }
+                RouteParamKind::PostParam => {
+                    writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_ptr_{n} = inttoptr i64 %req_i64_{n} to i64*").unwrap();
+                    // HttpRequest layout: [method, path, body, headers, queryString, params, wasEarlyData] -> body = offset 2
+                    writeln!(&mut self.lambda_ir, "  %body_field_{n} = getelementptr i64, i64* %req_ptr_{n}, i64 2").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_i64_{n} = load i64, i64* %body_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_ptr_{n} = inttoptr i64 %body_i64_{n} to i8*").unwrap();
+
+                    let target_class = match &binding.ty {
+                        Type::Named(c) => c.clone(),
+                        _ => unreachable!("@PostParam target type validated as a class at typecheck time"),
+                    };
+                    let gm = self.generic_methods.get("Json_deserialize").cloned()
+                        .expect("Json::deserialize<T> must be registered when @PostParam is used -- it requires a \
+                                 @JsonSerializable type, which requires importing tinox.core.json, which also \
+                                 defines Json.deserialize<T> (same module directory, one import pulls in both)");
+                    let (mangled, ret_llvm) = self
+                        .ensure_generic_method_specialization("Json_deserialize", &gm, &[Type::Named(target_class)])
+                        .expect("Json::deserialize<T> specialization should always succeed for an already-typechecked @JsonSerializable class");
+                    writeln!(&mut self.lambda_ir,
+                        "  %val_{n} = call {ret_llvm} @{mangled}(i8* %body_ptr_{n})").unwrap();
+                    call_args.push(format!("{ret_llvm} %val_{n}"));
+                }
+            }
+        }
+
+        let ret_llvm = Self::type_to_llvm(&route.return_type);
+        let is_manual = matches!(&route.return_type, Type::Named(n) if n == "HttpContext");
+        let args_joined = call_args.join(", ");
+
+        if is_manual {
+            // Manual mode: ctx.response was already (or will be, inside
+            // the call) mutated in place through %ctx_ptr -- the returned
+            // HttpContext value itself is never dereferenced, so an
+            // unused SSA capture is enough; nothing more to do here, the
+            // caller's trailing `ret void` finishes the shim.
+            let discard = self.temp();
+            writeln!(&mut self.lambda_ir, "  {discard} = call {ret_llvm} @{method_fn}({args_joined})").unwrap();
+        } else {
+            let result = self.temp();
+            writeln!(&mut self.lambda_ir, "  {result} = call {ret_llvm} @{method_fn}({args_joined})").unwrap();
+            self.emit_route_auto_serialize(idx, route, &result, &ret_llvm);
+        }
+    }
+
+    /// `param_fail_{n}:` block shared by every `@PathParam`/`@QueryParam`
+    /// binding above -- missing (empty string) or, for non-String types,
+    /// not parseable as the declared type -- HTTP 400 with a JSON error
+    /// body, handler never called. Mirrors the existing `@Auth` (401) /
+    /// `@Consumes` (415) guards' own "set status, ret void" shape.
+    fn emit_param_bind_failure(&mut self, n: &str, param_name: &str) {
+        writeln!(&mut self.lambda_ir, "param_fail_{n}:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_ffail_{n} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_ifail_{n} = load i64, i64* %resp_ffail_{n}").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_pfail_{n} = inttoptr i64 %resp_ifail_{n} to i64*").unwrap();
+        writeln!(&mut self.lambda_ir, "  %sc_ffail_{n} = getelementptr i64, i64* %resp_pfail_{n}, i64 0").unwrap();
+        writeln!(&mut self.lambda_ir, "  store i64 400, i64* %sc_ffail_{n}").unwrap();
+        let err_json = format!("{{\"error\":\"missing or invalid parameter '{param_name}'\"}}");
+        let err_ptr = self.emit_lambda_string_literal(&err_json);
+        writeln!(&mut self.lambda_ir,
+            "  %discard_fail_{n} = call i64* @HttpResponse_json(i64* %resp_pfail_{n}, i8* {err_ptr})").unwrap();
+        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+    }
+
+    /// Serializes an auto-serialize-mode handler's return value
+    /// (`%result`, LLVM type `ret_llvm`) as the JSON response body via the
+    /// real, compiled `HttpResponse.json(String)` (`HttpResponse.tnx`) --
+    /// which also sets `Content-Type: application/json; charset=utf-8`
+    /// itself, so there's nothing extra to do for that here (matches
+    /// exactly what a manual handler's own `ctx.response.json(...)` call
+    /// already does). Status code was already set before the handler ran
+    /// if `@StatusCode` was given (default 200 otherwise, from
+    /// `HttpResponse`'s own constructor -- unchanged either way).
+    ///
+    /// Pointer-typed results (class/List/String) get a null-check first:
+    /// this compiler DOES already reject a handler that provably never
+    /// returns on some path (see the "missing return statement" check on
+    /// `Method`, tinox-typecheck/src/lib.rs), but a legitimately-returned-
+    /// but-null value (e.g. a null field) is still possible and would
+    /// otherwise crash `_toJson`/`tinox_json_list_serialize` on a null
+    /// deref -- 500 instead, not a crash or serialized garbage. Scalar
+    /// return types (Int64/Int32/Bool) have no such check: a raw `0`
+    /// value is indistinguishable from a legitimately-returned zero, the
+    /// same narrow, pre-existing limitation every non-Nothing Tinox
+    /// function already has, not worsened by this feature.
+    fn emit_route_auto_serialize(&mut self, idx: usize, route: &RouteEntry, result: &str, ret_llvm: &str) {
+        use tinox_parser::Type;
+
+        // %resp_ptr: HttpContext[1] = response, same GEP pattern used
+        // throughout this function for the @StatusCode/@Produces guards.
+        writeln!(&mut self.lambda_ir, "  %resp_fauto_{idx} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_iauto_{idx} = load i64, i64* %resp_fauto_{idx}").unwrap();
+        writeln!(&mut self.lambda_ir, "  %resp_pauto_{idx} = inttoptr i64 %resp_iauto_{idx} to i64*").unwrap();
+
+        let is_pointer = ret_llvm == "i8*" || ret_llvm == "i64*";
+        if is_pointer {
+            writeln!(&mut self.lambda_ir, "  %isnull_{idx} = icmp eq {ret_llvm} {result}, null").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %isnull_{idx}, label %auto_fail_{idx}, label %auto_ok_{idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "auto_fail_{idx}:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %sc_fauto_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 500, i64* %sc_fauto_{idx}").unwrap();
+            let err_ptr = self.emit_lambda_string_literal("{\"error\":\"handler returned no value\"}");
+            writeln!(&mut self.lambda_ir,
+                "  %discard_500_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {err_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "auto_ok_{idx}:").unwrap();
+        }
+
+        let json_var = match &route.return_type {
+            Type::Named(cls) => {
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir, "  {v} = call i8* @{cls}_toJson({ret_llvm} {result})").unwrap();
+                v
+            }
+            Type::Generic { name, args } if name == "List" || name == "Array" => {
+                let elem_cls = match args.first() {
+                    Some(Type::Named(c)) => c.clone(),
+                    _ => unreachable!("List<class> return type validated at typecheck time"),
+                };
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {v} = call i8* @tinox_json_list_serialize(i64* {result}, ptr @{elem_cls}_toJson)").unwrap();
+                v
+            }
+            Type::Array(inner) => {
+                let elem_cls = match inner.as_ref() {
+                    Type::Named(c) => c.clone(),
+                    _ => unreachable!("List<class> return type validated at typecheck time"),
+                };
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {v} = call i8* @tinox_json_list_serialize(i64* {result}, ptr @{elem_cls}_toJson)").unwrap();
+                v
+            }
+            Type::String => {
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir, "  {v} = call i8* @tinox_json_encode_string(i8* {result})").unwrap();
+                v
+            }
+            Type::Int32 => {
+                let ext = self.temp();
+                writeln!(&mut self.lambda_ir, "  {ext} = sext i32 {result} to i64").unwrap();
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir, "  {v} = call i8* @tinox_int_to_string(i64 {ext})").unwrap();
+                v
+            }
+            Type::Int64 => {
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir, "  {v} = call i8* @tinox_int_to_string(i64 {result})").unwrap();
+                v
+            }
+            Type::Bool => {
+                let v = self.temp();
+                writeln!(&mut self.lambda_ir, "  {v} = call i8* @tinox_bool_to_string(i1 {result})").unwrap();
+                v
+            }
+            _ => unreachable!("return type validated as auto-serializable at typecheck time"),
+        };
+
+        writeln!(&mut self.lambda_ir,
+            "  %discard_auto_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json_var})").unwrap();
     }
 
     /// Generates an auto-run `main` for the single `@Http3RestController`
@@ -2472,6 +2798,7 @@ impl CodeGen {
 
         let routes = self.route_entries.clone();
         self.emit_route_annotation_globals(&routes);
+        self.ensure_postparam_specializations(&routes);
 
         let cert_escaped = Self::escape_llvm_string(&controller.cert_path);
         let cert_len = controller.cert_path.len() + 1;
@@ -12366,46 +12693,30 @@ impl CodeGen {
     /// the specialization. Type arguments come explicitly
     /// (Json::deserialize<User>) or are inferred from the arguments
     /// (Json::serialize(users) via the infer_struct_type marker).
-    fn gen_generic_method_call(
+    /// Monomorphizes a generic static method for fully-known, explicit
+    /// type arguments (no call-site inference -- callers that need
+    /// inference, i.e. the actual `Class::method<T>(args)` call-site path,
+    /// resolve `type_args` themselves first and pass the result here; see
+    /// `gen_generic_method_call`, which is now a thin wrapper: resolve
+    /// type args (with inference) -> call this -> codegen the call-site
+    /// arguments). Extracted so callers that already know the concrete
+    /// type at codegen time -- e.g. `emit_route_shim_body`'s `@PostParam`
+    /// binding, which knows the target class from the parameter's own
+    /// declared type, no AST call expression or `GenCtx` involved at all
+    /// -- can reuse the exact same specialization machinery (registering
+    /// `fn_sigs`/`method_ret_class`, emitting the specialized body via
+    /// `gen_fn` with the right `type_param_aliases` active) without
+    /// needing to fake up an expression-level call site.
+    fn ensure_generic_method_specialization(
         &mut self,
         static_key: &str,
         gm: &tinox_parser::Method,
         type_args: &[tinox_parser::Type],
-        args: &[tinox_parser::Expr],
-        ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         use tinox_parser::Type;
-        // Bindungen: Typparameter -> konkreter Parser-Typ
         let mut subst: HashMap<String, Type> = HashMap::new();
-        for (i, tp) in gm.type_params.iter().enumerate() {
-            let bound = if let Some(t) = type_args.get(i) {
-                t.clone()
-            } else {
-                // Inference: the first argument whose declared type is
-                // exactly the type parameter supplies the marker
-                let mut inferred = None;
-                for (pi, param) in gm.params.iter().enumerate() {
-                    if matches!(&param.param_type, Type::Named(n) if n == tp) {
-                        if let Some(arg) = args.get(pi) {
-                            // Raw marker: infer_struct_type's Ident arm
-                            // strips "List:" (legacy) — here we need the
-                            // container type itself, not the element type.
-                            let marker = if let ExprKind::Ident(n) = &arg.node {
-                                ctx.local_types.get(n.as_str()).cloned()
-                            } else {
-                                None
-                            }
-                            .or_else(|| self.infer_struct_type(arg, ctx));
-                            if let Some(marker) = marker {
-                                inferred = Some(Self::marker_to_type(&marker));
-                            }
-                        }
-                        break;
-                    }
-                }
-                inferred.unwrap_or(Type::Int64)
-            };
-            subst.insert(tp.clone(), bound);
+        for (tp, ty) in gm.type_params.iter().zip(type_args.iter()) {
+            subst.insert(tp.clone(), ty.clone());
         }
 
         let suffix: Vec<String> = gm
@@ -12430,6 +12741,7 @@ impl CodeGen {
                         name: prm.name.clone(),
                         param_type: Self::substitute_type(&prm.param_type, &subst),
                         span: prm.span,
+                        annotations: prm.annotations.clone(),
                     })
                     .collect(),
                 ret_type: ret_type.clone(),
@@ -12472,6 +12784,59 @@ impl CodeGen {
             self.lambda_ir.push_str(&spec_ir);
             self.type_param_aliases = saved_aliases;
         }
+
+        Ok((mangled, ret_llvm))
+    }
+
+    /// Monomorphizes a generic static method at the call site and calls
+    /// the specialization. Type arguments come explicitly
+    /// (Json::deserialize<User>) or are inferred from the arguments
+    /// (Json::serialize(users) via the infer_struct_type marker).
+    fn gen_generic_method_call(
+        &mut self,
+        static_key: &str,
+        gm: &tinox_parser::Method,
+        type_args: &[tinox_parser::Type],
+        args: &[tinox_parser::Expr],
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        use tinox_parser::Type;
+        // Bindungen: Typparameter -> konkreter Parser-Typ
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        for (i, tp) in gm.type_params.iter().enumerate() {
+            let bound = if let Some(t) = type_args.get(i) {
+                t.clone()
+            } else {
+                // Inference: the first argument whose declared type is
+                // exactly the type parameter supplies the marker
+                let mut inferred = None;
+                for (pi, param) in gm.params.iter().enumerate() {
+                    if matches!(&param.param_type, Type::Named(n) if n == tp) {
+                        if let Some(arg) = args.get(pi) {
+                            // Raw marker: infer_struct_type's Ident arm
+                            // strips "List:" (legacy) — here we need the
+                            // container type itself, not the element type.
+                            let marker = if let ExprKind::Ident(n) = &arg.node {
+                                ctx.local_types.get(n.as_str()).cloned()
+                            } else {
+                                None
+                            }
+                            .or_else(|| self.infer_struct_type(arg, ctx));
+                            if let Some(marker) = marker {
+                                inferred = Some(Self::marker_to_type(&marker));
+                            }
+                        }
+                        break;
+                    }
+                }
+                inferred.unwrap_or(Type::Int64)
+            };
+            subst.insert(tp.clone(), bound);
+        }
+        let resolved_type_args: Vec<Type> = gm.type_params.iter()
+            .map(|tp| subst.get(tp).unwrap().clone())
+            .collect();
+        let (mangled, ret_llvm) = self.ensure_generic_method_specialization(static_key, gm, &resolved_type_args)?;
 
         // Call the specialization. The definition is produced via gen_fn
         // (a top-level function WITHOUT an implicit self parameter), so
@@ -12748,6 +13113,7 @@ impl CodeGen {
                         name: p.name.clone(),
                         param_type: Self::substitute_type(&p.param_type, &subst),
                         span: p.span,
+                        annotations: p.annotations.clone(),
                     })
                     .collect(),
                 ret_type: concrete_ret.clone(),
@@ -13180,6 +13546,7 @@ impl CodeGen {
                         name: p.name.clone(),
                         param_type: Self::substitute_type(&p.param_type, subst),
                         span: p.span,
+                        annotations: p.annotations.clone(),
                     })
                     .collect(),
                 ret_type: ret_type.as_ref().map(|t| Self::substitute_type(t, subst)),
@@ -13235,6 +13602,7 @@ impl CodeGen {
                 name: p.name.clone(),
                 param_type: Self::substitute_type(&p.param_type, &subst),
                 span: p.span,
+                annotations: p.annotations.clone(),
             }).collect(),
             ret_type: Self::substitute_type(&f.ret_type, &subst),
             body: f.body.clone(),
@@ -13484,6 +13852,7 @@ impl CodeGen {
                     name: p.name.clone(),
                     param_type: Self::rename_self_type(&Self::substitute_type(&p.param_type, &subst), self_rename),
                     span: p.span,
+                    annotations: p.annotations.clone(),
                 }).collect(),
                 ret_type: Self::rename_self_type(&Self::substitute_type(&m.ret_type, &subst), self_rename),
                 body: Self::substitute_stmt(&m.body, &subst, self_rename),

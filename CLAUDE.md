@@ -730,3 +730,123 @@ self-consistent but wrong"):
   get the tests/+src/ auto-discovery scan is to run `tinox test` bare
   from inside the project. `/tests/run`'s command construction accounts
   for this: `cd <project root> &&`, not a positional argument.
+
+## REST Parameter Binding Annotations (since 2026-08-12)
+
+Every `@GET`/`@POST`/`@PUT`/`@PATCH`/`@DELETE` handler parameter now needs
+exactly one of `@PathParam`/`@QueryParam`/`@PostParam`/`@HttpContext`
+(`tinox-typecheck/src/annotations.rs`, `tinox-codegen/src/codegen.rs`'s
+`emit_route_handler_call`/`emit_route_auto_serialize`) instead of the old
+implicit single `ctx: HttpContext` parameter -- replaces the
+`ctx.request.getParam(...)`/`ctx.request.getQuery(...)`/
+`Json::deserialize<T>(ctx.request.body)` boilerplate every handler used to
+hand-write, in line with this repo's "annotations over manual boilerplate"
+preference.
+
+- **`@PathParam`/`@QueryParam`** take no argument -- they bind by the
+  Tinox parameter's own name to the same-named `:name` path segment /
+  query string key. Supported types: String/Int64/Int32/Bool/Float64/
+  Float32. Missing (empty string) or, for non-String types, not parseable
+  as the declared type -> the handler is never called, the shim
+  short-circuits with HTTP 400 + a JSON error body (mirrors the existing
+  `@Auth`/`@OIDCRolesAllowed` guard-and-early-return shape). New strict
+  runtime.c helpers (`tinox_parse_int_checked`/`_float_checked`/
+  `_bool_checked`) back this -- the existing `tinox_string_to_int`/
+  `_to_float` silently return 0/0.0 on garbage input (no error signal),
+  which would make a malformed value indistinguishable from a legitimate
+  zero, exactly the kind of silent garbage this project's philosophy
+  exists to prevent.
+- **`@PostParam`** binds the whole deserialized JSON body to that
+  parameter; the type must be `@JsonSerializable`. Codegen reuses the
+  exact `Json::deserialize<T>` specialization machinery the compiler's
+  own `List<C>.toJson()`/generic-static-method call-site codegen already
+  uses (`ensure_generic_method_specialization`, extracted from
+  `gen_generic_method_call` for this reuse -- see the bug note below for
+  why a naive reuse attempt broke).
+- **`@HttpContext`** opts a parameter into the request/response handle.
+  Independent of the response mode below -- a handler can combine
+  `@HttpContext` with `@PathParam`/etc. on other parameters freely (e.g.
+  read a header AND still auto-serialize the return value), though the
+  natural pairing is `@HttpContext` + `-> HttpContext` together for full
+  manual control.
+- **Response mode is decided entirely by the declared return type**, not
+  a separate annotation: `-> HttpContext` = manual mode, the handler
+  builds `ctx.response` itself exactly like before (the shim never
+  dereferences the returned value -- `ctx.response` was already mutated
+  in place through the `%ctx_ptr` the shim itself passed in, so an
+  unused SSA capture is enough, no return-completeness check needed for
+  this mode specifically). `-> AnyOtherType` (a `@JsonSerializable`
+  class, `List<class>`, String, Int64, Int32, or Bool) = auto-serialize
+  mode: the shim serializes the returned value as the JSON response body
+  via the real, compiled `HttpResponse.json(String)` (which also sets
+  `Content-Type: application/json; charset=utf-8` itself, matching what a
+  manual handler's own `.json(...)` call already does -- nothing extra
+  needed for that). Pointer-typed auto-serialize returns (class/List/
+  String) get a null-check first (500 + error body on null) since this
+  path DOES dereference the value, unlike manual mode; scalar returns
+  (Int64/Int32/Bool) skip it (`0` is indistinguishable from a legitimate
+  zero, the same narrow, pre-existing gap every non-Nothing Tinox
+  function already has -- not worsened by this feature, see below).
+- **No backward compatibility, deliberately (user-confirmed).** The old
+  implicit shape (`fn handler(ctx: HttpContext) -> Nothing`, a single
+  unannotated `HttpContext` parameter) is a hard compile error now, not a
+  silently-preserved legacy path -- simplifies `emit_route_shim_body` to
+  exactly one code path (no branching on "is this the old shape"). Every
+  existing example/test using the compiler's auto-run `@GET`/`@POST`
+  system was migrated: `examples/rest_auto`, `rest_minimal`,
+  `rest_with_mini`, `http3_rest_api_annotated/TaskController`,
+  `keycloak_oidc_api/HelloController`, `docs/tinox-core/rest/examples/
+  02_Annotated_controller.tnx`, `demo`'s `PersonController` (the primary
+  real-world proof, mixing manual mode for `getPerson`'s dynamic 404-vs-
+  200 with auto-serialize for `listPersons`/`createPerson`), and the two
+  Rust curl-based integration tests that compile their own fixtures
+  (`http3_annotated_curl.rs`, `http_server_gc_stress_curl.rs`).
+  `tinox.core.rest.server`'s separate, unrelated `RestController`/
+  `RestApi` manual-registration framework (own `@GET`/`@POST` data-holder
+  classes via `@annotation`, routes registered at runtime via `.route()`,
+  never through `extract_route_from_method`'s auto-run extraction) is
+  untouched -- confirmed structurally unaffected, not just "didn't happen
+  to need changes".
+- `docs.html`/`docs_en.html`'s `#annotationen` section got a "Migration
+  von der alten REST-API"/"Migrating from the old REST API" subsection
+  (old-vs-new side by side) alongside the four new annotations in the
+  built-in annotations table -- same parallel-maintenance rule as this
+  file's docs.html section above.
+- **`emit_route_shim_body` (codegen.rs) is shared, unmodified in this
+  regard, by both the plain-HttpServer path (`emit_route_code`) and
+  HTTP/3 (`emit_http3_route_code`, `@Http3RestController`)** -- so this
+  feature works identically for HTTP/3 routes "for free", verified live
+  (not just assumed) via the migrated `http3_annotated_curl.rs`, which
+  exercises `@PathParam`/`@PostParam`/`@HttpContext`/auto-serialize over
+  real HTTP/3 end to end.
+- **Found and fixed a real bug while wiring `@PostParam` up**: the first
+  attempt called the existing specialization machinery
+  (`gen_generic_method_call`'s internals) lazily from inside
+  `emit_route_handler_call`, which builds the current route's shim body
+  by writing directly into `self.lambda_ir`. That machinery ALSO appends
+  newly-triggered specializations straight into `self.lambda_ir` --
+  safe when called from ordinary expression codegen (where `self.ir` is
+  the "current function" buffer and `self.lambda_ir` only ever holds
+  complete, already-finished definitions), but not when the caller is
+  ITSELF mid-way through writing into `self.lambda_ir`. Caught immediately
+  by actually compiling a `@PostParam` handler: `opt` rejected the output
+  with "expected instruction opcode" -- the generated `Json_deserialize__
+  Person` function definition had landed textually INSIDE the enclosing
+  route shim's own body, before its closing brace. Fixed by extracting
+  the specialization-only part into `ensure_generic_method_specialization`
+  and pre-triggering every `@PostParam` binding's specialization
+  (`ensure_postparam_specializations`) once per route list, BEFORE the
+  shim-emission loop starts -- so each specialization lands as its own
+  clean top-level entry first, and the later in-shim call for the same
+  (class, type) pair becomes a cheap no-op that just returns the mangled
+  name.
+- **Confirmed still accurate, not a regression**: this compiler DOES
+  already have a real "missing return statement" check for both
+  functions and methods (`tinox-typecheck/src/lib.rs`, `check_function`/
+  the method-checking equivalent) -- an earlier concern that no such
+  check existed at all (based on `TypeError::MissingReturn`/
+  `ReturnTypeMismatch` being unused dead enum variants) turned out to be
+  wrong; the real enforcement uses a plain `Error::new(...)` string
+  directly, not those specific variants. This meaningfully de-risked
+  auto-serialize mode: a handler that provably never returns on some path
+  is already a compile error today, independent of this feature.

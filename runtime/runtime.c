@@ -468,6 +468,69 @@ double tinox_string_to_float(const char* s) {
     return strtod(s, NULL);
 }
 
+// Strict variants for @PathParam/@QueryParam binding (emit_route_shim_body,
+// codegen.rs): tinox_string_to_int/_to_float above silently return 0/0.0 on
+// garbage input, indistinguishable from a legitimate zero -- exactly the
+// silent-garbage failure mode the REST parameter binding feature's 400
+// response exists to prevent. These return 1 on success (writing *out) or 0
+// on failure (empty string or any non-numeric content), so the caller can
+// tell "absent/invalid" apart from "genuinely zero".
+int tinox_parse_int_checked(const char* s, int64_t* out) {
+    if (!s || !*s) return 0;
+    const char* p = s;
+    int neg = 0;
+    if (*p == '-' || *p == '+') { neg = (*p == '-'); p++; }
+    if (!*p) return 0; // just a sign, no digits
+    int64_t result = 0;
+    while (*p) {
+        if (*p < '0' || *p > '9') return 0;
+        result = result * 10 + (*p - '0');
+        p++;
+    }
+    *out = neg ? -result : result;
+    return 1;
+}
+
+int tinox_parse_float_checked(const char* s, double* out) {
+    if (!s || !*s) return 0;
+    char* end = NULL;
+    double result = strtod(s, &end);
+    if (end == s || *end != '\0') return 0; // no digits consumed, or trailing garbage
+    *out = result;
+    return 1;
+}
+
+int tinox_parse_bool_checked(const char* s, int* out) {
+    if (!s) return 0;
+    if (strcmp(s, "true") == 0) { *out = 1; return 1; }
+    if (strcmp(s, "false") == 0) { *out = 0; return 1; }
+    return 0;
+}
+
+// Quotes+escapes a bare string as a standalone JSON string value (not a
+// key:value pair) -- backs REST auto-serialize responses whose return
+// type is `String` (emit_route_shim_body, codegen.rs). Same escaping
+// rules as jsonBuilderAddString (further down in this file), just
+// without that function's object-key/comma bookkeeping.
+char* tinox_json_encode_string(const char* s) {
+    size_t sl = s ? strlen(s) : 0;
+    char* buf = (char*)malloc(sl * 2 + 3); // worst case: every char escaped + 2 quotes + NUL
+    size_t len = 0;
+    buf[len++] = '"';
+    for (size_t i = 0; i < sl; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if      (c == '"')  { buf[len++] = '\\'; buf[len++] = '"'; }
+        else if (c == '\\') { buf[len++] = '\\'; buf[len++] = '\\'; }
+        else if (c == '\n') { buf[len++] = '\\'; buf[len++] = 'n'; }
+        else if (c == '\r') { buf[len++] = '\\'; buf[len++] = 'r'; }
+        else if (c == '\t') { buf[len++] = '\\'; buf[len++] = 't'; }
+        else                { buf[len++] = (char)c; }
+    }
+    buf[len++] = '"';
+    buf[len] = '\0';
+    return buf;
+}
+
 char* tinox_bool_to_string(int val) {
     const char* s = val ? "true" : "false";
     size_t len = val ? 4 : 5;

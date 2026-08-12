@@ -2,25 +2,28 @@ import tinox.core.http_server;
 import tinox.core.json;
 import User;
 
+// Auto-serialize mode throughout (no @HttpContext param, return type is
+// the real domain object) -- the compiler serializes the returned
+// List<User>/User as the JSON response body itself, replacing the
+// manual Json::serialize(...)/ctx.response.body= wiring this example
+// used to demonstrate.
 class UserController
 {
     @GET
     @Path("/users")
     @Produces("application/json")
     @StatusCode(200)
-    fn listUsers(ctx: HttpContext) -> Nothing
+    fn listUsers() -> List<User>
     {
-        let users: User[] = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
-        ctx.response.body = Json::serialize(users);
+        return [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
     }
 
     @POST
     @Path("/users")
     @Consumes("application/json")
     @StatusCode(201)
-    fn createUser(ctx: HttpContext) -> Nothing
+    fn createUser(@PostParam user: User) -> User
     {
-        let user: User = Json::deserialize<User>(ctx.request.body);
-        ctx.response.body = Json::serialize(user);
+        return user;
     }
 }

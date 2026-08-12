@@ -634,6 +634,27 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Converts typecheck's per-route parameter bindings (@PathParam/
+/// @QueryParam/@PostParam/@HttpContext) into codegen's own duplicated
+/// shape -- same explicit-conversion-at-the-boundary convention already
+/// used for `DiScope` right below each of this function's two call sites,
+/// factored here since the 4-way kind match is more repetitive than
+/// DiScope's 3-way one.
+fn convert_route_params(
+    params: &[tinox_typecheck::annotations::RouteParamBinding],
+) -> Vec<tinox_codegen::RouteParamBinding> {
+    params.iter().map(|p| tinox_codegen::RouteParamBinding {
+        kind: match p.kind {
+            tinox_typecheck::annotations::RouteParamKind::PathParam => tinox_codegen::RouteParamKind::PathParam,
+            tinox_typecheck::annotations::RouteParamKind::QueryParam => tinox_codegen::RouteParamKind::QueryParam,
+            tinox_typecheck::annotations::RouteParamKind::PostParam => tinox_codegen::RouteParamKind::PostParam,
+            tinox_typecheck::annotations::RouteParamKind::HttpContext => tinox_codegen::RouteParamKind::HttpContext,
+        },
+        name: p.name.clone(),
+        ty: p.ty.clone(),
+    }).collect()
+}
+
 /// Walks up from the current directory to find the nearest `tinox.toml`,
 /// returning its containing directory -- same search `read_dev_config`/
 /// `read_docker_config`/etc. already do, but returning the directory
@@ -2380,6 +2401,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         consumes: r.consumes.clone(), auth_type: r.auth_type.clone(),
         oidc_roles: r.oidc_roles.clone(),
         is_static: r.is_static,
+        params: convert_route_params(&r.params),
+        return_type: r.return_type.clone(),
     }).collect();
     let di_components = ann.di_components.iter().map(|c| tinox_codegen::DiComponentInfo {
         class_name: c.class_name.clone(),
@@ -3055,6 +3078,8 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             auth_type: r.auth_type.clone(),
             oidc_roles: r.oidc_roles.clone(),
             is_static: r.is_static,
+            params: convert_route_params(&r.params),
+            return_type: r.return_type.clone(),
         })
         .collect();
 

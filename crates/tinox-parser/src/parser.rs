@@ -243,6 +243,7 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, Error> {
+        let annotations = self.parse_annotations();
         let span = self.mk_span();
         let name = self.parse_ident()?;
         self.expect(TokenKind::Colon)?;
@@ -251,6 +252,7 @@ impl Parser {
             name,
             param_type,
             span,
+            annotations,
         })
     }
 
@@ -2778,7 +2780,7 @@ impl Parser {
         } else {
             Type::Infer
         };
-        Ok(Param { name, param_type, span })
+        Ok(Param { name, param_type, span, annotations: vec![] })
     }
 
     fn parse_lambda_param(&mut self) -> Result<Param, Error> {
@@ -2793,6 +2795,7 @@ impl Parser {
             name,
             param_type,
             span,
+            annotations: vec![],
         })
     }
 
@@ -2824,12 +2827,12 @@ impl Parser {
 
     fn expr_to_lambda_params(expr: Expr) -> Result<Vec<Param>, Error> {
         match expr.node {
-            ExprKind::Ident(name) => Ok(vec![Param { name, param_type: Type::Infer, span: expr.span }]),
+            ExprKind::Ident(name) => Ok(vec![Param { name, param_type: Type::Infer, span: expr.span, annotations: vec![] }]),
             ExprKind::Tuple(exprs) => {
                 let mut params = Vec::new();
                 for e in exprs {
                     match e.node {
-                        ExprKind::Ident(name) => params.push(Param { name, param_type: Type::Infer, span: e.span }),
+                        ExprKind::Ident(name) => params.push(Param { name, param_type: Type::Infer, span: e.span, annotations: vec![] }),
                         _ => return Err(Error::new(e.span, "expected identifier in lambda parameter list")),
                     }
                 }

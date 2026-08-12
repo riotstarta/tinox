@@ -26,8 +26,9 @@ class HelloController
 {
     @GET("/api/hello")
     @OIDCRolesAllowed(["api-user"])
-    fnc hello(ctx: HttpContext) -> Nothing
+    fnc hello(@HttpContext ctx: HttpContext) -> HttpContext
     {
         ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}");
+        return ctx;
     }
 }

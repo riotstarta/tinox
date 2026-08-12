@@ -11,9 +11,9 @@ class GreetController
     @GET
     @Path("/hello/:name")
     @Produces("application/json")
-    fn hello(ctx: HttpContext) -> Nothing
+    fn hello(@PathParam name: String, @HttpContext ctx: HttpContext) -> HttpContext
     {
-        let name: String = ctx.request.getParam("name");
         ctx.response.json("{\"message\":\"Hello, " + name + "!\"}");
+        return ctx;
     }
 }

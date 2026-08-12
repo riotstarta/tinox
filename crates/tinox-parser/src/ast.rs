@@ -358,6 +358,12 @@ pub struct Param {
     pub name: Ident,
     pub param_type: Type,
     pub span: Span,
+    /// `@PathParam`/`@QueryParam`/`@PostParam`/`@HttpContext` on a REST
+    /// handler's parameter (see CLAUDE.md's REST parameter binding
+    /// section) -- empty for every other parameter (lambda params,
+    /// synthetic/generic-specialization params, and ordinary function
+    /// params never carry annotations).
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone)]

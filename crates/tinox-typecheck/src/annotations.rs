@@ -27,6 +27,7 @@ pub enum AnnotationTarget {
     Enum,
     Trait,
     Namespace,
+    Param,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,29 @@ pub struct ProcessedAnnotation {
     pub span: Span,
 }
 
+/// Which of the four REST parameter-binding annotations a handler
+/// parameter carries -- see CLAUDE.md's REST parameter binding section.
+/// Every parameter of an `@GET`/`@POST`/etc. handler carries exactly one
+/// (validated in `extract_route_from_method`); there is no unannotated/
+/// implicit shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteParamKind {
+    PathParam,
+    QueryParam,
+    PostParam,
+    HttpContext,
+}
+
+#[derive(Debug, Clone)]
+pub struct RouteParamBinding {
+    pub kind: RouteParamKind,
+    /// The Tinox parameter's own name -- also the `:name` path segment /
+    /// query string key it binds to for Path/QueryParam (no separate key
+    /// argument on the annotation).
+    pub name: String,
+    pub ty: Type,
+}
+
 #[derive(Debug, Clone)]
 pub struct RouteInfo {
     pub method: String,
@@ -60,6 +84,13 @@ pub struct RouteInfo {
     /// realm roles. Empty = no OIDC role check on this route.
     pub oidc_roles: Vec<String>,
     pub is_static: bool,
+    /// Per-parameter bindings, in declared order -- drives the shim's
+    /// call-argument construction (emit_route_shim_body, codegen.rs).
+    pub params: Vec<RouteParamBinding>,
+    /// `HttpContext` = manual-response mode (handler builds `ctx.response`
+    /// itself); anything else = auto-serialize mode (the shim serializes
+    /// the returned value as the JSON response body).
+    pub return_type: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -361,6 +392,51 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
+            },
+        );
+        // REST parameter binding annotations -- exactly one required on
+        // every parameter of an @GET/@POST/etc. handler (see
+        // extract_route_from_method's validation and CLAUDE.md's REST
+        // parameter binding section; no backward-compat "bare ctx param"
+        // shape -- every handler parameter must be annotated).
+        registry.insert(
+            "PathParam".to_string(),
+            AnnotationInfo {
+                name: "PathParam".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds a `:name` path segment (same name as the parameter) to this parameter — String/Int64/Int32/Bool/Float64/Float32".to_string(),
+            },
+        );
+        registry.insert(
+            "QueryParam".to_string(),
+            AnnotationInfo {
+                name: "QueryParam".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds a query string key (same name as the parameter) to this parameter — String/Int64/Int32/Bool/Float64/Float32".to_string(),
+            },
+        );
+        registry.insert(
+            "PostParam".to_string(),
+            AnnotationInfo {
+                name: "PostParam".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds the deserialized JSON request body to this parameter — type must be @JsonSerializable".to_string(),
+            },
+        );
+        registry.insert(
+            "HttpContext".to_string(),
+            AnnotationInfo {
+                name: "HttpContext".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds the request/response handle to this parameter — type must be HttpContext".to_string(),
             },
         );
         registry.insert(
@@ -1277,6 +1353,26 @@ impl AnnotationProcessor {
             None => p,
         };
 
+        // Data extraction only -- infallible by design (matches this
+        // function's existing convention). A parameter with zero or more
+        // than one binding annotation simply gets no entry here; the real
+        // "every parameter needs exactly one" + type-compatibility +
+        // return-type checks live in validate_decl/validate_route_params
+        // below, which run as part of the real typecheck error pipeline
+        // (check_source_file -> validate_annotations) and produce proper
+        // spanned compile errors instead of a confusing codegen-internal
+        // failure downstream.
+        let params: Vec<RouteParamBinding> = method.params.iter().filter_map(|p| {
+            let kind = p.annotations.iter().find_map(|a| match a.name.as_str() {
+                "PathParam" => Some(RouteParamKind::PathParam),
+                "QueryParam" => Some(RouteParamKind::QueryParam),
+                "PostParam" => Some(RouteParamKind::PostParam),
+                "HttpContext" => Some(RouteParamKind::HttpContext),
+                _ => None,
+            })?;
+            Some(RouteParamBinding { kind, name: p.name.clone(), ty: p.param_type.clone() })
+        }).collect();
+
         Some(RouteInfo {
             method: m,
             path: full_path,
@@ -1288,6 +1384,8 @@ impl AnnotationProcessor {
             auth_type: auth,
             oidc_roles,
             is_static: method.static_,
+            params,
+            return_type: method.ret_type.clone(),
         })
     }
 }
@@ -1385,10 +1483,13 @@ fn collect_custom_annotation_classes(decl: &DeclKind, processor: &mut Annotation
     }
 }
 
-fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, errors: &mut Vec<Error>) {
+fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
     match decl {
         DeclKind::Function(f) => {
             errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
+            for param in &f.params {
+                errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
+            }
         }
         DeclKind::Class(c) => {
             errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
@@ -1397,12 +1498,19 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, errors: &mut 
             }
             for method in &c.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                for param in &method.params {
+                    errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
+                }
+                validate_route_params(method, json_serializable, errors);
             }
         }
         DeclKind::Interface(i) => {
             errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
             for method in &i.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                for param in &method.params {
+                    errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
+                }
             }
         }
         DeclKind::Enum(e) => {
@@ -1412,15 +1520,127 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, errors: &mut 
             errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
             for method in &t.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                for param in &method.params {
+                    errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
+                }
             }
         }
         DeclKind::Namespace(ns) => {
             errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
             for inner in &ns.decls {
-                validate_decl(processor, &inner.node, errors);
+                validate_decl(processor, &inner.node, json_serializable, errors);
             }
         }
         _ => {}
+    }
+}
+
+/// Scalar types `@PathParam`/`@QueryParam` can convert a raw path/query
+/// string into -- matches the strict runtime parsers
+/// (`tinox_parse_int_checked`/etc., runtime.c) added alongside this.
+fn is_supported_param_scalar_type(ty: &Type) -> bool {
+    matches!(ty, Type::String | Type::Int64 | Type::Int32 | Type::Bool | Type::Float64 | Type::Float32)
+}
+
+fn is_json_serializable_class_type(ty: &Type, json_serializable: &HashSet<String>) -> bool {
+    matches!(ty, Type::Named(n) if json_serializable.contains(n))
+}
+
+fn is_json_serializable_list_type(ty: &Type, json_serializable: &HashSet<String>) -> bool {
+    match ty {
+        Type::Generic { name, args } if name == "List" || name == "Array" => {
+            args.first().is_some_and(|t| is_json_serializable_class_type(t, json_serializable))
+        }
+        Type::Array(inner) => is_json_serializable_class_type(inner, json_serializable),
+        _ => false,
+    }
+}
+
+fn is_http_context_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(n) if n == "HttpContext")
+}
+
+/// Semantic validation for REST parameter-binding annotations, beyond the
+/// generic per-annotation target/arity checks `validate_decl`/`validate`
+/// already do: cardinality (every parameter needs exactly one of the
+/// four), type compatibility per binding kind, and return-type validity.
+/// Only runs for methods that actually carry an HTTP-verb annotation
+/// (`@GET`/`@POST`/`@PUT`/`@PATCH`/`@DELETE`) -- an ordinary method is
+/// never reachable here, so e.g. `@HttpContext` on a plain helper method's
+/// parameter is simply never checked by this function (the generic
+/// target-mismatch check in `validate` already rejects it regardless,
+/// since `@HttpContext`'s `valid_targets` is `[Param]` either way -- this
+/// function only adds the REST-specific cardinality/compatibility rules
+/// on top).
+fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
+    let has_verb = method.annotations.iter()
+        .any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));
+    if !has_verb {
+        return;
+    }
+
+    for param in &method.params {
+        let bindings: Vec<&Annotation> = param.annotations.iter()
+            .filter(|a| matches!(a.name.as_str(), "PathParam" | "QueryParam" | "PostParam" | "HttpContext"))
+            .collect();
+        match bindings.len() {
+            0 => {
+                errors.push(Error::new(param.span, format!(
+                    "REST handler parameter '{}' needs exactly one of @PathParam/@QueryParam/@PostParam/@HttpContext",
+                    param.name
+                )));
+                continue;
+            }
+            1 => {}
+            _ => {
+                errors.push(Error::new(param.span, format!(
+                    "REST handler parameter '{}' has more than one binding annotation ({}) -- exactly one is required",
+                    param.name,
+                    bindings.iter().map(|a| format!("@{}", a.name)).collect::<Vec<_>>().join(", ")
+                )));
+                continue;
+            }
+        }
+        let binding = bindings[0];
+        match binding.name.as_str() {
+            "PathParam" | "QueryParam" => {
+                if !is_supported_param_scalar_type(&param.param_type) {
+                    errors.push(Error::new(param.span, format!(
+                        "@{} on '{}' must be String/Int64/Int32/Bool/Float64/Float32, found {:?}",
+                        binding.name, param.name, param.param_type
+                    )));
+                }
+            }
+            "PostParam" => {
+                if !is_json_serializable_class_type(&param.param_type, json_serializable) {
+                    errors.push(Error::new(param.span, format!(
+                        "@PostParam on '{}' must be a class marked @JsonSerializable, found {:?}",
+                        param.name, param.param_type
+                    )));
+                }
+            }
+            "HttpContext" => {
+                if !is_http_context_type(&param.param_type) {
+                    errors.push(Error::new(param.span, format!(
+                        "@HttpContext on '{}' must be of type HttpContext, found {:?}",
+                        param.name, param.param_type
+                    )));
+                }
+            }
+            _ => unreachable!("filtered to the four binding annotation names above"),
+        }
+    }
+
+    let return_ok = is_http_context_type(&method.ret_type)
+        || is_json_serializable_class_type(&method.ret_type, json_serializable)
+        || is_json_serializable_list_type(&method.ret_type, json_serializable)
+        || matches!(&method.ret_type, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
+    if !return_ok {
+        errors.push(Error::new(method.span, format!(
+            "REST handler '{}' cannot auto-serialize return type {:?} -- use HttpContext for a manually-built \
+             response, or a @JsonSerializable class / List<@JsonSerializable class> / String / Int64 / Int32 / Bool",
+            method.name, method.ret_type
+        )));
     }
 }
 
@@ -1434,11 +1654,32 @@ pub fn validate_annotations(
         collect_custom_annotation_classes(&decl.node, &mut processor);
     }
 
+    // @JsonSerializable class names, needed by validate_route_params for
+    // @PostParam/return-type checks -- imports are already merged into
+    // source.decls by this point (typecheck runs after resolve_imports),
+    // so this also sees classes defined in other files.
+    let mut json_serializable: HashSet<String> = HashSet::new();
+    collect_json_serializable_classes(&source.decls, &mut json_serializable);
+
     let mut errors = Vec::new();
     for decl in &source.decls {
-        validate_decl(&processor, &decl.node, &mut errors);
+        validate_decl(&processor, &decl.node, &json_serializable, &mut errors);
     }
     errors
+}
+
+fn collect_json_serializable_classes(decls: &[tinox_parser::Decl], out: &mut HashSet<String>) {
+    for decl in decls {
+        match &decl.node {
+            DeclKind::Class(c) => {
+                if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
+                    out.insert(c.name.clone());
+                }
+            }
+            DeclKind::Namespace(ns) => collect_json_serializable_classes(&ns.decls, out),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1484,7 +1725,63 @@ mod tests {
 
     #[test]
     fn test_validate_get_on_method_ok() {
-        let errors = valid("class Ctrl { @GET\nfn list(ctx: Ctx) -> Nothing {} }");
+        let errors = valid("class Ctrl { @GET\nfn list(@HttpContext ctx: HttpContext) -> HttpContext { return ctx; } }");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    // --- validate: REST parameter binding (@PathParam/@QueryParam/@PostParam/@HttpContext) ---
+
+    #[test]
+    fn test_route_param_unannotated_err() {
+        // No backward compatibility: a bare, unannotated ctx param is a hard error now.
+        let errors = valid("class Ctrl { @GET\nfn list(ctx: HttpContext) -> HttpContext { return ctx; } }");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.message.contains("needs exactly one of")));
+    }
+
+    #[test]
+    fn test_route_param_multiple_bindings_err() {
+        let errors = valid("class Ctrl { @GET\nfn list(@PathParam @QueryParam id: Int64) -> HttpContext { return HttpContext::new(); } }");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.message.contains("more than one binding annotation")));
+    }
+
+    #[test]
+    fn test_route_pathparam_wrong_type_err() {
+        let errors = valid("class Ctrl { @GET\nfn list(@PathParam id: Ctx) -> HttpContext { return HttpContext::new(); } }");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.message.contains("must be String/Int64/Int32/Bool/Float64/Float32")));
+    }
+
+    #[test]
+    fn test_route_postparam_wrong_type_err() {
+        // Person isn't @JsonSerializable here, so @PostParam on it is rejected.
+        let errors = valid("class Person { var id: Int64; }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p; } }");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.message.contains("must be a class marked @JsonSerializable")));
+    }
+
+    #[test]
+    fn test_route_postparam_json_serializable_ok() {
+        // @annotation class JsonSerializable {} stands in for the real one
+        // (tinox.core.json's JsonSerializable.tnx) -- this test harness
+        // parses the snippet directly with no import resolution, so a
+        // custom annotation must be defined in-snippet to be "known"
+        // (see test_validate_custom_annotation_usable_after_registration).
+        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64; }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p; } }");
+        assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_route_return_type_not_serializable_err() {
+        let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new(); } }");
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.message.contains("cannot auto-serialize return type")));
+    }
+
+    #[test]
+    fn test_route_return_list_of_json_serializable_ok() {
+        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64; }\nclass Ctrl { @GET\nfn list() -> List<Person> { return []; } }");
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 

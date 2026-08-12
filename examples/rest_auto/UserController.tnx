@@ -1,14 +1,21 @@
 import tinox.core.http_server;
 
+// Manual-response mode (@HttpContext parameter, -> HttpContext return
+// type) throughout -- these handlers write hardcoded JSON strings
+// straight into ctx.response.body rather than returning a real domain
+// object, so there's nothing for the compiler to auto-serialize; see
+// examples/rest_with_mini/UserController.tnx for the auto-serialize
+// style (returning an actual class/List<class>) instead.
 class UserController
 {
     @GET
     @Path("/users")
     @Produces("application/json")
     @StatusCode(200)
-    fn listUsers(ctx: HttpContext) -> Nothing
+    fn listUsers(@HttpContext ctx: HttpContext) -> HttpContext
     {
         ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
+        return ctx;
     }
 
     @POST
@@ -16,8 +23,9 @@ class UserController
     @Consumes("application/json")
     @Produces("application/json")
     @StatusCode(201)
-    fn createUser(ctx: HttpContext) -> Nothing
+    fn createUser(@HttpContext ctx: HttpContext) -> HttpContext
     {
         ctx.response.body = "{\"id\":2,\"name\":\"Bob\"}";
+        return ctx;
     }
 }

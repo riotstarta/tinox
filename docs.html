@@ -1161,12 +1161,61 @@
     </p>
 
     <h3>HTTP-REST-Annotationen</h3>
-    <pre><code><span class="ann">@GET</span>
+    <p>
+      Jeder Parameter eines <code>@GET</code>/<code>@POST</code>/…-Handlers braucht
+      genau eine Bindungs-Annotation: <code>@PathParam</code>/<code>@QueryParam</code>
+      binden per Parametername an das gleichnamige <code>:name</code>-Pfadsegment bzw.
+      den Query-String-Key, <code>@PostParam</code> deserialisiert den kompletten
+      JSON-Request-Body, <code>@HttpContext</code> gibt Zugriff auf Request/Response.
+      Der <strong>Rückgabetyp</strong> entscheidet über den Antwortmodus: <code>HttpContext</code>
+      bedeutet manueller Modus (die Methode baut <code>ctx.response</code> selbst auf),
+      jeder andere Typ wird automatisch als JSON serialisiert.
+    </p>
+    <pre><code><span class="cmt">// Auto-Serialize: Rückgabewert wird automatisch zu JSON</span>
+<span class="ann">@GET</span>
 <span class="ann">@Path</span>(<span class="str">"/users/:id"</span>)
 <span class="ann">@Produces</span>(<span class="type">MediaType</span>.APPLICATION_JSON)
 <span class="ann">@Auth</span>(<span class="str">"bearer"</span>)
-<span class="ann">@StatusCode</span>(<span class="num">200</span>)
-<span class="kw">fn</span> <span class="fn">getUser</span>(ctx: <span class="type">HttpContext</span>) -> <span class="type">Nothing</span> { ... }</code></pre>
+<span class="kw">fn</span> <span class="fn">getUser</span>(<span class="ann">@PathParam</span> id: <span class="type">Int64</span>) -> <span class="type">User</span> { ... }
+
+<span class="cmt">// Manueller Modus: dynamischer Statuscode (z.B. 404), @HttpContext + -> HttpContext</span>
+<span class="ann">@GET</span>
+<span class="ann">@Path</span>(<span class="str">"/users/:id"</span>)
+<span class="kw">fn</span> <span class="fn">getUserOrNotFound</span>(<span class="ann">@PathParam</span> id: <span class="type">Int64</span>, <span class="ann">@HttpContext</span> ctx: <span class="type">HttpContext</span>) -> <span class="type">HttpContext</span>
+{
+    <span class="cmt">// ... ctx.response.status(404).json(...) oder ctx.response.json(...)</span>
+    <span class="kw">return</span> ctx;
+}</code></pre>
+
+    <h4>Migration von der alten REST-API</h4>
+    <p>
+      Vor dieser Version bekam jeder Handler implizit genau einen <code>ctx:
+      HttpContext</code>-Parameter ohne Annotation, mit Rückgabetyp <code>Nothing</code>,
+      und musste Pfad-/Query-Parameter sowie den Request-Body manuell über
+      <code>ctx.request.getParam(...)</code>/<code>ctx.request.getQuery(...)</code>/
+      <code>Json::deserialize&lt;T&gt;(ctx.request.body)</code> auslesen. Diese Form
+      kompiliert nicht mehr — es gibt keine Abwärtskompatibilität, jeder Parameter
+      braucht jetzt explizit eine der vier Bindungs-Annotationen.
+    </p>
+    <table>
+      <thead><tr><th>Vorher</th><th>Nachher</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
+          <td><code>fn getUser(@PathParam id: Int64) -> User<br>{<br>&nbsp;&nbsp;return user;<br>}</code></td>
+        </tr>
+        <tr>
+          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
+          <td><code>fn createUser(@PostParam u: User) -> User<br>{<br>&nbsp;&nbsp;return u;<br>}</code></td>
+        </tr>
+        <tr>
+          <td colspan="2">Dynamischer Statuscode (z.B. dieselbe Route mal 200, mal 404) lässt
+          sich mit einem festen Rückgabetyp nicht ausdrücken — dafür bleibt der manuelle Modus:
+          <code>@HttpContext ctx: HttpContext</code> als Parameter, <code>-&gt; HttpContext</code>
+          als Rückgabetyp, am Ende <code>return ctx;</code>.</td>
+        </tr>
+      </tbody>
+    </table>
 
     <h3>Serialisierung</h3>
     <pre><code><span class="ann">@JsonSerializable</span>
@@ -1193,6 +1242,10 @@
         <tr><td><code>@Produces(MediaType.*)</code></td><td>Methode</td><td>Response-Content-Type</td></tr>
         <tr><td><code>@Consumes(MediaType.*)</code></td><td>Methode</td><td>Request-Content-Type</td></tr>
         <tr><td><code>@StatusCode(200)</code></td><td>Methode</td><td>Standard-HTTP-Statuscode</td></tr>
+        <tr><td><code>@PathParam</code></td><td>Parameter</td><td>Bindet ein <code>:name</code>-Pfadsegment (gleicher Name wie der Parameter) — String/Int64/Int32/Bool/Float64/Float32</td></tr>
+        <tr><td><code>@QueryParam</code></td><td>Parameter</td><td>Bindet einen Query-String-Key (gleicher Name wie der Parameter) — gleiche Typen wie @PathParam</td></tr>
+        <tr><td><code>@PostParam</code></td><td>Parameter</td><td>Bindet den deserialisierten JSON-Request-Body — Typ muss @JsonSerializable sein</td></tr>
+        <tr><td><code>@HttpContext</code></td><td>Parameter</td><td>Bindet Request/Response-Handle — Typ muss HttpContext sein; Rückgabetyp <code>HttpContext</code> aktiviert den manuellen Response-Modus</td></tr>
         <tr><td><code>@Auth("bearer")</code></td><td>Klasse / Methode</td><td>Authentifizierungspflicht</td></tr>
         <tr><td><code>@JsonSerializable</code></td><td>Klasse</td><td>Generiert toJson()/fromJson()</td></tr>
         <tr><td><code>@JsonField("name")</code></td><td>Feld</td><td>Alternativer JSON-Key</td></tr>
