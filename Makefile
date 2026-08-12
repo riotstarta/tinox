@@ -7,19 +7,30 @@ export DOGFOOD_DIR
 
 .PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz
 
-check: clippy test e2e dogfood
+check: clippy test dogfood
 
 # Lint gate: 0 warnings across the whole workspace (bins + tests).
 # Deliberate exceptions are #[allow(...)] with a justification in the code.
 clippy:
 	cargo clippy --release --workspace --all-targets -- -D warnings
 
-# Rust unit tests (lexer, parser, typecheck, codegen, …)
+# Rust unit tests (lexer, parser, typecheck, codegen, …) -- unrestricted
+# `cargo test` also auto-discovers and runs every crates/tinox/tests/*.rs
+# integration test binary, including e2e.rs/matrix.rs/boundary.rs/
+# stdlib_smoke.rs below, so `check` does NOT also depend on `e2e` (found
+# via `make check` itself taking measurably longer than it should: those
+# four suites were running twice, once here and once via the `e2e` target
+# -- an accidental side effect of e2e.rs originally being a standalone
+# `bash tests/runtime_tests.sh` script with no overlap with `test`, then
+# migrated to a plain cargo integration test without updating `check`'s
+# dependency list -- not a deliberate flakiness-catching double-run).
 test:
 	cargo test --release
 
 # End-to-end: golden tests (tests/e2e/*.tnx) + generated context matrix
-# + boundary cases + stdlib smoke gate (use every tinox-core module once)
+# + boundary cases + stdlib smoke gate (use every tinox-core module once).
+# Already covered by `test` above -- kept as its own target for quickly
+# iterating on just these suites during development, not part of `check`.
 e2e:
 	cargo test --release -p tinox --test e2e --test matrix --test boundary --test stdlib_smoke
 

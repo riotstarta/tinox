@@ -91,15 +91,35 @@ whole point is to show the manual/low-level mechanism itself.
 
 ## Build & Test
 
-- `make check` (clippy + unit tests + e2e/matrix/boundary/stdlib_smoke
-  twice + dogfood incl. `jgrep-tinox`) must be fully green before every
-  commit — takes 15–25 minutes. Run it in the background (`nohup ... &
-  disown`, poll the log file), don't wait on it blockingly. A failure is
-  a REAL regression by default, not assumed flakiness — but: plain
-  bind/port errors in e2e tests can arise from port collisions between
-  two test files (has happened before), a quick `grep -rn
-  "httpServerCreate(4" tests/` check is worth it before writing it off
-  as "just flaky".
+- `make check` (clippy + unit tests + e2e/matrix/boundary/stdlib_smoke +
+  dogfood incl. `jgrep-tinox`) must be fully green before every commit.
+  Run it in the background (`nohup ... & disown`, poll the log file),
+  don't wait on it blockingly. **Since 2026-08-12, `check` no longer
+  depends on the separate `e2e` target** -- it used to (`check: clippy
+  test e2e dogfood`), but unrestricted `cargo test --release` (the
+  `test` target) already auto-discovers and runs every
+  `crates/tinox/tests/*.rs` integration test binary on its own,
+  including e2e.rs/matrix.rs/boundary.rs/stdlib_smoke.rs, so those four
+  suites were silently running twice on every `make check` -- an
+  accidental leftover from e2e.rs originally being a standalone `bash`
+  script with no such overlap, never revisited after it was migrated to
+  a plain cargo integration test. Measured directly (a dedicated
+  timestamped run): this alone was ~35% of total wall time. `e2e` is
+  still available standalone (`make e2e`) for quickly iterating on just
+  those suites; it's just no longer part of the aggregate gate. A
+  failure is a REAL regression by default, not assumed flakiness.
+- **Since 2026-08-12, e2e test fixtures bind OS-assigned dynamic ports**
+  (`httpServerCreate(0)` + `httpServerBoundPort(fd)`, see the dedicated
+  section below) instead of hardcoded literals — port collisions between
+  two test files are no longer a thing to check for by hand. If a bind/
+  port-related e2e failure still shows up, it's much more likely a
+  leftover process from a manually-run `tinox dev`/example session still
+  holding a port than an actual collision between two test files (bit
+  this project ran into directly: a stale `tinox dev` session sharing
+  port 8080's `SO_REUSEPORT` group with a test server made ~half of that
+  test's requests silently land on the wrong process and get a 404) --
+  `ss -ltnp | grep :<port>` to check for a stray listener before assuming
+  a real regression.
 - `make asan` (AddressSanitizer, `-DTINOX_NO_GC`) and `make checked`
   (heap-kind registry, `-DTINOX_CHECKED`) are NOT part of `make check`,
   but useful when memory errors/dispatch bugs on the wrong heap-object
@@ -107,8 +127,10 @@ whole point is to show the manual/low-level mechanism itself.
   weekly/pre-release runs.
 - New e2e tests under `tests/e2e/*.tnx` with `// expect:` directives
   (line-by-line comparison of stdout output). For tests that bind a
-  port: pick an actually free port (`grep -rn "httpServerCreate(4"
-  tests/e2e/*.tnx examples/*.tnx` shows the ones already in use).
+  port: use `httpServerCreate(0)` + `httpServerBoundPort(fd)` (dynamic),
+  not a hardcoded literal — see the dedicated section below for the
+  exact pattern, including the one real edge case (rebinding to the same
+  port for a reconnect test).
 - Tests that use `spawn`/`await` (simulated broker/server via loopback)
   should be run 15–40× repeatedly before being trusted as green — the
   async runtime has had several timing-dependent bugs (Bug 68 among
