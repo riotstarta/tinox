@@ -97,14 +97,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47631);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", 47631, "/", "guest", "guest");
+        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
         if c.conn > 0 {
             println("ok-connect");
         }

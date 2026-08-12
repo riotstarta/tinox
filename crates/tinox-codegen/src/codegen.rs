@@ -1483,6 +1483,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_insert(i64*, i64, i64)").unwrap();
         // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerBoundPort(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpServerReadRequest(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpServerSendRaw(i64, i8*)").unwrap();

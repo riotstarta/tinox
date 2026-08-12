@@ -49,14 +49,15 @@ class Main
 
     fnc main() -> Int32 {
         // --- Success path ---
-        let srv1 = httpServerCreate(47626);
+        let srv1 = httpServerCreate(0);
+        let port1 = httpServerBoundPort(srv1);
         if srv1 < 0 {
             println("bind failed");
             return 1;
         }
         let handle1 = spawn fakeBrokerAccept(srv1, 0);
 
-        let conn1 = Amqp10::dial("127.0.0.1", 47626);
+        let conn1 = Amqp10::dial("127.0.0.1", port1);
         Amqp10::sendSaslProtocolHeader(conn1);
         let echoOk1 = Amqp10::checkProtocolHeaderEcho(conn1, [65, 77, 81, 80, 3, 1, 0, 0]);
         let result1 = Amqp10::negotiateSasl(conn1, "guest", "guest");
@@ -74,14 +75,15 @@ class Main
         httpServerClose(srv1);
 
         // --- Rejected auth (sasl-outcome code = 1) ---
-        let srv2 = httpServerCreate(47627);
+        let srv2 = httpServerCreate(0);
+        let port2 = httpServerBoundPort(srv2);
         if srv2 < 0 {
             println("bind failed");
             return 1;
         }
         let handle2 = spawn fakeBrokerAccept(srv2, 1);
 
-        let conn2 = Amqp10::dial("127.0.0.1", 47627);
+        let conn2 = Amqp10::dial("127.0.0.1", port2);
         Amqp10::sendSaslProtocolHeader(conn2);
         Amqp10::checkProtocolHeaderEcho(conn2, [65, 77, 81, 80, 3, 1, 0, 0]);
         let result2 = Amqp10::negotiateSasl(conn2, "guest", "wrong-password");

@@ -908,3 +908,42 @@ changes).
   here" -- matching Swagger's "Example Value" tab rather than adding a parallel
   "Schema" tab. `params`' per-field `{kind, name, type}` already covers the scalar
   path/query side separately.
+
+## Dynamic Ports for e2e Test Fixtures (since 2026-08-12)
+
+30 of the `tests/e2e/**/*.tnx` fixtures (every simulated-broker `spawn`+connect
+test: AMQP 0-9-1/1.0, OIDC, OAuth2, SMTP, WS, ...) used to hardcode a literal TCP
+port, tracked only by a manual "grep `httpServerCreate(4` before picking a new
+one" convention -- which had already caused a real collision this session (a
+manually-run `tinox dev` session on :8080 colliding with
+`http_server_gc_stress_curl.rs`). Fixed with a new runtime builtin,
+`httpServerBoundPort(fd) -> Int64` (`runtime/runtime.c`, `getsockname()` on the
+listening socket), registered exactly like every sibling low-level HTTP builtin
+(`tinox-typecheck/src/lib.rs`'s `httpServerCreate` entry, `tinox-codegen/src/
+codegen.rs`'s matching `declare`) -- `httpServerCreate(0)` already made the OS
+pick a free ephemeral port, the missing piece was just a way to ask which one it
+picked. All 30 fixtures migrated: `httpServerCreate(LITERAL)` -> `httpServerCreate
+(0)` + `let port = httpServerBoundPort(srv);`, threading `port` through every
+place that used to repeat the literal (connect calls, and a few OIDC/OAuth2
+fixtures that build a JWKS/token-endpoint URL as a string -- those splice via
+`"http://127.0.0.1:" + port.toString() + "/jwks.json"` instead).
+
+- **One real edge case, not hypothetical**: `amqp10_heartbeat_reconnect/Main.tnx`
+  binds twice (close, then rebind to test `conn.reconnect()`, which targets the
+  *original* host:port with no new port argument) -- the second bind must reuse
+  the *same* port the first one got, not a fresh `httpServerCreate(0)` (which
+  would hand back an unrelated port `reconnect()` never learns about). Fixed as
+  `httpServerCreate(port)` (the variable) on the second call --
+  `SO_REUSEADDR`/`SO_REUSEPORT` (already set unconditionally in
+  `httpServerCreateOn`) make rebinding to the same port immediately after close
+  safe. Verified live, 5x repeated: identical output every run.
+- Deliberately **not** applied to the 4 Rust `*_curl.rs` integration tests
+  (`crates/tinox/tests/`) -- two are already `TINOX_PORT`-driven (trivial to make
+  dynamic later if desired), two build real, checked-in example files with the
+  port as a literal *inside user-facing example source*
+  (`examples/http3_rest_api_annotated/src/TaskController.tnx`'s
+  `@Http3RestController(8843, ...)`, `examples/http3_hello/Main.tnx`'s
+  `Http3Server::new(8493, ...)`) -- making those dynamic changes real example
+  behavior, not just test plumbing, and each already uses one distinct,
+  non-colliding port. Out of scope here (fix narrowly, not broadly) -- a
+  separate follow-up if wanted.

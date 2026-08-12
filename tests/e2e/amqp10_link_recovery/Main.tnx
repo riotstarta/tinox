@@ -112,14 +112,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47717);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let handle = spawn recoveryBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", 47717, "guest", "guest");
+        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if conn.conn <= 0 {
             println("connect failed: " + conn.errorMessage);
             return 1;

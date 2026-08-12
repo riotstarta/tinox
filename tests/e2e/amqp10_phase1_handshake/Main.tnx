@@ -25,14 +25,15 @@ class Main
             println("ok-dial-refused");
         }
 
-        let srv = httpServerCreate(47624);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
 
         // --- Check the AMQP header bytes ---
-        let conn1 = Amqp10::dial("127.0.0.1", 47624);
+        let conn1 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendAmqpProtocolHeader(conn1);
         let sconn1 = httpServerAcceptConnHandle(srv);
         let hdr1 = httpConnReadN(sconn1, 8);
@@ -64,7 +65,7 @@ class Main
         httpConnClose(sconn1);
 
         // --- Check the SASL header bytes ---
-        let conn2 = Amqp10::dial("127.0.0.1", 47624);
+        let conn2 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendSaslProtocolHeader(conn2);
         let sconn2 = httpServerAcceptConnHandle(srv);
         let hdr2 = httpConnReadN(sconn2, 8);
@@ -89,7 +90,7 @@ class Main
         httpConnClose(sconn2);
 
         // --- EOF path: the fake broker closes immediately without answering ---
-        let conn3 = Amqp10::dial("127.0.0.1", 47624);
+        let conn3 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendAmqpProtocolHeader(conn3);
         let sconn3 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn3, 8);

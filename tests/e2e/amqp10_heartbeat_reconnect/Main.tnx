@@ -132,14 +132,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47711);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let handle = spawn heartbeatBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", 47711, "guest", "guest");
+        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if conn.conn <= 0 {
             println("connect failed: " + conn.errorMessage);
             return 1;
@@ -176,7 +177,7 @@ class Main
         // --- Reconnect: rebuild using the SAME stored host/port/user/pass
         // (SO_REUSEADDR lets the fresh listen socket reuse the just-closed
         // port immediately). ---
-        let srv2 = httpServerCreate(47711);
+        let srv2 = httpServerCreate(port);
         if srv2 < 0 {
             println("srv2 bind failed");
             return 1;

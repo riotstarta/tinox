@@ -91,7 +91,8 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47643);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
@@ -100,7 +101,7 @@ class Main
 
         let client = OAuth2Client::new(
             "https://example.com/authorize",
-            "http://127.0.0.1:47643/token",
+            "http://127.0.0.1:" + port.toString() + "/token",
             "my-client-id",
             "my-client-secret",
             "https://myapp.example.com/callback"

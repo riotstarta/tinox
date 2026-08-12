@@ -33,13 +33,14 @@ class Main
 
         // Loopback: server + client in the same process (the backlog holds the pending
         // connection, so connect-before-accept works single-threaded).
-        let srv = httpServerCreate(47613);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let cfd = socketCreateTcp();
-        if !socketConnect(cfd, "127.0.0.1", 47613) {
+        if !socketConnect(cfd, "127.0.0.1", port) {
             println("connect failed");
             return 1;
         }

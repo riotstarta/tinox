@@ -30,14 +30,15 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47639);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
 
         let cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", 47639);
+        socketConnect(cfd, "127.0.0.1", port);
         let clientFd = httpServerAcceptConn(srv);
 
         var payload: String = "";
@@ -68,7 +69,7 @@ class Main
         // Short read: only 100 bytes actually sent (then connection closed),
         // but the caller declares/requests 5000 — must not hang or over-read.
         let cfd2 = socketCreateTcp();
-        socketConnect(cfd2, "127.0.0.1", 47639);
+        socketConnect(cfd2, "127.0.0.1", port);
         let clientFd2 = httpServerAcceptConn(srv);
         var small: List<Int64> = [];
         for i in 0..100 {

@@ -175,14 +175,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47642);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let brokerHandle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", 47642, "/", "guest", "guest");
+        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
         let ch1 = AmqpChannel091::open(c);
         let ch2 = AmqpChannel091::open(c);
 

@@ -130,13 +130,14 @@ class Main
 
     fnc main() -> Int32 {
         // --- Success path: correct password ---
-        let srv1 = httpServerCreate(47715);
+        let srv1 = httpServerCreate(0);
+        let port1 = httpServerBoundPort(srv1);
         if srv1 < 0 {
             println("bind failed");
             return 1;
         }
         let handle1 = spawn scramBroker(srv1, "correctpass");
-        let conn1 = Amqp10Connection::connect("127.0.0.1", 47715, "testuser", "correctpass");
+        let conn1 = Amqp10Connection::connect("127.0.0.1", port1, "testuser", "correctpass");
         let broker1Ok = await handle1;
         if conn1.conn > 0 {
             println("ok-scram-connect");
@@ -152,9 +153,10 @@ class Main
         httpServerClose(srv1);
 
         // --- Failure path: wrong password ---
-        let srv2 = httpServerCreate(47716);
+        let srv2 = httpServerCreate(0);
+        let port2 = httpServerBoundPort(srv2);
         let handle2 = spawn scramBroker(srv2, "correctpass");
-        let conn2 = Amqp10Connection::connect("127.0.0.1", 47716, "testuser", "wrongpass");
+        let conn2 = Amqp10Connection::connect("127.0.0.1", port2, "testuser", "wrongpass");
         await handle2;
         if conn2.conn <= 0 {
             println("ok-wrong-password-rejected");

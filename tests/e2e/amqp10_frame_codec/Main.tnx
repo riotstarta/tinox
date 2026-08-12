@@ -64,13 +64,14 @@ class Main
         }
 
         // --- Real frame round trip over loopback ---
-        let srv = httpServerCreate(47625);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", 47625);
+        socketConnect(cfd, "127.0.0.1", port);
         let cconn = httpConnFromFd(cfd);
         let sconn = httpServerAcceptConnHandle(srv);
 

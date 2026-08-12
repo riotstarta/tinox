@@ -68,14 +68,15 @@ class Main
     }
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47831);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeServer(srv);
 
-        let client: RedisClient = RedisClient::connect("127.0.0.1", 47831);
+        let client: RedisClient = RedisClient::connect("127.0.0.1", port);
         if client.conn <= 0 {
             println("connect failed: " + client.errorMessage);
             return 1;

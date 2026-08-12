@@ -104,7 +104,8 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47644);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
@@ -113,9 +114,9 @@ class Main
 
         let client = OidcClient::new(
             "https://issuer.example.com",
-            "http://127.0.0.1:47644/authorize",
-            "http://127.0.0.1:47644/token",
-            "http://127.0.0.1:47644/jwks.json",
+            "http://127.0.0.1:" + port.toString() + "/authorize",
+            "http://127.0.0.1:" + port.toString() + "/token",
+            "http://127.0.0.1:" + port.toString() + "/jwks.json",
             "my-client-id",
             "my-client-secret",
             "http://localhost/callback"
@@ -155,9 +156,9 @@ class Main
 
         let wrongClient = OidcClient::new(
             "https://issuer.example.com",
-            "http://127.0.0.1:47644/authorize",
-            "http://127.0.0.1:47644/token",
-            "http://127.0.0.1:47644/jwks.json",
+            "http://127.0.0.1:" + port.toString() + "/authorize",
+            "http://127.0.0.1:" + port.toString() + "/token",
+            "http://127.0.0.1:" + port.toString() + "/jwks.json",
             "someone-elses-client-id",
             "some-secret",
             "http://localhost/callback"

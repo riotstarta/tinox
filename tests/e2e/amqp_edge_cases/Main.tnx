@@ -223,14 +223,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47622);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", 47622, "/", "guest", "guest");
+        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
         let ch = AmqpChannel091::open(c);
 
         let queueName = ch.declareQueue("loopback-test-queue", true, false, false);

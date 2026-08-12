@@ -148,14 +148,15 @@ class Main
         }
 
         // --- readFrame/writeFrame over a real loopback conn ---
-        let srv = httpServerCreate(47616);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
         }
 
         let cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", 47616);
+        socketConnect(cfd, "127.0.0.1", port);
         let cconn = httpConnFromFd(cfd);
         let sconn = httpServerAcceptConnHandle(srv);
 

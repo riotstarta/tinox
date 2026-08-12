@@ -799,6 +799,7 @@ impl TypeChecker {
         }
         // HTTP low-level builtins (called from http_server.tnx)
         symbols.functions.insert("httpServerCreate".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerBoundPort".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("httpServerSendRaw".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });

@@ -64,7 +64,8 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(47645);
+        let srv = httpServerCreate(0);
+        let port = httpServerBoundPort(srv);
         if srv < 0 {
             println("bind failed");
             return 1;
@@ -72,7 +73,7 @@ class Main
         let handle = spawn fakeJwksProvider(srv);
 
         Env::setVar("OIDC_ISSUER", "https://issuer.example.com");
-        Env::setVar("OIDC_JWKS_URI", "http://127.0.0.1:47645/jwks.json");
+        Env::setVar("OIDC_JWKS_URI", "http://127.0.0.1:" + port.toString() + "/jwks.json");
         Env::setVar("OIDC_AUDIENCE", "my-client-id");
 
         let validToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleTEiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ1c2VyNDIiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLmNvbSIsImF1ZCI6Im15LWNsaWVudC1pZCIsImV4cCI6OTk5OTk5OTk5OSwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbImFwaS11c2VyIl19fQ.cqEdNwnOpfR94pLfx-kn5-w-045E4d3-WYCaPZceN5Pa8Oe2_poWMSmjdLm3RpFbdhY1NDnbKU1LgswyOIsBXyGkIjJaYBuP11u0QllCGawblRkcQ5o0yqeXIoFmO6jzAjCK6OTDWEzHGeF3JuhFjHx6G4ZHww_GM4pEhELqb5Ex8clE63QhvaXA_TOrvqoIJnwglgGmSnTs23IREXBkO-nUVGPy00aS9YgRBXRx2q-iaMiXDUT50sfb0buT_GdBqRPwiFmXDnWMag8ioCPolpK-pQrNHMvTHVcb_VZP4vHoFuMuf0DWaZDN9-vL6lhV45-3diIqqlO8s0J9ESwnLA";

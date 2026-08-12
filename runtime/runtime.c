@@ -2721,6 +2721,20 @@ int64_t httpServerCreate(int64_t port) {
     return httpServerCreateOn(port, NULL);
 }
 
+// `httpServerCreate(0)` already asks the OS to pick a free ephemeral port
+// (ordinary bind() semantics) -- this is the missing other half, letting
+// Tinox code find out which port it actually got via getsockname(). Added
+// so e2e test fixtures (tests/e2e/**/*.tnx) can stop hardcoding literal
+// ports for their simulated-broker `spawn`+connect pattern -- a hand-
+// curated "which ports are already used by another test file" registry
+// that had already caused a real collision (see CLAUDE.md).
+int64_t httpServerBoundPort(int64_t server_fd) {
+    struct sockaddr_in addr = {0};
+    socklen_t len = sizeof(addr);
+    if (getsockname((int)server_fd, (struct sockaddr*)&addr, &len) < 0) return -1;
+    return (int64_t)ntohs(addr.sin_port);
+}
+
 int64_t httpServerAcceptConn(int64_t server_fd) {
     struct sockaddr_in client = {0};
     socklen_t len = sizeof(client);
