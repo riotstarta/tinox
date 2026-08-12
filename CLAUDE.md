@@ -623,11 +623,17 @@ default `http://localhost:9090`).
   Re-verified live after the fix: `kill -INT` now cleanly stops and
   removes (`--rm`) the container and leaves no leftover `.tinox_dev_*`
   files.
-- **Registry push / CI publish workflow: deliberately not done yet.**
-  The image builds and has been verified locally (`docker build` +
-  `docker run` against a real `demo`-style app, and end-to-end through
-  `tinox dev` itself) -- per the plan, publishing (`ghcr.io/subnix-work/
-  tinox-devui` + a tag-triggered GitHub Actions workflow) comes only
-  *after* that manual validation, and additionally involves pushing to a
-  shared/external registry, which needs an explicit go-ahead rather than
-  being bundled into routine commit work.
+- **Published to `ghcr.io/subnix-work/tinox-devui` (since the `tinox-devui`
+  repo's `v1.0.0` tag, 2026-08-12).** The image was `docker build`+`docker
+  run`-verified locally first (against a real `demo`-style app, and
+  end-to-end through `tinox dev` itself) before the registry push, per the
+  plan's "publish only after manual validation" note.
+  `.github/workflows/publish.yml` (in the `tinox-devui` repo) builds and
+  pushes on every `vX.Y.Z` tag, using the repo's own `GITHUB_TOKEN`
+  (`packages: write` permission -- no separate PAT/secret needed) via
+  `docker/login-action`. `launch_devui_container`'s default `[dev]
+  devui_image` is now this published tag (`ghcr.io/subnix-work/
+  tinox-devui:latest`) rather than a locally-built-only `tinox-devui:latest`
+  -- `docker run` pulls it automatically on a machine that's never built
+  the dashboard itself. Override to a local build via `[dev] devui_image`
+  in `tinox.toml` when developing the dashboard.

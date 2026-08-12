@@ -1244,9 +1244,9 @@ fn print_dev_banner(watching: &str) {
 /// `--network host` (Linux-only, matches this whole toolchain's target)
 /// lets the container reach the loopback-only introspection API on the
 /// host's 127.0.0.1 directly, no `host.docker.internal` needed. A soft
-/// failure by design: if docker isn't installed or the image is missing,
-/// `tinox dev` still runs the actual program fine, just without the
-/// dashboard -- printed as a warning, not a hard error.
+/// failure by design: if docker isn't installed or the image can't be
+/// pulled/found, `tinox dev` still runs the actual program fine, just
+/// without the dashboard -- printed as a warning, not a hard error.
 fn launch_devui_container(cfg: &DevConfig) -> Option<String> {
     let docker_available = Command::new("docker")
         .arg("--version")
@@ -1258,7 +1258,14 @@ fn launch_devui_container(cfg: &DevConfig) -> Option<String> {
         return None;
     }
 
-    let image = cfg.devui_image.clone().unwrap_or_else(|| "tinox-devui:latest".to_string());
+    // Default is the real published image (ghcr.io/subnix-work/tinox-devui,
+    // pushed by that repo's own `.github/workflows/publish.yml` on every
+    // `vX.Y.Z` tag) -- `docker run` pulls it automatically on a machine
+    // that's never built it locally. Override to a local `tinox-devui:latest`
+    // (or any other tag) via `[dev] devui_image` in tinox.toml when
+    // developing the dashboard itself.
+    let image = cfg.devui_image.clone()
+        .unwrap_or_else(|| "ghcr.io/subnix-work/tinox-devui:latest".to_string());
     let container_name = format!("tinox-devui-{}", std::process::id());
     let app_url = format!("http://127.0.0.1:{}", cfg.port);
 
