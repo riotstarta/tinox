@@ -213,16 +213,50 @@ class Main
     std::thread::sleep(Duration::from_millis(500));
 
     let base = "http://127.0.0.1:18099";
+    // Retries on an empty/`000` result (curl's own signal for "couldn't
+    // connect") rather than a single fixed sleep+fire: this test's fixed
+    // port can transiently collide with load from the OTHER real-server-
+    // spawning integration tests when `make check` runs everything in
+    // parallel (found live: this test alone was 5/5 green in isolation,
+    // but failed once as part of a full `make check` run with an empty
+    // body where a real one was expected -- a transient connection
+    // hiccup under contention, not a feature bug). Doesn't weaken the
+    // actual assertions below, which still check exact values.
     let curl_body = |url: &str| -> String {
-        let out = Command::new("curl").args(["-s", url]).output().expect("spawn curl");
-        String::from_utf8_lossy(&out.stdout).to_string()
+        for attempt in 0..5 {
+            let out = Command::new("curl").args(["-s", url]).output().expect("spawn curl");
+            let body = String::from_utf8_lossy(&out.stdout).to_string();
+            if !body.is_empty() || attempt == 4 {
+                return body;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        unreachable!()
     };
     let curl_status = |args: &[&str]| -> String {
-        let out = Command::new("curl")
-            .args([&["-s", "-o", "/dev/null", "-w", "%{http_code}"], args].concat())
-            .output()
-            .expect("spawn curl");
-        String::from_utf8_lossy(&out.stdout).to_string()
+        for attempt in 0..5 {
+            let out = Command::new("curl")
+                .args([&["-s", "-o", "/dev/null", "-w", "%{http_code}"], args].concat())
+                .output()
+                .expect("spawn curl");
+            let status = String::from_utf8_lossy(&out.stdout).to_string();
+            if (!status.is_empty() && status != "000") || attempt == 4 {
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        unreachable!()
+    };
+    let curl_body_with_args = |args: &[&str]| -> String {
+        for attempt in 0..5 {
+            let out = Command::new("curl").args([&["-s"], args].concat()).output().expect("spawn curl");
+            let body = String::from_utf8_lossy(&out.stdout).to_string();
+            if !body.is_empty() || attempt == 4 {
+                return body;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        unreachable!()
     };
 
     // String @PathParam + Bool @QueryParam, auto-serialize.
@@ -254,18 +288,12 @@ class Main
         &format!("{base}/items"),
     ]);
     assert_eq!(create_status, "201");
-    let create_body = {
-        let out = Command::new("curl")
-            .args([
-                "-s", "-X", "POST",
-                "-H", "Content-Type: application/json",
-                "-d", r#"{"id":0,"name":"sprocket"}"#,
-                &format!("{base}/items"),
-            ])
-            .output()
-            .expect("spawn curl");
-        String::from_utf8_lossy(&out.stdout).to_string()
-    };
+    let create_body = curl_body_with_args(&[
+        "-X", "POST",
+        "-H", "Content-Type: application/json",
+        "-d", r#"{"id":0,"name":"sprocket"}"#,
+        &format!("{base}/items"),
+    ]);
     assert_eq!(create_body, r#"{"id":0,"name":"sprocket"}"#);
 
     // Int64 @PathParam + @HttpContext manual mode, dynamic status.
