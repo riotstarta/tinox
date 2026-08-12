@@ -2,13 +2,30 @@ import tinox.core.http_server;
 import tinox.core.json;
 import User;
 
-// Auto-serialize mode throughout (no @HttpContext param, return type is
-// the real domain object) -- the compiler serializes the returned
-// List<User>/User as the JSON response body itself, replacing the
-// manual Json::serialize(...)/ctx.response.body= wiring this example
-// used to demonstrate.
+// Auto-serialize mode for listUsers/createUser/renameUser (no @HttpContext
+// param, return type is the real domain object) -- the compiler serializes
+// the returned List<User>/User as the JSON response body itself, replacing
+// the manual Json::serialize(...)/ctx.response.body= wiring this example
+// used to demonstrate. getUser mixes in @HttpContext to show the other
+// mode: a dynamic 404 (a fixed @StatusCode can't express "sometimes 200,
+// sometimes 404"), same pattern as
+// examples/http3_rest_api_annotated/src/TaskController.tnx's getTask.
 class UserController
 {
+    fnc findUserIndex(users: List<User>, id: Int64) -> Int64
+    {
+        var i: Int64 = 0;
+        while i < users.len()
+        {
+            if users[i].id == id
+            {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
     @GET
     @Path("/users")
     @Produces("application/json")
@@ -18,12 +35,39 @@ class UserController
         return [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
     }
 
+    // @PathParam by itself, mixed with @HttpContext for a dynamic status.
+    @GET
+    @Path("/users/:id")
+    fn getUser(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
+    {
+        let users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+        let idx: Int64 = findUserIndex(users, id);
+        if idx < 0
+        {
+            ctx.response.status(404).json("{\"error\":\"user not found\"}");
+            return ctx;
+        }
+        ctx.response.json(Json::serialize(users[idx]));
+        return ctx;
+    }
+
     @POST
     @Path("/users")
     @Consumes("application/json")
     @StatusCode(201)
     fn createUser(@PostParam user: User) -> User
     {
+        return user;
+    }
+
+    // A second, standalone @PostParam example: @PathParam + @PostParam
+    // together, still auto-serialized (no @HttpContext needed since the
+    // status is always 200 here).
+    @POST
+    @Path("/users/:id/rename")
+    fn renameUser(@PathParam id: Int64, @PostParam user: User) -> User
+    {
+        user.id = id;
         return user;
     }
 }
